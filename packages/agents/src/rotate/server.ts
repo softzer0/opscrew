@@ -732,6 +732,17 @@ async function runRotation(
     existing !== undefined && isDeepStrictEqual(sorted(existing.names), sorted(named))
       ? existing
       : undefined;
+  // One that began in the user's Portainer or on this computer keeps its state there (T2507).
+  if (reused !== undefined && reused.step !== "planned" && reused.target !== undefined) {
+    const where = reused.target === "portainer" ? "in your Portainer" : "on this computer";
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `The rotation of ${listText(named)} began ${where}, and its state is there, not on the servers. Nothing was changed.`,
+      {
+        hint: `Finish it with \`${again}\`, or put the old values back with \`${again} --undo\`, while the plan still runs the app where the rotation began.`,
+      },
+    );
+  }
   // A rotation only planned changed nothing yet: one of other services replaces it.
   if (existing !== undefined && reused === undefined && existing.step !== "planned") {
     const theirs = `opscrew rotate ${existing.names.join(" ")}${flags}`;
@@ -784,7 +795,16 @@ async function runRotation(
     runs.length === 0
       ? undefined
       : await readAppEnv(deps, hosts.get(APP_SERVER) as RotateHost, plan, again, flags);
-  const values = reused ?? (await newRotationValues(deps, services, grants));
+  // Only the values of a reused file: a planned one of Portainer or this computer (T2507) also
+  // holds that path's progress, which the servers' rotation must not carry.
+  const values: RotationValues =
+    reused === undefined
+      ? await newRotationValues(deps, services, grants)
+      : {
+          names: reused.names,
+          services: reused.services,
+          ...(reused.grants ? { grants: reused.grants } : {}),
+        };
   const envFiles = await envFilesWith(deps, plan, values, appEnv, "new");
   const input: RotationPlan = {
     services,

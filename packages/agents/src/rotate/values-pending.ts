@@ -37,6 +37,19 @@ export type RotationValues = z.infer<typeof RotationValuesSchema>;
 const PendingRotationSchema = RotationValuesSchema.extend({
   hash: z.string().regex(/^[0-9a-f]{64}$/),
   step: z.enum(["planned", "started", "switched"]),
+  /**
+   * Where it runs when not on the servers: the user's Portainer or this computer (T2507), whose
+   * rotation keeps its own progress here.
+   */
+  target: z.enum(["portainer", "localhost"]).optional(),
+  /** Portainer: the hash of the stack plan the rotation's approval covers, bound into `hash`. */
+  stackPlanHash: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/)
+    .optional(),
+  /** Portainer and this computer: the rotation's units done, and while undone, its undo's. */
+  done: z.int().min(0).optional(),
+  undone: z.int().min(0).optional(),
 });
 
 /** An unfinished rotation ({@link PendingRotationSchema}). */

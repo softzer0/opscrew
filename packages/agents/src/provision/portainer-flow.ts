@@ -15,7 +15,7 @@ import {
   valueFingerprint,
   valueFingerprints,
 } from "@opscrew/connector-portainer";
-import type { PhaseName } from "@opscrew/contracts";
+import type { ApprovalRecord, PhaseName } from "@opscrew/contracts";
 import { OpsCrewError, plural, tfstateFile, writeFileAtomic } from "@opscrew/core";
 import {
   PORTAINER_STACK_VARIABLES,
@@ -55,6 +55,7 @@ import {
   stringOutput,
   writePlanIfChanged,
 } from "../shared";
+import { gitClient } from "../shared/github";
 import { connectorFirst, tunnelChange } from "../shared/tunnel-connections";
 import { portainerAdditionsNote } from "./additions";
 import { caddyRecordNote, deletedRecordHosts, requireCaddyRecords } from "./caddy-records";
@@ -133,7 +134,12 @@ import {
   requireStorageKey,
   storageLogin,
 } from "./storage";
-import type { PortainerServices, ProvisionOptions, ProvisionResult } from "./types";
+import type {
+  PortainerServices,
+  ProvisionOptions,
+  ProvisionResult,
+  ProvisionServices,
+} from "./types";
 
 /** What {@link provisionPortainer} gets from the shared provision flow. */
 export interface PortainerFlowInput {
@@ -245,6 +251,16 @@ export interface PortainerStacksInput {
   origin: () => { tls?: RuntimeContext["originTls"]; bundle?: string };
 }
 
+/** A stack plan bound to the values it sends (which stay with {@link PortainerStacks}). */
+export interface PlannedStacks {
+  plan: StackPlan;
+  hash: string;
+  /** The plan as shown, with its hash. */
+  details: string;
+  /** How many of its changes change something. */
+  changes: number;
+}
+
 /** The app's stacks in Portainer, from {@link preparePortainerStacks}. */
 export interface PortainerStacks {
   /** The stack plan without values, already checked for blockers and missing tokens. */
@@ -252,9 +268,19 @@ export interface PortainerStacks {
   /** The hash of the stack plan last shown. */
   shownHash(): string | undefined;
   /**
-   * The stack step: the plan bound to the values (`outputs`: the tunnels' tokens) → shown and
-   * saved → stop on blockers or missing tokens → with `planOnly`, nothing more; else `note` →
-   * `stack-apply` approval by its hash → apply → record what OpsCrew created.
+   * The stack plan bound to the values (`outputs`: the tunnels' tokens), shown and saved; stops
+   * on blockers or missing tokens. Changes nothing.
+   */
+  plan(outputs: Record<string, unknown>): Promise<PlannedStacks>;
+  /**
+   * Applies a stack plan {@link plan} made in this run under an approval the caller holds, bound
+   * to its hash (`approval`, recorded in the result; one with changes is refused without it), and
+   * records what OpsCrew created; one without changes only records the connection.
+   */
+  apply(planned: PlannedStacks, approval?: ApprovalRecord): Promise<StackStepResult>;
+  /**
+   * The stack step: {@link plan} → with `planOnly`, nothing more; else `note` → `stack-apply`
+   * approval by its hash → {@link apply}.
    */
   step(
     outputs: Record<string, unknown>,
@@ -383,59 +409,136 @@ export function preparePortainerStacks(
 
   let stale = false;
   let shownHash: string | undefined;
+  /** The values each planned stack plan sends, by the plan (never in the plan itself). */
+  const sent = new WeakMap<StackPlan, StackValues>();
+
+  const planStep = async (outputs: Record<string, unknown>): Promise<PlannedStacks> => {
+    if (stale) {
+      facts = await input.inspect("after changing Portainer");
+      stale = false;
+    }
+    const stack = await values(outputs);
+    const stackPlan = planStacks(facts, desired(fingerprints(stack)));
+    const hash = stackPlanHash(stackPlan);
+    shownHash = hash;
+    await writeFileAtomic(
+      stackPlanFile(deps.paths, hash),
+      `${JSON.stringify(stackPlan, null, 2)}\n`,
+      { mode: 0o600 },
+    );
+    const details = describeStackPlan(stackPlan, hash, facts.environment?.name);
+    deps.reporter.info(details);
+    requireNoStackBlockers(stackPlan);
+    requireTokens(
+      sentTokens(stackPlan),
+      {
+        repository: stack.repositoryToken !== undefined,
+        registry: stack.registryToken !== undefined,
+      },
+      stackBranch,
+    );
+    sent.set(stackPlan, stack);
+    const changes = stackPlan.changes.filter((change) => change.state === "change").length;
+    return { plan: stackPlan, hash, details, changes };
+  };
+
+  const applyStep = async (
+    planned: PlannedStacks,
+    approval?: ApprovalRecord,
+  ): Promise<StackStepResult> => {
+    const { plan: stackPlan, hash } = planned;
+    const stack = sent.get(stackPlan);
+    if (stack === undefined) {
+      throw new OpsCrewError("INTERNAL", "Only a stack plan this run planned is applied.");
+    }
+    if (planned.changes === 0) {
+      deps.reporter.success("Your Portainer is already set up as planned; nothing in it changes.");
+      connection = await recordConnection(deps, connection, {
+        publicImage: input.publicImage,
+        ...(hasAppStack(connection.created) ? { appliedWeb: target.web } : {}),
+      });
+      return { plan: stackPlan, hash, applied: false };
+    }
+    if (approval?.approved !== true) {
+      throw new OpsCrewError(
+        "INTERNAL",
+        "A stack plan with changes is applied only under an approval its caller holds.",
+      );
+    }
+    const sends = sentTokens(stackPlan);
+    const secrets: ApplySecrets = {
+      env: stack.env,
+      webhookId: stack.webhookId,
+      ...(stack.updaterEnv !== undefined ? { updaterEnv: stack.updaterEnv } : {}),
+      ...(stack.tunnelToken !== undefined ? { tunnelToken: stack.tunnelToken } : {}),
+      ...(sends.repository && stack.repositoryToken !== undefined
+        ? { repositoryToken: stack.repositoryToken }
+        : {}),
+      ...(sends.registry && stack.registryToken !== undefined
+        ? { registryToken: stack.registryToken }
+        : {}),
+    };
+    deps.reporter.step(
+      `Changing your Portainer (${plural(planned.changes, "change")}; a stack's first deploy can take a few minutes)`,
+    );
+    stale = true;
+    const result = await applyStackPlanAudited(deps, {
+      client,
+      plan: stackPlan,
+      hash,
+      options: {
+        secrets,
+        valueKey,
+        ...(services.wait !== undefined ? { wait: services.wait } : {}),
+      },
+      phase: input.phase,
+      // What OpsCrew created is recorded (with the route of an app stack it holds), also after
+      // a failure part-way; the image's visibility once the apply is done.
+      record: async (created, finished) => {
+        connection = await recordConnection(deps, connection, {
+          created,
+          ...(finished ? { publicImage: input.publicImage } : {}),
+          ...(hasAppStack(created) ? { appliedWeb: target.web } : {}),
+        });
+      },
+    });
+    deps.reporter.success(
+      `Changed your Portainer (${plural(result.applied.length, "change")} applied).`,
+    );
+    return {
+      plan: stackPlan,
+      hash,
+      applied: result.applied.length > 0,
+      approval,
+    };
+  };
+
   return {
     preliminary,
     shownHash: () => shownHash,
+    plan: planStep,
+    apply: applyStep,
     async step(outputs, { planOnly, note }) {
-      if (stale) {
-        facts = await input.inspect("after changing Portainer");
-        stale = false;
-      }
-      const stack = await values(outputs);
-      const stackPlan = planStacks(facts, desired(fingerprints(stack)));
-      const hash = stackPlanHash(stackPlan);
-      shownHash = hash;
-      await writeFileAtomic(
-        stackPlanFile(deps.paths, hash),
-        `${JSON.stringify(stackPlan, null, 2)}\n`,
-        { mode: 0o600 },
-      );
-      const details = describeStackPlan(stackPlan, hash, facts.environment?.name);
-      deps.reporter.info(details);
-      requireNoStackBlockers(stackPlan);
-      const sends = sentTokens(stackPlan);
-      requireTokens(
-        sends,
-        {
-          repository: stack.repositoryToken !== undefined,
-          registry: stack.registryToken !== undefined,
-        },
-        stackBranch,
-      );
-      const work = stackPlan.changes.filter((change) => change.state === "change");
-      if (work.length === 0) {
+      const planned = await planStep(outputs);
+      const { hash } = planned;
+      if (planned.changes === 0) {
+        if (!planOnly) return applyStep(planned);
         deps.reporter.success(
           "Your Portainer is already set up as planned; nothing in it changes.",
         );
-        if (!planOnly) {
-          connection = await recordConnection(deps, connection, {
-            publicImage: input.publicImage,
-            ...(hasAppStack(connection.created) ? { appliedWeb: target.web } : {}),
-          });
-        }
-        return { plan: stackPlan, hash, applied: false };
+        return { plan: planned.plan, hash, applied: false };
       }
       if (planOnly) {
         deps.reporter.info(
           `Saved the stack plan (hash ${hash}); nothing in Portainer was changed.`,
         );
-        return { plan: stackPlan, hash, applied: false };
+        return { plan: planned.plan, hash, applied: false };
       }
       if (note !== undefined) deps.reporter.info(note);
       const approval = await deps.approvals.request({
         kind: "stack-apply",
-        title: `Apply the stack plan to your Portainer (${plural(work.length, "change")})`,
-        details,
+        title: `Apply the stack plan to your Portainer (${plural(planned.changes, "change")})`,
+        details: planned.details,
         planHash: hash,
       });
       if (!approval.approved) {
@@ -447,48 +550,162 @@ export function preparePortainerStacks(
         });
       }
       await deps.approvals.assertApprovedStackPlan(hash);
-      const secrets: ApplySecrets = {
-        env: stack.env,
-        webhookId: stack.webhookId,
-        ...(stack.updaterEnv !== undefined ? { updaterEnv: stack.updaterEnv } : {}),
-        ...(stack.tunnelToken !== undefined ? { tunnelToken: stack.tunnelToken } : {}),
-        ...(sends.repository && stack.repositoryToken !== undefined
-          ? { repositoryToken: stack.repositoryToken }
-          : {}),
-        ...(sends.registry && stack.registryToken !== undefined
-          ? { registryToken: stack.registryToken }
-          : {}),
-      };
-      deps.reporter.step(
-        `Changing your Portainer (${plural(work.length, "change")}; a stack's first deploy can take a few minutes)`,
-      );
-      stale = true;
-      const result = await applyStackPlanAudited(deps, {
-        client,
-        plan: stackPlan,
-        hash,
-        options: {
-          secrets,
-          valueKey,
-          ...(services.wait !== undefined ? { wait: services.wait } : {}),
-        },
-        phase: input.phase,
-        // What OpsCrew created is recorded (with the route of an app stack it holds), also after
-        // a failure part-way; the image's visibility once the apply is done.
-        record: async (created, finished) => {
-          connection = await recordConnection(deps, connection, {
-            created,
-            ...(finished ? { publicImage: input.publicImage } : {}),
-            ...(hasAppStack(created) ? { appliedWeb: target.web } : {}),
-          });
-        },
-      });
-      deps.reporter.success(
-        `Changed your Portainer (${plural(result.applied.length, "change")} applied).`,
-      );
-      return { plan: stackPlan, hash, applied: result.applied.length > 0, approval };
+      return applyStep(planned, approval);
     },
   };
+}
+
+/**
+ * The user's Portainer reached with the pinned certificate and `token`, values fingerprinted with
+ * the local value key, and read-only inspected; `inspect` reads it again, each reading stopping
+ * on what blocks the app's stacks.
+ */
+async function connectPortainer(
+  deps: PhaseDeps,
+  input: {
+    plan: DeployPlan;
+    connection: PortainerConnection;
+    token: string;
+    services: PortainerServices;
+    phase: PhaseName;
+  },
+) {
+  const { plan, connection, token, services, phase } = input;
+  const target = portainerTarget(plan.target);
+  const valueKey = await ensurePortainerValueKey(deps, services.randomBytes);
+  const client = portainerClientFor(deps, {
+    connection,
+    token,
+    client: services.client,
+    valueKey,
+  });
+  const inspect = async (detail?: string): Promise<PortainerFacts> => {
+    const facts = await inspectAudited(deps, client, {
+      plan,
+      target,
+      step: "Inspecting your Portainer (read-only)",
+      phase,
+      ...(detail !== undefined ? { detail } : {}),
+    });
+    requireUsableFacts(facts, target);
+    return facts;
+  };
+  return { valueKey, client, inspect, facts: await inspect() };
+}
+
+/** The app's stacks of {@link portainerStacksFor}, with the outputs their values need. */
+export interface PortainerStacksSetup {
+  stacks: PortainerStacks;
+  /** The infrastructure state's outputs (the tunnels' tokens); `{}` when the stacks need none. */
+  outputs: Record<string, unknown>;
+}
+
+/**
+ * For `opscrew rotate` (whose own unfinished rotation does not stop it): the app's stacks in the
+ * user's Portainer as the last `opscrew provision` set them up, without
+ * changing anything (no Cloudflare, bucket or infrastructure plan): Portainer reached and
+ * inspected, GitHub's repository, the committed stack template, the app's values (`rewrite`
+ * changes them before any plan binds them: a rotation's new values), the off-server copy's
+ * variables, the stack Caddy's origin TLS from the recorded edge, and the tunnels' tokens from the
+ * infrastructure state. Every value is registered with the redactor. Provision does not call it:
+ * there each of these inputs is made at its own step, between changes (the stack Caddy's origin
+ * TLS after the Cloudflare apply, the bucket's key after its plan, the off-server copy with the
+ * recovery key it makes), so only {@link connectPortainer} and {@link preparePortainerStacks} are
+ * shared.
+ * @throws OpsCrewError as provision's preconditions: Portainer's token or connection, GitHub,
+ * Cloudflare for an R2 bucket, the storage key, or what blocks the stacks.
+ */
+export async function portainerStacksFor(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  services: ProvisionServices,
+  options: {
+    phase: PhaseName;
+    /** The command a refusal says to run again. */
+    command: string;
+    rewrite?: (environment: AppEnvironment) => AppEnvironment;
+  },
+): Promise<PortainerStacksSetup> {
+  const { phase, command } = options;
+  const target = portainerTarget(plan.target);
+  const connection = await requirePortainerConnection(deps, plan);
+  const token = requirePortainerToken(deps);
+  const github = await setupGitHub(deps, gitClient(deps), services);
+  const bucket = providerBucket(plan);
+  const offsite = snapshotOffsiteOf(plan);
+  const account =
+    bucket?.provider === "r2" || offsite?.provider === "r2"
+      ? await setupCloudflare(deps, plan, services)
+      : undefined;
+  const { valueKey, client, inspect, facts } = await connectPortainer(deps, {
+    plan,
+    connection,
+    token,
+    services: services.portainer ?? {},
+    phase,
+  });
+  const repository = await github.api.getRepo(github.owner, github.repo);
+  const site = await recordedEdge(deps, plan);
+  const tls = site.edge.originTls;
+  const bundle = tls === undefined ? undefined : portainerOriginTls(site.values);
+  if (bundle !== undefined) deps.redactor.addLiteral(bundle, "origin-tls");
+  const already = "Nothing in your Portainer was changed.";
+  let environment: AppEnvironment | undefined;
+  const appEnvironment = async () => {
+    if (environment === undefined) {
+      const key =
+        bucket === undefined
+          ? undefined
+          : await requireStorageKey(deps, plan, services, { command, already });
+      const built = await buildAppEnvironment(deps, plan, services, undefined, {
+        portainer: true,
+        rotating: true,
+        ...(key === undefined ? {} : { storage: storageLogin(plan, key, account) }),
+      });
+      environment = options.rewrite?.(built) ?? built;
+    }
+    return environment;
+  };
+  let offsiteValues: Promise<Record<string, string>> | undefined;
+  const offsiteStack = () => {
+    offsiteValues ??= offsiteSetup(deps, plan, services, {
+      github,
+      key: undefined,
+      cloudflare: account,
+      command,
+      already,
+    }).then((setup) => setup.values);
+    return offsiteValues;
+  };
+  const stacks = preparePortainerStacks(deps, {
+    plan,
+    phase,
+    command,
+    client,
+    connection,
+    valueKey,
+    facts,
+    inspect,
+    github,
+    repositoryPrivate: repository.private,
+    publicImage: connection.publicImage ?? false,
+    committed: await committedStackPins(deps.paths.root, plan),
+    services: services.portainer ?? {},
+    appEnvironment,
+    ...(offsite !== undefined ? { offsite: offsiteStack } : {}),
+    origin: () => ({
+      ...(tls !== undefined ? { tls } : {}),
+      ...(bundle !== undefined ? { bundle } : {}),
+    }),
+  });
+  // The tunnels' tokens, read from the state only when a stack needs one.
+  const tokens = target.web.mode === "tunnel" || target.redeploy === "cloudflare";
+  const outputs = tokens
+    ? await provisionEngine(deps, plan, { services }).then(({ engine, env }) =>
+        engine.output(join(deps.paths.root, plan.infra.dir), { env }).catch(() => ({})),
+      )
+    : {};
+  return { stacks, outputs };
 }
 
 /**
@@ -593,25 +810,13 @@ export async function provisionPortainer(
     recovery: options.recovery,
   });
   // 2. Connect with the pinned certificate, inspect read-only, stop on what blocks the deploy.
-  const valueKey = await ensurePortainerValueKey(deps, portainerServices.randomBytes);
-  const client = portainerClientFor(deps, {
+  const { valueKey, client, inspect, facts } = await connectPortainer(deps, {
+    plan,
     connection,
     token,
-    client: portainerServices.client,
-    valueKey,
+    services: portainerServices,
+    phase,
   });
-  const inspect = async (detail?: string): Promise<PortainerFacts> => {
-    const facts = await inspectAudited(deps, client, {
-      plan,
-      target,
-      step: "Inspecting your Portainer (read-only)",
-      phase,
-      ...(detail !== undefined ? { detail } : {}),
-    });
-    requireUsableFacts(facts, target);
-    return facts;
-  };
-  const facts = await inspect();
   // The app's own additions: a Portainer stack has none yet (said when there is a file).
   await portainerAdditionsNote(deps);
   // The stack Caddy's origin TLS, planned against what the stack serves now (its file and the

@@ -1,5 +1,5 @@
 import type { DockerTransport } from "@opscrew/contracts";
-import { OpsCrewError, parseAnswer, Redactor } from "@opscrew/core";
+import { OpsCrewError, parseAnswer, Redactor, realSleep } from "@opscrew/core";
 import { z } from "zod";
 import {
   type ContainerFigures,
@@ -101,6 +101,10 @@ export interface ContainerInspection {
   startedAt: string;
   /** `HostConfig.Memory`; absent when the container has no limit. */
   memoryLimitBytes?: number;
+  /** `Config.Cmd`, the command it started with; absent when Docker gives none. */
+  command?: string[];
+  /** `Config.Entrypoint`; absent when Docker gives none. */
+  entrypoint?: string[];
 }
 
 /** A Docker volume, reduced to its name and Compose project. */
@@ -222,6 +226,17 @@ export interface PortainerClient {
   containerStats(environmentId: number, containerId: string): Promise<ContainerFigures>;
   /** `GET …/docker/containers/{id}/json`, reduced to {@link ContainerInspection}. */
   containerInspect(environmentId: number, containerId: string): Promise<ContainerInspection>;
+  /**
+   * Runs `command` in a running container through Docker's exec (`POST …/containers/{id}/exec`,
+   * `POST …/exec/{id}/start`, `GET …/exec/{id}/json`) with no stdin and no TTY, `env` only in its
+   * environment (each value registered with the redactor; never in the command), and returns its
+   * exit code. Its output is read and dropped: it can quote a value.
+   */
+  containerExec(
+    environmentId: number,
+    containerId: string,
+    input: { command: readonly string[]; env: Readonly<Record<string, string>> },
+  ): Promise<number>;
   /** `GET /api/endpoints/{id}/docker/volumes` (Compose volumes only). */
   listVolumes(environmentId: number): Promise<VolumeSummary[]>;
   /** `DELETE /api/endpoints/{id}/docker/volumes/{name}`. */
@@ -315,6 +330,8 @@ export interface PortainerClientDeps {
   stream?: PinnedStream;
   /** Per-request timeout (default {@link PORTAINER_REQUEST_TIMEOUT_MS}). */
   timeoutMs?: number;
+  /** Waits between reads of how an exec ended (default: a real sleep). */
+  sleep?: (ms: number) => Promise<void>;
   /**
    * The local value key (at least 16 bytes). While parsing a stack, its `Env` values and webhook
    * id become keyed fingerprints and are dropped; without it only the keys are kept.
@@ -347,11 +364,14 @@ export function portainerClient(
   const request = deps.request ?? pinnedRequest(endpoint);
   const stream = deps.stream ?? pinnedStream(endpoint);
   const timeoutMs = deps.timeoutMs ?? PORTAINER_REQUEST_TIMEOUT_MS;
+  const sleep = deps.sleep ?? realSleep;
   if (deps.valueKey !== undefined) checkKey(deps.valueKey);
   const stackSchema = stackSchemaFor(deps.valueKey);
 
   type CallSpec = Omit<PinnedRequestInit, "headers" | "timeoutMs" | "body"> & {
     action: string;
+    /** This request's timeout, when it may take longer than the client's. */
+    timeoutMs?: number;
     /** What a 403 means here, as an access the user can grant. */
     access?: string;
     /** What to do about a 403, when the default hint does not fit. */
@@ -373,7 +393,7 @@ export function portainerClient(
       method: spec.method,
       path: spec.path,
       headers,
-      timeoutMs,
+      timeoutMs: spec.timeoutMs ?? timeoutMs,
       ...(spec.body !== undefined && { body: JSON.stringify(spec.body) }),
       ...(spec.raw === true && { raw: true }),
     }).catch((error: unknown) => {
@@ -594,7 +614,67 @@ export function portainerClient(
         restartCount: details.RestartCount,
         startedAt: details.State.StartedAt,
         ...(memory > 0 && { memoryLimitBytes: memory }),
+        ...(details.Config?.Cmd ? { command: details.Config.Cmd } : {}),
+        ...(details.Config?.Entrypoint ? { entrypoint: details.Config.Entrypoint } : {}),
       };
+    },
+    async containerExec(environmentId, containerId, input) {
+      if (input.command.length === 0) {
+        throw new OpsCrewError("INTERNAL", "A command to run in a container has a program.");
+      }
+      const env = Object.entries(input.env).map(([name, value]) => {
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+          throw new OpsCrewError(
+            "INTERNAL",
+            "An exec's variable has an environment variable name.",
+          );
+        }
+        if (value !== "") redactor.addLiteral(value, name);
+        return `${name}=${value}`;
+      });
+      const created = (await call({
+        method: "POST",
+        path: `${containerPath(environmentId, containerId)}/exec`,
+        body: {
+          AttachStdin: false,
+          AttachStdout: true,
+          AttachStderr: true,
+          Tty: false,
+          Cmd: input.command,
+          Env: env,
+        },
+        schema: execCreatedSchema,
+        action: "run a command in the container",
+        ...EXEC_ACCESS,
+      })) as z.output<typeof execCreatedSchema>;
+      const exec = `/api/endpoints/${id(environmentId)}/docker/exec/${created.Id}`;
+      // The answer is the command's output stream, which ends when it exits; it is dropped.
+      await send({
+        method: "POST",
+        path: `${exec}/start`,
+        body: { Detach: false, Tty: false },
+        action: "run a command in the container",
+        raw: true,
+        timeoutMs: EXEC_TIMEOUT_MS,
+        ...EXEC_ACCESS,
+      });
+      // Docker may still show the exec running for a moment after its stream ended.
+      for (let read = 0; read < EXEC_READS; read++) {
+        if (read > 0) await sleep(EXEC_READ_PAUSE_MS);
+        const state = (await call({
+          method: "GET",
+          path: `${exec}/json`,
+          schema: execStateSchema,
+          action: "read how the command in the container ended",
+          ...EXEC_ACCESS,
+        })) as z.output<typeof execStateSchema>;
+        if (!state.Running && state.ExitCode !== null) return state.ExitCode;
+      }
+      throw new OpsCrewError(
+        "PROVIDER_ERROR",
+        "Docker did not say how a command OpsCrew ran in a container ended.",
+        { hint: "Check the container in Portainer, then run the command again." },
+      );
     },
     async listVolumes(environmentId) {
       // Every volume (not only labelled ones): a volume named like OpsCrew's without the app's
@@ -866,6 +946,19 @@ const CONTAINER_ACCESS = {
     "Use an administrator's access token, or the token of the user who deployed the app's stack, as PORTAINER_API_KEY, then try again.",
 };
 
+/** A 403 on an exec: the same rule as {@link CONTAINER_ACCESS}. */
+const EXEC_ACCESS = {
+  access:
+    "run a command in this container; a standard user's token reaches only the containers of that user's own stacks",
+  forbiddenHint: CONTAINER_ACCESS.forbiddenHint,
+};
+/** How many times an exec's end is read before OpsCrew gives up on it. */
+const EXEC_READS = 5;
+/** The pause between two reads of how an exec ended. */
+const EXEC_READ_PAUSE_MS = 200;
+/** How long a command run in a container may take, as on this computer. */
+const EXEC_TIMEOUT_MS = 2 * 60_000;
+
 /** Path segment for an id: a positive integer, never text from elsewhere. */
 function id(value: number): number {
   if (!Number.isSafeInteger(value) || value <= 0) {
@@ -1024,12 +1117,20 @@ const containerSchema = z.object({
     .nullable()
     .optional(),
 });
-/** Three fields of `…/containers/{id}/json`; everything else (`Config.Env`) is stripped here. */
+/** The fields of `…/containers/{id}/json` OpsCrew reads; the rest (`Config.Env`) is stripped here. */
 const inspectSchema = z.object({
   RestartCount: z.int().nonnegative(),
   State: z.object({ StartedAt: z.string() }),
   HostConfig: z.object({ Memory: z.int().nonnegative().optional() }).optional(),
+  Config: z
+    .object({
+      Cmd: z.array(z.string()).nullish(),
+      Entrypoint: z.array(z.string()).nullish(),
+    })
+    .optional(),
 });
+const execCreatedSchema = z.object({ Id: z.string().regex(/^[0-9a-f]{64}$/) });
+const execStateSchema = z.object({ Running: z.boolean(), ExitCode: z.int().nullable() });
 const volumesSchema = z.object({
   Volumes: z
     .array(z.object({ Name: z.string(), Labels: labelsSchema }))

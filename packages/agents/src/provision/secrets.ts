@@ -177,20 +177,28 @@ export async function buildAppEnvironment(
   plan: DeployPlan,
   services: ProvisionServices,
   serverHost?: string,
-  options: { portainer?: boolean; storage?: StorageLogin } = {},
+  options: {
+    portainer?: boolean;
+    storage?: StorageLogin;
+    /**
+     * Read by `opscrew rotate` itself (its Portainer stack plan), which the unfinished rotation
+     * does not stop: it is that rotation.
+     */
+    rotating?: true;
+  } = {},
 ): Promise<AppEnvironment> {
   // Provision may have changed the infrastructure already, but not the values.
   const stopped =
     "Provision stopped before the app's settings and deploy secrets, and neither was changed.";
   await assertValuesCurrent(deps, stopped);
-  const rotation = await readPendingRotation(deps);
+  const rotation = options.rotating === true ? undefined : await readPendingRotation(deps);
   if (rotation !== undefined) {
     const { root, environment, app } = deps.paths;
     const flags = await commandFlags(root, environment, app);
     const rotate = `opscrew rotate ${rotation.names.join(" ")}${flags}`;
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `The rotation of ${listText(rotation.names)} in ${environment} is unfinished, and provision would give GitHub and the servers values the rotation is replacing. ${stopped}`,
+      `The rotation of ${listText(rotation.names)} in ${environment} is unfinished, and provision would give the app values the rotation is replacing. ${stopped}`,
       {
         hint: `Finish it with \`${rotate}\`, or put the old values back with \`${rotate} --undo\`, then run \`opscrew provision${flags}\` again.`,
       },

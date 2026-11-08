@@ -543,6 +543,27 @@ describe("container reads", () => {
     });
   });
 
+  it("keeps the command and entrypoint a container started with", async () => {
+    const { client } = setup({
+      containers: [
+        {
+          ...app,
+          inspect: {
+            RestartCount: 0,
+            State: { StartedAt: "2026-10-28T08:00:00Z" },
+            Config: { Cmd: ["sh", "-c", "exec server"], Entrypoint: ["/entry"], Env: ["A=1"] },
+          },
+        },
+      ],
+    });
+    expect(await client.containerInspect(3, "a1b2c3")).toEqual({
+      restartCount: 0,
+      startedAt: "2026-10-28T08:00:00Z",
+      command: ["sh", "-c", "exec server"],
+      entrypoint: ["/entry"],
+    });
+  });
+
   it("says on 403 that a standard user's token sees only that user's stacks", async () => {
     const { client } = setup({ stacks: [stack(1)], containers: [app] }, "limited");
     for (const read of [
@@ -565,5 +586,98 @@ describe("container reads", () => {
       "limited",
     );
     expect(await owner.client.containerLogs(3, "a1b2c3", { tail: 10 })).toEqual([]);
+  });
+
+  it("runs a command through Docker's exec with the values only in its environment", async () => {
+    const old = fakeSecret("generic-password", "exec-old");
+    const next = fakeSecret("generic-password", "exec-new");
+    const { client, fake, redactor } = setup({
+      containers: [
+        {
+          ...app,
+          // The output may quote a value: the client drops it.
+          exec: (_command, env) => ({ exitCode: 3, output: `changed to ${env.OPSCREW_NEW}\n` }),
+        },
+      ],
+    });
+    const command = ["sh", "-c", 'test -n "$OPSCREW_NEW"'];
+    expect(
+      await client.containerExec(3, "a1b2c3", {
+        command,
+        env: { OPSCREW_OLD: old, OPSCREW_NEW: next },
+      }),
+    ).toBe(3);
+    expect(fake.execs).toMatchObject([
+      {
+        container: "a1b2c3",
+        command,
+        env: { OPSCREW_OLD: old, OPSCREW_NEW: next },
+        exitCode: 3,
+      },
+    ]);
+    const [create, start, read] = fake.calls;
+    expect(create).toMatchObject({
+      method: "POST",
+      path: "/api/endpoints/3/docker/containers/a1b2c3/exec",
+      body: { AttachStdin: false, Tty: false, Cmd: command },
+    });
+    expect(start).toMatchObject({
+      method: "POST",
+      path: `/api/endpoints/3/docker/exec/${fake.execs[0]?.id}/start`,
+      body: { Detach: false, Tty: false },
+    });
+    expect(read).toMatchObject({
+      method: "GET",
+      path: `/api/endpoints/3/docker/exec/${fake.execs[0]?.id}/json`,
+    });
+    // No value is ever in a path or the command, and both are registered with the redactor.
+    for (const call of fake.calls) {
+      expect(
+        `${call.path} ${JSON.stringify((call.body as { Cmd?: unknown })?.Cmd ?? "")}`,
+      ).not.toMatch(new RegExp(`${old}|${next}`));
+    }
+    expect(redactor.redact(`${old} ${next}`)).not.toMatch(new RegExp(`${old}|${next}`));
+  });
+
+  it("waits up to two minutes for an exec, and pauses between reads of how it ended", async () => {
+    let reads = 0;
+    const fake = fakePortainer({
+      containers: [{ ...app, exec: () => ({ exitCode: 0 }) }],
+      // The first read still shows it running, as Docker may right after its stream ended.
+      override: (call) =>
+        call.path.endsWith("/json") && call.path.includes("/exec/") && reads++ === 0
+          ? { status: 200, body: { Running: true, ExitCode: null } }
+          : undefined,
+    });
+    const timeouts: Record<string, number> = {};
+    const sleeps: number[] = [];
+    const client = portainerClient(endpoint, fake.tokens.admin, {
+      request: (init) => {
+        timeouts[`${init.method} ${init.path.split("/").at(-1)}`] = init.timeoutMs;
+        return fake.request(init);
+      },
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
+    });
+    expect(await client.containerExec(3, "a1b2c3", { command: ["true"], env: {} })).toBe(0);
+    expect(timeouts["POST start"]).toBe(120_000);
+    expect(timeouts["POST exec"]).toBe(30_000);
+    expect(sleeps).toEqual([200]);
+  });
+
+  it("refuses an exec with plain words: a stopped container, a standard user's token", async () => {
+    const stopped = setup({ containers: [{ ...app, running: false }] });
+    await expect(
+      stopped.client.containerExec(3, "a1b2c3", { command: ["true"], env: {} }),
+    ).rejects.toMatchObject({ status: 409 });
+    const limited = setup({ stacks: [stack(1)], containers: [app] }, "limited");
+    const error = (await limited.client
+      .containerExec(3, "a1b2c3", { command: ["true"], env: {} })
+      .catch((caught: unknown) => caught)) as PortainerApiError;
+    expect(error.status).toBe(403);
+    expect(error.message).toMatch(/may not run a command in this container/);
+    expect(error.hint).toMatch(/administrator's access token/);
+    expect(limited.fake.execs).toEqual([]);
   });
 });

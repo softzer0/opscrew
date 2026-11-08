@@ -13,12 +13,15 @@ import {
   initStepsFor,
   type LocalhostSite,
   localhostTlsUpload,
+  ROTATION_HOLDER,
   rollbackCommands,
   shellQuote,
   switchCommands,
 } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { commandFlags } from "../environments/choice";
+import { readPendingRotation } from "../rotate/values-pending";
 import { caFiles, ensureLocalCa, issueLeaf } from "./ca";
 import { nodeLocalRequest } from "./https";
 import type { LocalRegistry } from "./image";
@@ -235,7 +238,8 @@ export async function applyLocal(
                 ? "The previous version keeps running."
                 : switched.back === "held"
                   ? "A restore holds the app here, so OpsCrew changed nothing: finish it with `opscrew restore <copy>`, or run `sh snapshot.sh resume` in the app's folder, then run `opscrew provision` again."
-                  : `OpsCrew could not put the previous version back: run \`docker compose ps\` in ${folder}.`;
+                  : ((await heldByRotation(deps, switched.back)) ??
+                    `OpsCrew could not put the previous version back: run \`docker compose ps\` in ${folder}.`);
         const why =
           switched.startFailed === undefined
             ? `The new version did not answer at ${localPlan.address}${plan.app.healthPath}.`
@@ -267,10 +271,39 @@ export type SwitchOutcome =
       startFailed?: string;
       /**
        * The rollback script's last line: `restored`, `unchanged`, `no-previous`, `held` (a restore
-       * holds the app, and nothing was changed), or anything else when it could not switch back.
+       * holds the app, and nothing was changed), `held rotation <hash>` (a credential rotation
+       * does), or anything else when it could not switch back.
        */
       back: string | undefined;
     };
+
+/**
+ * What to do when a credential rotation holds the app here (`back` is `held rotation <hash>`): the
+ * command that finishes it or puts its old values back, with its credentials when this computer
+ * has its pending values (none when their file is damaged); `undefined` for any other `back`.
+ */
+export async function heldByRotation(
+  deps: Pick<PhaseDeps, "paths" | "redactor">,
+  back: string | undefined,
+): Promise<string | undefined> {
+  const hash = new RegExp(`^held ${ROTATION_HOLDER} ([0-9a-f]{64})$`).exec(back ?? "")?.[1];
+  if (hash === undefined) return undefined;
+  // A damaged pending file must not hide the deploy's own error: the words without its names.
+  const pending = await readPendingRotation(deps).catch((error: unknown) => {
+    if (error instanceof OpsCrewError && error.code === "ARTIFACT_INVALID") return undefined;
+    throw error;
+  });
+  const { root, environment, app } = deps.paths;
+  const rotate =
+    pending?.hash === hash
+      ? `opscrew rotate ${pending.names.join(" ")}${await commandFlags(root, environment, app)}`
+      : undefined;
+  const way =
+    rotate === undefined
+      ? "finish it with `opscrew rotate` and the credentials it rotates, or add --undo to put their old values back"
+      : `finish it with \`${rotate}\`, or put the old values back with \`${rotate} --undo\``;
+  return `A credential rotation holds the app here (the rotation of the plan ${hash}), so OpsCrew changed nothing: the app's services may have new values the app does not use yet. To go on, ${way}, then run \`opscrew provision\` again.`;
+}
 
 /**
  * Switches the app on this computer to `image`, as the workflow's start step does: keeps the

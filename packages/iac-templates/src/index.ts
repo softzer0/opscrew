@@ -84,4 +84,4 @@ export {
   rollbackApprovalLine,
   snapshotTakenPath,
 } from "./workflow/snapshots";
-export { FAILED_DEPLOY_DIR } from "./workflow/switch";
+export { FAILED_DEPLOY_DIR, RESTORE_HELD, ROTATION_HOLDER } from "./workflow/switch";

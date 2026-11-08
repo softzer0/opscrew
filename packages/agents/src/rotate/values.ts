@@ -231,7 +231,7 @@ export function swapAppEnv(
       if (left === undefined || !swapped.includes(left)) continue;
       throw new OpsCrewError(
         "PHASE_PRECONDITION",
-        `The app's settings (app.env) on the app's server hold the ${name} of ${service} in a way OpsCrew doesn't write it (a value of your own?), so OpsCrew can't give the app the new one. Nothing was changed.`,
+        `The app's settings (its app.env) hold the ${name} of ${service} in a way OpsCrew doesn't write it (a value of your own?), so OpsCrew can't give the app the new one. Nothing was changed.`,
         {
           hint: "Let the app's settings hold only what OpsCrew writes for the service (run `opscrew provision` and let its deploy finish), then run the command again.",
         },

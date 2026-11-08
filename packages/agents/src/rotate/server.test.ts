@@ -844,6 +844,49 @@ describe("rotateServices refuses before any change", () => {
     expect(w.log).toEqual([]);
   });
 
+  it("when the unfinished rotation began in the user's Portainer or on this computer", async () => {
+    for (const [target, where] of [
+      ["portainer", "in your Portainer"],
+      ["localhost", "on this computer"],
+    ] as const) {
+      const w = await world(stagingPlan([{ kind: "postgres", name: "db" }]));
+      w.servers.app.fail.set("rotate", { exitCode: 1, stderr: "stopped" });
+      await failure(w.run(["db"]));
+      const started = (await pending(w)) as PendingRotation;
+      await writeFile(pendingRotationFile(w.deps), `${JSON.stringify({ ...started, target })}\n`);
+      w.log.length = 0;
+      const error = await failure(w.run(["db"]));
+      expect(error.message).toContain(`The rotation of db began ${where}`);
+      expect(error.message).toContain("Nothing was changed.");
+      expect(error.hint).toContain("Finish it with `opscrew rotate db`");
+      expect(error.hint).toContain("`opscrew rotate db --undo`");
+      // Refused before any server or GitHub call.
+      expect(w.log).toEqual([]);
+    }
+  });
+
+  it("reuses only the values of a Portainer rotation planned here, so its own failed run goes on", async () => {
+    const w = await world(stagingPlan([{ kind: "postgres", name: "db" }]), [false, true, true]);
+    await failure(w.run(["db"]));
+    const planned = (await pending(w)) as PendingRotation;
+    // As a planned rotation of Portainer or this computer leaves it: its progress beside the values.
+    await writeFile(
+      pendingRotationFile(w.deps),
+      `${JSON.stringify({ ...planned, target: "portainer", stackPlanHash: "d".repeat(64), done: 0 })}\n`,
+    );
+    w.servers.app.fail.set("rotate", { exitCode: 1, stderr: "stopped" });
+    await failure(w.run(["db"]));
+    const started = (await pending(w)) as PendingRotation;
+    expect(started.step).toBe("started");
+    expect(started).not.toHaveProperty("target");
+    expect(started).not.toHaveProperty("stackPlanHash");
+    expect(started).not.toHaveProperty("done");
+    expect(started.services).toEqual(planned.services);
+    w.servers.app.fail.delete("rotate");
+    await w.run(["db"]);
+    expect(await pending(w)).toBeUndefined();
+  });
+
   it("when the app's settings hold the old password in a value of the user's own", async () => {
     const w = await world(stagingPlan([{ kind: "postgres", name: "db" }]));
     w.servers.app.appEnv = `${w.servers.app.appEnv}MY_DB=user=app password=${w.old.dbPassword}\n`;

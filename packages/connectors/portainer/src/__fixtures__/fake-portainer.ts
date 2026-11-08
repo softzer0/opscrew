@@ -112,6 +112,24 @@ export interface FakeContainer {
   /** What `…/containers/{id}/stats` and `…/containers/{id}/json` answer, as Docker gives them. */
   stats?: unknown;
   inspect?: unknown;
+  /** What a command run in it through Docker's exec does: its exit code and output (default 0). */
+  exec?: (command: readonly string[], env: Record<string, string>) => FakeExecResult;
+}
+
+/** How a command run in a container ended. */
+export interface FakeExecResult {
+  exitCode: number;
+  output?: string;
+}
+
+/** A command run in a container through Docker's exec, as the fake recorded it. */
+export interface FakeExec {
+  id: string;
+  container: string;
+  command: string[];
+  env: Record<string, string>;
+  /** Set once it was started. */
+  exitCode?: number;
 }
 
 /** Docker's log framing: an 8-byte header (stream, 0, 0, 0, big-endian size) before each chunk. */
@@ -254,6 +272,8 @@ export function fakePortainer(options: FakePortainerOptions = {}) {
     }),
   };
   const calls: RecordedCall[] = [];
+  /** Every exec created, in order. */
+  const execs: FakeExec[] = [];
   let clock = 1_760_000_000;
   let nextId = 100;
 
@@ -561,6 +581,54 @@ export function fakePortainer(options: FakePortainerOptions = {}) {
       return reply(200, match[3] === "stats" ? container.stats : container.inspect);
     },
   );
+  route(
+    "POST",
+    /^\/api\/endpoints\/(\d+)\/docker\/containers\/([^/]+)\/exec$/,
+    ({ match, user, body }) => {
+      const env = envFor(user, match[1]);
+      if (isReply(env)) return env;
+      const name = decodeURIComponent(match[2] ?? "");
+      const container = state.containers.find(
+        (item) => item.EndpointId === env.Id && item.id === name,
+      );
+      if (container === undefined) return reply(404, { message: `No such container: ${name}` });
+      if (!ownsProject(user, env.Id, container.project)) return denied();
+      if (!container.running) return reply(409, { message: `container ${name} is not running` });
+      const pairs = (body.Env as string[] | undefined) ?? [];
+      const exec: FakeExec = {
+        id: (execs.length + 1).toString(16).padStart(64, "0"),
+        container: name,
+        command: [...((body.Cmd as string[] | undefined) ?? [])],
+        env: Object.fromEntries(
+          pairs.map((pair) => [pair.slice(0, pair.indexOf("=")), pair.slice(pair.indexOf("=") + 1)]),
+        ),
+      };
+      execs.push(exec);
+      return reply(201, { Id: exec.id });
+    },
+  );
+  route("POST", /^\/api\/endpoints\/(\d+)\/docker\/exec\/([0-9a-f]+)\/start$/, ({ match, user }) => {
+    const env = envFor(user, match[1]);
+    if (isReply(env)) return env;
+    const exec = execs.find((item) => item.id === match[2]);
+    if (exec === undefined) return reply(404, { message: "No such exec instance" });
+    const container = state.containers.find((item) => item.id === exec.container);
+    const result = container?.exec?.(exec.command, exec.env) ?? { exitCode: 0 };
+    exec.exitCode = result.exitCode;
+    return { status: 200, bytes: dockerFrames([1, result.output ?? ""]) };
+  });
+  route("GET", /^\/api\/endpoints\/(\d+)\/docker\/exec\/([0-9a-f]+)\/json$/, ({ match, user }) => {
+    const env = envFor(user, match[1]);
+    if (isReply(env)) return env;
+    const exec = execs.find((item) => item.id === match[2]);
+    if (exec === undefined) return reply(404, { message: "No such exec instance" });
+    return reply(200, {
+      ID: exec.id,
+      Running: exec.exitCode === undefined,
+      ExitCode: exec.exitCode ?? null,
+      ProcessConfig: { entrypoint: exec.command[0], arguments: exec.command.slice(1) },
+    });
+  });
   route("GET", /^\/api\/endpoints\/(\d+)\/docker\/volumes$/, ({ match, user }) => {
     const env = envFor(user, match[1]);
     if (isReply(env)) return env;
@@ -963,7 +1031,7 @@ export function fakePortainer(options: FakePortainerOptions = {}) {
     }
   };
 
-  return { request, state, calls, callWebhook, settle, tokens };
+  return { request, state, calls, execs, callWebhook, settle, tokens };
 }
 
 /** Records requested sleeps without waiting, and a clock that moves with them. */
