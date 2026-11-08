@@ -15,7 +15,7 @@ secret in any test: `fakeSecret(kind)` and `{{FAKE:<kind>}}` (`@opscrew/core/tes
 
 ## Phase 1: Contracts (lead)
 
-- [ ] T2501 The record and the plan's fields (lead)
+- [x] T2501 The record and the plan's fields (lead)
   - Owns: `packages/plan-schema/src/**` (+ tests)
   - Accept:
     - `CredentialsRecordSchema` for `opscrew/credentials.yaml`: per environment, per credential name `{ rotatedAt?: IsoDateTime, madeAt?: IsoDateTime, generation: int ≥ 1 }`; never a value; read and written by `readArtifact`/`writeArtifact` like the others.
