@@ -59,6 +59,7 @@ export type GitHubApi = Pick<
   | "actionsSecretExists"
   | "findOpenPullRequest"
   | "createPullRequest"
+  | "updatePullRequest"
   | "dispatchWorkflow"
   // A move's maintenance window waits for the app's deploys that run.
   | "listWorkflowRuns"

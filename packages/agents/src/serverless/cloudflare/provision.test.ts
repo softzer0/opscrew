@@ -571,6 +571,8 @@ describe.skipIf(!findExecutable("git"))("provision on Cloudflare's hosting", () 
       "iac-apply",
       "github-secrets",
       "git-push",
+      // The open pull request's title and body now say what it changes.
+      "pull-request",
     ]);
     expect(s.handler.requests[0]?.details).toContain("changed  opscrew/cloudflare/wrangler.jsonc");
     expect(s.handler.requests[0]?.details).toContain(

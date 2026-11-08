@@ -134,6 +134,25 @@ describe("GitHubClient", () => {
     });
   });
 
+  it("updates an open pull request's title and body", async () => {
+    const { fetch, calls } = fakeFetch({
+      "PATCH /repos/acme/shop/pulls/7": {
+        body: { number: 7, html_url: "https://github.com/acme/shop/pull/7" },
+      },
+    });
+    const client = new GitHubClient({ token: TOKEN, fetch });
+    const pr = await client.updatePullRequest({
+      owner: "acme",
+      repo: "shop",
+      number: 7,
+      title: "t2",
+      body: "b2",
+    });
+    expect(pr).toEqual({ number: 7, url: "https://github.com/acme/shop/pull/7" });
+    expect(calls[0]?.method).toBe("PATCH");
+    expect(calls[0]?.body).toEqual({ title: "t2", body: "b2" });
+  });
+
   it("seals secrets with the repository key so only GitHub can read them", async () => {
     await sodium.ready;
     const pair = sodium.crypto_box_keypair();

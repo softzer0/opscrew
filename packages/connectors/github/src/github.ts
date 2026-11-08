@@ -1286,6 +1286,25 @@ export class GitHubClient {
     return { number: pull.number, url: pull.html_url };
   }
 
+  /** Replaces the title and body of the pull request `number`. */
+  async updatePullRequest(input: {
+    owner: string;
+    repo: string;
+    number: number;
+    title: string;
+    body: string;
+  }): Promise<PullRequest> {
+    const what = "update a pull request";
+    const { json } = await this.#request(
+      "PATCH",
+      `/repos/${input.owner}/${input.repo}/pulls/${input.number}`,
+      what,
+      { body: { title: input.title, body: input.body } },
+    );
+    const pull = this.#parse(PullSchema, json, what);
+    return { number: pull.number, url: pull.html_url };
+  }
+
   /** The sealing key of the secrets below `secretsPath` (`…/actions/secrets` and the like). */
   async #publicKey(
     secretsPath: string,

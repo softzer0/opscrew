@@ -682,6 +682,18 @@ export class FakeGitHub implements GitHubApi {
     this.pulls.push(input);
     return { number: 7, url: "https://github.com/acme/shop/pull/7" };
   }
+  /** Every `updatePullRequest`: the pull request's number and its new title and body. */
+  readonly pullUpdates: { number: number; title: string; body: string }[] = [];
+  async updatePullRequest(input: {
+    owner: string;
+    repo: string;
+    number: number;
+    title: string;
+    body: string;
+  }) {
+    this.pullUpdates.push({ number: input.number, title: input.title, body: input.body });
+    return { number: input.number, url: `https://github.com/acme/shop/pull/${input.number}` };
+  }
   /** The runs `listWorkflowRuns` returns, newest first (none by default). */
   workflowRuns: Awaited<ReturnType<GitHubApi["listWorkflowRuns"]>> = [];
   async listWorkflowRuns() {

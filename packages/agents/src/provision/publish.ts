@@ -1,4 +1,6 @@
+import { readFile } from "node:fs/promises";
 import { join, posix } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import type { GitClient, PullRequest } from "@opscrew/connector-github";
 import type { PhaseName } from "@opscrew/contracts";
 import {
@@ -9,6 +11,7 @@ import {
   writeFileAtomic,
 } from "@opscrew/core";
 import {
+  CHECK_WORKFLOW_FILE,
   pagesVerificationRootDir,
   portainerDeployBranch,
   portainerStackTemplatePath,
@@ -21,6 +24,7 @@ import {
   runtimeDir,
 } from "@opscrew/iac-templates";
 import { type DeployPlan, isServerlessProvider } from "@opscrew/plan-schema";
+import { parse } from "yaml";
 import type { PhaseDeps } from "../context";
 import { OWN_SERVER_BACKUPS_NOTE } from "../design/own";
 import { PORTAINER_HOST_NOTE, portainerBackupsNote, portainerHasData } from "../design/portainer";
@@ -32,6 +36,7 @@ import {
   keyHandoverNote,
   type RefreshRecoveryOptions,
   refreshRecoveryCopy,
+  SOPS_CONFIG_PATH,
 } from "../secrets";
 import { appBranchNames, numberedBranches } from "../shared/app-branches";
 import { type GitHubSetup, portainerCloudflare } from "./credentials";
@@ -712,6 +717,223 @@ export async function recoveryCopyFiles(
     : { files: [] };
 }
 
+/** A path a commit or pull request changes; `added` when the file is new there. */
+export interface PathChange {
+  path: string;
+  added: boolean;
+}
+
+/** A pull request's title and body, and the commit message, whose subject follows the title. */
+export interface Proposal {
+  title: string;
+  body: string;
+  commitMessage: string;
+}
+
+/** Runs `git -C <root> <args>` and returns its output; a failure is an error. */
+async function gitOutput(
+  deps: Pick<PhaseDeps, "paths" | "runner">,
+  args: readonly string[],
+): Promise<string> {
+  const result = await deps.runner.run("git", ["-C", deps.paths.root, ...args]);
+  if (result.exitCode !== 0) {
+    throw new Error(`git ${args[0]} failed: ${result.stderr.trim()}`);
+  }
+  return result.stdout;
+}
+
+/**
+ * The files (of `paths`, by default all) that `git diff <range>` names, each with whether it was
+ * added.
+ */
+async function changesOf(
+  deps: Pick<PhaseDeps, "paths" | "runner">,
+  range: readonly string[],
+  paths: readonly string[] = [],
+): Promise<PathChange[]> {
+  const out = await gitOutput(deps, [
+    "diff",
+    "--name-status",
+    "--no-renames",
+    "--relative",
+    ...range,
+    "--",
+    ...paths,
+  ]);
+  return out
+    .split("\n")
+    .filter((line) => line.length > 0)
+    .map((line) => {
+      const [status, path] = line.split("\t");
+      return { path: path ?? "", added: status === "A" };
+    });
+}
+
+/**
+ * A plan file without what OpsCrew records as it deploys and verifies (`updatedAt`,
+ * `deployment.firstDeployAt`, `lastApplyAt`, `lastPlanHash`), which alone is no change to propose.
+ */
+function withoutRecords(text: string): unknown {
+  const { updatedAt: _updated, deployment, ...rest } = parse(text) ?? {};
+  const {
+    firstDeployAt: _first,
+    lastApplyAt: _apply,
+    lastPlanHash: _hash,
+    ...kept
+  } = deployment ?? {};
+  return { ...rest, deployment: kept };
+}
+
+/**
+ * True when, of `paths`, only the plan file `planPath` differs from HEAD (staged, unstaged or
+ * untracked files count), and only in its records ({@link withoutRecords}).
+ */
+async function onlyPlanRecords(
+  deps: Pick<PhaseDeps, "paths" | "runner">,
+  git: GitClient,
+  paths: readonly string[],
+  planPath: string,
+): Promise<boolean> {
+  const wanted = new Set(paths);
+  const changed = (await git.status()).filter((entry) => wanted.has(entry.path));
+  const [only] = changed;
+  if (changed.length !== 1 || only?.path !== planPath) return false;
+  if (![...only.code].every((c) => c === " " || c === "M")) return false;
+  const committed = await gitOutput(deps, ["show", `HEAD:${planPath}`]);
+  const current = await readFile(join(deps.paths.root, planPath), "utf8");
+  return isDeepStrictEqual(withoutRecords(committed), withoutRecords(current));
+}
+
+/** A group of a deployment's files, as a pull request names and lists it. */
+interface ChangeGroup {
+  /** Whether the changed file `path` is in the group (the first group that has it). */
+  has: (path: string) => boolean;
+  /** The title's phrase when the run changes this group alone; `undefined`: the general title. */
+  phrase: (paths: readonly string[]) => string | undefined;
+  /** The body's lines for the group's changed files. */
+  lines: (paths: readonly string[]) => string[];
+}
+
+/** The most files a pull request lists for one group of {@link changeGroups}. */
+const LISTED_FILES = 20;
+
+/** The scheduled check's workflow, one per repository. */
+const CHECK_WORKFLOW_PATH = `.github/workflows/${CHECK_WORKFLOW_FILE}`;
+
+/** OpsCrew's own workflows of `plan`: the deploy (or preview) workflow and the scheduled check. */
+const ownWorkflows = (plan: DeployPlan): string[] => [
+  plan.cicd.workflowPath,
+  previewWorkflowPath(plan),
+  CHECK_WORKFLOW_PATH,
+];
+
+/** The groups of `plan`'s deployment files, in the order a pull request lists them. */
+function changeGroups(plan: DeployPlan, copy: string): ChangeGroup[] {
+  const file = planFile(plan);
+  // At most LISTED_FILES files a group, so the body stays far below GitHub's size limit.
+  const listed = (label: string) => (paths: readonly string[]) => {
+    const shown = paths.slice(0, LISTED_FILES).map((path) => `\`${path}\``);
+    const more = paths.length - shown.length;
+    return [`- ${label}: ${shown.join(", ")}${more > 0 ? ` and ${more} more` : ""}.`];
+  };
+  const named = (phrase: string) => () => phrase;
+  return [
+    {
+      has: (path) =>
+        path.startsWith("opscrew/infra/") || path.startsWith(`${posix.dirname(plan.infra.dir)}/`),
+      phrase: named("the infrastructure code"),
+      lines: listed("The infrastructure code (works with OpenTofu and Terraform)"),
+    },
+    {
+      has: (path) => path === CHECK_WORKFLOW_PATH,
+      phrase: named("the scheduled check"),
+      lines: listed("The scheduled check"),
+    },
+    {
+      // The scheduled check matched above.
+      has: (path) => ownWorkflows(plan).includes(path),
+      phrase: named("the deploy workflow"),
+      lines: listed("The deploy workflow"),
+    },
+    {
+      has: (path) => path === copy || path === SOPS_CONFIG_PATH || path === ".gitattributes",
+      phrase: (paths) => (paths.includes(copy) ? "the recovery copy" : "the recovery copy's keys"),
+      lines: (paths) =>
+        paths.map((path) =>
+          path === copy
+            ? recoveryCopyLine(copy)
+            : path === SOPS_CONFIG_PATH
+              ? `- \`${SOPS_CONFIG_PATH}\`: the keys that open the recovery copy (its recipients).`
+              : "- `.gitattributes`: keeps the recovery copy's line endings as they are on every computer.",
+        ),
+    },
+    {
+      has: (path) => path === file,
+      phrase: named("the deployment plan"),
+      lines: () => [
+        `- \`${file}\`: the deployment plan, with OpsCrew's records of the deployment.`,
+      ],
+    },
+    {
+      has: (path) => path.startsWith("opscrew/") && path.endsWith(".md"),
+      phrase: named("the runbook and reports"),
+      lines: listed("The runbook and reports"),
+    },
+    {
+      has: (path) => path.startsWith(`${posix.dirname(file)}/`),
+      phrase: named("the runtime"),
+      lines: listed("The runtime the app runs with"),
+    },
+    { has: () => true, phrase: () => undefined, lines: listed("Other files") },
+  ];
+}
+
+/**
+ * The pull request of a run that is not the first setup: its title names the one group of files
+ * it changes ("OpsCrew: the recovery copy's keys for shop"), or else "OpsCrew: update the
+ * deployment of shop"; its body lists the changed files by group, whether the deploy secrets are
+ * stored (`flag` names the environment in the command that stores them), and the pinned-actions
+ * check when a workflow changed. The commit message follows the title.
+ */
+function deploymentUpdate(
+  plan: DeployPlan,
+  version: string,
+  changes: readonly PathChange[],
+  options: { copy: string; flag: string; secretsStored: boolean },
+): Proposal {
+  const app = plan.app.name;
+  const file = planFile(plan);
+  const all = changeGroups(plan, options.copy);
+  const byGroup = new Map<ChangeGroup, string[]>();
+  for (const { path } of changes) {
+    const group = all.find((candidate) => candidate.has(path)) as ChangeGroup;
+    byGroup.set(group, [...(byGroup.get(group) ?? []), path]);
+  }
+  const groups = all.filter((group) => byGroup.has(group));
+  const [only] = groups;
+  const phrase =
+    groups.length === 1 && only !== undefined ? only.phrase(byGroup.get(only) ?? []) : undefined;
+  const subject = phrase !== undefined ? `${phrase} for ${app}` : `update the deployment of ${app}`;
+  const workflowChanged = changes.some(({ path }) => ownWorkflows(plan).includes(path));
+  const body = [
+    `This pull request updates the deployment of **${app}** that OpsCrew generated from \`${file}\`:`,
+    "",
+    ...groups.flatMap((group) => group.lines(byGroup.get(group) ?? [])),
+    "",
+    options.secretsStored
+      ? "Nothing else is needed before merging: the deploy secrets are stored in GitHub Actions."
+      : `OpsCrew has no record of storing the deploy secrets in GitHub Actions, so a deploy would fail. **Before merging, run \`opscrew provision${options.flag}\` in a terminal in the project directory.**`,
+    ...(workflowChanged ? ["", "Review checklist:", PINNED_ACTIONS_CHECK] : []),
+    "",
+    `Opened by OpsCrew ${version}.`,
+  ].join("\n");
+  return {
+    title: `OpsCrew: ${subject}`,
+    body,
+    commitMessage: `chore(opscrew): ${subject}\n\nGenerated by OpsCrew ${version} from ${file}.`,
+  };
+}
+
 /**
  * Commits the generated files and the plan on the deploy branch (`input.branch`, chosen with
  * {@link chooseDeployBranch} before anything changed; when absent it is chosen here, or with
@@ -719,7 +941,10 @@ export async function recoveryCopyFiles(
  * files changed since the last copy, then (when `push`) pushes it and opens a pull request into the
  * deploy branch, each after its own approval. A refused push or pull request is not an error: the
  * commit stays local and the user is told how to continue. When nothing changed and nothing waits
- * to be pushed, it commits, pushes and opens nothing ({@link commitAndPropose}).
+ * to be pushed, it commits, pushes and opens nothing ({@link commitAndPropose}); so too when only
+ * the plan's records changed (`deployment.firstDeployAt` and the like), which then stay on this
+ * computer and go with the next change. The first setup's pull request is
+ * {@link deploySetupPullRequestBody}'s; a later one says what it changes.
  */
 export async function publishDeploySetup(
   deps: PhaseDeps,
@@ -766,12 +991,47 @@ export async function publishDeploySetup(
     ...(await providerLockFiles(deps.paths.root, input.paths)),
     ...recovery.map((file) => file.path),
   ];
+  const file = planFile(plan);
+  const base = workflowBranch(plan, github.defaultBranch);
+  const current = await git.currentBranch();
+  if (
+    recovery.length === 0 &&
+    (await onlyPlanRecords(deps, git, paths, file)) &&
+    // An earlier commit that waits to be pushed still goes out.
+    !(
+      input.push &&
+      current === chosen.branch &&
+      (await hasUnpublishedFiles(deps, git, { branch: chosen.branch, base, paths }))
+    )
+  ) {
+    deps.reporter.info(
+      `Only the plan's records changed (such as when the app was first deployed), so OpsCrew opened no pull request: ${file} goes with the next change.`,
+    );
+    const open = chosen.branch === current ? chosen.pullRequest?.url : undefined;
+    return {
+      branch: current,
+      base,
+      published: false,
+      pushed: false,
+      ...(open !== undefined ? { prUrl: open } : {}),
+    };
+  }
   const copy = copyPath(deps.paths);
-  const body = deploySetupPullRequestBody(plan, deps.version, {
-    flag: (await planWhere(deps.paths.root, plan)).flag,
-    secretsStored: input.secretsStored !== false,
-    ...(input.dependabot !== undefined ? { dependabot: input.dependabot } : {}),
-    ...(recovery.some((file) => file.path === copy) ? { recoveryCopy: copy } : {}),
+  const flag = (await planWhere(deps.paths.root, plan)).flag;
+  const secretsStored = input.secretsStored !== false;
+  // The first setup adds the workflow that deploys (or, for previews, the preview workflow); the
+  // plan file may be on the base branch already, as `opscrew adapt` commits it.
+  const workflow =
+    plan.environment?.previews !== undefined ? previewWorkflowPath(plan) : plan.cicd.workflowPath;
+  const firstSetup = (changes: readonly PathChange[]): Proposal => ({
+    title: `OpsCrew: deployment infrastructure for ${plan.app.name}`,
+    body: deploySetupPullRequestBody(plan, deps.version, {
+      flag,
+      secretsStored,
+      ...(input.dependabot !== undefined ? { dependabot: input.dependabot } : {}),
+      ...(changes.some((change) => change.path === copy) ? { recoveryCopy: copy } : {}),
+    }),
+    commitMessage: `chore(opscrew): deployment infrastructure for ${plan.app.name}\n\nGenerated by OpsCrew ${deps.version} from ${file}.`,
   });
   return commitAndPropose(deps, {
     git,
@@ -780,10 +1040,11 @@ export async function publishDeploySetup(
     chosen,
     files: recovery,
     paths,
-    commitMessage: `chore(opscrew): deployment infrastructure for ${plan.app.name}\n\nGenerated by OpsCrew ${deps.version} from ${planFile(plan)}.`,
     what: "the deployment files",
-    title: `OpsCrew: deployment infrastructure for ${plan.app.name}`,
-    body,
+    describe: (changes) =>
+      changes.some((change) => change.added && change.path === workflow)
+        ? firstSetup(changes)
+        : deploymentUpdate(plan, deps.version, changes, { copy, flag, secretsStored }),
     push: input.push,
     phase,
   });
@@ -842,7 +1103,12 @@ async function hasUnpublishedFiles(
  * after its own approval. A refused push or pull request is not an error: the commit stays local
  * and the user is told how to continue. The checkout stays on the deploy branch; after opening the
  * pull request it says how to get back to the user's branch. `what` names the files in the
- * messages.
+ * messages. The commit message, title and body are fixed, or come from `describe`: given this
+ * commit's changed files for the commit message, and the pull request's (what the branch changes
+ * since it left the base branch as this clone last fetched it) for its title and body. With
+ * `describe`, an open pull request gets the new title and body after its own approval; when git
+ * cannot tell what the branch changes, an open one keeps its text and a new one describes this
+ * commit.
  */
 export async function commitAndPropose(
   deps: PhaseDeps,
@@ -853,17 +1119,41 @@ export async function commitAndPropose(
     chosen: DeployBranch;
     files: readonly RenderedFile[];
     paths: readonly string[];
-    commitMessage: string;
     what: string;
-    title: string;
-    body: string;
     push: boolean;
     phase?: PublishPhase;
-  },
+  } & (Proposal | { describe: (changes: readonly PathChange[]) => Proposal }),
 ): Promise<PublishResult> {
-  const { git, github, plan, chosen, paths, title, body } = input;
+  const { git, github, plan, chosen, paths } = input;
   const branch = chosen.branch;
   const base = workflowBranch(plan, github.defaultBranch);
+  /** This commit's staged changes, for the commit message (and when the branch's diff fails). */
+  let committed: PathChange[] = [];
+  /** The text for `changes`: fixed, or from `describe`. */
+  const textFor = (changes: readonly PathChange[]): Proposal =>
+    "describe" in input ? input.describe(changes) : input;
+  /**
+   * The text for what the branch changes since it left the base branch (as this clone last
+   * fetched it from GitHub, else this clone's own); `undefined`, with a warning, when git cannot
+   * tell (no merge base, a shallow clone).
+   */
+  const branchText = async (): Promise<Proposal | undefined> => {
+    if (!("describe" in input)) return input;
+    const from = (await lastFetchedTip(git, base)) ?? base;
+    let changes: PathChange[];
+    try {
+      // Every file of the branch, OpsCrew's earlier runs' too, not only this run's paths.
+      changes = await changesOf(deps, [`${from}...HEAD`]);
+    } catch (error) {
+      deps.reporter.warn(
+        deps.redactor.redact(
+          `OpsCrew could not tell what ${branch} changes since it left ${base} (${(error as Error).message}).`,
+        ),
+      );
+      return undefined;
+    }
+    return input.describe(changes);
+  };
   const phase = input.phase !== undefined ? { phase: input.phase } : {};
   const current = await git.currentBranch();
   for (const file of input.files) {
@@ -901,7 +1191,8 @@ export async function commitAndPropose(
   }
   let commit: string | undefined;
   if (staged) {
-    commit = await git.commit(input.commitMessage, paths);
+    if ("describe" in input) committed = await changesOf(deps, ["--cached"], paths);
+    commit = await git.commit(textFor(committed).commitMessage, paths);
     await deps.audit.append({
       kind: "git",
       actor: "opscrew",
@@ -952,10 +1243,54 @@ export async function commitAndPropose(
   const existing =
     chosen.pullRequest ?? (await github.api.findOpenPullRequest(github.owner, github.repo, branch));
   if (existing) {
-    deps.reporter.info(`The pull request is already open: ${existing.url}`);
     result.prUrl = existing.url;
+    // Fixed text describes only this run's files, so only text built from the branch's whole
+    // change replaces what the open pull request says.
+    if (!("describe" in input)) {
+      deps.reporter.info(`The pull request is already open: ${existing.url}`);
+      return result;
+    }
+    const text = await branchText();
+    if (text === undefined) {
+      deps.reporter.warn(
+        `Pushed to the open pull request ${existing.url}; its title and body stay as they were.`,
+      );
+      return result;
+    }
+    const { title, body } = text;
+    const update = await deps.approvals.request({
+      kind: "pull-request",
+      title: `Update the open pull request ${existing.url} to "${title}"`,
+      details: body,
+    });
+    if (!update.approved) {
+      deps.reporter.warn(
+        `Pushed to the open pull request ${existing.url}; its title and body stay as they were.`,
+      );
+      return result;
+    }
+    await github.api.updatePullRequest({
+      owner: github.owner,
+      repo: github.repo,
+      number: existing.number,
+      title,
+      body,
+    });
+    await deps.audit.append({
+      kind: "git",
+      actor: "opscrew",
+      action: "pull-request-update",
+      ...phase,
+      target: existing.url,
+      decision: "approved",
+    });
+    deps.reporter.success(
+      `Pushed to the open pull request ${existing.url} and updated its title and body.`,
+    );
     return result;
   }
+  // When git cannot tell what the branch changes, the text says what this commit changes.
+  const { title, body } = (await branchText()) ?? textFor(committed);
   const pr = await deps.approvals.request({
     kind: "pull-request",
     title: `Open the pull request "${title}" into ${base}`,
