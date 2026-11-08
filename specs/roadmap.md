@@ -8,8 +8,8 @@ there. The lead keeps this file current. Research for a feature goes in that fea
 Done: 000–024. [024 snapshots and restores as commands](024-snapshots-and-restores/) passed
 every live pass on its final code by 2026-11-08 and shipped as 0.2.5 that day.
 Being built first: plain PHP apps, a follow-up to 013 (US8, the founder's request of
-2026-11-08), released as 0.2.6. Then 025 credential rotation (the founder's go-ahead, 2026-11-08,
-the night 0.2.5 shipped; its research is done).
+2026-11-08). Then 025 credential rotation (the founder's go-ahead, 2026-11-08, the night 0.2.5
+shipped; its research is done). Both ship together in one release, 0.2.6 (founder, 2026-11-08).
 
 ## 019 Rollback
 

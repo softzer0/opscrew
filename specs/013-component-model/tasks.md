@@ -608,7 +608,7 @@ Each wave is merged, gated and pushed before the next starts.
 
 ## Plain PHP apps (US8, added 2026-11-08)
 
-The founder's request: teach OpsCrew plain PHP apps and release it as 0.2.6 (research R10, spec
+The founder's request: teach OpsCrew plain PHP apps, released with 025 as 0.2.6 (research R10, spec
 US8, FR-1335–FR-1342, SC-1309). Waves: T1319 → {T1320, T1321} → {T1322, T1323, T1327} → T1324 → T1325
 (lead) → T1326 (lead). T1327 (Laravel) joined on 2026-11-08 from a spike on a Laravel app with Sail,
 Horizon, PostgreSQL and Redis.
@@ -701,4 +701,4 @@ Horizon, PostgreSQL and Redis.
 - [ ] T1325 [US8] Live: `examples/php-plain-mysql` on Hetzner (lead; SC-1309)
   - Through init, analyze, interview, design, adapt, provision and verify with no edit to an OpsCrew file; only `public/` served; it reaches MySQL; a second deploy keeps `storage/`; its cron runs.
 
-- [ ] T1326 [US8] The release 0.2.6 (lead): `docs/releasing.md`.
+- [ ] T1326 [US8] The release 0.2.6 (lead): `docs/releasing.md`, together with 025 credential rotation (founder, 2026-11-08).
