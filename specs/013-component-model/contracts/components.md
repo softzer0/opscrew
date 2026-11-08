@@ -27,6 +27,10 @@ export interface ServiceSpec {
   conventionalVariables: (ctx: ServiceContext, address: string) => Record<string, string>;
                                         // what the app receives by convention; the catalog's
                                         // appVariables(ctx) adds the app's own detected variable
+  databaseSettings?: (ctx: ServiceContext) => DatabaseSettings;
+                                        // PostgreSQL, MySQL, MariaDB: { host, port, database,
+                                        // user, password (a secret reference) } one by one, for
+                                        // an app reading DB_HOST and the like (US8, T1321)
   hostSettings?: { sysctl: Record<string, string> };              // vm.max_map_count for the search engines
   ulimits?: { nofile: number };        // the open-file limit, soft and hard (OpenSearch, Elasticsearch: 65536)
   targets: ("server" | "portainer")[]; // portainer omitted when a host setting is needed
