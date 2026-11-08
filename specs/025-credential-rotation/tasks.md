@@ -162,6 +162,10 @@ secret in any test: `fakeSecret(kind)` and `{{FAKE:<kind>}}` (`@opscrew/core/tes
   - Owns: `packages/cli/src/commands/rotate*.ts`, `packages/cli/src/commands/secrets.ts`, `packages/cli/src/commands/index.ts`, `packages/agents/src/index.ts` (the rotations' exports), `packages/agents/src/secrets/index.ts` (the `publishRotatedKey` re-export, removed), `packages/mcp-server/src/tools/**`, `plugin/skills/**`, `docs/guide/credential-rotation.md`, `docs/guide/secrets-recovery.md`, `README.md` (its guide list) (+ tests)
   - Depends: T2506–T2514
   - Accept: plan 13; the listing never records a token (`credentialInventory` without `recordTokens`); `github-secrets` joins the kinds `--approve <hash>` grants (`APPROVE_BY_HASH_KINDS`, T2512); the CLI's help and errors in plain English; `--json` for the list; the MCP tool read-only; the guide page with every name, mode, window and consequence, the command-line note of R10, and where the old values live until done; `opscrew secrets rotate` removed (the CLI command and its test, the MCP hint naming it, the `publishRotatedKey` re-export), since `opscrew rotate recovery-key` replaces it (T2511).
+    - Every rotation's entry point is exported and dispatched by name and target: services and app secrets per target (T2506, T2507, T2509: `--drop-previous` through `dropPreviousNames`, `--confirm <app>` for the lossy ones), keys (T2508), network, devices and logins (T2510: `--qr` drawn as a QR code from the config's text), Cloudflare tokens, the passphrase, Portainer and the recovery key (T2511: the tunnel token only in a terminal), user tokens (T2512), monitoring and Beszel (T2519).
+    - The guide names the limits:
+      - add-on rotations go only forward (no `--undo`);
+      - after a retarget into a server or this computer, rotated services count as their first generation until their next rotation, so a rollback of a service copied by stopping it restores through `opscrew restore` (T2514).
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server && node plugin/validate.mjs && pnpm lint`
   - Effort: high
 
