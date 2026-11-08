@@ -638,7 +638,7 @@ Horizon, PostgreSQL and Redis.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/detect && pnpm lint`
   - Effort: high
 
-- [ ] T1321 [US8] [P] The image, the kept folder and the database's settings in iac-templates
+- [x] T1321 [US8] [P] The image, the kept folder and the database's settings in iac-templates
   - Owns: `packages/iac-templates/src/**` (+ tests and snapshots), not `src/generated/**`
   - Reads: research R10; `workflow/build.ts` (`railpackSteps`, `RAILPACK_SEAL`, `sqliteSeal`), `workflow/shared.ts` (`sqliteFolder`), `runtime/components.ts` (`appVolumes`, `SQLITE_VOLUME`), `portainer-target/stack.ts`, `workflow/snapshots.ts`, `portainer-target/snapshots.ts`, `runbook/components.ts`, `catalog/**`
   - Depends: T1319
