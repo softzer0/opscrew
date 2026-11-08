@@ -652,7 +652,7 @@ Horizon, PostgreSQL and Redis.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates && pnpm lint`
   - Effort: xhigh
 
-- [ ] T1322 [US8] [P] Design and the app's environment for a plain PHP app
+- [x] T1322 [US8] [P] Design and the app's environment for a plain PHP app
   - Owns: `packages/agents/src/design/**`, `packages/agents/src/shared/app-env.ts`, `packages/agents/src/shared/app-secrets.ts`, `packages/agents/src/analyze/**`, `packages/agents/src/adapt/**`, `packages/agents/src/provision/secrets.ts` (+ tests)
   - Reads: spec US8 scenarios 1–5, 7, 9; `design/builder.ts`, `design/plan.ts`, `design/components.ts`, `design/storage.ts`
   - Depends: T1319, T1321
