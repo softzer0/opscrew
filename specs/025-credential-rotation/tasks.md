@@ -77,7 +77,7 @@ secret in any test: `fakeSecret(kind)` and `{{FAKE:<kind>}}` (`@opscrew/core/tes
   - Depends: T2503, T2504, T2505
   - Accept:
     - New values generated, old kept (`generated_values.json`, a `pending` entry) until done; every value registered with the redactor before anything prints.
-    - The plan (credentials, steps, each one's window or consequence) with its hash; approval (`remote-exec`, `--approve <hash>`); GitHub secrets replaced while deploys are held; `rotate.sh` over SSH with the env files and values on stdin; split placement: each server's part on its server; the record and the recovery copy after.
+    - The plan (credentials, steps, each one's window or consequence) with its hash; approval (`remote-exec`, `--approve <hash>`); GitHub secrets replaced while deploys are held; `rotate.sh` over SSH with the env files and values on stdin; split placement: each extra server's `rotate.sh begin` before the app server's full run and its `rotate.sh finish` after (T2504), each with its own approval file; refused while a move pauses deploys (`OPSCREW_DEPLOY_PAUSED`); the record and the recovery copy after.
     - A failure keeps `pending`, says the step and how to resume or undo; provision calls T2505's two-computer guard (`assertValuesCurrent`) and keeps `generations` among its kept values (`KEPT_VALUES` in `provision/secrets.ts`), or every provision drops the guard's data.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm lint`
   - Effort: xhigh
