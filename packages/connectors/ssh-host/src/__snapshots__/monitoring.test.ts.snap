@@ -110,6 +110,7 @@ CREDENTIAL='grafana_admin_credential'
 PATHS='Caddyfile compose.yaml grafana/dashboards/servers.json grafana/provisioning/dashboards/opscrew.yaml grafana/provisioning/datasources/opscrew.yaml loki.yaml prometheus.yml'
 DIRS='grafana grafana/dashboards grafana/provisioning grafana/provisioning/dashboards grafana/provisioning/datasources'
 MANIFEST='Caddyfile:41efde35bd4819cd8c844d214497de99c89cc16d299a62e5ea3af5a50f0677c2 compose.yaml:4e445d7ca8149709e9ead07716dedcfd41cf3ba6478a56a163636fca046350d3 grafana/dashboards/servers.json:add9289ce43dc2c7886cb2dbb6d701660e16969686cca6c0cc5abb7f1d86a633 grafana/provisioning/dashboards/opscrew.yaml:91863bafca7e667fd49cdbbe826f66ec350d91a53ad263ed48efc5843f21a45e grafana/provisioning/datasources/opscrew.yaml:409c3f717e5e456302adc88f82242bbb8f9a8b971d978325223da7076908699e loki.yaml:470ec796de94ebc56ff4a25e567cc1100fbe7a675f5fd10d8b2b02784e477952 prometheus.yml:68df12ad8474fcda0cd34fd4ae499834a5b9a82a55f364f16b79884ff52cf904'
+ROTATE='false'
 trap '' HUP PIPE
 apt_get() {
   install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
@@ -177,6 +178,14 @@ recreate=''
 files_ok || recreate=--force-recreate
 # Grafana (user 472, group 0) reads its password through its group.
 if [ -L "$DIR/$CREDENTIAL" ]; then fail "$DIR/$CREDENTIAL is a symbolic link; OpsCrew does not follow it."; fi
+# Grafana reads the file only when it first makes its admin: in a rotation, a password other than
+# the file's is set in the running Grafana first, through its CLI in its container, on stdin.
+if [ "$ROTATE" = true ] && { [ ! -f "$DIR/$CREDENTIAL" ] || [ "$(cat "$DIR/$CREDENTIAL")" != "$pw" ]; }; then
+  if ! printf '%s\\n' "$pw" | compose exec -T grafana grafana cli admin reset-admin-password --password-from-stdin >/dev/null 2>&1; then
+    pw=''
+    fail "The running Grafana did not take its new admin password (grafana cli admin reset-admin-password failed), so OpsCrew left its password file as it was. Check that the monitoring stack runs: docker compose -p $PROJECT ps on the server."
+  fi
+fi
 printf '%s' "$pw" | write_file "$DIR/$CREDENTIAL" 0640 0:0
 pw=''
 # Then the files, one line of base64 each, in the order of $PATHS. None holds a secret.
@@ -208,6 +217,7 @@ CREDENTIAL='grafana_admin_credential'
 PATHS='Caddyfile compose.yaml grafana/dashboards/servers.json grafana/provisioning/dashboards/opscrew.yaml grafana/provisioning/datasources/opscrew.yaml loki.yaml prometheus.yml'
 DIRS='grafana grafana/dashboards grafana/provisioning grafana/provisioning/dashboards grafana/provisioning/datasources'
 MANIFEST='Caddyfile:41efde35bd4819cd8c844d214497de99c89cc16d299a62e5ea3af5a50f0677c2 compose.yaml:4e445d7ca8149709e9ead07716dedcfd41cf3ba6478a56a163636fca046350d3 grafana/dashboards/servers.json:add9289ce43dc2c7886cb2dbb6d701660e16969686cca6c0cc5abb7f1d86a633 grafana/provisioning/dashboards/opscrew.yaml:91863bafca7e667fd49cdbbe826f66ec350d91a53ad263ed48efc5843f21a45e grafana/provisioning/datasources/opscrew.yaml:409c3f717e5e456302adc88f82242bbb8f9a8b971d978325223da7076908699e loki.yaml:470ec796de94ebc56ff4a25e567cc1100fbe7a675f5fd10d8b2b02784e477952 prometheus.yml:68df12ad8474fcda0cd34fd4ae499834a5b9a82a55f364f16b79884ff52cf904'
+ROTATE='false'
 apt_get() {
   install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
   if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
@@ -431,6 +441,7 @@ CREDENTIAL='grafana_admin_credential'
 PATHS='Caddyfile compose.yaml grafana/dashboards/servers.json grafana/provisioning/dashboards/opscrew.yaml grafana/provisioning/datasources/opscrew.yaml loki.yaml prometheus.yml'
 DIRS='grafana grafana/dashboards grafana/provisioning grafana/provisioning/dashboards grafana/provisioning/datasources'
 MANIFEST='Caddyfile:41efde35bd4819cd8c844d214497de99c89cc16d299a62e5ea3af5a50f0677c2 compose.yaml:4e445d7ca8149709e9ead07716dedcfd41cf3ba6478a56a163636fca046350d3 grafana/dashboards/servers.json:add9289ce43dc2c7886cb2dbb6d701660e16969686cca6c0cc5abb7f1d86a633 grafana/provisioning/dashboards/opscrew.yaml:91863bafca7e667fd49cdbbe826f66ec350d91a53ad263ed48efc5843f21a45e grafana/provisioning/datasources/opscrew.yaml:409c3f717e5e456302adc88f82242bbb8f9a8b971d978325223da7076908699e loki.yaml:470ec796de94ebc56ff4a25e567cc1100fbe7a675f5fd10d8b2b02784e477952 prometheus.yml:68df12ad8474fcda0cd34fd4ae499834a5b9a82a55f364f16b79884ff52cf904'
+ROTATE='false'
 VERIFY_FAILED='The monitoring stack is not running as planned.'
 apt_get() {
   install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"

@@ -630,6 +630,16 @@ describe("planning the monitoring add-ons again", () => {
     });
 
     expect(onlyStep(await plan(MONITORING_FILES))).toMatchObject({ state: "in-place" });
+    // A new Grafana password (a rotation): a change with `rewrite`, which its check never skips.
+    const rotated = planAddon("monitoring", {
+      app: "shop",
+      runAs: "login",
+      facts: await inspectHost(fake, { rootImage: IMAGE }),
+      enable: { files: MONITORING_FILES },
+      secretsChanged: true,
+    });
+    expect(onlyStep(rotated)).toMatchObject({ state: "change", params: { rewrite: true } });
+    expect(scriptsFor(onlyStep(rotated)).check).toContain("echo state=change");
     const changed = { ...MONITORING_FILES, "prometheus.yml": "global: {}\n" };
     expect(onlyStep(await plan(changed)).state).toBe("change");
     // A stopped container, or a missing password file, is a change too.

@@ -111,6 +111,18 @@ export async function ensureBeszelHubSecrets(deps: {
       },
     );
   }
+  const secrets = newBeszelHubSecrets(deps.redactor);
+  await writeBeszelSecrets(deps.paths, secrets);
+  return secrets;
+}
+
+/**
+ * New hub mode secrets, registered with the redactor and kept nowhere yet: a 32-character password
+ * of letters, digits, `-` and `_`, a token of 48 lowercase hex digits and the hub's Ed25519 key.
+ */
+export function newBeszelHubSecrets(
+  redactor: Pick<Redactor, "addLiteral">,
+): Extract<BeszelSecrets, { mode: "hub" }> {
   const key = generateEd25519KeyPair("beszel-hub");
   const secrets = {
     mode: "hub" as const,
@@ -119,8 +131,7 @@ export async function ensureBeszelHubSecrets(deps: {
     hubKey: key.privateKeyOpenSsh,
     hubPublicKey: key.publicKeyOpenSsh.split(" ").slice(0, 2).join(" "),
   };
-  await writeBeszelSecrets(deps.paths, secrets);
-  registered(deps.redactor, secrets);
+  registered(redactor, secrets);
   return secrets;
 }
 

@@ -2035,7 +2035,9 @@ export class FakeHost implements RemoteExec {
 
       // the monitoring stack, always as root
       case "monitoring.check":
-        return this.check(this.stackOk(p), { installed: this.files.has(`${p.DIR}/compose.yaml`) });
+        return this.check(this.stackOk(p) && p.REWRITE !== "true", {
+          installed: this.files.has(`${p.DIR}/compose.yaml`),
+        });
       case "monitoring.apply":
         return this.stackApply(p, input);
       case "monitoring.verify":

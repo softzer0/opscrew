@@ -27,6 +27,7 @@ import { commandFlags } from "../environments/choice";
 import { type RefreshRecoveryResult, refreshRecoveryCopy } from "../secrets/copy";
 import { PlanRefusedError } from "../shared/approvals";
 import { codeOf } from "../shared/errors";
+import { ADDON_ROTATION_HASH } from "./addons-monitoring";
 import { rotationContext, undoHash } from "./plan";
 import { assertValuesCurrent, readCredentialsRecord, recordRotation } from "./record";
 import { completePendingRotation, newRotationValues } from "./values";
@@ -436,16 +437,20 @@ export async function rotateThroughDocker(
   const again = `opscrew rotate ${names.join(" ")}${flags}`;
   const services = servicesNamed(deps, plan, names);
   const existing = await readPendingRotation(deps);
-  const reused = existing !== undefined && sameNames(existing.names, names) ? existing : undefined;
-  // A rotation only planned changed nothing yet: one of other services replaces it.
-  if (existing !== undefined && existing.step !== "planned") {
+  const named = existing !== undefined && sameNames(existing.names, names);
+  // An add-on's rotation (`monitoring`, `beszel`) is another rotation, whatever its name.
+  const addon = existing?.hash === ADDON_ROTATION_HASH;
+  const reused = named && !addon ? existing : undefined;
+  // A rotation only planned changed nothing yet: one of other services replaces it, but never an
+  // add-on's of the same name, which this command could not finish.
+  if (existing !== undefined && (existing.step !== "planned" || (addon && named))) {
     const theirs = `opscrew rotate ${existing.names.join(" ")}${flags}`;
     if (reused === undefined) {
       throw new OpsCrewError(
         "PHASE_PRECONDITION",
         `The rotation of ${listText(existing.names)} in ${environment} is unfinished, so OpsCrew starts no other one. Nothing was changed.`,
         {
-          hint: `Finish it with \`${theirs}\`, or put the old values back with \`${theirs} --undo\`, then run this command again.`,
+          hint: `Finish it with \`${theirs}\`${existing.step === "switched" || addon ? "" : `, or put the old values back with \`${theirs} --undo\``}, then run this command again.`,
         },
       );
     }

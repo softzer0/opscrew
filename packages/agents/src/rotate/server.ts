@@ -43,6 +43,7 @@ import { READ_TIMEOUT_MS, scriptSaid } from "../snapshot/hosts";
 import { requireNoDeployOrMove } from "../snapshot/run";
 import { serverShell } from "../status/servers";
 import { passwordKey } from "../vpn/grants";
+import { ADDON_ROTATION_HASH } from "./addons-monitoring";
 import {
   approveRotation,
   approveUndo,
@@ -728,10 +729,11 @@ async function runRotation(
   await registerAppSecrets(deps, plan);
   const existing = await readPendingRotation(deps);
   const sorted = (list: readonly string[]) => [...list].sort();
-  const reused =
-    existing !== undefined && isDeepStrictEqual(sorted(existing.names), sorted(named))
-      ? existing
-      : undefined;
+  const sameNames =
+    existing !== undefined && isDeepStrictEqual(sorted(existing.names), sorted(named));
+  // An add-on's rotation (`monitoring`, `beszel`) is another rotation, whatever its name.
+  const addon = existing?.hash === ADDON_ROTATION_HASH;
+  const reused = sameNames && !addon ? existing : undefined;
   // One that began in the user's Portainer or on this computer keeps its state there (T2507).
   if (reused !== undefined && reused.step !== "planned" && reused.target !== undefined) {
     const where = reused.target === "portainer" ? "in your Portainer" : "on this computer";
@@ -739,18 +741,23 @@ async function runRotation(
       "PHASE_PRECONDITION",
       `The rotation of ${listText(named)} began ${where}, and its state is there, not on the servers. Nothing was changed.`,
       {
-        hint: `Finish it with \`${again}\`, or put the old values back with \`${again} --undo\`, while the plan still runs the app where the rotation began.`,
+        hint: `Finish it with \`${again}\`${reused.step === "switched" ? "" : `, or put the old values back with \`${again} --undo\``}, while the plan still runs the app where the rotation began.`,
       },
     );
   }
-  // A rotation only planned changed nothing yet: one of other services replaces it.
-  if (existing !== undefined && reused === undefined && existing.step !== "planned") {
+  // A rotation only planned changed nothing yet: one of other services replaces it, but never an
+  // add-on's of the same name, which this command could not finish.
+  if (
+    existing !== undefined &&
+    reused === undefined &&
+    (existing.step !== "planned" || (addon && sameNames))
+  ) {
     const theirs = `opscrew rotate ${existing.names.join(" ")}${flags}`;
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       `The rotation of ${listText(existing.names)} in ${environment} is unfinished: its new values are on this computer, and maybe on the servers. Nothing was changed.`,
       {
-        hint: `Finish it with \`${theirs}\`, or put the old values back with \`${theirs} --undo\`, then run this command again.`,
+        hint: `Finish it with \`${theirs}\`${existing.step === "switched" || addon ? "" : `, or put the old values back with \`${theirs} --undo\``}, then run this command again.`,
       },
     );
   }

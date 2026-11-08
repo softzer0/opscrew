@@ -200,7 +200,7 @@ export async function buildAppEnvironment(
       "PHASE_PRECONDITION",
       `The rotation of ${listText(rotation.names)} in ${environment} is unfinished, and provision would give the app values the rotation is replacing. ${stopped}`,
       {
-        hint: `Finish it with \`${rotate}\`, or put the old values back with \`${rotate} --undo\`, then run \`opscrew provision${flags}\` again.`,
+        hint: `Finish it with \`${rotate}\`${rotation.step === "switched" ? "" : `, or put the old values back with \`${rotate} --undo\``}, then run \`opscrew provision${flags}\` again.`,
       },
     );
   }

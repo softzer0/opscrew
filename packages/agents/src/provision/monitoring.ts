@@ -115,6 +115,21 @@ interface Run {
   servers: Reached[];
   /** The monitoring's values this computer kept before this run (`{}` for none). */
   kept: MonitoringValues;
+  /** A rotation's new values: each is written by its steps even where the rest is in place. */
+  rotating?: MonitoringRotation;
+}
+
+/** New values of the monitoring's credentials (`opscrew rotate monitoring`, feature 025). */
+export interface MonitoringRotation {
+  /** Grafana's new admin password: only the environment that runs the stack has one. */
+  grafanaAdminPassword?: string;
+  /** The new password of OpsCrew's monitoring login to Postgres. */
+  postgresPassword?: string;
+  /**
+   * Marks the rotation begun (idempotent): awaited once the login's or the stack's plan is
+   * approved, right before its apply.
+   */
+  begin?: () => Promise<void>;
 }
 
 /**
@@ -204,6 +219,60 @@ export async function leaveMonitoringServer(
   if (kept.owner === undefined) return [];
   const run: Run = { deps, plan, input, servers: [], kept };
   return applyChanges(run, await leave(run, kept.owner));
+}
+
+/**
+ * The host plans that give the running monitoring the new values `rotating` (`opscrew rotate
+ * monitoring`, feature 025 plan.md 10.), each shown, approved by its hash and applied, the values
+ * passed only on apply: with a new login password, on each server with Postgres its `grant` (the
+ * password changed over the container's socket, `ALTER ROLE` as the PostgreSQL recipe does), then
+ * Alloy there with its new data source; with a new Grafana password, the stack's plan, whose apply
+ * sets it in the running Grafana first, then in the file Grafana reads at its first start. Nothing
+ * else changes; this computer's values are the caller's to keep.
+ * @throws OpsCrewError `PHASE_PRECONDITION` before any change when Postgres does not run yet on a
+ * server (a deploy starts it), or Grafana Cloud's token is not on this computer.
+ */
+export async function monitoringRotationHostPlans(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  input: MonitoringHostPlansInput,
+  rotating: MonitoringRotation,
+): Promise<HostPlanOutcome[]> {
+  const monitoring = monitoringOf(plan);
+  if (monitoring === undefined) throw new Error("A rotation of the monitoring needs it on.");
+  const servers: Reached[] = [];
+  for (const name of appServers(plan)) servers.push(await reachServer(deps, input, plan, name));
+  const kept = (await monitoringValues(deps)) ?? {};
+  const run: Run = { deps, plan, input, servers, kept, rotating };
+  const changes: Change[] = [];
+  const { postgresPassword, grafanaAdminPassword } = rotating;
+  if (postgresPassword !== undefined) {
+    const withPostgres = servers.filter((server) => postgresOn(plan, server.name) !== undefined);
+    const waiting = withPostgres.filter((server) => !ready(plan, server));
+    if (waiting.length > 0) {
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        `The app does not run on ${listText(waiting.map((s) => serverWords(s.name)))} yet, so OpsCrew can't change its monitoring login to Postgres there. Nothing was changed.`,
+        {
+          hint: `Let a deploy start the app there (push to ${plan.cicd.branch}), then run \`${input.command}\` again.`,
+        },
+      );
+    }
+    const cloud = withPostgres.some((server) => grafanaCloudOn(plan, server.name) !== undefined);
+    const needs = { token: cloud ? await grafanaToken(run) : "", postgresPassword };
+    for (const server of withPostgres) {
+      const postgres = postgresOn(plan, server.name) as PlanService;
+      changes.push({ host: await grantStep(run, server, postgres, postgresPassword) });
+    }
+    changes.push(...withPostgres.map((server) => ({ host: alloyStep(run, server, needs) })));
+  }
+  if (grafanaAdminPassword !== undefined) {
+    if (monitoring.where.kind === "shared") {
+      throw new Error("Grafana's password is rotated from the environment that runs the stack.");
+    }
+    changes.push(...(await stackChanges(run, monitoring, { token: "", postgresPassword: "" })));
+  }
+  return applyChanges(run, changes);
 }
 
 /**
@@ -533,9 +602,11 @@ async function grantStep(
   } as const;
   const app = plan.app.name;
   const privilege = server.facts.privilege;
-  // A password made in this run reaches the login only through the step: never in place then, and
-  // the server's check (which sees the login, never its password) does not skip it.
-  const secretsChanged = !remove && run.kept.postgresPassword === undefined;
+  // A password made or rotated in this run reaches the login only through the step: never in place
+  // then, and the server's check (which sees the login, never its password) does not skip it.
+  const secretsChanged =
+    !remove &&
+    (run.kept.postgresPassword === undefined || run.rotating?.postgresPassword !== undefined);
   let inPlace = false;
   if (!secretsChanged) {
     inPlace = await readGrant(server.remote, { app, grant }, privilege, rootImageOf(server));
@@ -555,7 +626,11 @@ async function grantStep(
       ? `Remove OpsCrew's monitoring login from ${postgres.name} on ${words}`
       : `Let OpsCrew's monitoring read the statistics of ${postgres.name} on ${words}, with a login of its own`,
     upToDate: `OpsCrew's monitoring login on ${postgres.name} is as planned; nothing on ${words} changes.`,
-    secrets: async () => (password === undefined ? {} : { monitoringPostgresPassword: password }),
+    secrets: async () => {
+      if (password === undefined) return {};
+      await run.rotating?.begin?.();
+      return { monitoringPostgresPassword: password };
+    },
     applying: remove
       ? `Removing OpsCrew's monitoring login from ${postgres.name}`
       : `Setting up OpsCrew's monitoring login on ${postgres.name}`,
@@ -564,7 +639,8 @@ async function grantStep(
 
 /**
  * The stack's host plan on `server`, rendered from `owner`'s plan and `senders` (approved with the
- * owner's app name, which the host record names), Grafana's password from `password` on apply.
+ * owner's app name, which the host record names), Grafana's password from `password` on apply;
+ * written even where the stack runs as planned when the run rotates it.
  */
 function stackStep(
   run: Run,
@@ -582,10 +658,14 @@ function stackStep(
       runAs: runAs(server),
       facts: server.facts,
       enable: { files: Object.fromEntries(files.map((f) => [f.path, f.content])) },
+      secretsChanged: run.rotating?.grafanaAdminPassword !== undefined,
     }),
     title: stack.title,
     upToDate: `The monitoring stack on ${stack.where} is as planned; nothing on it changes.`,
-    secrets: async () => ({ grafanaAdminPassword: await password() }),
+    secrets: async () => {
+      await run.rotating?.begin?.();
+      return { grafanaAdminPassword: await password() };
+    },
     applying: `Starting the monitoring stack on ${stack.where}`,
   };
 }
@@ -748,7 +828,9 @@ async function stackChanges(
             where: words,
             title: `Run the monitoring stack (Prometheus, Loki and Grafana) on ${words}`,
           },
-          () => monitoringPassword(deps, "grafanaAdminPassword"),
+          async () =>
+            run.rotating?.grafanaAdminPassword ??
+            (await monitoringPassword(deps, "grafanaAdminPassword")),
         ),
       },
     ];
@@ -836,8 +918,10 @@ function alloyStep(run: Run, server: Reached, needs: SetupNeeds): HostPlanStep {
       runAs: runAs(server),
       facts: server.facts,
       enable: monitoringAlloy(plan, server.name),
-      // A login password made in this run reaches Alloy only through the step.
-      secretsChanged: postgres !== undefined && run.kept.postgresPassword === undefined,
+      // A login password made or rotated in this run reaches Alloy only through the step.
+      secretsChanged:
+        postgres !== undefined &&
+        (run.kept.postgresPassword === undefined || run.rotating?.postgresPassword !== undefined),
     }),
     title: `Run Grafana Alloy on ${words}, sending its figures and logs to the monitoring stack${grafanaCloud === undefined ? "" : " and to Grafana Cloud"}`,
     upToDate: `Grafana Alloy on ${words} already runs as planned; nothing on it changes.`,

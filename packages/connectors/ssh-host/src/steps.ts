@@ -2754,9 +2754,56 @@ interface AddonVariant {
   templated: string;
   /** Reads the secrets from stdin into variables, and checks them. */
   read: string;
+  /** Changes the running add-on before its files are written (Beszel's hub password). */
+  change?: string;
   /** Writes the secret files (and Alloy's masking file) from those variables. */
   write: string;
 }
+
+/** Where Beszel's hub answers on its server: its loopback port. */
+const BESZEL_HUB_URL = "http://127.0.0.1:8090";
+
+/**
+ * Beszel's hub makes its dashboard's user and its superuser (the same email and password) from
+ * `hub.env` at its first start only. In a rotation (`ROTATE`, the step's `rewrite`), a password
+ * other than `hub.env`'s is set in the running hub first, through its PocketBase API on the
+ * server's loopback, then `hub.env` is written: the hub signs in its superuser with the new
+ * password (a run that already set it) or the one in `hub.env` (none without the file: it fails
+ * closed), then both accounts get the new one. `curl` reads its whole configuration, values
+ * included, from its stdin, so none is on a command line. Outside a rotation the hub is not asked.
+ */
+const BESZEL_HUB_PASSWORD = `hub_curl() { curl -fsS --max-time 30 -K - 2>/dev/null; }
+hub_id() { sed -n 's/.*[{,]"id":"\\([a-z0-9]*\\)".*/\\1/p'; }
+hub_password() {
+  command -v curl >/dev/null 2>&1 || fail "curl is missing on the server, so OpsCrew could not change the password of Beszel's dashboard. Install curl, then run the command again."
+  all_running || fail "Beszel's hub does not run on the server, so OpsCrew could not change the password of its dashboard; check docker compose -p $PROJECT ps."
+  auth=''
+  for try in "$pw" "$hub_old"; do
+    [ -n "$try" ] || continue
+    auth=$(printf 'url = %s/api/collections/_superusers/auth-with-password\\nheader = "Content-Type: application/json"\\ndata = {"identity":"%s","password":"%s"}\\n' "$HUB_URL" "$EMAIL" "$try" | hub_curl) && break
+    auth=''
+  done
+  try=''
+  [ -n "$auth" ] || fail "Beszel's hub accepts neither the dashboard password OpsCrew keeps nor the new one, so OpsCrew changed nothing on it. If you changed the password in Beszel's dashboard, set it back to the one OpsCrew keeps there, then run the command again."
+  tok=$(printf '%s' "$auth" | sed -n 's/.*"token":"\\([^"]*\\)".*/\\1/p')
+  sid=$(printf '%s' "$auth" | hub_id)
+  auth=''
+  uid=$(printf 'url = %s/api/collections/users/records\\nget\\ndata-urlencode = filter=email="%s"\\ndata-urlencode = fields=id\\nheader = "Authorization: %s"\\n' "$HUB_URL" "$EMAIL" "$tok" | hub_curl | hub_id)
+  if [ -z "$tok" ] || [ -z "$sid" ] || [ -z "$uid" ]; then
+    tok=''
+    fail "Beszel's hub did not answer as OpsCrew expects, so the password of its dashboard was not changed."
+  fi
+  for record in "users/records/$uid" "_superusers/records/$sid"; do
+    printf 'url = %s/api/collections/%s\\nrequest = PATCH\\nheader = "Content-Type: application/json"\\nheader = "Authorization: %s"\\ndata = {"password":"%s","passwordConfirm":"%s"}\\n' "$HUB_URL" "$record" "$tok" "$pw" "$pw" | hub_curl >/dev/null || { tok=''; fail "Beszel's hub did not take the new password of its dashboard, so OpsCrew left its files as they were."; }
+  done
+  tok=''
+}
+if [ "$ROTATE" = true ]; then
+  hub_old=''
+  if [ -f "$DIR/hub.env" ] && [ ! -L "$DIR/hub.env" ]; then hub_old=$(sed -n 's/^USER_PASSWORD=//p' "$DIR/hub.env"); fi
+  if [ "$hub_old" != "$pw" ]; then hub_password; fi
+  hub_old=''
+fi`;
 
 function readLines(names: string[]): string {
   return [
@@ -2854,6 +2901,7 @@ case "$pw" in ''|*[!A-Za-z0-9_-]*) pw=''; ${refuse("Beszel dashboard password", 
 case "$token" in *[!0-9a-f]*) token='' ;; esac
 if [ "\${#token}" -ne 48 ]; then token=''; ${refuse("Beszel agent token", "Beszel")}; fi
 case "$key" in ''|*[!A-Za-z0-9+/=]*) key=''; ${refuse("Beszel hub key", "Beszel")} ;; esac`,
+    change: BESZEL_HUB_PASSWORD,
     // The hub reads its key from its data folder at the first start (spike result 2); its public
     // half (the plan's, not secret) is the agent's KEY.
     write: `printf '%s' "$key" | base64 -d | put "$DIR/data/id_ed25519"
@@ -2950,6 +2998,9 @@ function addonScripts(
       PROJECT: ADDON_PROJECTS[kind],
       EMAIL: p.email ?? "",
       HUB_KEY: p.hubKey ?? "",
+      ...(variant.change === undefined
+        ? {}
+        : { HUB_URL: BESZEL_HUB_URL, ROTATE: p.rewrite === true }),
       MASK: kind === "alloy" && app.success ? maskFilePath(app.data) : "",
       EMPTY_MASK,
       FILES: files.map(([name, content]) => `${name}:${base64(content)}`).join(" "),
@@ -2984,7 +3035,7 @@ for d in $DATA_DIRS; do own_dir "$DIR/$d"; done
 # reaches a running container only when Compose recreates it.
 read_sums() { for f in $READ_FILES; do printf '%s:%s\\n' "$f" "$(sum_of "$DIR/$f")"; done; }
 before=$(read_sums)
-${variant.write}
+${variant.change === undefined ? "" : `${variant.change}\n`}${variant.write}
 for f in $STALE_FILES; do rm -f "$DIR/$f"; done
 # The containers run as the deploy user: Compose reads its ids from .env.
 ids | put "$DIR/.env"
@@ -3063,13 +3114,16 @@ files_ok() {
  * `docker compose up -d --wait`: the stack's services have healthchecks. It always runs as root,
  * for the password file (through Docker on a server OpsCrew created); `runAs` names the server's
  * kind, which sets its folder (`addonDir`). The check is the files' hashes, the password file and
- * every service running.
+ * every service running, never with `rewrite` (a rotation, feature 025): Grafana reads the file
+ * only when it first makes its admin, so then (`ROTATE`) a password other than the file's is set
+ * in the running Grafana first (`grafana cli admin reset-admin-password --password-from-stdin` in its
+ * container), then written to the file; a failure leaves the file as it was, so a re-run sets it.
  */
 function monitoringScripts(plan: HostPlan, step: HostStep): StepScripts {
   if (plan.purpose !== "setup" || step.params.remove === true) {
     return monitoringRemoveScripts(plan, step);
   }
-  const { runAs } = params(step, z.object({ runAs: RunAsSchema }));
+  const { runAs, rewrite } = params(step, z.object({ runAs: RunAsSchema, ...RewriteParams.shape }));
   const files = addonFiles(step, STACK_FILE_RULES);
   const paths = files.map(([path]) => path);
   const dir = addonDir("monitoring", runAs);
@@ -3085,6 +3139,7 @@ function monitoringScripts(plan: HostPlan, step: HostStep): StepScripts {
       PATHS: paths.join(" "),
       DIRS: stackDirs(paths).join(" "),
       MANIFEST: files.map(([path, content]) => `${path}:${sha256Hex(content)}`).join(" "),
+      ROTATE: rewrite === true,
     },
     helpers: STACK_HELPERS,
     verify: `  files_ok || return 1
@@ -3111,6 +3166,14 @@ recreate=''
 files_ok || recreate=--force-recreate
 # Grafana (user 472, group 0) reads its password through its group.
 if [ -L "$DIR/$CREDENTIAL" ]; then fail "$DIR/$CREDENTIAL is a symbolic link; OpsCrew does not follow it."; fi
+# Grafana reads the file only when it first makes its admin: in a rotation, a password other than
+# the file's is set in the running Grafana first, through its CLI in its container, on stdin.
+if [ "$ROTATE" = true ] && { [ ! -f "$DIR/$CREDENTIAL" ] || [ "$(cat "$DIR/$CREDENTIAL")" != "$pw" ]; }; then
+  if ! printf '%s\\n' "$pw" | compose exec -T grafana grafana cli admin reset-admin-password --password-from-stdin >/dev/null 2>&1; then
+    pw=''
+    fail "The running Grafana did not take its new admin password (grafana cli admin reset-admin-password failed), so OpsCrew left its password file as it was. Check that the monitoring stack runs: docker compose -p $PROJECT ps on the server."
+  fi
+fi
 printf '%s' "$pw" | write_file "$DIR/$CREDENTIAL" 0640 0:0
 pw=''
 # Then the files, one line of base64 each, in the order of $PATHS. None holds a secret.
@@ -3125,6 +3188,7 @@ sums_ok || fail "The monitoring stack's files on the server are not the planned 
 compose up -d --wait --wait-timeout 300 --remove-orphans --quiet-pull $recreate >/dev/null 2>&1 || fail "The monitoring stack was not up and healthy within five minutes (docker compose up --wait failed). See docker compose -p $PROJECT ps and logs on the server."
 printf '%s\\n' "$MANIFEST" | put "$DIR/.opscrew-files"`,
     failed: "The monitoring stack is not running as planned.",
+    rewrite: rewrite === true,
     secrets: { names: ["grafanaAdminPassword"], required: true },
     payload: files.map(([, content]) => `${base64(content)}\n`).join(""),
     doing: "starting the monitoring stack",

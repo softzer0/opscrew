@@ -3086,7 +3086,11 @@ export type AddonEnable<K extends AddonPlanKind> = z.input<(typeof AddonEnableSc
  *   (`addonDir`) with its secrets (supplied at apply, never part of the plan), then started. Off,
  *   everything of it goes, except Beszel's history with `keepData`; without it the plan has
  *   `deleteData` (a destroying plan: approve it with allowDestroy and the typed app name), unless
- *   only Beszel's agent ran there (`disable.mode: "agent"`), which keeps no history.
+ *   only Beszel's agent ran there (`disable.mode: "agent"`), which keeps no history. The hub
+ *   makes its dashboard's user and superuser from `hub.env` at its first start only, so in a
+ *   rotation (`secretsChanged`) a password other than `hub.env`'s is first set in the running hub
+ *   through its API on the server's loopback, with `curl` reading every value from its stdin
+ *   (feature 025).
  * - `alloy` on any server of the app (feature 020): also its `server` and `destinations`
  *   (`grafanaCloud`, `monitoring`), with the Grafana Cloud token only for Grafana Cloud, and on
  *   Postgres's server `postgresHost`, the Postgres service's name: the step writes the monitoring
@@ -3094,7 +3098,10 @@ export type AddonEnable<K extends AddonPlanKind> = z.input<(typeof AddonEnableSc
  * - `monitoring` (feature 020): the stack's files as `renderMonitoringStack` renders them, by
  *   path in its folder (`grafana/dashboards/servers.json`), each within 256 KiB, with Grafana's
  *   admin password supplied at apply as `grafanaAdminPassword`. It runs as root on every server
- *   (through Docker on one OpsCrew created: apply with `rootImage`), for the password file. Off,
+ *   (through Docker on one OpsCrew created: apply with `rootImage`), for the password file.
+ *   Grafana reads that file when it first makes its admin only, so in a rotation (`secretsChanged`)
+ *   a password other than the file's is first set in the running Grafana through its CLI in its
+ *   container, on stdin, then written to the file (feature 025). Off,
  *   its containers and folder go; its Docker volumes only with `disable.removeData`, which makes
  *   the plan `deleteData`.
  * - `previews` (feature 022): a preview environment's recipe for `app` (its own app name), the
@@ -3143,9 +3150,10 @@ export function planAddon<K extends AddonPlanKind>(
     disable?: { keepData?: boolean; mode?: "hub" | "agent"; removeData?: boolean };
     connector?: AddonConnector;
     /**
-     * Beszel's, Alloy's or the previews': a secret the step writes is new on this computer (a
-     * rotated token, a new password of the monitoring login, changed preview values or a new
-     * certificate of the previews). The step is
+     * Beszel's, Alloy's, the monitoring stack's or the previews': a secret the step writes is new
+     * on this computer (a rotated token, a new password of the monitoring login, Grafana's or
+     * Beszel's rotated values, changed preview values or a new certificate of the previews). The
+     * step is
      * a change with the `rewrite` parameter, even when the facts show it running as planned, and
      * its check never skips it.
      */
@@ -3231,7 +3239,7 @@ export function planAddon<K extends AddonPlanKind>(
     );
     item = addonStep(kind, app, runAs, repository, settings);
     if (options.secretsChanged === true) {
-      if (kind === "alloy" || kind === "beszel") {
+      if (kind === "alloy" || kind === "beszel" || kind === "monitoring") {
         item = { ...item, params: { ...item.params, rewrite: true } };
       }
     } else if (facts !== undefined && runsAsPlanned(kind, facts, settings)) {

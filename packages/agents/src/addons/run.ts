@@ -4,6 +4,7 @@ import {
   type ApplySecrets,
   addonDir,
   applyHostPlan,
+  type HostFacts,
   type HostPlan,
   planAddon,
 } from "@opscrew/connector-ssh-host";
@@ -54,6 +55,7 @@ import { hasAppInterface } from "../vpn/dashboards";
 import { estimateText, grafanaEstimate, readServer, type ServerReading } from "./estimate";
 import {
   BESZEL_EMAIL,
+  type BeszelSecrets,
   ensureBeszelHubSecrets,
   readBeszelSecrets,
   readGrafanaToken,
@@ -538,11 +540,41 @@ async function addonHostChange(
  * on the user's own server, its WireGuard interface is there already: Docker never binds an address
  * the server doesn't have.
  */
-function dashboardsPublished(plan: DeployPlan, ownRun: OwnServerRun | undefined): boolean {
+function dashboardsPublished(plan: DeployPlan, ownFacts: HostFacts | undefined): boolean {
   return (
-    dashboardsOnNetwork(plan, ownRun?.facts) &&
-    (ownRun === undefined || hasAppInterface(plan, ownRun.facts))
+    dashboardsOnNetwork(plan, ownFacts) &&
+    (ownFacts === undefined || hasAppInterface(plan, ownFacts))
   );
+}
+
+/**
+ * Beszel's host plan in hub mode with the hub's secrets `hub` written anew (`opscrew rotate
+ * beszel`, feature 025): its files as `opscrew addon enable beszel` renders them (on the user's own
+ * server, `ownFacts` its facts), the hub's public key as the agent's, and a step its check never
+ * skips. Its apply sets a new dashboard password in the running hub before `hub.env`; the hub and
+ * its agent start again on the new key and token.
+ */
+export function beszelHubPlan(
+  plan: DeployPlan,
+  hub: Pick<Extract<BeszelSecrets, { mode: "hub" }>, "hubPublicKey">,
+  ownFacts: HostFacts | undefined,
+): HostPlan {
+  return planAddon("beszel", {
+    app: plan.app.name,
+    runAs: ownFacts ? "root" : "login",
+    ...(ownFacts ? { facts: ownFacts } : {}),
+    enable: {
+      files: Object.fromEntries(
+        renderAddon(plan, "beszel", {
+          dashboardsOnNetwork: dashboardsPublished(plan, ownFacts),
+        }).map((file) => [file.path, file.content]),
+      ),
+      mode: "hub",
+      email: BESZEL_EMAIL,
+      hubKey: hub.hubPublicKey,
+    },
+    secretsChanged: true,
+  });
 }
 
 /**
@@ -570,7 +602,7 @@ function addonPlan(
   const files = change.enabling
     ? Object.fromEntries(
         renderAddon(plan, change.kind, {
-          dashboardsOnNetwork: dashboardsPublished(plan, ownRun),
+          dashboardsOnNetwork: dashboardsPublished(plan, ownRun?.facts),
         }).map((file) => [file.path, file.content]),
       )
     : {};
