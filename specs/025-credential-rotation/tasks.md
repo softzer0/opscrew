@@ -107,7 +107,7 @@ secret in any test: `fakeSecret(kind)` and `{{FAKE:<kind>}}` (`@opscrew/core/tes
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm lint`
   - Effort: high
 
-- [ ] T2510 [P] [US5] The private network, devices and their logins
+- [x] T2510 [P] [US5] The private network, devices and their logins
   - Owns: `packages/agents/src/rotate/network*.ts`, `packages/agents/src/vpn/**`, `packages/agents/src/network/**`, `packages/connectors/ssh-host/src/network.ts` (+ tests)
   - Depends: T2506
   - Accept: plan 7: `network` (servers' keys in one `wg syncconf` change per server, every device named and its new config written), `device:<name>`, `grant:<device>/<service>` (a new password shown once).
