@@ -662,7 +662,7 @@ Horizon, PostgreSQL and Redis.
     - **`APP_URL` (FR-1338):** derived where the app reads it: `https://<domain>`, else the server's address (as host lists are); a plain PHP app's `APP_ENV` and `APP_DEBUG` are `production` and `false`.
     - **Optional variables (FR-1339):** detect's `hasDefault` from PHP code makes a variable optional (a test: only values with no default are asked).
     - **The values that chose a service stay:** a variable whose `.env.example` value is the evidence that picked a service (`env:DB_CONNECTION=pgsql`, `env:QUEUE_CONNECTION=redis`, `env:CACHE_STORE=redis`, `env:SESSION_DRIVER=redis`) gets that value, derived, even when PHP code gives it a default (T1327 makes those optional; unset, Laravel would fall back to SQLite or its database store while the service sits unused).
-    - Design's summary names the kept folder and the cron job.
+    - Design's summary names the kept folder and the cron job; adapt passes the kept folder to OpsCrew's generated Dockerfile (`renderDockerAssets` `filesFolder`), as it does SQLite's.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm lint`
   - Effort: high
 
@@ -671,7 +671,7 @@ Horizon, PostgreSQL and Redis.
   - Reads: research R10 and T1321's names; every day-2 use of `storage.sqlite` (`snapshot/restore-portainer.ts`, `destroy/checks.ts`, `destroy/own.ts`, `retarget/window.ts`, `retarget/start.ts`, `environments/shared-parts.ts`)
   - Depends: T1319, T1321
   - Accept:
-    - Wherever `storage.sqlite` is handled on day 2, `storage.files` is too: snapshots list and restore it (servers and Portainer); destroy counts it as data, keeps it unless `--delete-data` and names it in the data-loss text; retarget and moves copy it; environments share or keep it as SQLite's folder.
+    - Wherever `storage.sqlite` is handled on day 2, `storage.files` is too: snapshots list and restore it (servers and Portainer: `restore-portainer.ts` mounts `${stack}_files` at `/data` for a part of kind `files`, as for SQLite); destroy counts it as data, keeps it unless `--delete-data` and names it in the data-loss text; retarget and moves copy it; environments share or keep it as SQLite's folder.
     - **Tests:** each path; plans without it unchanged.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm lint`
   - Effort: high
