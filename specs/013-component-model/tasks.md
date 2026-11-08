@@ -702,7 +702,7 @@ Horizon, PostgreSQL and Redis.
 - [x] T1325 [US8] Live: `examples/php-plain-mysql` on Hetzner (lead; SC-1309)
   - Through init, analyze, interview, design, adapt, provision and verify with no edit to an OpsCrew file; only `public/` served; it reaches MySQL; a second deploy keeps `storage/`; its cron runs.
 
-- [ ] T1328 [US8] What a real plain PHP app showed (found 2026-11-08 deploying one with the US8 build)
+- [x] T1328 [US8] What a real plain PHP app showed (found 2026-11-08 deploying one with the US8 build)
   - Owns: `packages/agents/src/analyze/**`, `packages/secops/src/**` (+ tests)
   - Accept:
     - **Analyze:** the "There is no Dockerfile. OpsCrew will add one" risk shows for a PHP app that also has a `package.json`, though Railpack builds it with no Dockerfile: it shows only when OpsCrew's own Dockerfile will build the app (the same rule design uses).
