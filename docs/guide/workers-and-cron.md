@@ -84,6 +84,24 @@ processes:
   why: give it a `command` that runs the job's code instead.
 - **A run that is still going** when the next one is due is skipped, so jobs never pile up.
 
+### A plain PHP app's `cron.php`
+
+A [plain PHP app](builders.md#a-plain-php-app) with a `cron.php` at its root or a `bin/cron.php`
+gets a cron job that runs it every minute, as a shared host's cron would:
+
+```yaml
+processes:
+  cron:
+    - name: cron
+      schedule: "* * * * *"
+      command: "php bin/cron.php"
+```
+
+Change its schedule or command in `opscrew/plan.yaml`; a later `npx opscrew design` keeps your
+edits, as long as the command still runs that file. The job sees the app's
+[kept folder](components.md#the-apps-kept-folder), so what it writes in `storage/` is there for
+the web process too.
+
 The cron container's memory limit is the app's (`app.memoryMb`) when a job runs a command, since
 it runs your app's code. When every job calls a route, the container only runs supercronic and
 the tool that calls the route, so its limit is 64 MB. Turn a job off with `enabled: false`.

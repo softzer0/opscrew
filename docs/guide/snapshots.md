@@ -1,10 +1,10 @@
 # Snapshots and restores
 
 A snapshot is a copy of an environment's data at one moment: every database, cache, queue and
-search engine next to your app, and the app's own [SQLite](databases.md#sqlite) files. Take one
-before a risky change, restore it without changing the version that runs, take them on a
-schedule, and keep an encrypted copy of each off the server, so that losing the server doesn't
-lose your data.
+search engine next to your app, the app's own [SQLite](databases.md#sqlite) files, and its
+[kept folder](components.md#the-apps-kept-folder). Take one before a risky change, restore it
+without changing the version that runs, take them on a schedule, and keep an encrypted copy of
+each off the server, so that losing the server doesn't lose your data.
 
 ```bash
 npx opscrew snapshot                          # a snapshot of the environment's data, now
@@ -20,13 +20,15 @@ Like every command, they take `--app <key>` and `--env <name>` for
 
 ## What a snapshot holds, and where it is
 
-A snapshot holds one file for each service that keeps data, and one for the app's SQLite volume:
+A snapshot holds one file for each service that keeps data, one for the app's SQLite volume, and
+one for its kept folder:
 
 | Kind | How it is copied |
 |---|---|
 | [PostgreSQL](https://www.postgresql.org/), [MySQL](https://www.mysql.com/), [MariaDB](https://mariadb.org/), [MongoDB](https://www.mongodb.com/) | A dump with the database's own tool, while it runs |
 | [Valkey](https://valkey.io/), [Redis](https://redis.io/), [Dragonfly](https://www.dragonflydb.io/) | A copy of its data file, while it runs |
 | The app's SQLite volume | Every SQLite database in it through SQLite's backup API, and its other files as they are, while the app runs |
+| The app's kept folder (`storage.files.dir`: a plain PHP app's `storage/`, [Laravel](https://laravel.com/)'s `storage/app`) | Its files as they are, in one archive, while the app runs |
 | Every other service with data: RabbitMQ, NATS, Kafka, Redpanda, OpenSearch, Elasticsearch, Meilisearch, Typesense, ClickHouse, Neo4j, Garage | That service alone stops, its files are copied, and it starts again |
 
 A snapshot's id is the UTC time it was taken, for example `20261106T190000Z`. It records the
@@ -61,6 +63,7 @@ The snapshot of staging copies:
 - db (PostgreSQL) on the app's server, while it runs
 - queue (Valkey) on the app's server, while it runs
 - sqlite (the app's SQLite files) on the app's server, while it runs
+- files (the app's kept folder) on the app's server, while it runs
 - kafka (Kafka) on the app's server: it stops alone for its copy (up to 120 seconds to stop cleanly, then as long as copying its files takes) and starts again
 ```
 
@@ -120,7 +123,7 @@ it runs, the app's requests wait and the app stops until its data is back:
 5. It starts the app and lets the held requests through.
 
 When it is done, it names the snapshot it took just before, so `opscrew restore` can put that back
-too. `--only <service>` puts back only that service. In a script, see [In a script](#in-a-script).
+too. `--only <service>` puts back only that service, and `--only files` only the kept folder. In a script, see [In a script](#in-a-script).
 
 ### The version rule
 

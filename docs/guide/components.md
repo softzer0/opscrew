@@ -15,8 +15,9 @@ is created.
 - **Services**: databases, caches, queues, brokers, and search and analytics engines that OpsCrew
   runs as containers on the server. See [Databases](databases.md), [Message brokers and
   queues](brokers.md) and [Search and analytics engines](search-and-analytics.md).
-- **Storage**: a persistent volume for a [SQLite](https://www.sqlite.org/) database, and a bucket for the app's files only
-  when you ask for one in the interview: otherwise the app keeps the storage it uses now. See
+- **Storage**: a persistent volume for a [SQLite](https://www.sqlite.org/) database, a [kept folder](#the-apps-kept-folder) for
+  the files the app writes, and a bucket for the app's files only when you ask for one in the
+  interview: otherwise the app keeps the storage it uses now. See
   [Object storage](object-storage.md).
 
 ## How OpsCrew finds them
@@ -28,7 +29,9 @@ is created.
   `MONGODB_URI`, `AMQP_URL` …);
 - the process types of a `Procfile`, and background-job libraries such as [Celery](https://docs.celeryq.dev/), [Sidekiq](https://sidekiq.org/), [BullMQ](https://bullmq.io/)
   or [Laravel](https://laravel.com/)'s queue;
-- the `crons` of a `vercel.json`;
+- the `crons` of a `vercel.json`, and a plain PHP app's `cron.php`;
+- the PHP extensions in `composer.json`'s `require` (`ext-pdo_mysql`, `ext-pgsql`, `ext-redis` …);
+- the folder the app writes its files to: a plain PHP app's `storage/`, Laravel's `storage/app`;
 - a hosted service the app already uses, such as a [MongoDB Atlas](https://www.mongodb.com/atlas) address in `.env.example`.
 
 `npx opscrew interview` asks only what it cannot tell: the command of a worker whose library has
@@ -83,6 +86,33 @@ have, it uses the memory it reads there, minus the limits of the other OpsCrew a
 Each service also has a smallest server it runs well on, from 512 MB for [NATS](https://nats.io/) or Valkey to 4 GB
 for [OpenSearch](https://opensearch.org/), Elasticsearch and Neo4j. On Hetzner Cloud and DigitalOcean, design picks a server
 at least that big. On a server you already have, it warns you when the server is smaller.
+
+## The app's kept folder
+
+Some apps write files they must keep: uploads, keys, a file that says the app is installed. A
+plain PHP app keeps them in `storage/`, and Laravel in `storage/app` (its local disk; a
+[SQLite](databases.md#sqlite) database in `storage/database` stays apart). OpsCrew makes that
+folder a persistent volume, named in `opscrew/plan.yaml`:
+
+```yaml
+storage:
+  files:
+    dir: storage   # relative to your app
+```
+
+- **Every deploy keeps it.** On a server it is the [Docker](https://www.docker.com/) volume `<app>_files`, in your Portainer
+  the stack's volume `<stack>_files`. The web process, the release command, the workers and the
+  cron jobs all see the same files.
+- **The app's own user owns it**, as with SQLite's folder (see
+  [Who owns the database folder](databases.md#who-owns-the-database-folder)).
+- **Two versions may use it at once.** Unlike SQLite, files are safe for two web containers, so
+  deploys still switch [without downtime](zero-downtime.md).
+- **It is in every [snapshot](snapshots.md)**, moves with [`npx opscrew retarget`](retarget.md),
+  and `npx opscrew destroy` keeps it unless you add `--delete-data`.
+- **In the repository, the folder holds only Git's placeholders** (`.gitignore`, `.gitkeep`,
+  `.keep`) and `.htaccess` files: the volume hides the folder's files in the image, so design
+  refuses a folder with your own files in it. It cannot be the app's whole folder, nor SQLite's
+  folder or one inside it.
 
 ## Changing a component
 

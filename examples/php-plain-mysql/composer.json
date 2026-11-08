@@ -1,0 +1,10 @@
+{
+  "name": "acme/notes",
+  "description": "A small notes page in plain PHP, made for shared hosting.",
+  "type": "project",
+  "license": "MIT",
+  "require": {
+    "php": ">=8.3",
+    "ext-pdo_mysql": "*"
+  }
+}

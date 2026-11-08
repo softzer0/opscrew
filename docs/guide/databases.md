@@ -39,6 +39,33 @@ address too. OpsCrew generates each password, keeps it on the computer that ran
 repository's encrypted deploy secrets. The database listens only on the app's own network: no
 port is open to the internet, or to other apps on the server.
 
+### The split settings
+
+Many PHP apps read the database's host, port, name, user and password one by one instead of an
+address. When your app reads `DB_HOST`, it gets them all from its PostgreSQL, MySQL or MariaDB, by
+the names it reads. OpsCrew derives them and never asks for them:
+
+| Setting | Names the app reads | PostgreSQL | MySQL | MariaDB |
+|---|---|---|---|---|
+| Host | `DB_HOST` | `db` | `mysql` | `mariadb` |
+| Port | `DB_PORT` | `5432` | `3306` | `3306` |
+| Database | `DB_DATABASE` or `DB_NAME` | `app` | `app` | `app` |
+| User | `DB_USERNAME` or `DB_USER` | `app` | `app` | `app` |
+| Password | `DB_PASSWORD` or `DB_PASS` | generated | generated | generated |
+
+For a database on [a server of its own](split-placement.md), the host is its private address.
+With two SQL databases, the app gets the settings of the one its `DATABASE_URL` names, else of the
+first one, and design names it. The password is kept like the other generated passwords. For a
+web installer that asks for it once, read it on your computer: see
+[An installer that asks for the database's password](builders.md#an-installer-that-asks-for-the-databases-password).
+
+[Laravel](https://laravel.com/) reads these names too, so a Laravel app on MySQL, MariaDB or PostgreSQL gets them the
+same way. Its `REDIS_HOST`, `REDIS_PORT` and `REDIS_PASSWORD` come from the Valkey, Redis or
+Dragonfly it uses. A value of its `.env.example` that chose a service, such as
+`DB_CONNECTION=pgsql` or `QUEUE_CONNECTION=redis`, is given with that value, so the app uses the
+service OpsCrew runs. The PHP driver of each service is in the image (see
+[A plain PHP app](builders.md#a-plain-php-app)).
+
 ## Settings for small servers
 
 - **MySQL** gets a buffer pool of its memory limit minus about 400 MB for everything else (at least

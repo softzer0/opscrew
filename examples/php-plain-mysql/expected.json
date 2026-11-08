@@ -1,0 +1,19 @@
+{
+  "facts": {
+    "platformExport": { "platform": "none" },
+    "appKind": "fullstack",
+    "frameworkNames": [],
+    "port": 8080,
+    "services": ["mysql"],
+    "languages": ["php"],
+    "secretEnv": ["DB_PASSWORD"]
+  },
+  "scan": { "clean": true, "mustInclude": [] },
+  "codeChanges": ["dockerignore"],
+  "builder": "railpack",
+  "components": {
+    "services": { "mysql": "mysql" },
+    "cron": ["cron"],
+    "files": "storage"
+  }
+}

@@ -31,6 +31,9 @@
  * only.
  * Then, inside the running container:
  * - the app does not run as root;
+ * - a plain PHP app (`app.build.webRoot`, built by Railpack with `RAILPACK_PHP_ROOT_DIR` and
+ *   `RAILPACK_PHP_EXTENSIONS`) serves only its web root: `/composer.json`, `/composer.lock` and
+ *   every file of the kept folder answer neither HTTP 200 nor their content;
  * - the Compose health check OpsCrew renders for the image passes (`docker exec`), so every probe
  *   (Node, Python, Ruby, PHP, wget, bash through the Buildpacks launcher) runs in a real image;
  * - a Node.js image holds no development dependency, except the release command's tools and what
@@ -1221,6 +1224,46 @@ describe.skipIf(SKIP !== undefined)(
         expect(uid, `${example} runs as root`).not.toBe("0");
       });
 
+      it("a plain PHP app serves only its web root", async (ctx) => {
+        const plan = prepared?.plan;
+        if (plan?.app.build?.webRoot === undefined || project === undefined) return ctx.skip();
+        const { container: name } = app();
+        // The app's private files: Composer's, and every file in the kept folder now (the ones
+        // the repository has and the ones the app wrote while it answered above).
+        const kept = plan.storage?.files?.dir;
+        const listed =
+          kept === undefined ? "" : (await docker(["exec", name, "ls", "-A", kept])).stdout;
+        const files = [
+          "composer.json",
+          "composer.lock",
+          ...listed
+            .split(/\r?\n/)
+            .filter((file) => file.trim() !== "")
+            .map((file) => `${kept}/${file.trim()}`),
+        ];
+        expect(files.length, `${example}: the files of the kept folder`).toBeGreaterThan(2);
+        const served: string[] = [];
+        for (const file of files) {
+          const shown = await docker(["exec", name, "cat", file]);
+          const answer = await untilAnswer(
+            name,
+            plan.app.port,
+            { path: `/${file}` },
+            30_000,
+            () => true,
+          );
+          const content = shown.stdout.trim();
+          if (answer.status === 200 || (content !== "" && answer.text.includes(content))) {
+            served.push(`/${file} (HTTP ${answer.status})`);
+          }
+          console.info(`${example}: GET /${file} answers HTTP ${answer.status}`);
+        }
+        expect(
+          served,
+          `${example}: files outside ${plan.app.build.webRoot}/ that are served`,
+        ).toEqual([]);
+      });
+
       it(
         "the image's files, history and configuration hold none of the known secret values",
         async () => {
@@ -1471,16 +1514,18 @@ describe.skipIf(SKIP !== undefined)(
           if (cron === undefined) throw new Error(`${example}: no cron container is running.`);
           const due = Math.ceil(Date.parse(cron.startedAt) / 60_000) * 60_000;
           // supercronic logs each run that succeeded with its time (the engine's clock, as the
-          // container's start): the first one must be within a minute of the first due time.
+          // container's start): the first one must be within a minute of the first due time. The
+          // log is read at least once: the tests before this one may take longer than that.
           let first: number | undefined;
-          while (first === undefined && Date.now() <= due + 70_000) {
+          for (;;) {
             const logs = await docker(["logs", cron.name]);
             const succeeded = `${logs.stdout}\n${logs.stderr}`
               .split(/\r?\n/)
               .find((line) => line.includes('msg="job succeeded"'));
             const time = /time="([^"]+)"/.exec(succeeded ?? "")?.[1];
             if (time !== undefined) first = Date.parse(time);
-            else await new Promise((resolve) => setTimeout(resolve, 2_000));
+            if (first !== undefined || Date.now() > due + 70_000) break;
+            await new Promise((resolve) => setTimeout(resolve, 2_000));
           }
           if (first === undefined) {
             const logs = await docker(["logs", "--tail", "20", cron.name]);

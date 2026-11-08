@@ -94,8 +94,9 @@ export const ExpectedSchema = z.strictObject({
     .optional(),
   /**
    * The components `opscrew design` plans besides the web process, exactly (013): the running
-   * services by name with their kind, the workers and cron jobs by name, SQLite's folder and
-   * whether there is a bucket. The Docker pass checks the components of the examples that have it.
+   * services by name with their kind, the workers and cron jobs by name, SQLite's folder, the
+   * kept folder (`storage.files.dir`) and whether there is a bucket. The Docker pass checks the
+   * components of the examples that have it.
    */
   components: z
     .strictObject({
@@ -103,6 +104,7 @@ export const ExpectedSchema = z.strictObject({
       workers: z.array(z.string().min(1)).default([]),
       cron: z.array(z.string().min(1)).default([]),
       sqlite: z.string().min(1).optional(),
+      files: z.string().min(1).optional(),
       objectStorage: z.boolean().default(false),
     })
     .optional(),
@@ -114,11 +116,13 @@ export function plannedComponents(plan: DeployPlan): NonNullable<Expected["compo
   const enabled = <T extends { enabled: boolean }>(items: readonly T[]) =>
     items.filter((item) => item.enabled);
   const sqlite = plan.storage?.sqlite?.dir;
+  const files = plan.storage?.files?.dir;
   return {
     services: Object.fromEntries(enabled(plan.services).map((s) => [s.name, s.kind])),
     workers: enabled(plan.processes.workers).map((worker) => worker.name),
     cron: enabled(plan.processes.cron).map((job) => job.name),
     ...(sqlite === undefined ? {} : { sqlite }),
+    ...(files === undefined ? {} : { files }),
     objectStorage: plan.storage?.objectStorage !== undefined,
   };
 }

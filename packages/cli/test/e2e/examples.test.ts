@@ -98,6 +98,8 @@ const ANSWERS: Record<string, Record<string, unknown>> = Object.fromEntries(
     "kafka-app": { budgetMonthly: "30 EUR" },
     "meili-search": {},
     "clickhouse-events": {},
+    // 013 US8: a plain PHP app.
+    "php-plain-mysql": {},
   }).map(([name, answers]) => [name, { ...BASE_ANSWERS, ...answers }]),
 );
 

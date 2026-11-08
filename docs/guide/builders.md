@@ -18,7 +18,7 @@ this order:
 3. **[Cloud Native Buildpacks](https://buildpacks.io/)** ([Paketo](https://paketo.io/)), for [Go](https://go.dev/), [Java](https://dev.java/), [.NET](https://dotnet.microsoft.com/) and [Ruby](https://www.ruby-lang.org/), when the pinned Buildpacks
    builder offers the app's runtime version.
 4. **[Railpack](https://railpack.com/)** for everything else: [Bun](https://bun.sh/) projects (Railpack builds and runs them with Bun), [Rust](https://www.rust-lang.org/),
-   [PHP](https://www.php.net/) ([Laravel](https://laravel.com/)), other languages, and Go, Java, .NET or Ruby versions that Buildpacks does not
+   [PHP](https://www.php.net/) ([Laravel](https://laravel.com/) and [plain PHP apps](#a-plain-php-app)), other languages, and Go, Java, .NET or Ruby versions that Buildpacks does not
    offer. Railpack also replaces Buildpacks when the build
    needs a secret value, because Buildpacks has no way to keep one out of the image.
 
@@ -215,6 +215,61 @@ app:
       secret: true
       source: user
 ```
+
+## A plain PHP app
+
+A PHP app without a framework, as made for shared hosting, has a `composer.json` and a
+`public/index.php`. OpsCrew builds it with Railpack and runs it as a web app on port 8080, with
+`/` as its health route. The PHP version is `require.php` in `composer.json`.
+
+- **Only `public/` is served.** OpsCrew tells Railpack to serve that folder
+  (`app.build.webRoot: public` in `opscrew/plan.yaml`). A request for any other file of the app,
+  such as `/composer.json` or a file in `storage/`, never returns it: it goes to
+  `public/index.php`, which answers as your app decides.
+- **The PHP extensions** come from `composer.json`'s `require` (for example `ext-pdo_mysql`), and
+  from the services the app uses: `pdo_pgsql` for PostgreSQL, `pdo_mysql` for MySQL and MariaDB,
+  `redis` for Valkey, Redis and Dragonfly, `mongodb` for MongoDB. Laravel apps get these drivers
+  too. An extension in `require-dev` starts no service.
+- **The settings come from the environment.** When the app reads them, it gets
+  `APP_ENV=production`, `APP_DEBUG=false`, `APP_URL` (its domain over HTTPS, else the server's
+  address) and its database's settings (see [Databases](databases.md#the-split-settings)). A
+  variable of `.env.example` that the code reads with a default, such as
+  `getenv('LOG_LEVEL') ?: 'info'`, is optional: left unset, the default applies.
+- **The folder the app keeps** is `storage/`: every deploy keeps its files (see
+  [Components](components.md#the-apps-kept-folder)).
+- **`cron.php`** at the app's root or `bin/cron.php` runs every minute (see
+  [Workers and cron jobs](workers-and-cron.md#cron-jobs)).
+
+### Files the app writes into its own folder
+
+The app's user can create new files in the app's folder, as a web installer does when it writes
+its settings file. It cannot change or remove the files of the image, so the app's code stays as
+it was built. A file written there lasts only until the next deploy: each deploy starts the app
+from a new image, without it. So the app must read its settings from the environment, which
+OpsCrew fills on every deploy, and keep the files it needs in `storage/`.
+
+### An installer that asks for the database's password
+
+Some apps ask for the database's details once, in a web installer. Give it the values OpsCrew
+gives the app: the host is the database service's name (`mysql`, `mariadb`, or `db` for
+PostgreSQL; the private address for a database on [a server of its own](split-placement.md)),
+the port its usual one (3306, or 5432), the database and the user `app`. The password
+is in the generated values file OpsCrew keeps on the computer that ran `npx opscrew provision`,
+readable only by you:
+
+- `~/.opscrew/projects/<project>/generated_values.json` for prod;
+- `~/.opscrew/projects/<project>/environments/<env>/generated_values.json` for another
+  environment.
+
+It is under `services.<service>.password`, for example `services.mysql.password`. Read it in a
+terminal on that computer, for example with [jq](https://jqlang.org/):
+
+```bash
+jq -r '.services.mysql.password' ~/.opscrew/projects/<project>/generated_values.json
+```
+
+Type or paste it into the installer only. Never paste it into a chat, an issue, a pull request or
+any other place others can read.
 
 ## Values the build needs
 
