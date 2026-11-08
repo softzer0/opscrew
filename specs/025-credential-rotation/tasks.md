@@ -171,7 +171,19 @@ secret in any test: `fakeSecret(kind)` and `{{FAKE:<kind>}}` (`@opscrew/core/tes
 
 ## Phase 7: Finish (lead)
 
-- [ ] T2516 Live (lead): plan 14's passes; results on `docs/e2e-coverage.md`.
+- [ ] T2516 Live (lead): plan 14's passes; results on `docs/e2e-coverage.md`. These are things the reviews could check only offline. Each needs a real run:
+  - Cloudflare: the Tunnel secret's PATCH on a token-run tunnel, with running connectors staying connected (R11, T2511).
+  - A Worker version uploaded with `--secrets-file` doesn't keep a secret dropped from the file (T2509).
+  - Portainer passes a stack's Env to a key the compose file names bare (T2509).
+  - Grafana 13.3's `reset-admin-password --password-from-stdin` in its read-only container (T2519).
+  - Beszel 0.21.1 (T2519):
+    - `hub.env` makes a user and a superuser;
+    - a superuser can PATCH both;
+    - real curl reads the config;
+    - config sync updates the agent's token;
+    - the hub reads `id_ed25519` at each start.
+  - Garage's key re-login after a restore (T2514).
+  - Better Auth with both `BETTER_AUTH_SECRET` and `BETTER_AUTH_SECRETS` set (T2509).
 - [ ] T2517 Simplify (lead): a review of the feature's diff for reuse and simplicity, then its tasks.
 - [ ] T2518 The release 0.2.6 (lead): `docs/releasing.md`, with 013's US8 (founder, 2026-11-08). The changelog says that existing deployments recreate MySQL, MariaDB, Valkey, Redis, Dragonfly, Kafka, Redpanda, OpenSearch and Elasticsearch once at their next deploy (their start commands changed, T2503), and that apps on Portainer or Cloudflare's hosting or GitHub Pages whose `APP_KEY` or `BETTER_AUTH_SECRET` OpsCrew generates get `APP_PREVIOUS_KEYS` or `BETTER_AUTH_SECRETS` named in their committed stack template or deploy workflow at their next provision. It stays unset until a rotation keeps an old key there (T2509).
 
