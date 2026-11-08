@@ -76,6 +76,7 @@ secret in any test: `fakeSecret(kind)` and `{{FAKE:<kind>}}` (`@opscrew/core/tes
   - Owns: `packages/agents/src/rotate/server*.ts`, `packages/agents/src/rotate/plan*.ts`, `packages/agents/src/rotate/values*.ts`, `packages/agents/src/provision/secrets.ts` (+ tests)
   - Depends: T2503, T2504, T2505
   - Accept:
+    - Refused, with the next step in plain English, while a rotated service still runs on a start command from before 025 (its container file is missing): a deploy first puts it on the new one (T2503's review).
     - New values generated, old kept (`generated_values.json`, a `pending` entry) until done; every value registered with the redactor before anything prints.
     - The plan (credentials, steps, each one's window or consequence) with its hash; approval (`remote-exec`, `--approve <hash>`); GitHub secrets replaced while deploys are held; `rotate.sh` over SSH with the env files and values on stdin; split placement: each extra server's `rotate.sh begin` before the app server's full run and its `rotate.sh finish` after (T2504), each with its own approval file; refused while a move pauses deploys (`OPSCREW_DEPLOY_PAUSED`); the record and the recovery copy after.
     - A failure keeps `pending`, says the step and how to resume or undo; provision calls T2505's two-computer guard (`assertValuesCurrent`) and keeps `generations` among its kept values (`KEPT_VALUES` in `provision/secrets.ts`), or every provision drops the guard's data.
