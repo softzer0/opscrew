@@ -15,6 +15,8 @@ import type { PhaseDeps } from "../context";
 import { serviceEnvFiles, withGrantHashes } from "../provision/secrets";
 import { dotenvLine, serviceAppVariables } from "../shared/app-env";
 import { changeGenerated, GeneratedValuesSchema, generatedValuesFile } from "../shared/app-secrets";
+import { randomPassword } from "../shared/ssh-keys";
+import { passwordKey } from "../vpn/grants";
 import {
   dropPendingRotation,
   type RotationValues,
@@ -66,18 +68,53 @@ function newValue(format: GeneratedSecret["format"]): string {
     : randomBytes(32).toString("hex");
 }
 
+/** A device's own login to a service (018's grants), which a rotation gives a new password. */
+export interface GrantLogin {
+  device: string;
+  service: PlanService;
+}
+
+/** The name `opscrew rotate` takes for `grant`'s login: `grant:<device>/<service>`. */
+export function grantName(grant: GrantLogin): string {
+  return `grant:${grantKey(grant)}`;
+}
+
+/** `grant`'s entry in the generated values' `grants`: `<device>/<service>`. */
+function grantKey(grant: GrantLogin): string {
+  return passwordKey(grant.device, grant.service.name);
+}
+
 /**
- * A new value for each generated secret of `services` (in the catalog's formats) beside the one it
- * has, both registered with the redactor; nothing is kept yet ({@link keepPendingRotation}).
+ * A new value for each generated secret of `services` (in the catalog's formats) and a new
+ * password for each of `grants` (32 letters and digits, as `opscrew vpn grant` makes one), beside
+ * the one it has, both registered with the redactor; nothing is kept yet
+ * ({@link keepPendingRotation}).
  * @throws OpsCrewError `PHASE_PRECONDITION` when this computer keeps no value of one,
  * `ARTIFACT_INVALID` when the generated values are damaged.
  */
 export async function newRotationValues(
   deps: Pick<PhaseDeps, "paths" | "redactor">,
   services: readonly PlanService[],
+  grants: readonly GrantLogin[] = [],
 ): Promise<RotationValues> {
   const kept = await readKept(deps);
-  const values: RotationValues = { names: services.map((s) => s.name), services: {} };
+  const values: RotationValues = {
+    names: [...services.map((s) => s.name), ...grants.map(grantName)],
+    services: {},
+  };
+  for (const grant of grants) {
+    const old = kept.grants?.[grantKey(grant)];
+    if (old === undefined) {
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        `This computer keeps no password of device ${grant.device}'s login to ${grant.service.name}, so OpsCrew can't rotate it. Nothing was changed.`,
+        {
+          hint: "Bring OpsCrew's generated values from your recovery copy (`opscrew secrets restore`) or run the command on the computer that granted the login.",
+        },
+      );
+    }
+    values.grants = { ...values.grants, [grantKey(grant)]: { old, new: randomPassword(32) } };
+  }
   for (const service of services) {
     const secrets: Record<string, { old: string; new: string }> = {};
     for (const { name, format } of serviceSpec(service.kind).secrets) {
@@ -102,7 +139,7 @@ export async function newRotationValues(
 /**
  * The secrets of every running service of `plan` as this computer keeps them, those `values`
  * rotates with their `side` of it, and each device login's SHA-256 added as the services' env
- * files declare it (`withGrantHashes`).
+ * files declare it (`withGrantHashes`), those `values` rotates by their `side` too.
  * @throws OpsCrewError `PHASE_PRECONDITION` when this computer keeps no value of a running
  * service, `ARTIFACT_INVALID` when the generated values are damaged.
  */
@@ -131,7 +168,8 @@ export async function serviceValues(
     }
     services[service.name] = secrets;
   }
-  return withGrantHashes(plan, services, kept.grants ?? {});
+  const rotated = Object.entries(values.grants ?? {}).map(([key, pair]) => [key, pair[side]]);
+  return withGrantHashes(plan, services, { ...kept.grants, ...Object.fromEntries(rotated) });
 }
 
 /** `<service>.env` of every running service of `plan` with `services`' values, by file name. */
@@ -204,9 +242,10 @@ export function swapAppEnv(
 }
 
 /**
- * Makes the new values of `values` the services' own (PostgreSQL's as `dbPassword`), keeping the
- * old ones under `history` at the generation each credential had (`generations`, by name; 1 when
- * absent) and every other generated value as it was (0600); then forgets the unfinished rotation.
+ * Makes the new values of `values` the services' own (PostgreSQL's as `dbPassword`) and the
+ * device logins' (`grants`), keeping the services' old ones under `history` at the generation each
+ * credential had (`generations`, by name; 1 when absent) and every other generated value as it was
+ * (0600); then forgets the unfinished rotation.
  * @throws OpsCrewError `ARTIFACT_INVALID` when the generated values are damaged.
  */
 export async function completePendingRotation(
@@ -231,11 +270,20 @@ export async function completePendingRotation(
         else services[name] = { ...services[name], [secret]: pair.new };
       }
     }
+    const grants = Object.entries(values.grants ?? {}).map(([key, pair]) => [key, pair.new]);
     return {
       ...current,
       ...(dbPassword === undefined ? {} : { dbPassword }),
       services,
       history,
+      ...(grants.length === 0
+        ? {}
+        : {
+            grants: {
+              ...GeneratedValuesSchema.shape.grants.parse(current.grants),
+              ...Object.fromEntries(grants),
+            },
+          }),
     };
   });
   await dropPendingRotation(deps);

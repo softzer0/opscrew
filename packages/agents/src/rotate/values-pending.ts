@@ -15,12 +15,14 @@ import type { PhaseDeps } from "../context";
 const PairSchema = z.strictObject({ old: z.string().min(1), new: z.string().min(1) });
 
 /**
- * The values of a rotation of services: the services, by plan name in the plan's order, and each
- * one's secrets with their old and new values.
+ * The values of a rotation: the credentials, by the names `opscrew rotate` takes (the services in
+ * the plan's order, then each device login as `grant:<device>/<service>`), each service's secrets
+ * with their old and new values, and each device login's passwords by `<device>/<service>`.
  */
 const RotationValuesSchema = z.strictObject({
   names: z.array(z.string().min(1)).min(1),
   services: z.record(z.string(), z.record(z.string(), PairSchema)),
+  grants: z.record(z.string(), PairSchema).optional(),
 });
 
 /** The values of a rotation of services ({@link RotationValuesSchema}). */
@@ -80,6 +82,10 @@ export function registerRotationValues(
       redactor.addLiteral(pair.old, "app-env");
       redactor.addLiteral(pair.new, "app-env");
     }
+  }
+  for (const pair of Object.values(values.grants ?? {})) {
+    redactor.addLiteral(pair.old, "grant-password");
+    redactor.addLiteral(pair.new, "grant-password");
   }
 }
 

@@ -91,12 +91,12 @@ const GRANTABLE: ReadonlySet<string> = new Set(GRANTABLE_KINDS);
 const DECLARED: ReadonlySet<string> = new Set(REDIS_PROTOCOL_KINDS);
 
 /** True for Valkey, Redis and Dragonfly, whose device logins the service's environment declares. */
-function declared(service: PlanService): boolean {
+export function declared(service: Pick<PlanService, "kind">): boolean {
   return DECLARED.has(service.kind);
 }
 
 /** The grant's entry in the generated values' `grants`. */
-function passwordKey(device: string, service: string): string {
+export function passwordKey(device: string, service: string): string {
   return `${device}/${service}`;
 }
 
@@ -208,17 +208,18 @@ async function confirmFullAccess(
  * The `grant` host plan on the service's server (`planGrant`), shown, approved by its hash and
  * applied: the login made, updated or (with `remove`) removed. The password goes to the server
  * only on apply, as `grantPassword`. `rewrite` (a password new on this computer) makes the step
- * set it even when the server has the login as planned.
+ * set it even when the server has the login as planned. `title` is its approval's, when not the
+ * grant's own (a rotation's new password).
  */
-function applyGrantPlan(
+export function applyGrantPlan(
   deps: PhaseDeps,
   server: NetworkServer,
   plan: DeployPlan,
   grant: GrantParams,
   command: string,
-  password?: string,
-  rewrite = false,
+  options: { password?: string; rewrite?: boolean; title?: string } = {},
 ): Promise<HostPlanOutcome> {
+  const { password, rewrite = false, title } = options;
   const hostPlan = planGrant(
     server.facts,
     { app: plan.app.name, grant, secretsChanged: rewrite },
@@ -230,9 +231,11 @@ function applyGrantPlan(
     remote: server.remote,
     apply: server.apply,
     verifyLogin: server.verifyLogin,
-    title: grant.remove
-      ? `Remove ${login} from ${grant.service} on server ${server.name}`
-      : `Give ${login} ${grant.access} access to ${grant.service} on server ${server.name}`,
+    title:
+      title ??
+      (grant.remove
+        ? `Remove ${login} from ${grant.service} on server ${server.name}`
+        : `Give ${login} ${grant.access} access to ${grant.service} on server ${server.name}`),
     server: `server ${server.name}`,
     planOf: `server ${server.name}`,
     upToDate: `${login} on ${grant.service} is as planned; nothing on server ${server.name} changes.`,
@@ -249,7 +252,7 @@ function applyGrantPlan(
  * The client line (which asks for the password) and the URL with it, for `login` on `service` at
  * `host:port`; MongoDB's logins live in `admin` (`authSource=admin`).
  */
-function connection(
+export function connection(
   service: PlanService,
   login: string,
   password: string,
@@ -391,7 +394,7 @@ export async function vpnGrant(
     const params = { service: service.name, kind: service.kind, login: device, access };
     const login = GrantParamsSchema.parse({ ...params, remove: false });
     const rewrite = kept === undefined;
-    outcomes.push(await applyGrantPlan(deps, target, plan, login, command, password, rewrite));
+    outcomes.push(await applyGrantPlan(deps, target, plan, login, command, { password, rewrite }));
     if (rewrite) await keep();
   }
   const admitted = await applyNetworkPlans(deps, {

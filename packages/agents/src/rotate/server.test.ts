@@ -1,5 +1,5 @@
 // Feature 025 (T2506): rotating services' credentials on servers (US1, FR-2501–2505, FR-2512).
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { CommandResult, RemoteExec } from "@opscrew/contracts";
@@ -13,12 +13,13 @@ import {
   writeArtifact,
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { allocateNetwork } from "../network";
 import { serviceEnvFiles } from "../provision/secrets";
 import type { GitHubApi } from "../provision/types";
 import { copyPath } from "../secrets/files";
 import { updateServerAddresses } from "../shared";
 import { assembleAppEnv } from "../shared/app-env";
-import { generatedValuesFile } from "../shared/app-secrets";
+import { generatedValuesFile, recordGeneratedEntries } from "../shared/app-secrets";
 import {
   DATA_IPV4,
   everythingShown,
@@ -31,10 +32,13 @@ import {
   ScriptedApprovalHandler,
   SERVER_IPV4,
   type TestPhaseDeps,
+  testKeyMaker,
+  testKeyPair,
 } from "../testing";
+import { rotateGrant } from "./network-grant";
 import { rotationContext } from "./plan";
 import { credentialsRecordFile, recordRotation } from "./record";
-import { rotateServices } from "./server";
+import { type RotateServicesOptions, rotateDeviceLogin, rotateServices } from "./server";
 import { type PendingRotation, pendingRotationFile } from "./values-pending";
 
 const NOW = new Date("2026-11-08T10:00:00.000Z");
@@ -847,5 +851,145 @@ describe("rotateServices refuses before any change", () => {
     expect(error.message).toContain("in a way OpsCrew doesn't write it");
     expect(w.log).toEqual([]);
     expectNoValue(w, [w.old.dbPassword as string], error);
+  });
+});
+
+/** Staging with `db` and the Valkey `cache` on its network, and device laptop's login to cache. */
+function grantedPlan(): DeployPlan {
+  const services = [
+    { kind: "postgres", name: "db" },
+    { kind: "valkey", name: "cache" },
+  ] as const;
+  const { network } = allocateNetwork(stagingPlan(services), {}, testKeyMaker("server"));
+  const prefix = network.range.split(".").slice(0, 3).join(".");
+  return stagingPlan(services, {
+    fields: {
+      network: {
+        ...network,
+        devices: [
+          {
+            name: "laptop",
+            address: `${prefix}.100`,
+            publicKey: testKeyPair("laptop").publicKey,
+            addedAt: "2026-10-30T10:00:00.000Z",
+          },
+        ],
+        grants: [{ device: "laptop", service: "cache", access: "read-only" }],
+      },
+    },
+  });
+}
+
+/** The options `w.run` passes, for the other entries. */
+function serversOf(w: World): RotateServicesOptions {
+  const byHost: Record<string, FakeServer> = {
+    [SERVER_IPV4]: w.servers.app,
+    [DATA_IPV4]: w.servers.data,
+  };
+  return {
+    github: { api: w.github as unknown as GitHubApi, owner: "acme", repo: "shop" },
+    remote: (host) => (byHost[host] as FakeServer).remote(host),
+    sleep: async () => {},
+    now: () => 0,
+  };
+}
+
+const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
+
+describe("rotateDeviceLogin: a device's own login to Valkey", () => {
+  async function granted() {
+    const w = await world(grantedPlan());
+    const old = randomBytes(16).toString("hex");
+    await recordGeneratedEntries(w.deps, "grants", { "laptop/cache": old });
+    return { w, old, cache: w.plan.services.find((s) => s.name === "cache") as PlanService };
+  }
+
+  it("adds the new password beside the old under the deploys' pause, then drops the old, and shows it once", async () => {
+    const { w, old } = await granted();
+
+    const result = await rotateGrant(w.deps, w.plan, "laptop", "cache", { servers: serversOf(w) });
+
+    const password = result.connection?.password as string;
+    expect(password).toMatch(/^[A-Za-z0-9]{32}$/);
+    expect(password).not.toBe(old);
+    expect(result.connection?.client).toContain("redis-cli");
+    // The deploys paused around GitHub's secrets and the server's run: the cache's env file holds
+    // only the new password's SHA-256.
+    expect(w.log).toEqual([
+      "github pause",
+      "github secret OPSCREW_STAGING_APP_ENV",
+      "github secret OPSCREW_STAGING_SERVICE_CACHE_ENV",
+      "app rotate",
+      "github resume",
+    ]);
+    const cacheEnv = secret(w, "SERVICE_CACHE_ENV") as string;
+    expect(cacheEnv).toContain(sha256(password));
+    expect(cacheEnv).not.toContain(sha256(old));
+    // rotate.sh's one step: the grant's begin (the new password beside the old) and finish (the old
+    // one dropped), the passwords only on its stdin; the app's settings as they were.
+    const [run] = w.servers.app.runs;
+    expect(run?.hash).toBe(result.hash);
+    expect(run?.script).toContain("ACL SETUSER laptop >%s");
+    expect(run?.script).toContain("ACL SETUSER laptop <%s");
+    const input = readInput(run as ScriptRun, ["app.env", "cache.env"]);
+    expect(input.files["cache.env"]).toBe(cacheEnv);
+    expect(input.files["app.env"]).toBe(await appEnvWith(w.plan, w.old, w.dotenv));
+    expect(input.values).toEqual([old, password]);
+
+    const request = w.handler.requests.find((r) => r.kind === "remote-exec");
+    expect(request?.title).toBe("Rotate the credentials of grant:laptop/cache in staging");
+    expect(request?.details).toContain("laptop's login to cache (Valkey): seamless for the app");
+    expect(request?.planHash).toBe(result.hash);
+
+    const after = JSON.parse(await readFile(generatedValuesFile(w.deps), "utf8"));
+    expect(after.grants).toEqual({ "laptop/cache": password });
+    expect(after.services).toEqual(w.old.services);
+    expect(await pending(w)).toBeUndefined();
+    const record = await readArtifact("credentials", credentialsRecordFile(w.deps.paths));
+    expect(record.environments.staging?.["grant:laptop/cache"]).toEqual({
+      rotatedAt: NOW.toISOString(),
+      generation: 2,
+    });
+    // Shown once: only in the result, never in any output, audit entry, approval or command.
+    expect(w.deps.reporter.text()).toContain("The connection details are shown only now.");
+    expectNoValue(w, [old, password]);
+  });
+
+  it("keeps both passwords after a failed run, then puts the old one back with --undo", async () => {
+    const { w, old, cache } = await granted();
+    w.servers.app.fail.set("rotate", {
+      exitCode: 1,
+      stderr: "The rotation stopped at step 3 of 6.",
+    });
+
+    const error = await failure(
+      rotateDeviceLogin(w.deps, w.plan, { device: "laptop", service: cache }, serversOf(w)),
+    );
+    expect(error.hint).toContain("`opscrew rotate grant:laptop/cache --undo`");
+    const kept = await pending(w);
+    expect(kept?.names).toEqual(["grant:laptop/cache"]);
+    expect(kept?.grants?.["laptop/cache"]?.old).toBe(old);
+    expect(w.github.variable).toBeDefined();
+
+    const undone = await rotateDeviceLogin(
+      w.deps,
+      w.plan,
+      { device: "laptop", service: cache },
+      { ...serversOf(w), undo: true },
+    );
+
+    expect(undone.password).toBeUndefined();
+    expect(w.log.slice(-4)).toEqual([
+      "app undo",
+      "github secret OPSCREW_STAGING_APP_ENV",
+      "github secret OPSCREW_STAGING_SERVICE_CACHE_ENV",
+      "github resume",
+    ]);
+    expect(secret(w, "SERVICE_CACHE_ENV")).toContain(sha256(old));
+    const after = JSON.parse(await readFile(generatedValuesFile(w.deps), "utf8"));
+    expect(after.grants).toEqual({ "laptop/cache": old });
+    expect(await pending(w)).toBeUndefined();
+    expect(w.github.variable).toBeUndefined();
+    expectNoValue(w, [old, kept?.grants?.["laptop/cache"]?.new as string], error);
   });
 });

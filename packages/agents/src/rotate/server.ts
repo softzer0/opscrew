@@ -42,9 +42,11 @@ import { serverWords } from "../shared/server-address";
 import { READ_TIMEOUT_MS, scriptSaid } from "../snapshot/hosts";
 import { requireNoDeployOrMove } from "../snapshot/run";
 import { serverShell } from "../status/servers";
+import { passwordKey } from "../vpn/grants";
 import {
   approveRotation,
   approveUndo,
+  grantSteps,
   type RotationPlan,
   rotationContext,
   rotationHash,
@@ -56,6 +58,8 @@ import {
 import { assertValuesCurrent, readCredentialsRecord, recordRotation } from "./record";
 import {
   completePendingRotation,
+  type GrantLogin,
+  grantName,
   newRotationValues,
   serviceEnvTexts,
   serviceValues,
@@ -88,6 +92,18 @@ export interface ServicesRotation {
   hash: string;
   /** The recovery copy, refreshed: its files for the caller's pull request. */
   copy: RefreshRecoveryResult;
+}
+
+/** A finished rotation of a device's login, or its undo. */
+export interface DeviceLoginRotation extends ServicesRotation {
+  /** The login's new password, to show once and never log; absent after an undo. */
+  password?: string;
+}
+
+/** What one rotation changes: the services' generated secrets and the device logins. */
+interface RotationRequest {
+  services: readonly PlanService[];
+  grants: readonly GrantLogin[];
 }
 
 /** The exit code of a command whose server has no app's folder. */
@@ -639,7 +655,64 @@ export async function rotateServices(
   const { root, environment, app } = deps.paths;
   const flags = await commandFlags(root, environment, app);
   const services = namedServices(plan, names, flags);
-  const named = services.map((service) => service.name);
+  const { values: _values, ...rotation } = await runRotation(
+    deps,
+    plan,
+    { services, grants: [] },
+    flags,
+    options,
+  );
+  return rotation;
+}
+
+/**
+ * Rotates the password of `grant`, a device's own login to a Valkey, Redis or Dragonfly service of
+ * `plan` (018's grants), or with `options.undo` puts the old one back: {@link rotateServices}'s
+ * flow, refusals, approval, pause, resume and undo, with the catalog's `rotation.grant` as the
+ * only step (the new password added beside the old, the service's env file with the new one's
+ * SHA-256, the app's switch, then the old one dropped). Returns the new password, to show once.
+ * @throws OpsCrewError as {@link rotateServices}, and `PHASE_PRECONDITION` when this computer keeps
+ * no password of the login.
+ */
+export async function rotateDeviceLogin(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  grant: GrantLogin,
+  options: RotateServicesOptions,
+): Promise<DeviceLoginRotation> {
+  const { root, environment, app } = deps.paths;
+  const flags = await commandFlags(root, environment, app);
+  const { values, ...rotation } = await runRotation(
+    deps,
+    plan,
+    { services: [], grants: [grant] },
+    flags,
+    options,
+  );
+  const password =
+    options.undo === true
+      ? undefined
+      : values.grants?.[passwordKey(grant.device, grant.service.name)]?.new;
+  return { ...rotation, ...(password === undefined ? {} : { password }) };
+}
+
+/**
+ * The rotation of `request` ({@link rotateServices}, {@link rotateDeviceLogin}), with its values.
+ */
+async function runRotation(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  request: RotationRequest,
+  flags: string,
+  options: RotateServicesOptions,
+): Promise<ServicesRotation & { values: RotationValues }> {
+  const { environment } = deps.paths;
+  const { services, grants } = request;
+  const named = [...services.map((service) => service.name), ...grants.map(grantName)];
+  // The services whose env files change: those rotated, and those of the device logins.
+  const changed = plan.services.filter(
+    (s) => services.includes(s) || grants.some((grant) => grant.service.name === s.name),
+  );
   const again = `opscrew rotate ${named.join(" ")}${flags}`;
   if (!onOneServer(plan.target.provider)) {
     throw new Error(`rotateServices rotates on servers, not on ${plan.target.provider}.`);
@@ -682,7 +755,7 @@ export async function rotateServices(
     deps.reporter.success(
       `Forgot the rotation of ${listText(named)} in ${environment}: it was never approved, so nothing else had changed.`,
     );
-    return { hash: reused.hash, copy: { changed: false } };
+    return { hash: reused.hash, copy: { changed: false }, values: reused };
   }
   if (options.undo === true && reused?.step === "switched") {
     throw new OpsCrewError(
@@ -703,7 +776,7 @@ export async function rotateServices(
     flags,
     reused !== undefined && reused.step !== "planned" ? reused.hash : undefined,
   );
-  const runs = serverRuns(plan, serviceSteps(plan, services));
+  const runs = serverRuns(plan, [...serviceSteps(plan, services), ...grantSteps(grants)]);
   const hosts = new Map<string, RotateHost>();
   for (const run of runs) hosts.set(run.server, await rotateHost(deps, plan, run.server, options));
   if (options.undo !== true) await requireCurrentStarts(deps, plan, runs, hosts, again, flags);
@@ -711,13 +784,13 @@ export async function rotateServices(
     runs.length === 0
       ? undefined
       : await readAppEnv(deps, hosts.get(APP_SERVER) as RotateHost, plan, again, flags);
-  const values = reused ?? (await newRotationValues(deps, services));
+  const values = reused ?? (await newRotationValues(deps, services, grants));
   const envFiles = await envFilesWith(deps, plan, values, appEnv, "new");
   const input: RotationPlan = {
     services,
     values,
     runs,
-    secrets: runs.length === 0 ? [] : rotatedSecrets(services).map((n) => secretPlace(plan, n)),
+    secrets: runs.length === 0 ? [] : rotatedSecrets(changed).map((n) => secretPlace(plan, n)),
   };
   const hash = rotationHash(deps, plan, input);
   // The servers' state of a rotation that began is bound to its hash.
@@ -732,12 +805,7 @@ export async function rotateServices(
   }
   const from = reused?.step ?? "planned";
   // Kept before the approval, so a run approved by the hash shown reuses the same values.
-  const pending: PendingRotation = {
-    names: values.names,
-    services: values.services,
-    hash,
-    step: from,
-  };
+  const pending: PendingRotation = { ...values, hash, step: from };
   await keepPendingRotation(deps, pending);
   const paused = {
     ...(options.sleep ? { sleep: options.sleep } : {}),
@@ -755,14 +823,14 @@ export async function rotateServices(
         plan,
         paused,
         { command: `${again} --undo`, hash },
-        () => undoOnServers(rotation, secretValues(services, old), options.github),
+        () => undoOnServers(rotation, secretValues(changed, old), options.github),
       );
     }
     await dropPendingRotation(deps);
     deps.reporter.success(
       `Put the old values of ${listText(named)} back in ${environment}: the app runs on them again, and the new ones are forgotten.`,
     );
-    return { hash: undo, copy: await refreshRecoveryCopy(deps, plan) };
+    return { hash: undo, copy: await refreshRecoveryCopy(deps, plan), values };
   }
 
   await approveRotation(deps, plan, input, again);
@@ -775,7 +843,7 @@ export async function rotateServices(
       plan,
       paused,
       { command: again, hash },
-      () => rotateOnServers(rotation, secretValues(services, envFiles), options.github),
+      () => rotateOnServers(rotation, secretValues(changed, envFiles), options.github),
     );
   }
   const record = (await readCredentialsRecord(deps)).environments[environment] ?? {};
@@ -791,5 +859,5 @@ export async function rotateServices(
       ? `Made new values for ${listText(named)} in ${environment} on this computer: ${named.length === 1 ? "it is" : "they are"} off and start with them.`
       : `Rotated the credentials of ${listText(named)} in ${environment}: the app runs on the new values, and the old ones no longer work.`,
   );
-  return { hash, copy: await refreshRecoveryCopy(deps, plan) };
+  return { hash, copy: await refreshRecoveryCopy(deps, plan), values };
 }

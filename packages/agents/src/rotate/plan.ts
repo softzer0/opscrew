@@ -19,7 +19,9 @@ import { APPROVAL_SECONDS } from "../rollback/database";
 import { PlanRefusedError } from "../shared/approvals";
 import { serverWords } from "../shared/server-address";
 import { extraServers, hasExtraServers } from "../shared/servers";
+import { passwordKey } from "../vpn/grants";
 import { credentialsRecordFile } from "./record";
+import type { GrantLogin } from "./values";
 import type { RotationValues } from "./values-pending";
 
 /**
@@ -35,6 +37,11 @@ export interface ServiceStep {
   server: string;
   /** The recipe: its secrets, mode, seconds and whether the service is created again. */
   rotation: SecretRotation;
+  /**
+   * The device whose own login (018's grants) the step rotates, by the service's `rotation.grant`;
+   * `rotation` is then that login's: `dual`, of none of the service's secrets.
+   */
+  device?: string;
   /** The step `rotate.sh` runs. */
   step: RotateStep;
 }
@@ -80,11 +87,51 @@ export function serviceSteps(plan: DeployPlan, services: readonly PlanService[])
     });
 }
 
-/** The old and the new value `rotate.sh` gets for `step`: none for a step of several secrets. */
+/**
+ * The steps that rotate each of `grants` (Valkey's, Redis's and Dragonfly's device logins) on its
+ * service's server: the catalog's `rotation.grant`, which adds the new password beside the old one
+ * and later drops the old.
+ */
+export function grantSteps(grants: readonly GrantLogin[]): ServiceStep[] {
+  return grants.map(({ device, service }) => {
+    const recipe = serviceSpec(service.kind).rotation.grant;
+    if (recipe === undefined) throw new Error(`${service.kind} has no device logins to rotate.`);
+    const begin = recipe.begin(device);
+    const finish = recipe.finish(device);
+    return {
+      service,
+      device,
+      server: service.server ?? APP_SERVER,
+      rotation: {
+        secrets: [],
+        mode: "dual",
+        recreate: false,
+        begin: () => begin,
+        finish: () => finish,
+      },
+      step: {
+        service: service.name,
+        envFile: `${service.name}.env`,
+        mode: "dual",
+        begin,
+        finish,
+        recreate: false,
+      },
+    };
+  });
+}
+
+/**
+ * The old and the new value `rotate.sh` gets for `step`: a device login's passwords, else none for
+ * a step of several secrets.
+ */
 export function stepValues(
   step: ServiceStep,
   values: RotationValues,
 ): { old: string; new: string } {
+  if (step.device !== undefined) {
+    return values.grants?.[passwordKey(step.device, step.service.name)] ?? { old: "", new: "" };
+  }
   const [secret, ...more] = step.rotation.secrets;
   const pair = secret === undefined ? undefined : values.services[step.service.name]?.[secret];
   return more.length > 0 || pair === undefined ? { old: "", new: "" } : pair;
@@ -118,6 +165,14 @@ export function serverRuns(plan: DeployPlan, steps: readonly ServiceStep[]): Ser
     }));
 }
 
+/** The credentials `input` rotates, by the names `opscrew rotate` takes. */
+function rotatedNames(input: RotationPlan): string[] {
+  return [
+    ...input.services.map((service) => service.name),
+    ...Object.keys(input.values.grants ?? {}).map((key) => `grant:${key}`),
+  ];
+}
+
 /** What a rotation's approval names and its hash binds. */
 export interface RotationPlan {
   /** The services rotated, by plan name, in the plan's order. */
@@ -130,8 +185,8 @@ export interface RotationPlan {
 
 /**
  * The SHA-256 a rotation's approval is bound to: the environment and app, the services, each
- * server's script, the GitHub secrets, and a fingerprint of each old and new value (so each
- * rotation has its own hash, never the values themselves).
+ * server's script, the GitHub secrets, and a fingerprint of each old and new value and device
+ * login's password (so each rotation has its own hash, never the values themselves).
  */
 export function rotationHash(
   deps: Pick<PhaseDeps, "paths">,
@@ -154,6 +209,15 @@ export function rotationHash(
       })),
       servers: input.runs.map((run) => ({ server: run.server, script: sha256Hex(run.script) })),
       secrets: input.secrets,
+      ...(input.values.grants === undefined
+        ? {}
+        : {
+            grants: Object.entries(input.values.grants).map(([grant, pair]) => ({
+              grant,
+              old: sha256Hex(pair.old),
+              new: sha256Hex(pair.new),
+            })),
+          }),
     }),
   );
 }
@@ -183,21 +247,32 @@ function costText(step: ServiceStep): string {
 /** The lines naming each credential and what its change costs. */
 function credentialLines(plan: DeployPlan, input: RotationPlan): string[] {
   const steps = input.runs.flatMap((run) => run.steps);
-  return input.services.flatMap((service) => {
-    const { title } = serviceSpec(service.kind);
-    if (!service.enabled) {
-      return [
-        `${service.name} (${title}) is off: only the values this computer keeps change, and it starts with the new ones.`,
-      ];
-    }
-    const where = hasExtraServers(plan) ? ` on ${serverWords(service.server ?? APP_SERVER)}` : "";
-    return steps
-      .filter((step) => step.service.name === service.name)
-      .map(
-        (step) =>
-          `${service.name} (${title})${where}, its ${listText([...step.rotation.secrets])}: ${costText(step)}`,
-      );
+  const where = (step: ServiceStep) =>
+    hasExtraServers(plan) ? ` on ${serverWords(step.server)}` : "";
+  const logins = steps.flatMap((step) => {
+    if (step.device === undefined) return [];
+    const { title } = serviceSpec(step.service.kind);
+    return [
+      `${step.device}'s login to ${step.service.name} (${title})${where(step)}: seamless for the app: ${title} accepts the old and the new password until the app's switch, then only the new one, which OpsCrew shows once at the end.`,
+    ];
   });
+  return [
+    ...input.services.flatMap((service) => {
+      const { title } = serviceSpec(service.kind);
+      if (!service.enabled) {
+        return [
+          `${service.name} (${title}) is off: only the values this computer keeps change, and it starts with the new ones.`,
+        ];
+      }
+      return steps
+        .filter((step) => step.service.name === service.name && step.device === undefined)
+        .map(
+          (step) =>
+            `${service.name} (${title})${where(step)}, its ${listText([...step.rotation.secrets])}: ${costText(step)}`,
+        );
+    }),
+    ...logins,
+  ];
 }
 
 /** `GitHub's secrets A and B (in the GitHub environment E)`. */
@@ -227,7 +302,7 @@ export async function approveRotation(
 ): Promise<string> {
   const hash = rotationHash(deps, plan, input);
   const { environment } = deps.paths;
-  const names = listText(input.services.map((service) => service.name));
+  const names = listText(rotatedNames(input));
   const extras = input.runs.filter((run) => run.server !== APP_SERVER);
   const app = input.runs.find((run) => run.server === APP_SERVER);
   const servicesOf = (run: ServerRun) =>
@@ -288,7 +363,7 @@ export async function approveUndo(
 ): Promise<string> {
   const undo = undoHash(hash);
   const { environment } = deps.paths;
-  const names = listText(input.services.map((service) => service.name));
+  const names = listText(rotatedNames(input));
   const steps =
     input.runs.length === 0
       ? ["No server runs them: the new values are forgotten on this computer."]

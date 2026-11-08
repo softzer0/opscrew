@@ -5,17 +5,10 @@
  */
 import type { HostFacts } from "@opscrew/connector-ssh-host";
 import type { PhaseName, RemoteExec } from "@opscrew/contracts";
-import { OpsCrewError, plural } from "@opscrew/core";
-import { type DeployPlan, networkInterface } from "@opscrew/plan-schema";
+import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { networkHostPlan, publicEndpoints } from "../network";
-import {
-  approveAndApplyHostPlan,
-  type HostAdapterApi,
-  type HostPlanOutcome,
-  readValidJson,
-} from "../shared";
-import { GeneratedValuesSchema, generatedValuesFile } from "../shared/app-secrets";
+import { networkPlanInputs, networkPlanStep } from "../network";
+import { approveAndApplyHostPlan, type HostAdapterApi, type HostPlanOutcome } from "../shared";
 
 /** One of the app's servers, as its network host plan reaches it. */
 export interface NetworkServer {
@@ -61,50 +54,14 @@ export async function applyNetworkPlans(
   const { plan, command } = input;
   const outcomes = new Map<string, HostPlanOutcome>();
   if (plan.network === undefined) return outcomes;
-  const endpoints = await publicEndpoints(deps, plan);
-  const keys =
-    (await readValidJson(generatedValuesFile(deps), GeneratedValuesSchema))?.network ?? {};
+  const inputs = await networkPlanInputs(deps, plan);
   for (const server of input.servers) {
-    const { name, facts } = server;
-    const member = plan.network.members.find((m) => m.name === name);
-    if (member === undefined) throw new Error(`Server "${name}" is not on the private network.`);
-    const hostPlan = networkHostPlan(
-      plan,
-      name,
-      facts,
-      { endpoints, sshPort: server.sshPort, alone: server.alone },
-      command,
-    );
-    const held = facts.network?.interfaces.find((i) => i.name === networkInterface(member));
-    const holds = held?.publicKey === member.publicKey;
-    const key = holds ? undefined : keys[name];
-    if (!holds && key === undefined) {
-      throw new OpsCrewError(
-        "PHASE_PRECONDITION",
-        `Server ${name} needs its private network key, and this computer does not have it. Nothing on server ${name} was changed.`,
-        {
-          hint: "Put OpsCrew's generated values back from your recovery copy (`opscrew secrets restore`) or from the computer that ran `opscrew design`, then run the command again.",
-        },
-      );
-    }
-    if (key !== undefined) deps.redactor.addLiteral(key, "network-key");
-    const changes = plural(hostPlan.steps.filter((s) => s.state === "change").length, "change");
-    const outcome = await approveAndApplyHostPlan(deps, {
-      plan: hostPlan,
-      remote: server.remote,
-      apply: server.apply,
-      verifyLogin: server.verifyLogin,
-      title: `Apply the private network's host plan to server ${name} (${changes})`,
-      server: `server ${name}`,
-      planOf: `server ${name}`,
-      upToDate: `The private network on server ${name} is as planned; nothing on it changes.`,
+    const step = networkPlanStep(deps, plan, server, inputs, {
       command,
       phase: input.phase,
       ...(input.planOnly === true ? { planOnly: true } : {}),
-      secrets: async () => (key === undefined ? {} : { wireguardKey: key }),
-      applying: `Setting up the private network on server ${name}`,
     });
-    outcomes.set(name, outcome);
+    outcomes.set(server.name, await approveAndApplyHostPlan(deps, step));
   }
   return outcomes;
 }

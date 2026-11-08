@@ -47,6 +47,11 @@ export interface VpnAddOptions {
   qr?: boolean;
   /** `--again`: a new key and configuration for a device already on the network. */
   again?: boolean;
+  /**
+   * The command that runs it again, which a refused host plan names with `--approve <hash>`
+   * (default `opscrew vpn add <name>`, with `--this-computer`).
+   */
+  command?: string;
   services?: VpnServices;
 }
 
@@ -169,7 +174,7 @@ async function reachableServers(
 }
 
 /** Writes a device's configuration, readable only by the user (0600, in a folder of 0700). */
-async function writeDeviceConfig(file: string, text: string): Promise<void> {
+export async function writeDeviceConfig(file: string, text: string): Promise<void> {
   await mkdir(dirname(file), { recursive: true, mode: 0o700 });
   await writeFileAtomic(file, text);
 }
@@ -223,7 +228,9 @@ export async function vpnAdd(
   }
   const flag = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
   // Running it again with `--approve` must plan the same: never `--again` (a new key) or `--qr`.
-  const command = `opscrew vpn add ${device}${flag}${options.thisComputer === true ? " --this-computer" : ""}`;
+  const command =
+    options.command ??
+    `opscrew vpn add ${device}${flag}${options.thisComputer === true ? " --this-computer" : ""}`;
   // Never beside previews another environment runs on this server: they would reach the device.
   await requireNoNetworkBesidePreviews(deps.paths, plan, command, [`device ${device}`]);
   const servers = await reachableServers(deps, plan, services);
@@ -283,7 +290,7 @@ export async function vpnAdd(
     );
   } else {
     deps.reporter.info(
-      `Device ${device} (${address}) is on ${listText(names.map((n) => `server ${n}`))}. Its configuration is the one written when it was added (${file}); OpsCrew keeps no copy of its key${options.qr === true ? ", so it can't show it as a QR code again" : ""}. For a new configuration, run \`opscrew vpn add ${device}${flag} --again\`.`,
+      `Device ${device} (${address}) is on ${listText(names.map((n) => `server ${n}`))}. Its configuration is the one OpsCrew wrote for it last (${file}); OpsCrew keeps no copy of its key${options.qr === true ? ", so it can't show it as a QR code again" : ""}. For a new configuration, run \`opscrew vpn add ${device}${flag} --again\`.`,
     );
   }
   if (monitoring !== undefined) {

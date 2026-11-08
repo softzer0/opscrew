@@ -11,7 +11,7 @@ import {
   hostPlanHash,
   inspectHost,
 } from "@opscrew/connector-ssh-host";
-import type { PhaseName, RemoteExec } from "@opscrew/contracts";
+import type { ApprovalRecord, PhaseName, RemoteExec } from "@opscrew/contracts";
 import { OpsCrewError, type ProjectPaths, writeFileAtomic } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
@@ -241,11 +241,35 @@ export function outcomeSummary(outcomes: Iterable<HostChangeResult>): {
  * which refuses any other plan and gets the secrets only now. The start, every applied step and a
  * failure (with the steps applied before it) are audited by the hash. A plan without changes needs
  * no approval (`upToDate` is said); with `planOnly` nothing is asked or changed.
+ * ({@link approveHostPlan}, then {@link applyApprovedHostPlan}.)
  */
 export async function approveAndApplyHostPlan(
   deps: Pick<PhaseDeps, "paths" | "reporter" | "approvals" | "audit" | "version" | "clock">,
   step: HostPlanStep,
 ): Promise<HostPlanOutcome> {
+  return applyApprovedHostPlan(deps, step, await approveHostPlan(deps, step));
+}
+
+/**
+ * A host plan shown and, when it has changes to apply, approved ({@link approveHostPlan}): what
+ * {@link applyApprovedHostPlan} applies. `approval` is absent when nothing is to be applied (no
+ * changes, or `planOnly`).
+ */
+export interface ApprovedHostPlan {
+  hash: string;
+  changes: readonly HostStep[];
+  approval?: ApprovalRecord;
+}
+
+/**
+ * The first half of {@link approveAndApplyHostPlan}: the plan saved and shown, stopped on blocking
+ * findings, and approved by its hash when it has changes; nothing on the server changes.
+ * @throws PlanRefusedError, or `step.refused`'s OpsCrewError, when it is not approved.
+ */
+export async function approveHostPlan(
+  deps: Pick<PhaseDeps, "paths" | "reporter" | "approvals">,
+  step: HostPlanStep,
+): Promise<ApprovedHostPlan> {
   const { plan, server } = step;
   const hash = hostPlanHash(plan);
   step.shown?.(hash);
@@ -256,11 +280,11 @@ export async function approveAndApplyHostPlan(
   const changes = plan.steps.filter((item) => item.state === "change");
   if (changes.length === 0) {
     deps.reporter.success(step.upToDate);
-    return { plan, hash, applied: false, steps: [] };
+    return { hash, changes };
   }
   if (step.planOnly === true) {
     deps.reporter.info(`Saved the host plan (hash ${hash}); nothing on ${server} was changed.`);
-    return { plan, hash, applied: false, steps: [] };
+    return { hash, changes };
   }
   const allowDestroy = step.allowDestroy === true;
   const approval = await deps.approvals.request({
@@ -285,6 +309,24 @@ export async function approveAndApplyHostPlan(
       hint: `To apply it later without prompts, run: ${step.command} --approve ${hash}`,
     });
   }
+  return { hash, changes, approval };
+}
+
+/**
+ * The second half of {@link approveAndApplyHostPlan}: `step`'s plan, as {@link approveHostPlan}
+ * approved it (`approved`), checked against the approval store and applied through the host
+ * adapter, which gets the secrets only now; the start, every applied step and a failure audited by
+ * the hash. Nothing is applied without an approval (no changes, or `planOnly`).
+ */
+export async function applyApprovedHostPlan(
+  deps: Pick<PhaseDeps, "reporter" | "approvals" | "audit" | "version" | "clock">,
+  step: HostPlanStep,
+  approved: ApprovedHostPlan,
+): Promise<HostPlanOutcome> {
+  const { plan } = step;
+  const { hash, changes, approval } = approved;
+  if (approval === undefined) return { plan, hash, applied: false, steps: [] };
+  const allowDestroy = step.allowDestroy === true;
   await deps.approvals.assertApprovedHostPlan(hash, { allowDestroy });
   const secrets = await step.secrets(changes);
   if (step.applying !== undefined) deps.reporter.step(step.applying);

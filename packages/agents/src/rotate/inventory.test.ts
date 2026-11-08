@@ -293,7 +293,7 @@ describe("credentialInventory", () => {
         kind: "device-login",
         rotation: { mode: "devices" },
         changes:
-          "laptop's login to cache gets a new password, shown once; the old one stops working after the deploy.",
+          "laptop's login to cache gets a new password, shown once; the old one stops working after the app's switch to the service's new settings.",
         date: { at: FIRST_DEPLOY, source: "first-deploy" },
       },
     ]);

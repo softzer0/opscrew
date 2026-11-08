@@ -10,6 +10,12 @@ export {
   type NetworkHostFacts,
   nextDeviceAddress,
 } from "./allocate";
+export {
+  applyNetworkPlansTogether,
+  type NetworkPlanInputs,
+  networkPlanInputs,
+  networkPlanStep,
+} from "./apply";
 export { deviceConfig } from "./device";
 export { hasPublicAddress, PREVIOUS_MEMBER, publicEndpoints } from "./endpoints";
 export { networkHostPlan, publicSshHostPlan } from "./host-plans";

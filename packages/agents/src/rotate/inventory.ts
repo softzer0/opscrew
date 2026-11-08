@@ -18,6 +18,7 @@ import { providerProfile } from "../providers/profiles";
 import { copyPath } from "../secrets/files";
 import { GeneratedValuesSchema, generatedValuesFile } from "../shared/app-secrets";
 import { readValidJson } from "../shared/files";
+import { declared } from "../vpn/grants";
 import { readCredentialsRecord, type UserTokenName } from "./record";
 import { tokenFirstSeen, tokenSeenAt } from "./record-tokens";
 
@@ -343,12 +344,17 @@ export async function credentialInventory(
         changes: `${device.name} gets a new key pair and a new config to import; its old config stops working.`,
       });
     }
+    /**
+     * True for a Valkey's, Redis's or Dragonfly's logins, which live in the service's settings: they
+     * rotate beside the old password until the app's switch; the others' change at once.
+     */
+    const inSettings = (name: string) => plan.services.some((s) => s.name === name && declared(s));
     for (const grant of network.grants) {
       made.push({
         name: `grant:${grant.device}/${grant.service}`,
         kind: "device-login",
         rotation: { mode: "devices" },
-        changes: `${grant.device}'s login to ${grant.service} gets a new password, shown once; the old one stops working after the deploy.`,
+        changes: `${grant.device}'s login to ${grant.service} gets a new password, shown once; the old one stops working ${inSettings(grant.service) ? "after the app's switch to the service's new settings" : "at once"}.`,
       });
     }
   }
