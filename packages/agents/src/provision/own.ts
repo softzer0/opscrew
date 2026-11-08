@@ -791,6 +791,8 @@ export async function applyOwnHostPlan(
     plan: DeployPlan;
     outputs: Record<string, unknown>;
     deployPublicKey: string;
+    /** A rotation's old deploy key, kept beside `deployPublicKey` (`planHost`'s `previousDeployKey`). */
+    previousDeployKey?: string;
     passwordLogins?: ProvisionOptions["passwordLogins"];
     planOnly?: boolean;
     phase: OwnHostPhase;
@@ -819,6 +821,7 @@ export async function applyOwnHostPlan(
       ...(input.withoutTunnel === true ? { withoutTunnel: true } : {}),
     }),
     input.command,
+    { previousDeployKey: input.previousDeployKey },
   );
   const changes = plural(plan.steps.filter((step) => step.state === "change").length, "change");
   const outcome = await approveAndApplyHostPlan(deps, {
@@ -1036,6 +1039,8 @@ export async function applyExtraOwnHostPlan(
   input: {
     plan: DeployPlan;
     deployPublicKey: string;
+    /** A rotation's old deploy key, kept beside `deployPublicKey` (`planHost`'s `previousDeployKey`). */
+    previousDeployKey?: string;
     passwordLogins?: ProvisionOptions["passwordLogins"];
     planOnly?: boolean;
     phase: OwnHostPhase;
@@ -1043,7 +1048,9 @@ export async function applyExtraOwnHostPlan(
   },
 ): Promise<HostPlanOutcome | undefined> {
   if (servicesOn(input.plan, run.name).length === 0) return undefined;
-  const plan = planHost(run.facts, await desiredExtraHost(deps, run, input), input.command);
+  const plan = planHost(run.facts, await desiredExtraHost(deps, run, input), input.command, {
+    previousDeployKey: input.previousDeployKey,
+  });
   const pending = plan.steps.filter((step) => step.state === "change").length;
   const changes = plural(pending, "change");
   const outcome = await approveAndApplyHostPlan(deps, {

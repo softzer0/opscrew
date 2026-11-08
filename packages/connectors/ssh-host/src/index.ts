@@ -37,6 +37,7 @@
  * `specs/020-self-hosted-monitoring/contracts/monitoring.md`.
  */
 
+export { keyFingerprint } from "./addons";
 export { applyHostPlan, HostApplyError } from "./apply";
 export {
   ADDON_PROJECTS,

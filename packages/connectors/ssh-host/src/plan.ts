@@ -699,11 +699,12 @@ function keyList(keys: readonly string[]): string[] {
 }
 
 /**
- * The app's own deploy key: the deploy user's authorized_keys holds exactly the deploy keys of
- * the apps on the server, this app's current one included, so an app's old key stops working.
+ * The app's own deploy keys (`own`: its current one, and during a rotation the old one beside
+ * it): the deploy user's authorized_keys holds exactly the deploy keys of the apps on the server,
+ * so an app's old key stops working once it is no longer listed.
  */
-function deployKeyStep({ facts, desired, others }: SetupContext): HostStep {
-  const keys = keyList([desired.deploy.publicKey, ...others.map((record) => record.deployKey)]);
+function deployKeyStep({ facts, desired, others }: SetupContext, own: readonly string[]): HostStep {
+  const keys = keyList([...own, ...others.map((record) => record.deployKey)]);
   const params = { user: desired.deploy.user, keys: keys.join("\n") };
   const title = `Authorize the deploy key of "${desired.app}" for the deploy user`;
   if (foreignDeployUser(facts)) {
@@ -717,6 +718,9 @@ function deployKeyStep({ facts, desired, others }: SetupContext): HostStep {
   const revoked = current.some((line) => !keys.includes(line));
   const reason = [
     hasKey ? "" : `GitHub Actions deploys "${desired.app}" as the deploy user with this key.`,
+    own.length > 1
+      ? "The app's old deploy key stays beside it until a deploy with the new one passed."
+      : "",
     revoked
       ? "authorized_keys then holds exactly the deploy keys of the apps on this server, so any other key (an old deploy key too) stops working."
       : "",
@@ -1756,14 +1760,29 @@ function conflicts(
  * is planned only when missing. Each step is in place, a change or blocked; every blocked step
  * comes with a finding that says what was found and what to do, and to run `command` (for
  * example `opscrew provision`) again once it is fixed.
+ *
+ * `options.previousDeployKey`: a rotation's old deploy key of the app (`opscrew rotate
+ * deploy-key`), which the deploy-key step keeps beside `desired.deploy.publicKey` until the new
+ * key proved itself; the next plan without it removes it.
  */
-export function planHost(facts: HostFacts, desired: DesiredHost, command: string): HostPlan {
+export function planHost(
+  facts: HostFacts,
+  desired: DesiredHost,
+  command: string,
+  options: { previousDeployKey?: string | undefined } = {},
+): HostPlan {
   const f = parseFacts(facts);
   const d = parseInput(
     DesiredHostSchema,
     desired,
     "The settings for this server are not valid",
     "Run opscrew interview again to fix the server settings.",
+  );
+  const previous = parseInput(
+    PublicKeyLineSchema.optional(),
+    options.previousDeployKey,
+    "The old deploy key is not a valid public key",
+    "Put the old key's public half back in its file on this computer, then run the command again.",
   );
   if (f.privilege === "root" || f.privilege === "sudo") {
     if (d.admin.isRoot !== (f.privilege === "root") || d.admin.user !== f.user) {
@@ -1827,7 +1846,7 @@ export function planHost(facts: HostFacts, desired: DesiredHost, command: string
     dockerStep(ctx),
     dockerDaemonStep(ctx),
     deployUserStep(ctx),
-    deployKeyStep(ctx),
+    deployKeyStep(ctx, [d.deploy.publicKey, ...(previous === undefined ? [] : [previous])]),
     sshdStep(ctx),
     ufwStep(ctx),
     webFilterStep(ctx),

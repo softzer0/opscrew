@@ -18,6 +18,7 @@ import { type DeployPlan, DeployPlanSchema, readArtifact } from "@opscrew/plan-s
 import { describe, expect, it } from "vitest";
 import { runDns } from "../dns";
 import type { PortainerServices } from "../portainer";
+import { type OwnHostPlanInput, rotateSshKey } from "../rotate/keys";
 import { planAndCopyFiles } from "../secrets/__fixtures__/world";
 import {
   hostPlanFile,
@@ -27,6 +28,7 @@ import {
   recordOwnServer,
   recordServerAddress,
 } from "../shared";
+import { ensureDeployKey } from "../shared/ssh-keys";
 import {
   ACCOUNT_ID,
   createProject,
@@ -54,7 +56,7 @@ import {
   withOtherApp,
   writeArchitecture,
 } from "../testing";
-import { prepareOwnServer } from "./own";
+import { applyOwnHostPlan, prepareOwnServer } from "./own";
 import { runProvision } from "./run";
 import { zeroTrustAuthDomain } from "./shared-cloudflare";
 import type { ProvisionOptions } from "./types";
@@ -1259,5 +1261,69 @@ describe.skipIf(!findExecutable("git"))("the scheduled check on a server the use
     await runProvision(s.deps, { services: s.services });
     expect(kinds(s)).not.toContain("host-apply");
     expect(s.host.applies).toHaveLength(2);
+  });
+});
+
+describe.skipIf(!findExecutable("git"))("a deploy key's rotation on a server the user owns", () => {
+  /** GitHub's fake whose deploy run, which proves the new key, succeeds. */
+  class RotationGitHub extends FakeGitHub {
+    async waitForWorkflowRun(_owner: string, _repo: string, options: { runId: number }) {
+      return {
+        id: options.runId,
+        status: "completed" as const,
+        conclusion: "success",
+        htmlUrl: `https://github.com/acme/shop/actions/runs/${options.runId}`,
+        headSha: "abc1234def",
+      };
+    }
+  }
+
+  it("keeps both deploy keys through the setup host plan, then the new one only", async () => {
+    const plan = ownPlan({ proxied: false, deployed: true });
+    const s = await setup({ plan });
+    const command = "opscrew rotate deploy-key";
+    const old = (await ensureDeployKey(s.deps.paths, s.deps.redactor)).publicKeyOpenSsh;
+    /** The rotation's callback: the server's setup host plan with these deploy keys. */
+    const hostPlan = async (input: Omit<OwnHostPlanInput, "server">) => {
+      const run = await prepareOwnServer(s.deps, {
+        plan,
+        options: { hostKey: ED25519_FINGERPRINT },
+        services: s.services,
+        deployPublicKey: input.deployKey,
+        deployKeyFile: s.deps.paths.files.deployKey,
+        phase: "provision",
+        command,
+      });
+      await applyOwnHostPlan(s.deps, run, {
+        plan,
+        outputs: publicOutputs(),
+        deployPublicKey: input.deployKey,
+        ...(input.previousDeployKey === undefined
+          ? {}
+          : { previousDeployKey: input.previousDeployKey }),
+        phase: "provision",
+        command,
+      });
+    };
+    // The server as provision left it, with the old key alone.
+    await hostPlan({ deployKey: old });
+    expect(s.host.facts.deployUser?.keys).toEqual([old]);
+
+    const github = new RotationGitHub();
+    const held: string[][] = [];
+    await rotateSshKey(s.deps, plan, "deploy-key", {
+      github: { api: github, owner: "acme", repo: "shop", defaultBranch: "main" },
+      ownHostPlan: async (input) => {
+        await hostPlan(input);
+        held.push([...(s.host.facts.deployUser?.keys ?? [])]);
+      },
+    });
+    const fresh = (await readFile(s.deps.paths.files.deployKeyPub, "utf8")).trim();
+    expect(fresh).not.toBe(old);
+    expect(held).toEqual([[fresh, old].sort(), [fresh]]);
+    expect(github.dispatches).toEqual([{ workflowFile: "opscrew-deploy.yml", ref: "main" }]);
+    // The server's record names the new key.
+    const last = s.host.applies.at(-1)?.plan;
+    expect(last?.steps.find((step) => step.id === "app-record")?.params.deployKey).toBe(fresh);
   });
 });

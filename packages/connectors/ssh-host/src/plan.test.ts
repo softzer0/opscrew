@@ -360,6 +360,35 @@ describe("planHost: steps", () => {
     expect(fake.users.get("deploy")?.keys).toEqual([DEPLOY_KEY]);
   });
 
+  it("keeps a rotation's old deploy key beside the new one, and removes it in the next plan", async () => {
+    const fake = new FakeHost();
+    await provision(fake);
+    const next = DEPLOY_KEY.replace("AAAAC3Nz", "AAAAnext");
+    const desired = desiredFor(fake, { deploy: { user: "deploy", publicKey: next } });
+    const both = planHost(await inspectHost(fake), desired, "opscrew rotate deploy-key", {
+      previousDeployKey: DEPLOY_KEY,
+    });
+    expect(both.steps.find((step) => step.id === "deploy-key")).toMatchObject({
+      state: "change",
+      reason: expect.stringMatching(/old deploy key stays beside it/),
+    });
+    await applyApproved(fake, both);
+    expect([...(fake.users.get("deploy")?.keys ?? [])].sort()).toEqual([DEPLOY_KEY, next].sort());
+    // In place while both are there; the next plan without the old key removes it.
+    const again = planHost(await inspectHost(fake), desired, "opscrew rotate deploy-key", {
+      previousDeployKey: DEPLOY_KEY,
+    });
+    expect(stateOf(again, "deploy-key")).toBe("in-place");
+    const only = planHost(await inspectHost(fake), desired, "opscrew rotate deploy-key");
+    expect(stateOf(only, "deploy-key")).toBe("change");
+    await applyApproved(fake, only);
+    expect(fake.users.get("deploy")?.keys).toEqual([next]);
+    const facts = await inspectHost(fake);
+    expect(() =>
+      planHost(facts, desired, "opscrew rotate deploy-key", { previousDeployKey: "nope" }),
+    ).toThrow(/old deploy key is not a valid public key/);
+  });
+
   it("plans Portainer only when asked, local-only, with a password needed only for a new install", async () => {
     const fake = new FakeHost();
     expect(paramsOf(await planFor(fake), "portainer")).toBeUndefined();
