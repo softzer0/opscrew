@@ -264,6 +264,47 @@ ClickHouse. Index or insert data through the app and query it back after a redep
 4. **Given** an app using Cassandra, **When** design runs, **Then** OpsCrew keeps it external, says
    why, and names a hosted option.
 
+### User Story 8 - A plain PHP app runs with its database, its files and its cron (Priority: P1)
+
+Added 2026-11-08 (founder: teach OpsCrew plain PHP apps and release it; research R10). A PHP app
+without a framework, made for shared hosting: `composer.json`, a `public/index.php` front
+controller, MySQL through PHP's own PDO, its settings in `DB_HOST`, `DB_PASSWORD` and the like, a
+`storage/` folder it writes to, and a `bin/cron.php` the host runs every few minutes. Today
+analyze calls it "unknown".
+
+**Independent Test**: analyze, design, adapt and provision `examples/php-plain-mysql` with no edit
+to any OpsCrew file: it serves only its `public/` folder, reaches MySQL, keeps `storage/` across a
+second deploy, and its cron runs.
+
+**Acceptance Scenarios**:
+
+1. **Given** a `composer.json` and `public/index.php` and no known framework, **When** analyze runs,
+   **Then** the app is a server-rendered web app on port 8080 with `/` as its health path, built
+   by Railpack, and design shows the PHP version `composer.json` asks for.
+2. **Given** `ext-pdo_mysql` or `ext-mysqli` in `composer.json`'s `require` (`ext-pdo_pgsql` or
+   `ext-pgsql`, `ext-mongodb`, `ext-redis`, `ext-amqp` likewise), **Then** design runs that
+   service.
+3. **Given** the app reads `DB_HOST` and the other split settings (`DB_PORT`, `DB_DATABASE` or
+   `DB_NAME`, `DB_USERNAME` or `DB_USER`, `DB_PASSWORD` or `DB_PASS`), **Then** it receives them
+   from its database service, never asked; Laravel apps on MySQL, MariaDB or PostgreSQL too.
+4. **Given** the app reads `APP_URL`, **Then** it receives the app's address; a plain PHP app
+   reading `APP_ENV` or `APP_DEBUG` receives `production` and `false`.
+5. **Given** a variable of `.env.example` the PHP code reads with a default (`env('NAME', …)`,
+   `getenv('NAME') ?: …`, `$_ENV['NAME'] ?? …`, `$_SERVER['NAME'] ?? …`,
+   `->string|int|bool|float('NAME', …)`), **Then** it is optional: left unset, the app's default
+   applies.
+6. **Given** the image, **Then** it serves only `public/`: a request for any other file of the
+   app (`/composer.json`, `/storage/…`) never returns it.
+7. **Given** a `storage/` folder in the repository, **Then** it is a folder the app keeps: a
+   persistent volume writable by the app's user, mounted in the web process, its workers and its
+   cron, kept by every deploy, in every snapshot, moved by retarget, and kept by destroy unless
+   `--delete-data`.
+8. **Given** a web installer that writes a settings file into the app's folder, **Then** the app's
+   user can create files there, though not change the code; the guide says such a file lasts until
+   the next deploy, so the app's settings come from its environment.
+9. **Given** `cron.php` at the app's root or `bin/cron.php`, **Then** design adds a cron job
+   `php <that file>` every minute, editable in `opscrew/plan.yaml`.
+
 ---
 
 ### Edge Cases
@@ -465,6 +506,29 @@ ClickHouse. Index or insert data through the app and query it back after a redep
 - **FR-1334**: The acceptance matrix MUST add example apps for workers and cron, MySQL, MongoDB, SQLite,
   object storage, RabbitMQ, NATS and Kafka (part 1), and for one search and one analytics engine
   (part 2).
+- **FR-1335** (US8): A PHP app with `composer.json` and `public/index.php` and no known framework
+  MUST be detected as a server-rendered web app (`fullstack`) on port 8080 with health path `/`,
+  built by Railpack.
+- **FR-1336** (US8): Services MUST also follow from `composer.json` `require` extensions:
+  `ext-pdo_mysql`/`ext-mysqli` MySQL, `ext-pdo_pgsql`/`ext-pgsql` PostgreSQL, `ext-mongodb`
+  MongoDB, `ext-redis` the Redis protocol, `ext-amqp` RabbitMQ (never `require-dev`).
+- **FR-1337** (US8): An app reading the split database settings MUST receive them from its SQL
+  database (PostgreSQL, MySQL or MariaDB): host, port, database, user and the generated password,
+  by the names it reads (`DB_HOST`, `DB_PORT`, `DB_DATABASE`|`DB_NAME`, `DB_USERNAME`|`DB_USER`,
+  `DB_PASSWORD`|`DB_PASS`), derived and never asked.
+- **FR-1338** (US8): `APP_URL`, when read, MUST be derived as the app's address (its domain over
+  HTTPS, else the server's address); a plain PHP app's `APP_ENV` and `APP_DEBUG` MUST be
+  `production` and `false`.
+- **FR-1339** (US8): A `.env.example` variable that PHP code reads with a default (the forms of US8
+  scenario 5, outside `vendor/`) MUST be optional.
+- **FR-1340** (US8): A plain PHP app's image MUST serve only its `public/` folder (Railpack's
+  `RAILPACK_PHP_ROOT_DIR`), and its app folder MUST accept new files from the app's user while
+  every file of the image stays root's.
+- **FR-1341** (US8): A plain PHP app's `storage/` MUST be a kept folder (`storage.files.dir` in the
+  plan), handled wherever SQLite's folder is: the volume and its owner, the web process, workers and
+  cron, Portainer, snapshots and restores, retarget, environments, destroy and the runbook.
+- **FR-1342** (US8): `cron.php` at the root or `bin/cron.php` MUST give a cron job `php <file>` every
+  minute; the example `examples/php-plain-mysql` joins the acceptance matrix.
 
 ### Key Entities
 
@@ -505,6 +569,8 @@ ClickHouse. Index or insert data through the app and query it back after a redep
   no file.
 - **SC-1308**: Before approving, the user sees each component's memory and price share. Every licence
   outside permissive open-source is named.
+- **SC-1309** (US8): `examples/php-plain-mysql` deploys to Hetzner with no edit to any OpsCrew file:
+  only `public/` is served, it reaches MySQL, a second deploy keeps its `storage/`, its cron runs.
 
 ## Assumptions
 

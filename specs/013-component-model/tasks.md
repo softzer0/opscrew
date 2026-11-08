@@ -605,3 +605,85 @@ Each wave is merged, gated and pushed before the next starts.
 - Cron's memory limit equals the app's `memoryMb`, so sizing counts it twice: a cron with only route jobs needs a small fixed limit (supercronic and the probe), command jobs keep the app's (T1312).
 - Text: the guide's Celery worker command (`components.md`, `workers-and-cron.md`) gains `--concurrency 2`; the runbook's volume list (`runbook/components.ts`) joins with `listText` instead of " and " (T1313).
 - For 014 (SecOps): Valkey runs `internal-only` with no password, while Redis 8 and Dragonfly have one (T1317). Consider a password for Valkey too, as defence in depth.
+
+## Plain PHP apps (US8, added 2026-11-08)
+
+The founder's request: teach OpsCrew plain PHP apps and release it as 0.2.6 (research R10, spec
+US8, FR-1335–FR-1342, SC-1309). Waves: T1319 → {T1320, T1321} → {T1322, T1323} → T1324 → T1325
+(lead) → T1326 (lead).
+
+- [ ] T1319 [US8] The schema of a plain PHP app's facts and plan
+  - Owns: `packages/plan-schema/src/**` (+ tests)
+  - Reads: research R10, `facts.ts`, `components.ts`, `plan.ts`
+  - Accept:
+    - **Facts:** `webRoot?: RepoPath` (the folder a plain PHP app serves, `public`); `files?: { dir: RepoPath }` (a folder the app writes to and keeps); `cronJobs` items may also be `{ schedule, command, source: "cron.php" }` beside today's route jobs from `vercel.json`.
+    - **Plan:** `app.build.webRoot?: RepoPath`, valid only with the Railpack builder and PHP; `storage.files?: { dir: RepoPath }`, "a folder of the app kept across deploys: a persistent volume".
+    - **Rules like SQLite's:** `storage.files` refused on serverless targets and for `.`; `storage.files.dir` and `storage.sqlite.dir` never the same folder or one inside the other; `snapshotsOn` counts it as data. It does **not** require the `recreate` strategy (files, unlike SQLite, are safe for two web containers at once).
+    - The JSON schema export and its test follow.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/plan-schema && pnpm lint`
+  - Effort: medium
+
+- [ ] T1320 [US8] [P] Detect a plain PHP app
+  - Owns: `packages/detect/src/**` (+ tests, fixtures)
+  - Reads: research R10; spec US8 scenarios 1, 2, 5, 7, 9
+  - Depends: T1319
+  - Accept:
+    - **The app:** `composer.json` and `public/index.php` with no known framework give `appKind: "fullstack"`, port 8080, `healthEndpoint: "/"`, `webRoot: "public"`; analyze's "could not tell what kind of app this is" risk no longer shows for it. Laravel's facts are unchanged (no `webRoot`).
+    - **Services from extensions:** `composer.json` `require` (never `require-dev`) `ext-pdo_mysql`/`ext-mysqli` MySQL, `ext-pdo_pgsql`/`ext-pgsql` PostgreSQL, `ext-mongodb` MongoDB, `ext-redis` the Redis protocol (as `predis/predis`), `ext-amqp` AMQP, with `dependency:ext-…` evidence.
+    - **Defaults in PHP code:** a variable already found (for example in `.env.example`) that a `.php` file outside `vendor/` reads with a default gets `hasDefault`: `env('NAME', …)`, `getenv('NAME') ?: …`, `$_ENV['NAME'] ?? …`, `$_SERVER['NAME'] ?? …`, `->string|int|bool|float('NAME', …)`. PHP files add no new names.
+    - **The kept folder:** a plain PHP app with a `storage/` folder in the repository gets `files: { dir: "storage" }` (Laravel unchanged).
+    - **Cron:** a plain PHP app's `cron.php` at its root or `bin/cron.php` gives a cron job `{ schedule: "* * * * *", command: "php bin/cron.php", source: "cron.php" }`.
+    - **Tests:** a small fixture of such an app, one test per rule, the Laravel fixture's facts unchanged.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/detect && pnpm lint`
+  - Effort: high
+
+- [ ] T1321 [US8] [P] The image, the kept folder and the database's settings in iac-templates
+  - Owns: `packages/iac-templates/src/**` (+ tests and snapshots), not `src/generated/**`
+  - Reads: research R10; `workflow/build.ts` (`railpackSteps`, `RAILPACK_SEAL`, `sqliteSeal`), `workflow/shared.ts` (`sqliteFolder`), `runtime/components.ts` (`appVolumes`, `SQLITE_VOLUME`), `portainer-target/stack.ts`, `workflow/snapshots.ts`, `portainer-target/snapshots.ts`, `runbook/components.ts`, `catalog/**`
+  - Depends: T1319
+  - Accept:
+    - **Web root:** with `app.build.webRoot`, `railpack prepare` gets `--env RAILPACK_PHP_ROOT_DIR=<app root>/<webRoot>` and the build reads it as a BuildKit secret, as the runtime version setting is; without it, nothing changes.
+    - **The app folder accepts new files:** with `webRoot`, the seal gives the app root mode `1777` (as `/tmp`): uid 10001 can create a file there (an installer's settings file, through a temporary file and a rename) but cannot change or remove the image's files. The Laravel storage link (`public/storage`) is made only without `webRoot`.
+    - **The kept folder:** `storage.files.dir` is handled wherever SQLite's folder is: given to the app's user in every builder's seal; a named volume (its own name, not `sqlite`) mounted in the web process, every worker and the cron, on servers and in Portainer stacks; a part of every snapshot and restore (server script and Portainer); named in the runbook. A plan without it renders exactly as today.
+    - **The database's settings:** the catalog gives PostgreSQL, MySQL and MariaDB their split settings (host, port, database, user, and the password as a secret reference), exported for agents.
+    - **Tests:** each case, snapshots updated only where these change them; a Docker check (`OPSCREW_DOCKER_TESTS=1`) of a sealed Railpack PHP image: as uid 10001, creating and renaming a file in the app root works, changing an image file fails.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates && pnpm lint`
+  - Effort: xhigh
+
+- [ ] T1322 [US8] [P] Design and the app's environment for a plain PHP app
+  - Owns: `packages/agents/src/design/**`, `packages/agents/src/shared/app-env.ts`, `packages/agents/src/shared/app-secrets.ts`, `packages/agents/src/analyze/**`, `packages/agents/src/adapt/**`, `packages/agents/src/provision/secrets.ts` (+ tests)
+  - Reads: spec US8 scenarios 1–5, 7, 9; `design/builder.ts`, `design/plan.ts`, `design/components.ts`, `design/storage.ts`
+  - Depends: T1319, T1321
+  - Accept:
+    - **Design:** a plain PHP app (facts with `webRoot`) is built by Railpack with `app.build.webRoot`; `facts.files` gives `storage.files.dir` with SQLite's folder checks; a `cron.php` job becomes a command job in `processes.cron`; port 8080 and health `/`; adapt asks for no health route.
+    - **Split settings (FR-1337):** an app reading `DB_HOST` with any of the other split names receives each name it reads from its SQL database (PostgreSQL, MySQL or MariaDB) through the catalog's settings, derived, never asked; with two SQL databases, design says which one it chose. Laravel apps on these databases too.
+    - **`APP_URL` (FR-1338):** derived where the app reads it: `https://<domain>`, else the server's address (as host lists are); a plain PHP app's `APP_ENV` and `APP_DEBUG` are `production` and `false`.
+    - **Optional variables (FR-1339):** detect's `hasDefault` from PHP code makes a variable optional (a test: only values with no default are asked).
+    - Design's summary names the kept folder and the cron job.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm lint`
+  - Effort: high
+
+- [ ] T1323 [US8] [P] The kept folder on day 2
+  - Owns: `packages/agents/src/snapshot/**`, `packages/agents/src/destroy/**`, `packages/agents/src/retarget/**`, `packages/agents/src/move/**`, `packages/agents/src/environments/**`, `packages/agents/src/promote/**`, `packages/agents/src/status/**` (+ tests)
+  - Reads: research R10 and T1321's names; every day-2 use of `storage.sqlite` (`snapshot/restore-portainer.ts`, `destroy/checks.ts`, `destroy/own.ts`, `retarget/window.ts`, `retarget/start.ts`, `environments/shared-parts.ts`)
+  - Depends: T1319, T1321
+  - Accept:
+    - Wherever `storage.sqlite` is handled on day 2, `storage.files` is too: snapshots list and restore it (servers and Portainer); destroy counts it as data, keeps it unless `--delete-data` and names it in the data-loss text; retarget and moves copy it; environments share or keep it as SQLite's folder.
+    - **Tests:** each path; plans without it unchanged.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm lint`
+  - Effort: high
+
+- [ ] T1324 [US8] The example, the matrix and the guide
+  - Owns: `examples/php-plain-mysql/**`, `packages/cli/test/e2e/**`, `docs/guide/builders.md`, `docs/guide/databases.md`, `docs/guide/components.md`, `docs/guide/workers-and-cron.md`, `docs/guide/snapshots.md`, `plugin/skills/**`
+  - Depends: T1320, T1321, T1322, T1323
+  - Accept:
+    - **The example:** plain PHP (no framework), `ext-pdo_mysql`, `public/index.php` that answers 200 after a query through `DB_HOST`…, writes a file under `storage/`, `bin/cron.php` that records its run in `storage/`, a `.env.example` with the split settings and `APP_URL`, and `expected.json` (kind, port, services, kept folder, cron, builder).
+    - **The matrix:** the examples test includes it; the Docker test (`OPSCREW_DOCKER_TESTS=1`) builds it with Railpack, `/` answers, `/composer.json` and `/storage/…` are not served.
+    - **The guide:** a plain PHP app (builders: served from `public/`, the app folder accepting new files and why such a file lasts until the next deploy); the split settings (databases); the kept folder (components, snapshots); `cron.php` (workers and cron); where the user reads the database's password for an installer that asks for it.
+  - Verify: `pnpm turbo run typecheck test --filter=opscrew && pnpm lint`, and `OPSCREW_DOCKER_TESTS=1` for the example
+  - Effort: medium
+
+- [ ] T1325 [US8] Live: `examples/php-plain-mysql` on Hetzner (lead; SC-1309)
+  - Through init, analyze, interview, design, adapt, provision and verify with no edit to an OpsCrew file; only `public/` served; it reaches MySQL; a second deploy keeps `storage/`; its cron runs.
+
+- [ ] T1326 [US8] The release 0.2.6 (lead): `docs/releasing.md`.

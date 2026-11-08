@@ -734,3 +734,41 @@ tried (this CPU has AVX).
    - Redpanda v26.2.5: 101; bash; no; curl; `curl -fsS http://localhost:9644/v1/status/ready`;
      278 MiB (`--smp 1 --memory 1G --mode dev-container`);
    - Garage v2.4.1: root; no shell; `/garage status`; 6–7 MiB.
+
+## R10. A plain PHP app (spike, 2026-11-08)
+
+The founder asked for plain PHP apps (US8): PHP without a framework, made for shared hosting. The
+spike used such an app: PHP 8.5 (`require.php: ">=8.5"`), a small router library, `ext-pdo_mysql`
+and `ext-sodium` in `composer.json`, a `public/index.php` front controller, a root `.htaccess`
+that denies everything outside `public/`, a `storage/` folder it writes to (keys, sessions,
+backups, logs), a `bin/cron.php` for its queue, and a web installer. OpsCrew 0.2.5's analyze: kind
+`unknown`, no service, no port, no start.
+
+What the pinned Railpack (0.42.0) does with it, built locally as the workflow does (`railpack
+prepare`, then BuildKit with the pinned frontend):
+- **Detects PHP** and takes 8.5.12 from `require.php`, installs the extensions of `composer.json`'s
+  `ext-*` (`install-php-extensions json mbstring pdo pdo_mysql sodium`), runs `composer install`,
+  starts FrankenPHP on `$PORT` (8080 when OpsCrew sets it). Image 1.1 GB.
+- **Serves `/app`, not `public/`,** unless `RAILPACK_PHP_ROOT_DIR=/app/public`: its Caddyfile
+  hides only `.git` and `.env*`, so a private file at the root answered 200 and `storage/` (the
+  app's database dumps among it) would download. With the setting, given to `prepare` as `--env`
+  and to the build as a BuildKit secret like every prepare value, the app's own routes answer and
+  every private path goes to the app's router instead; `public/` assets 200. Laravel gets
+  `public/` from Railpack already.
+- As uid 10001 with `storage/` its own (the seal), the app starts. Its installer writes a settings
+  file into `/app` through a temporary file and a rename, so it needs to create files in `/app`
+  itself. The app reads real environment variables before that file, so the file matters only for
+  the installer: it is lost on the next deploy, and OpsCrew's environment holds every setting.
+- The app counts as installed by a file in `storage/`, and keeps its encryption keys there. So
+  `storage/` must outlive deploys, or the next deploy shows the installer again.
+- The health probe for PHP (`file_get_contents`) follows redirects, so `/` works before and after
+  an install.
+
+What OpsCrew lacks (code map): PHP sources are never scanned (`detect/src/sources.ts`), so no PHP
+default makes a variable optional; `ext-*` names are parsed and ignored; MySQL gives only
+`DATABASE_URL` (`catalog/entries.ts`), which Laravel 11 doesn't read either (it reads `DB_URL` or
+the split names); no derivation of `APP_URL`; the only kept folder is SQLite's
+(`storage.sqlite.dir`, volume `sqlite`); no cron for a plain PHP app.
+
+An installer that asks for the database's host, name, user and password (rather than reading the
+environment) needs them once; the guide says where OpsCrew keeps them.
