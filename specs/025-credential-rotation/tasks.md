@@ -59,7 +59,7 @@ secret in any test: `fakeSecret(kind)` and `{{FAKE:<kind>}}` (`@opscrew/core/tes
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates && pnpm lint`
   - Effort: xhigh
 
-- [ ] T2505 [P] [US2] The inventory and the record
+- [x] T2505 [P] [US2] The inventory and the record
   - Owns: `packages/agents/src/rotate/inventory*.ts`, `packages/agents/src/rotate/record*.ts` (+ tests)
   - Reads: research R1; plan 1
   - Depends: T2501
