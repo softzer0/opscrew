@@ -312,10 +312,12 @@ export async function expectProcesses(
     const logs = `docker logs --since ${cron.startedAt} ${cron.name} 2>&1`;
     let run = firstCronRun("", cron.startedAt, appReadyAt);
     const deadline = Date.now() + (run.due + 75_000 - (await serverNow(exec)));
-    while (run.ran === undefined && Date.now() <= deadline) {
+    // The log is read at least once: the checks before this one can take longer than the time
+    // left until the deadline, and a run that already happened must still count.
+    do {
       run = firstCronRun(await exec(logs), cron.startedAt, appReadyAt);
-      if (run.ran === undefined) await sleep(5_000);
-    }
+      if (run.ran === undefined && Date.now() <= deadline) await sleep(5_000);
+    } while (run.ran === undefined && Date.now() <= deadline);
     expect(run.ran, "a cron run that succeeded within a minute of its due time").toBeDefined();
     expect(
       (run.ran as number) - run.due,
