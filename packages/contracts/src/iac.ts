@@ -130,6 +130,11 @@ export interface IacEngine {
       destroy?: boolean;
       /** Only refresh the state and report drift (`-refresh-only`); never plans changes. */
       refreshOnly?: boolean;
+      /**
+       * Resource addresses to replace even when nothing changed (`-replace=<address>` each), for a
+       * credential the resource holds (feature 025). A replacement needs `allowDestroy`.
+       */
+      replace?: readonly string[];
     },
   ): Promise<PlanSummary>;
   /**
