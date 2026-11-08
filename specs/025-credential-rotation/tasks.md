@@ -91,7 +91,7 @@ secret in any test: `fakeSecret(kind)` and `{{FAKE:<kind>}}` (`@opscrew/core/tes
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/connector-portainer && pnpm lint`
   - Effort: high
 
-- [ ] T2508 [P] [US3] The SSH keys
+- [x] T2508 [P] [US3] The SSH keys
   - Owns: `packages/agents/src/rotate/keys*.ts`, `packages/agents/src/secrets/files.ts`, `packages/connectors/ssh-host/src/plan.ts` (only `deployKeyStep` taking several keys) (+ tests)
   - Depends: T2505
   - Accept: plan 5 for `deploy-key`, `check-key`, `preview-key`: add first, prove (a dispatched deploy, a check run, the preview server's check), then remove; the preview key in the recovery copy.
