@@ -661,6 +661,7 @@ Horizon, PostgreSQL and Redis.
     - **Split settings (FR-1337):** an app reading `DB_HOST` with any of the other split names receives each name it reads from its SQL database (PostgreSQL, MySQL or MariaDB) through the catalog's settings, derived, never asked; with two SQL databases, design says which one it chose. Laravel apps on these databases too.
     - **`APP_URL` (FR-1338):** derived where the app reads it: `https://<domain>`, else the server's address (as host lists are); a plain PHP app's `APP_ENV` and `APP_DEBUG` are `production` and `false`.
     - **Optional variables (FR-1339):** detect's `hasDefault` from PHP code makes a variable optional (a test: only values with no default are asked).
+    - **The values that chose a service stay:** a variable whose `.env.example` value is the evidence that picked a service (`env:DB_CONNECTION=pgsql`, `env:QUEUE_CONNECTION=redis`, `env:CACHE_STORE=redis`, `env:SESSION_DRIVER=redis`) gets that value, derived, even when PHP code gives it a default (T1327 makes those optional; unset, Laravel would fall back to SQLite or its database store while the service sits unused).
     - Design's summary names the kept folder and the cron job.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm lint`
   - Effort: high
