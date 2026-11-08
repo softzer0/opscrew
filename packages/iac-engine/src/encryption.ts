@@ -1,4 +1,5 @@
 import { OpsCrewError } from "@opscrew/core";
+import { z } from "zod";
 
 /** Minimum passphrase length accepted by OpenTofu's `pbkdf2` key provider. */
 export const MIN_PASSPHRASE_LENGTH = 16;
@@ -21,11 +22,36 @@ export function hclString(value: string): string {
 }
 
 /**
- * Returns the value for OpenTofu's `TF_ENCRYPTION` environment variable: a PBKDF2 key provider
- * and an AES-GCM method applied to both state and plan files. Use it only with OpenTofu, pass it
- * through `IacRunOptions.env`, and never log or write it to a file (it contains the passphrase).
+ * The name of OpsCrew's key provider and method. It alternates with each passphrase rotation:
+ * OpenTofu keeps a key provider's metadata in the state under its name, so the new passphrase
+ * needs the other name while the old one still reads the state.
  */
-export function tofuEncryptionEnv(passphrase: string): string {
+export type StateKeyName = "opscrew" | "opscrew_next";
+
+/** The parts of an encrypted state file read here; its `meta` keys are plaintext. */
+const EncryptedStateSchema = z.looseObject({ meta: z.record(z.string(), z.unknown()).optional() });
+
+/**
+ * The key name an OpenTofu state file was encrypted under, from its plaintext `meta` keys
+ * (`key_provider.pbkdf2.<name>`). `opscrew` when the text is absent, unencrypted or names neither;
+ * `opscrew_next` when it names both.
+ */
+export function stateKeyName(stateText: string | undefined): StateKeyName {
+  if (stateText === undefined) return "opscrew";
+  let json: unknown;
+  try {
+    json = JSON.parse(stateText);
+  } catch {
+    throw new OpsCrewError("INVALID_INPUT", "The state file could not be read: it is not JSON.", {
+      hint: "Check that the file is the infrastructure state OpenTofu wrote, then try again.",
+    });
+  }
+  const meta = EncryptedStateSchema.safeParse(json).data?.meta ?? {};
+  return "key_provider.pbkdf2.opscrew_next" in meta ? "opscrew_next" : "opscrew";
+}
+
+/** A PBKDF2 key provider and the AES-GCM method using it, both called `name`. */
+function keyBlocks(name: StateKeyName, passphrase: string): string[] {
   if ([...passphrase].length < MIN_PASSPHRASE_LENGTH) {
     throw new OpsCrewError(
       "INVALID_INPUT",
@@ -34,18 +60,57 @@ export function tofuEncryptionEnv(passphrase: string): string {
     );
   }
   return [
-    `key_provider "pbkdf2" "opscrew" {`,
+    `key_provider "pbkdf2" "${name}" {`,
     `  passphrase = ${hclString(passphrase)}`,
     `}`,
-    `method "aes_gcm" "opscrew" {`,
-    `  keys = key_provider.pbkdf2.opscrew`,
+    `method "aes_gcm" "${name}" {`,
+    `  keys = key_provider.pbkdf2.${name}`,
     `}`,
-    `state {`,
-    `  method = method.aes_gcm.opscrew`,
+  ];
+}
+
+/**
+ * Returns the value for OpenTofu's `TF_ENCRYPTION` environment variable: a PBKDF2 key provider
+ * and an AES-GCM method under `name` (default `opscrew`; read it with `stateKeyName`) applied to
+ * both state and plan files. Use it only with OpenTofu, pass it through `IacRunOptions.env`, and
+ * never log or write it to a file (it contains the passphrase).
+ *
+ * With `previous`, the state passphrase is being changed: `previous` stays under `name` as the
+ * `fallback` that reads the state, and `passphrase` gets the other name, which state and plan are
+ * written with. Plans leave the state as it is; an apply rewrites it under the other name, after
+ * which `previous` no longer reads it (research R10).
+ */
+export function tofuEncryptionEnv(
+  passphrase: string,
+  options: { name?: StateKeyName; previous?: string } = {},
+): string {
+  const name = options.name ?? "opscrew";
+  if (options.previous === undefined) {
+    return [
+      ...keyBlocks(name, passphrase),
+      `state {`,
+      `  method = method.aes_gcm.${name}`,
+      `}`,
+      `plan {`,
+      `  method = method.aes_gcm.${name}`,
+      `}`,
+      ``,
+    ].join("\n");
+  }
+  const next = name === "opscrew" ? "opscrew_next" : "opscrew";
+  const target = (kind: string) => [
+    `${kind} {`,
+    `  method = method.aes_gcm.${next}`,
+    `  fallback {`,
+    `    method = method.aes_gcm.${name}`,
+    `  }`,
     `}`,
-    `plan {`,
-    `  method = method.aes_gcm.opscrew`,
-    `}`,
+  ];
+  return [
+    ...keyBlocks(name, options.previous),
+    ...keyBlocks(next, passphrase),
+    ...target("state"),
+    ...target("plan"),
     ``,
   ].join("\n");
 }

@@ -14,6 +14,6 @@ export {
   type DialectFile,
   type DialectIssue,
 } from "./dialect";
-export { tofuEncryptionEnv } from "./encryption";
+export { type StateKeyName, stateKeyName, tofuEncryptionEnv } from "./encryption";
 export { engineLabel } from "./engine";
 export { hashFile } from "./hash";

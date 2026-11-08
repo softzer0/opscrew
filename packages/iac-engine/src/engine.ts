@@ -169,7 +169,11 @@ class Engine implements IacEngine {
   async plan(
     dir: string,
     planFile: string,
-    options: IacRunOptions & { destroy?: boolean; refreshOnly?: boolean } = {},
+    options: IacRunOptions & {
+      destroy?: boolean;
+      refreshOnly?: boolean;
+      replace?: readonly string[];
+    } = {},
   ): Promise<PlanSummary> {
     if (options.refreshOnly && options.destroy) {
       throw new OpsCrewError(
@@ -178,6 +182,7 @@ class Engine implements IacEngine {
         { hint: "Create the drift check and the destroy plan separately." },
       );
     }
+    const replace = options.replace ?? [];
     const cwd = path.resolve(dir);
     const file = path.resolve(cwd, planFile);
     await mkdir(path.dirname(file), { recursive: true });
@@ -187,6 +192,7 @@ class Engine implements IacEngine {
     const args = ["plan", "-input=false", "-no-color", `-out=${file}`, "-detailed-exitcode"];
     if (options.destroy) args.push("-destroy");
     if (options.refreshOnly) args.push("-refresh-only");
+    for (const address of replace) args.push(`-replace=${address}`);
     args.push(...this.varArgs(options.vars));
     const result = await this.exec("plan", cwd, args, options);
     // -detailed-exitcode: 0 = no changes, 2 = changes, anything else is an error.
@@ -198,6 +204,21 @@ class Engine implements IacEngine {
     const planHash = sha256Hex(bytes);
     const planJson = await this.show(cwd, file, options);
     const parsed = parsePlanJson(planJson);
+    // Both engines plan nothing, without an error, for an address that is not in the state.
+    const replaced = new Set(
+      parsed.changes.filter((c) => c.action === "replace").map((c) => c.address),
+    );
+    const missing = replace.filter((address) => !replaced.has(address));
+    if (missing.length > 0) {
+      await rm(file, { force: true });
+      throw new OpsCrewError(
+        "INVALID_INPUT",
+        `The plan does not replace ${missing.join(", ")}: ${this.label} found nothing to replace at that address, so the plan was discarded.`,
+        {
+          hint: "Check the address against the infrastructure files and the resources already created, then create the plan again.",
+        },
+      );
+    }
     // A refresh-only plan only updates the state, so it never carries resource changes.
     const refreshOnly = options.refreshOnly === true;
     return {

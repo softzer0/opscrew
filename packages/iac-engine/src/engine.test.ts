@@ -336,6 +336,47 @@ describe("plan", () => {
     expect(existsSync(stale)).toBe(true);
   });
 
+  it("passes -replace=<address> for each address to both engines and summarises the replacement", async () => {
+    for (const name of ["tofu", "terraform"] as const) {
+      const runner = new ScriptedRunner()
+        .on("plan", writesPlan("REPLACE"))
+        .on("show", { stdout: fixture("show-mixed.json") });
+      const summary = await makeEngine(runner, name).plan(dir, "p.tfplan", {
+        replace: ["hcloud_server.app", "hcloud_primary_ip.v4"],
+        vars: { name: "my-app" },
+      });
+      expect(runner.calls[0]?.args).toEqual([
+        "plan",
+        "-input=false",
+        "-no-color",
+        `-out=${path.join(path.resolve(dir), "p.tfplan")}`,
+        "-detailed-exitcode",
+        "-replace=hcloud_server.app",
+        "-replace=hcloud_primary_ip.v4",
+        "-var",
+        "name=my-app",
+      ]);
+      expect(summary.counts.replace).toBe(2);
+      expect(summary.hasDestroy).toBe(true);
+    }
+  });
+
+  it("fails, removing the plan file, when the plan does not replace an address asked for", async () => {
+    const runner = new ScriptedRunner()
+      .on("plan", writesPlan("NOT-REPLACED"))
+      .on("show", { stdout: fixture("show-mixed.json") });
+    const error = await failure(
+      makeEngine(runner).plan(dir, "p.tfplan", {
+        replace: ["hcloud_server.app", "hcloud_firewall.web", "cloudflare_tunnel.missing"],
+      }),
+    );
+    expect(error.code).toBe("INVALID_INPUT");
+    expect(error.message).toContain("hcloud_firewall.web, cloudflare_tunnel.missing");
+    expect(error.message).not.toContain("hcloud_server.app");
+    expect(error.hint).toBeTruthy();
+    expect(existsSync(path.join(dir, "p.tfplan"))).toBe(false);
+  });
+
   it("rejects invalid variable names", async () => {
     const runner = new ScriptedRunner();
     const error = await failure(

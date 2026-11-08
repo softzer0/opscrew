@@ -13,7 +13,7 @@ import path from "node:path";
 import type { IacEngine, IacEngineName } from "@opscrew/contracts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { detectEngines, selectEngine } from "./detect";
-import { tofuEncryptionEnv } from "./encryption";
+import { stateKeyName, tofuEncryptionEnv } from "./encryption";
 
 const MODULE = `variable "label" {
   type    = string
@@ -130,6 +130,57 @@ for (const name of ["tofu", "terraform"] as const satisfies readonly IacEngineNa
         });
         expect(replaced.ok).toBe(true);
         expect(replaced.outputs).toEqual({ a: "alpha-two" });
+      },
+      TIMEOUT,
+    );
+
+    it(
+      "replace: a plan replacing an unchanged resource, guarded by allowDestroy; a missing address fails",
+      async () => {
+        const root = await mkdtemp(path.join(tmpdir(), `opscrew-it-${name}-replace-`));
+        try {
+          await writeFile(path.join(root, "main.tf"), MODULE);
+          await engine.init(root);
+          const created = await engine.plan(root, "create.tfplan");
+          const applied = await engine.apply(root, created.planFile, {
+            approvedPlanHash: created.planHash,
+          });
+          expect(applied.ok).toBe(true);
+          expect((await engine.plan(root, "same.tfplan")).changes).toEqual([]);
+
+          const replacing = await engine.plan(root, "replace.tfplan", {
+            replace: ["terraform_data.b"],
+          });
+          expect(replacing.changes).toEqual([
+            expect.objectContaining({ address: "terraform_data.b", action: "replace" }),
+          ]);
+          expect(replacing.counts).toEqual({ create: 0, update: 0, delete: 0, replace: 1 });
+          expect(replacing.hasDestroy).toBe(true);
+          await expect(
+            engine.apply(root, replacing.planFile, { approvedPlanHash: replacing.planHash }),
+          ).rejects.toMatchObject({ code: "DESTROY_NOT_APPROVED" });
+          const replaced = await engine.apply(root, replacing.planFile, {
+            approvedPlanHash: replacing.planHash,
+            allowDestroy: true,
+          });
+          expect(replaced.ok).toBe(true);
+          expect((await engine.plan(root, "after.tfplan")).changes).toEqual([]);
+
+          // The engines plan nothing for an address the configuration lacks; the plan fails here.
+          const missing = await engine
+            .plan(root, "missing.tfplan", { replace: ["terraform_data.missing"] })
+            .catch((e: unknown) => e);
+          expect(missing).toMatchObject({ code: "INVALID_INPUT" });
+          expect(String((missing as Error).message)).toContain("terraform_data.missing");
+          // The engine's own message for an address it cannot parse.
+          const unparsable = await engine
+            .plan(root, "bad.tfplan", { replace: ["terraform_data.a b"] })
+            .catch((e: unknown) => e);
+          expect(unparsable).toMatchObject({ code: "ENGINE_FAILED" });
+          expect(String((unparsable as Error).message)).toContain("attribute access");
+        } finally {
+          await rm(root, { recursive: true, force: true });
+        }
       },
       TIMEOUT,
     );
@@ -261,6 +312,89 @@ describe.skipIf(!tofu)("tofu state encryption via TF_ENCRYPTION (real binary)", 
       const error = await engine.plan(dir, "infra3.tfplan").catch((e: unknown) => e);
       expect(error).toMatchObject({ code: "ENGINE_FAILED" });
       expect(String((error as Error).message)).not.toContain(passphrase);
+    },
+    TIMEOUT,
+  );
+});
+
+// A new state passphrase with the old as fallback (research R10), twice so the key name
+// alternates (opscrew -> opscrew_next -> opscrew); only with OPSCREW_IT=1.
+describe.skipIf(!tofu || !runDriftIt)("tofu state passphrase fallback (real binary)", () => {
+  it(
+    "plans leave the state as it is; each apply rewrites it under the other name, which alone reads it",
+    async () => {
+      const dir = await mkdtemp(path.join(tmpdir(), "opscrew-it-tofu-fallback-"));
+      try {
+        await writeFile(path.join(dir, "main.tf"), MODULE);
+        const engine = await selectEngine("tofu");
+        const stateFile = path.join(dir, "terraform.tfstate");
+        const passphrases = [0, 1, 2].map((i) => `it-${i}-${randomBytes(16).toString("hex")}`);
+        const first = { TF_ENCRYPTION: tofuEncryptionEnv(passphrases[0] as string) };
+
+        await engine.init(dir, { env: first });
+        const created = await engine.plan(dir, "create.tfplan", { env: first });
+        const applied = await engine.apply(
+          dir,
+          created.planFile,
+          { approvedPlanHash: created.planHash },
+          { env: first },
+        );
+        expect(applied.ok).toBe(true);
+        expect(stateKeyName(await readFile(stateFile, "utf8"))).toBe("opscrew");
+
+        for (const [step, expected] of [
+          [1, "opscrew_next"],
+          [2, "opscrew"],
+        ] as const) {
+          const previous = passphrases[step - 1] as string;
+          const passphrase = passphrases[step] as string;
+          const written = await readFile(stateFile, "utf8");
+          const name = stateKeyName(written);
+          const old = { TF_ENCRYPTION: tofuEncryptionEnv(previous, { name }) };
+          const both = { TF_ENCRYPTION: tofuEncryptionEnv(passphrase, { name, previous }) };
+          const alone = {
+            TF_ENCRYPTION: tofuEncryptionEnv(passphrase, { name: expected }),
+          };
+
+          // A plan with the fallback reads the old state and leaves it under the old key.
+          const rotation = await engine.plan(dir, `rotate-${step}.tfplan`, { env: both });
+          expect(rotation.changes).toEqual([]);
+          expect(rotation.hasDestroy).toBe(false);
+          expect(await readFile(stateFile, "utf8")).toBe(written);
+          await expect(engine.stateResources(stateFile, { env: alone })).rejects.toMatchObject({
+            code: "ENGINE_FAILED",
+          });
+
+          // The one apply of that no-change plan rewrites the state under the other name.
+          const rotated = await engine.apply(
+            dir,
+            rotation.planFile,
+            { approvedPlanHash: rotation.planHash },
+            { env: both },
+          );
+          expect(rotated.ok).toBe(true);
+          const rewritten = await readFile(stateFile, "utf8");
+          expect(stateKeyName(rewritten)).toBe(expected);
+          expect(rewritten).not.toContain(previous);
+          expect(rewritten).not.toContain(passphrase);
+
+          // The new passphrase alone, under the name the state now names, reads it.
+          expect(await engine.stateResources(stateFile, { env: alone })).toEqual([
+            "terraform_data.a",
+            "terraform_data.b",
+          ]);
+          expect((await engine.plan(dir, `after-${step}.tfplan`, { env: alone })).changes).toEqual(
+            [],
+          );
+          expect(await readFile(stateFile, "utf8")).toBe(rewritten);
+          // The old passphrase no longer reads it, and the error never shows it.
+          const refused = await engine.stateResources(stateFile, { env: old }).catch((e) => e);
+          expect(refused).toMatchObject({ code: "ENGINE_FAILED" });
+          expect(String((refused as Error).message)).not.toContain(previous);
+        }
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
     },
     TIMEOUT,
   );
