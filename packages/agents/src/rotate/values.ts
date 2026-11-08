@@ -17,6 +17,7 @@ import { dotenvLine, serviceAppVariables } from "../shared/app-env";
 import { changeGenerated, GeneratedValuesSchema, generatedValuesFile } from "../shared/app-secrets";
 import { randomPassword } from "../shared/ssh-keys";
 import { passwordKey } from "../vpn/grants";
+import { appEnvAfter } from "./app-values";
 import {
   dropPendingRotation,
   type RotationValues,
@@ -242,10 +243,10 @@ export function swapAppEnv(
 }
 
 /**
- * Makes the new values of `values` the services' own (PostgreSQL's as `dbPassword`) and the
- * device logins' (`grants`), keeping the services' old ones under `history` at the generation each
- * credential had (`generations`, by name; 1 when absent) and every other generated value as it was
- * (0600); then forgets the unfinished rotation.
+ * Makes the new values of `values` the services' own (PostgreSQL's as `dbPassword`), the device
+ * logins' (`grants`) and the app's (`env`, an emptied variable removed), keeping the services' old
+ * ones under `history` at the generation each credential had (`generations`, by name; 1 when
+ * absent) and every other generated value as it was (0600); then forgets the unfinished rotation.
  * @throws OpsCrewError `ARTIFACT_INVALID` when the generated values are damaged.
  */
 export async function completePendingRotation(
@@ -271,11 +272,13 @@ export async function completePendingRotation(
       }
     }
     const grants = Object.entries(values.grants ?? {}).map(([key, pair]) => [key, pair.new]);
+    const env = GeneratedValuesSchema.shape.env.parse(current.env);
     return {
       ...current,
       ...(dbPassword === undefined ? {} : { dbPassword }),
       services,
       history,
+      ...(values.app === undefined ? {} : { env: appEnvAfter(env, values.app) }),
       ...(grants.length === 0
         ? {}
         : {

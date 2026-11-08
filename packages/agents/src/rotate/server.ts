@@ -44,6 +44,7 @@ import { requireNoDeployOrMove } from "../snapshot/run";
 import { serverShell } from "../status/servers";
 import { passwordKey } from "../vpn/grants";
 import { ADDON_ROTATION_HASH } from "./addons-monitoring";
+import { appSecretNames, appSuccessNote, isAppName, newAppValues, withAppEnv } from "./app-values";
 import {
   approveRotation,
   approveUndo,
@@ -101,10 +102,14 @@ export interface DeviceLoginRotation extends ServicesRotation {
   password?: string;
 }
 
-/** What one rotation changes: the services' generated secrets and the device logins. */
+/**
+ * What one rotation changes: the services' generated secrets, the device logins and the app's own
+ * secrets (`app:<NAME>`, `./app-values`).
+ */
 interface RotationRequest {
   services: readonly PlanService[];
   grants: readonly GrantLogin[];
+  app?: readonly string[];
 }
 
 /** The exit code of a command whose server has no app's folder. */
@@ -606,7 +611,9 @@ async function envFilesWith(
   const to = await serviceValues(deps, plan, values, side);
   return {
     ...serviceEnvTexts(plan, to),
-    ...(appEnv === undefined ? {} : { "app.env": swapAppEnv(plan, appEnv, values, from, to) }),
+    ...(appEnv === undefined
+      ? {}
+      : { "app.env": withAppEnv(swapAppEnv(plan, appEnv, values, from, to), values.app, side) }),
   };
 }
 
@@ -628,9 +635,10 @@ function secretValues(
 
 /**
  * Rotates the generated secrets of the services `names` of `plan`'s environment (`deps.paths`;
- * on its servers, cloud or the user's own), or with `options.undo` puts the old values of the
- * unfinished rotation of them back. Refused before any change, with the next step: for a name of
- * no rotatable service, a preview environment, by the two-computer guard, while another rotation
+ * on its servers, cloud or the user's own), and the app's own secrets they name (`app`,
+ * `app:<NAME>`, `./app-values`: the app's settings and its switch only), or with `options.undo`
+ * puts the old values of the unfinished rotation of them back. Refused before any change, with the
+ * next step: for a name of no rotatable service or app secret, a preview environment, by the two-computer guard, while another rotation
  * is unfinished, while a deploy runs or a move is in progress or pauses the deploys, while a
  * rollback pins them, and when a service does not run or runs on a start command from before 025.
  * New values (the catalog's formats) are registered with the redactor and kept beside the old in
@@ -655,11 +663,17 @@ export async function rotateServices(
 ): Promise<ServicesRotation> {
   const { root, environment, app } = deps.paths;
   const flags = await commandFlags(root, environment, app);
-  const services = namedServices(plan, names, flags);
+  const serviceNames = names.filter((name) => !isAppName(name));
+  const appNames = names.filter(isAppName);
+  const services = serviceNames.length === 0 ? [] : namedServices(plan, serviceNames, flags);
   const { values: _values, ...rotation } = await runRotation(
     deps,
     plan,
-    { services, grants: [] },
+    {
+      services,
+      grants: [],
+      ...(appNames.length === 0 ? {} : { app: await appSecretNames(deps, plan, appNames) }),
+    },
     flags,
     options,
   );
@@ -708,8 +722,8 @@ async function runRotation(
   options: RotateServicesOptions,
 ): Promise<ServicesRotation & { values: RotationValues }> {
   const { environment } = deps.paths;
-  const { services, grants } = request;
-  const named = [...services.map((service) => service.name), ...grants.map(grantName)];
+  const { services, grants, app = [] } = request;
+  const named = [...services.map((service) => service.name), ...grants.map(grantName), ...app];
   // The services whose env files change: those rotated, and those of the device logins.
   const changed = plan.services.filter(
     (s) => services.includes(s) || grants.some((grant) => grant.service.name === s.name),
@@ -736,7 +750,11 @@ async function runRotation(
   const reused = sameNames && !addon ? existing : undefined;
   // One that began in the user's Portainer or on this computer keeps its state there (T2507).
   if (reused !== undefined && reused.step !== "planned" && reused.target !== undefined) {
-    const where = reused.target === "portainer" ? "in your Portainer" : "on this computer";
+    const where = {
+      portainer: "in your Portainer",
+      localhost: "on this computer",
+      site: "in the site's GitHub secrets",
+    }[reused.target];
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       `The rotation of ${listText(named)} began ${where}, and its state is there, not on the servers. Nothing was changed.`,
@@ -794,7 +812,11 @@ async function runRotation(
     flags,
     reused !== undefined && reused.step !== "planned" ? reused.hash : undefined,
   );
-  const runs = serverRuns(plan, [...serviceSteps(plan, services), ...grantSteps(grants)]);
+  const runs = serverRuns(
+    plan,
+    [...serviceSteps(plan, services), ...grantSteps(grants)],
+    app.length > 0,
+  );
   const hosts = new Map<string, RotateHost>();
   for (const run of runs) hosts.set(run.server, await rotateHost(deps, plan, run.server, options));
   if (options.undo !== true) await requireCurrentStarts(deps, plan, runs, hosts, again, flags);
@@ -806,11 +828,16 @@ async function runRotation(
   // holds that path's progress, which the servers' rotation must not carry.
   const values: RotationValues =
     reused === undefined
-      ? await newRotationValues(deps, services, grants)
+      ? {
+          ...(await newRotationValues(deps, services, grants)),
+          names: named,
+          ...(app.length === 0 ? {} : { app: await newAppValues(deps, plan, app) }),
+        }
       : {
           names: reused.names,
           services: reused.services,
           ...(reused.grants ? { grants: reused.grants } : {}),
+          ...(reused.app ? { app: reused.app } : {}),
         };
   const envFiles = await envFilesWith(deps, plan, values, appEnv, "new");
   const input: RotationPlan = {
@@ -884,7 +911,7 @@ async function runRotation(
   deps.reporter.success(
     runs.length === 0
       ? `Made new values for ${listText(named)} in ${environment} on this computer: ${named.length === 1 ? "it is" : "they are"} off and start with them.`
-      : `Rotated the credentials of ${listText(named)} in ${environment}: the app runs on the new values, and the old ones no longer work.`,
+      : `Rotated the credentials of ${listText(named)} in ${environment}: the app runs on the new values, and the old ones no longer work.${appSuccessNote(values.app)}`,
   );
   return { hash, copy: await refreshRecoveryCopy(deps, plan), values };
 }

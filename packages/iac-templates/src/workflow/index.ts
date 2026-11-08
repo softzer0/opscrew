@@ -15,6 +15,7 @@ import { enabledServices, initStepsFor } from "../catalog";
 import { additionsPath, appDir, EDGE_DIR, type LocalhostSite } from "../edge";
 import { httpsPortSuffix, localhostSite } from "../edge/localhost";
 import { ACTIONS, type PinArch, TOOLS, toolDownloadUrl } from "../pins";
+import { previousValueVariables } from "../previous-values";
 import {
   certbotHosts,
   type RuntimeContext,
@@ -1435,14 +1436,18 @@ function localDeploy(plan: DeployPlan, upload: Upload): Deploy {
  * need no connection secret. With extra servers, each one's {@link serverDeploySecrets} (only its
  * known hosts once public SSH is closed), and the SSH key also for a deploy in place.
  *
- * For a server-less target, the app's variables one by one ({@link siteEnvSecret}), which the
+ * For a server-less target, the app's variables one by one ({@link siteEnvSecret}) and the
+ * previous values a rotation keeps beside its generated secrets (`previousValueVariables`), which the
  * build reads (also for GitHub Pages) and, with `render: ssr` on Cloudflare, the deploy job gives
  * to the new version (also in a promoted environment, which builds nothing); on Cloudflare also
  * the deploy token and the account id ({@link CLOUDFLARE_DEPLOY_SECRETS}).
  */
 export function deploySecretNamesFor(plan: DeployPlan): string[] {
   if (isServerlessTarget(plan.target)) {
-    const values = plan.app.env.map((variable) => siteEnvSecret(variable.name));
+    const values = [
+      ...plan.app.env.map((variable) => variable.name),
+      ...previousValueVariables(plan),
+    ].map(siteEnvSecret);
     if (plan.target.provider === "github-pages") return values;
     const read = !promoted(plan) || plan.target.render === "ssr";
     return [...Object.values(CLOUDFLARE_DEPLOY_SECRETS), ...(read ? values : [])];

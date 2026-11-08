@@ -28,6 +28,16 @@ import { type RefreshRecoveryResult, refreshRecoveryCopy } from "../secrets/copy
 import { PlanRefusedError } from "../shared/approvals";
 import { codeOf } from "../shared/errors";
 import { ADDON_ROTATION_HASH } from "./addons-monitoring";
+import {
+  type AppValues,
+  appConsequence,
+  appFingerprints,
+  appSecretLines,
+  appSecretNames,
+  appSuccessNote,
+  isAppName,
+  newAppValues,
+} from "./app-values";
 import { rotationContext, undoHash } from "./plan";
 import { assertValuesCurrent, readCredentialsRecord, recordRotation } from "./record";
 import { completePendingRotation, newRotationValues } from "./values";
@@ -261,6 +271,7 @@ function planHash(
         finish: step.finish,
         undo: step.undo ?? null,
       })),
+      ...(values.app === undefined ? {} : { appValues: appFingerprints(values.app) }),
     }),
   );
 }
@@ -410,7 +421,9 @@ function rotationUnits(
 // --- The run ------------------------------------------------------------------------------------
 
 /**
- * Rotates the generated secrets of the services `names` of `plan`'s environment through `target`.
+ * Rotates the generated secrets of the services `names` of `plan`'s environment through `target`,
+ * and the app's own secrets they name (`app`, `app:<NAME>`, `./app-values`: no step of their own,
+ * the new values written and the app's switch).
  * An unfinished rotation of the same services goes on with its values (one only planned is
  * replaced by a rotation of others); the two-computer guard; new values (`newRotationValues`),
  * registered with the redactor; the target's checks; what the switch applies planned (Portainer's
@@ -434,16 +447,22 @@ export async function rotateThroughDocker(
 ): Promise<DockerRotation | DockerUndo> {
   const { root, environment, app } = deps.paths;
   const flags = await commandFlags(root, environment, app);
-  const again = `opscrew rotate ${names.join(" ")}${flags}`;
-  const services = servicesNamed(deps, plan, names);
+  const serviceNames = names.filter((name) => !isAppName(name));
+  const appNames = names.filter(isAppName);
+  const services =
+    serviceNames.length === 0 && appNames.length > 0 ? [] : servicesNamed(deps, plan, serviceNames);
+  // The app's own secrets, as `app:<NAME>` (`app` names each), after the services.
+  const appSecrets = appNames.length === 0 ? [] : await appSecretNames(deps, plan, appNames);
+  const named = [...services.map((service) => service.name), ...appSecrets];
+  const again = `opscrew rotate ${named.join(" ")}${flags}`;
   const existing = await readPendingRotation(deps);
-  const named = existing !== undefined && sameNames(existing.names, names);
+  const same = existing !== undefined && sameNames(existing.names, named);
   // An add-on's rotation (`monitoring`, `beszel`) is another rotation, whatever its name.
   const addon = existing?.hash === ADDON_ROTATION_HASH;
-  const reused = named && !addon ? existing : undefined;
+  const reused = same && !addon ? existing : undefined;
   // A rotation only planned changed nothing yet: one of other services replaces it, but never an
   // add-on's of the same name, which this command could not finish.
-  if (existing !== undefined && (existing.step !== "planned" || (addon && named))) {
+  if (existing !== undefined && (existing.step !== "planned" || (addon && same))) {
     const theirs = `opscrew rotate ${existing.names.join(" ")}${flags}`;
     if (reused === undefined) {
       throw new OpsCrewError(
@@ -469,7 +488,7 @@ export async function rotateThroughDocker(
     if (reused === undefined) {
       throw new OpsCrewError(
         "INVALID_INPUT",
-        `There is no unfinished rotation of ${listText([...names])} in ${environment} to undo. Nothing was changed.`,
+        `There is no unfinished rotation of ${listText(named)} in ${environment} to undo. Nothing was changed.`,
         { hint: "Run `opscrew rotate` to list the credentials and their dates." },
       );
     }
@@ -492,7 +511,11 @@ export async function rotateThroughDocker(
   }
   await assertValuesCurrent(deps);
   // A rotation planned before (shown, not approved) keeps its values, so its hash stays the same.
-  const values: RotationValues = reused ?? (await newRotationValues(deps, services));
+  const values: RotationValues = reused ?? {
+    ...(await newRotationValues(deps, services)),
+    names: named,
+    ...(appSecrets.length === 0 ? {} : { app: await newAppValues(deps, plan, appSecrets) }),
+  };
   const steps = stepsOf(plan, services, values);
   const identity = planHash(deps, plan, target.target, values, steps);
   if (began !== undefined && began.hash !== boundHash(identity, began.stackPlanHash)) {
@@ -521,6 +544,7 @@ export async function rotateThroughDocker(
   const pending: PendingRotation = {
     names: values.names,
     services: values.services,
+    ...(values.app === undefined ? {} : { app: values.app }),
     hash,
     step: began?.step ?? "planned",
     target: target.target,
@@ -528,9 +552,11 @@ export async function rotateThroughDocker(
     done,
   };
   if (began === undefined) await keepPendingRotation(deps, pending);
-  const approval = await approve(deps, target, steps, {
+  const approval = await approve(deps, plan, target, steps, {
     hash,
     again,
+    names: values.names,
+    app: values.app,
     resumed: done > 0,
     ...(stack === undefined ? {} : { stack }),
   });
@@ -549,6 +575,7 @@ const TARGET_WORDS: Record<NonNullable<PendingRotation["target"]> | "server", st
   server: "on the servers",
   portainer: "in your Portainer",
   localhost: "on this computer",
+  site: "in the site's GitHub secrets",
 };
 
 /**
@@ -607,36 +634,61 @@ function locked<T>(
 /** Shows the plan and asks its approval, bound to its hash. */
 async function approve(
   deps: PhaseDeps,
+  plan: DeployPlan,
   target: DockerRotationTarget,
   steps: readonly ServiceStep[],
   input: {
     hash: string;
     again: string;
+    /** The credentials, by the names `opscrew rotate` takes. */
+    names: readonly string[];
+    /** The app's own secrets that change (`./app-values`). */
+    app: AppValues | undefined;
     resumed: boolean;
     /** What the switch applies under this approval, planned and shown before it. */
     stack?: { hash: string; what: string };
   },
 ): Promise<ApprovalRecord> {
-  const { hash, again, stack } = input;
+  const { hash, again, stack, app } = input;
   const services = [...new Set(steps.map((step) => step.service.name))];
+  const secrets = appSecretLines(app);
+  const credentials = [...input.names];
+  const consequence = appConsequence(plan, app);
+  const resumed = input.resumed
+    ? " (this rotation began earlier: it goes on after its last step done, with the same values)"
+    : "";
+  const actions = [
+    ...(services.length === 0
+      ? []
+      : [
+          `Each service's new value is made valid in its running container through Docker's exec ${target.where}, the values only in the command's environment, never on its command line.`,
+        ]),
+    `${target.valuesText}${stack === undefined || stack.what === "" ? "" : ` ${stack.what}`}`,
+    ...(services.length === 0
+      ? []
+      : ["Once the app runs on the new values, each service's old value is dropped."]),
+  ];
   const details = [
-    `New values made on this computer replace the generated secrets of ${listText(services)} in the ${deps.paths.environment} environment ${target.where}${input.resumed ? " (this rotation began earlier: it goes on after its last step done, with the same values)" : ""}:`,
+    ...(consequence === undefined ? [] : [consequence.line]),
+    `New values made on this computer replace ${services.length === 0 ? "" : `the generated secrets of ${listText(services)}${secrets.length === 0 ? "" : " and "}`}${secrets.length === 0 ? "" : "the app's own secrets"} in the ${deps.paths.environment} environment ${target.where}${resumed}:`,
     ...steps.map((step) => `  ${stepText(step, target.target)}`),
-    `1. Each service's new value is made valid in its running container through Docker's exec ${target.where}, the values only in the command's environment, never on its command line.`,
-    `2. ${target.valuesText}${stack === undefined || stack.what === "" ? "" : ` ${stack.what}`}`,
-    "3. Once the app runs on the new values, each service's old value is dropped.",
-    `If a step fails, the old and new values stay on this computer: \`${again}\` goes on from that step, and before step 3 \`${again} --undo\` puts the old values back.`,
+    ...secrets.map((line) => `  ${line}`),
+    ...actions.map((line, i) => `${i + 1}. ${line}`),
+    services.length === 0
+      ? `If a step fails, the old and new values stay on this computer: \`${again}\` goes on from that step, and \`${again} --undo\` puts the old values back.`
+      : `If a step fails, the old and new values stay on this computer: \`${again}\` goes on from that step, and before step ${actions.length} \`${again} --undo\` puts the old values back.`,
     `Rotation hash: ${hash}`,
   ].join("\n");
   const approval = await deps.approvals.request({
     kind: "remote-exec",
-    title: `Rotate the passwords of ${listText(services)} in ${deps.paths.environment}`,
+    title: `Rotate the ${secrets.length === 0 ? "passwords" : "credentials"} of ${listText(credentials)} in ${deps.paths.environment}`,
     details,
     planHash: hash,
+    ...consequence?.guard,
   });
   if (approval.approved) return approval;
   throw new PlanRefusedError({
-    plan: `rotation of ${listText(services)}`,
+    plan: `rotation of ${listText(credentials)}`,
     ...(approval.reason === undefined ? {} : { reason: approval.reason }),
     unchanged: `Nothing ${target.where} was changed.`,
     hint: `Run \`${again}\` again when you are ready (in a script: --approve ${hash}).`,
@@ -710,7 +762,7 @@ async function runRotation(
   await recordRotation(deps, pending.names);
   await audit(deps, target, pending, hash, "rotation finished", "approved");
   deps.reporter.success(
-    `Rotated the generated secrets of ${listText(pending.names)} ${target.where}: the app runs on the new values, and the old ones no longer work.`,
+    `Rotated the generated secrets of ${listText(pending.names)} ${target.where}: the app runs on the new values, and the old ones no longer work.${appSuccessNote(pending.app)}`,
   );
   return { hash, copy: await refreshRecoveryCopy(deps, plan) };
 }

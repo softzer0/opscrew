@@ -20,6 +20,7 @@ import {
   portainerStackEnvKeys,
   portainerStackTemplatePath,
   portainerTarget,
+  previousValueVariables,
   renderPlaceholderStack,
 } from "@opscrew/iac-templates";
 import { type DeployPlan, ghcrImageFor, type PortainerDeployTarget } from "@opscrew/plan-schema";
@@ -246,7 +247,11 @@ async function desiredFingerprints(
   const outputs = input.outputs ?? {};
   const stackOf = (role: "app" | "updater" | "tunnel-connector") =>
     recordedStack(connection, facts, role);
-  const keys = portainerStackEnvKeys(plan);
+  // The stack's Env holds the previous values a rotation kept (`APP_PREVIOUS_KEYS`).
+  const generated = await readValidJson(generatedValuesFile(deps), GeneratedValuesSchema);
+  const keys = portainerStackEnvKeys(plan, {
+    previousValues: previousValueVariables(plan).filter((n) => generated?.env?.[n] !== undefined),
+  });
   const envKeys = [...keys.app, ...keys.opscrew].sort();
 
   // The app stack: the production values only from OPSCREW_APP_ENV_FILE, never asked for, and the
@@ -666,7 +671,14 @@ export async function portainerDrift(
     committed: await committedStackPins(deps.paths.root, current),
     repositoryPrivate: repository.private,
     imagePrivate: !publicImage,
-    ...(fingerprints !== undefined ? { fingerprints } : {}),
+    ...(fingerprints !== undefined
+      ? {
+          fingerprints,
+          previousValues: previousValueVariables(current).filter(
+            (name) => fingerprints.app?.[name] !== undefined,
+          ),
+        }
+      : {}),
   });
   differences.push(...stackDifferences(planStacks(facts, desired)));
 

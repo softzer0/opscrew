@@ -30,6 +30,7 @@ import {
   type LocalhostServices,
   requireOwnLocalApp,
 } from "../localhost/services";
+import { withAppEnv } from "./app-values";
 import {
   type DockerRotation,
   type DockerRotationOptions,
@@ -108,7 +109,8 @@ export function rotateLocalServices(
   /** The app's settings, `app.env`, with `values` swapped from one side to `which`. */
   const appEnvWith = async (values: RotationValues, which: keyof ValuePair, text: string) => {
     const from = await serviceValues(deps, plan, values, which === "new" ? "old" : "new");
-    return swapAppEnv(plan, text, values, from, await serviceValues(deps, plan, values, which));
+    const to = await serviceValues(deps, plan, values, which);
+    return withAppEnv(swapAppEnv(plan, text, values, from, to), values.app, which);
   };
   /**
    * The env files as provision writes them, with `values` on their `which` side: the rotated

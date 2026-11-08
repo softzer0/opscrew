@@ -14,6 +14,7 @@ import type { ServiceSpec } from "../catalog/types";
 import { isClientExposedEnvName } from "../docker";
 import { CADDY_MEMORY_MB } from "../edge";
 import { IMAGES } from "../pins";
+import { previousValueVariables } from "../previous-values";
 import { portainerTarget } from "../providers";
 import { type RuntimeContext, siteHosts } from "../runtime";
 import {
@@ -457,13 +458,14 @@ function stackOriginTls(plan: DeployPlan, ctx: Pick<RuntimeContext, "originTls">
  * `${VARS}` a stack references. A Kafka's or Redpanda's password is there with its login off too,
  * unused, so turning the login on changes no variable. The app's and OpsCrew's names never
  * overlap. With `ctx.originTls` in web mode `caddy`, OpsCrew's include
- * {@link PORTAINER_STACK_VARIABLES}' `originTls`.
+ * {@link PORTAINER_STACK_VARIABLES}' `originTls`. The app's include each of
+ * `ctx.previousValues` the stack names bare (`previousValueVariables`): those that hold a value.
  * @throws OpsCrewError `INVALID_INPUT` for an app variable named `OPSCREW_*` or `COMPOSE_*`, or a
  * service that needs a setting of the Docker host (so provision stops before any change).
  */
 export function portainerStackEnvKeys(
   plan: DeployPlan,
-  ctx: Pick<RuntimeContext, "originTls"> = {},
+  ctx: Pick<RuntimeContext, "originTls"> & { previousValues?: readonly string[] } = {},
 ): PortainerStackEnvKeys {
   const { web } = portainerTarget(plan.target);
   checkAppEnvNames(plan);
@@ -478,7 +480,8 @@ export function portainerStackEnvKeys(
   if (snapshotOffsiteOf(plan) !== undefined) {
     for (const variable of Object.values(PORTAINER_OFFSITE_VARIABLES)) opscrew.add(variable);
   }
-  return { app: appEnvKeys(plan), opscrew: [...opscrew].sort() };
+  const held = previousValueVariables(plan).filter((name) => ctx.previousValues?.includes(name));
+  return { app: [...appEnvKeys(plan), ...held].sort(), opscrew: [...opscrew].sort() };
 }
 
 /** Named volumes of the app stack, in the order the stack declares them: the stamp's is last. */
@@ -593,6 +596,9 @@ export function renderPortainerStack(plan: DeployPlan, ctx: RuntimeContext): Ren
   const environment = () => ({
     PORT: String(plan.app.port),
     ...Object.fromEntries(appEnvKeys(plan).map((name) => [name, `\${${name}}`])),
+    // Bare: Compose takes the value from the stack's Env, and leaves the variable unset when the
+    // Env has none (no rotation kept an old value yet).
+    ...Object.fromEntries(previousValueVariables(plan).map((name) => [name, null])),
   });
   const backing = stackServices(plan);
   const snapshots = stackSnapshots(plan, backing, {

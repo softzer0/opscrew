@@ -28,6 +28,7 @@ import { type AppEnvironment, dotenvLine, parseDotenv } from "../shared/app-env"
 import { gitClient } from "../shared/github";
 import { portainerClientFor } from "../shared/portainer-stacks";
 import { hidePortainerAddress } from "../shared/server-address";
+import { withAppRecord } from "./app-values";
 import {
   boundHash,
   type DockerRotation,
@@ -61,13 +62,15 @@ function withNewValues(
 ): AppEnvironment {
   // One value at a time: a value the swap leaves as it is stays byte for byte (a dotenv line does
   // not read back every value as written); a swapped one is OpsCrew's own address or key.
-  const app = Object.fromEntries(
+  const withServices = Object.fromEntries(
     Object.entries(environment.values.app).map(([name, value]) => {
       const line = `${dotenvLine(name, value)}\n`;
       const swapped = swapAppEnv(plan, line, values, sides.from, sides.to);
       return [name, swapped === line ? value : (parseDotenv(swapped).get(name) ?? value)];
     }),
   );
+  // The app's own secrets by name (`./app-values`).
+  const app = withAppRecord(withServices, values.app, "new");
   return {
     ...environment,
     values: {

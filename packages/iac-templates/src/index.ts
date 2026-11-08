@@ -48,6 +48,7 @@ export * from "./portainer-host";
 export * from "./portainer-target";
 export { webOnlyFromCloudflare } from "./predicates";
 export * from "./previews";
+export { PREVIOUS_VALUES, previousValueVariables } from "./previous-values";
 export * from "./prices";
 export { cloudTarget, portainerTarget, wrongTarget } from "./providers";
 export { imageDigest } from "./registry";

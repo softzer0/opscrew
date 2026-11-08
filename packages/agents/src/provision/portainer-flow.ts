@@ -23,6 +23,7 @@ import {
   portainerStackEnvKeys,
   portainerTarget,
   portainerWebhookHostname,
+  previousValueVariables,
   type RuntimeContext,
   renderBackups,
   renderStorage,
@@ -304,9 +305,16 @@ export function preparePortainerStacks(
   const updater = target.redeploy === "updater";
   const imagePrivate = !input.publicImage;
   let { connection, facts } = input;
-  const desired = (fingerprints?: DesiredValueFingerprints): DesiredStacks => {
+  // The previous values a rotation kept (`APP_PREVIOUS_KEYS`) that `env` holds: the Env has them.
+  const held = (env: Readonly<Record<string, string>>) =>
+    previousValueVariables(plan).filter((name) => env[name] !== undefined);
+  const desired = (
+    fingerprints?: DesiredValueFingerprints,
+    env?: StackValues["env"],
+  ): DesiredStacks => {
     const tls = input.origin().tls;
     return desiredStacks(plan, {
+      ...(env === undefined ? {} : { previousValues: held(env) }),
       connection,
       github: input.github,
       committed: input.committed,
@@ -352,10 +360,10 @@ export function preparePortainerStacks(
   const values = async (outputs: Record<string, unknown>): Promise<StackValues> => {
     const env = await appEnvironment();
     const origin = input.origin();
-    const stackKeys = portainerStackEnvKeys(
-      plan,
-      origin.tls !== undefined ? { originTls: origin.tls } : {},
-    );
+    const stackKeys = portainerStackEnvKeys(plan, {
+      ...(origin.tls !== undefined ? { originTls: origin.tls } : {}),
+      previousValues: held(env.values.app),
+    });
     const out: Record<string, string> = {};
     for (const key of stackKeys.app) out[key] = env.values.app[key] ?? "";
     const opscrew: Record<string, string | undefined> = {
@@ -418,7 +426,7 @@ export function preparePortainerStacks(
       stale = false;
     }
     const stack = await values(outputs);
-    const stackPlan = planStacks(facts, desired(fingerprints(stack)));
+    const stackPlan = planStacks(facts, desired(fingerprints(stack), stack.env));
     const hash = stackPlanHash(stackPlan);
     shownHash = hash;
     await writeFileAtomic(

@@ -2,7 +2,7 @@
  * What provision does the same way for both server-less targets (feature 016): the site's deploy
  * secrets in GitHub Actions.
  */
-import { siteEnvSecret } from "@opscrew/iac-templates";
+import { previousValueVariables, siteEnvSecret } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import type { GitHubSetup } from "../provision/credentials";
@@ -46,8 +46,10 @@ export async function storeSiteSecrets(
         ...environment.values.app,
         ...environment.values.build,
       };
+      // The previous values a rotation kept (`APP_PREVIOUS_KEYS`) too, once there is one.
+      const names = [...plan.app.env.map((v) => v.name), ...previousValueVariables(plan)];
       const site = Object.fromEntries(
-        plan.app.env.flatMap(({ name }) => {
+        names.flatMap((name) => {
           const value = values[name];
           return value === undefined ? [] : [[siteEnvSecret(name), value]];
         }),

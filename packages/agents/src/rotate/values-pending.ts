@@ -16,13 +16,16 @@ const PairSchema = z.strictObject({ old: z.string().min(1), new: z.string().min(
 
 /**
  * The values of a rotation: the credentials, by the names `opscrew rotate` takes (the services in
- * the plan's order, then each device login as `grant:<device>/<service>`), each service's secrets
- * with their old and new values, and each device login's passwords by `<device>/<service>`.
+ * the plan's order, then each device login as `grant:<device>/<service>`, then each app secret as
+ * `app:<NAME>`), each service's secrets with their old and new values, each device login's
+ * passwords by `<device>/<service>`, and each app variable that changes by its name (T2509: an
+ * empty side is a variable unset, as `APP_PREVIOUS_KEYS` before it holds a previous key).
  */
 const RotationValuesSchema = z.strictObject({
   names: z.array(z.string().min(1)).min(1),
   services: z.record(z.string(), z.record(z.string(), PairSchema)),
   grants: z.record(z.string(), PairSchema).optional(),
+  app: z.record(z.string(), z.strictObject({ old: z.string(), new: z.string() })).optional(),
 });
 
 /** The values of a rotation of services ({@link RotationValuesSchema}). */
@@ -39,9 +42,9 @@ const PendingRotationSchema = RotationValuesSchema.extend({
   step: z.enum(["planned", "started", "switched"]),
   /**
    * Where it runs when not on the servers: the user's Portainer or this computer (T2507), whose
-   * rotation keeps its own progress here.
+   * rotation keeps its own progress here, or a server-less site's GitHub secrets (T2509).
    */
-  target: z.enum(["portainer", "localhost"]).optional(),
+  target: z.enum(["portainer", "localhost", "site"]).optional(),
   /** Portainer: the hash of the stack plan the rotation's approval covers, bound into `hash`. */
   stackPlanHash: z
     .string()
@@ -99,6 +102,10 @@ export function registerRotationValues(
   for (const pair of Object.values(values.grants ?? {})) {
     redactor.addLiteral(pair.old, "grant-password");
     redactor.addLiteral(pair.new, "grant-password");
+  }
+  for (const pair of Object.values(values.app ?? {})) {
+    for (const value of [pair.old, pair.new])
+      if (value !== "") redactor.addLiteral(value, "app-env");
   }
 }
 

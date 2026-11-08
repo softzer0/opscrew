@@ -6,8 +6,10 @@ import {
   type DatabaseSettings,
   type GeneratedSecret,
   isClientExposedEnvName,
+  PREVIOUS_VALUES,
   type PreviewSecretFormat,
   previewSecret,
+  previousValueVariables,
   serviceSpec,
   siteHosts,
   splitDatabaseSettings,
@@ -136,6 +138,15 @@ function randomValue(format: PreviewSecretFormat): string {
 /** A catalog secret's format as a value's format: a Garage key id, or 32 random bytes as hex. */
 function secretFormat(format: GeneratedSecret["format"] | undefined): PreviewSecretFormat {
   return format === "garage-key-id" ? "gk" : "hex32";
+}
+
+/**
+ * A new value for the generated app variable `name`: in its {@link FRAMEWORK_ENV} format (Laravel's
+ * `APP_KEY`), else a random password, as {@link assembleAppEnv} makes one.
+ */
+export function newGeneratedValue(name: string): string {
+  const format = GENERATED_FORMATS.get(name);
+  return format === undefined ? randomPassword() : randomValue(format);
 }
 
 /** The fixed production value of a {@link FRAMEWORK_ENV} setting (`RAILS_ENV`), else undefined. */
@@ -751,8 +762,7 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
       value = previewSecret(variable.name, format ?? "hex32");
     } else if (variable.source === "generated") {
       // An injected source wins, so a caller that cannot know new values (drift) sees its marker.
-      const generate =
-        options.password ?? (format === undefined ? randomPassword : () => randomValue(format));
+      const generate = options.password ?? (() => newGeneratedValue(variable.name));
       value = userValue ?? options.previous?.env?.[variable.name] ?? generate();
       if (userValue === undefined) generatedEnv[variable.name] = value;
     } else if (options.ask) {
@@ -782,6 +792,21 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
     } else {
       (users && templates ? own : app).set(variable.name, value);
     }
+  }
+
+  // The earlier values a rotation kept beside a generated secret (`APP_PREVIOUS_KEYS`), while
+  // OpsCrew still generates that secret and gives the variable (not one the plan names itself).
+  for (const [name, variable] of Object.entries(PREVIOUS_VALUES)) {
+    const kept = options.previous?.env?.[variable];
+    if (
+      generatedEnv[name] === undefined ||
+      !kept ||
+      !previousValueVariables(plan).includes(variable)
+    ) {
+      continue;
+    }
+    app.set(variable, kept);
+    generatedEnv[variable] = kept;
   }
 
   if (missing.length > 0 && !options.ask && !templates) {

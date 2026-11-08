@@ -2,6 +2,7 @@
 import { OpsCrewError } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { ACTIONS, TOOLS } from "../pins";
+import { previousValueVariables } from "../previous-values";
 import { shellQuote } from "../runtime/services";
 import { HEADERS_ENTRY, headersProgram } from "../serverless/headers";
 import {
@@ -387,7 +388,16 @@ function deployJob(
       true,
     );
   const stored = (name: string) => deploySecretName(plan, siteEnvSecret(name));
-  const values = secrets.map((variable) => `"${variable.name}": env.${stored(variable.name)}`);
+  // The previous values a rotation keeps, left out of the new version while their secret is empty.
+  const previous = ssr ? previousValueVariables(plan) : [];
+  const own = secrets.map((variable) => variable.name);
+  const names = [...own, ...previous];
+  const pairs = (list: readonly string[]) =>
+    `{${list.map((name) => `"${name}": env.${stored(name)}`).join(", ")}}`;
+  const values =
+    previous.length === 0
+      ? pairs(own)
+      : `${pairs(own)} + (${pairs(previous)} | with_entries(select((.value // "") != "")))`;
   const mismatch = fromRun
     ? `The site run $RUN built has the SHA-256 $sha256, not $SHA256, the one \\\`opscrew promote\\\` asked for. Promote again with \\\`${promoteCommand(plan)}\\\`, which reads the build the source environment runs.`
     : "The downloaded site has the SHA-256 $sha256, not $SHA256, the build's. Run the workflow again.";
@@ -429,14 +439,12 @@ function deployJob(
     "  run: |",
     ...block([...headersProgram(plan).split("\n"), "main();"], 4),
     ...prepareWrangler(
-      secrets.map(
-        (variable) => `    ${stored(variable.name)}: ${secret(plan, siteEnvSecret(variable.name))}`,
-      ),
+      names.map((name) => `    ${stored(name)}: ${secret(plan, siteEnvSecret(name))}`),
       secrets.length === 0
         ? []
         : [
             "# The app's variables, for the new version only; the file is removed after the upload.",
-            `(umask 077 && jq -n '{${values.join(", ")}}' > "${SECRETS_FILE}")`,
+            `(umask 077 && jq -n '${values}' > "${SECRETS_FILE}")`,
           ],
     ),
     "- id: previous",

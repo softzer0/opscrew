@@ -10,6 +10,7 @@ import {
 } from "@opscrew/plan-schema";
 import { packageManagerSpec } from "../docker/stacks";
 import { ACTIONS, RUNTIME_DEFAULTS, TOOLS } from "../pins";
+import { previousValueVariables } from "../previous-values";
 import { wrongTarget } from "../providers";
 import { shellQuote } from "../runtime/services";
 import { artefactsFolder } from "../runtime-dir";
@@ -155,8 +156,9 @@ function toolSteps(site: Site, dir: string): string[] {
  * The build job's steps up to the built site, on GitHub's machines with no image: the checkout
  * (its token kept out of the build), the site's tool ({@link toolSteps}), the install from the
  * lockfile and `site.command` in `app.buildContext`. The build gets every variable of `app.env`
- * from its GitHub secret ({@link siteEnvSecret}), and `extra` (name, value) environment lines.
- * Nothing is built for `tool: none`: the files are in the repository as they are.
+ * from its GitHub secret ({@link siteEnvSecret}), and `extra` (name, value) environment lines; the
+ * previous values a rotation keeps (`previousValueVariables`) too, unset while their secret is
+ * empty. Nothing is built for `tool: none`: the files are in the repository as they are.
  */
 export function siteBuildSteps(
   plan: DeployPlan,
@@ -164,10 +166,11 @@ export function siteBuildSteps(
 ): string[] {
   const { site } = serverlessTarget(plan);
   const dir = JSON.stringify(plan.app.buildContext);
+  const previous = previousValueVariables(plan);
   const env = [
     ...extra.map(([name, value]) => `    ${name}: ${value}`),
-    ...plan.app.env.map(
-      (variable) => `    ${variable.name}: ${secret(plan, siteEnvSecret(variable.name))}`,
+    ...[...plan.app.env.map((variable) => variable.name), ...previous].map(
+      (name) => `    ${name}: ${secret(plan, siteEnvSecret(name))}`,
     ),
   ];
   const command = site.command;
@@ -178,7 +181,12 @@ export function siteBuildSteps(
           "- name: Build the site",
           `  working-directory: ${dir}`,
           ...(env.length === 0 ? [] : ["  env:", ...env]),
-          ...run(["set -euo pipefail", command]),
+          ...run([
+            "set -euo pipefail",
+            // No rotation kept an old value yet: the build sees no empty variable.
+            ...previous.map((name) => `[ -n "\${${name}-}" ] || unset ${name}`),
+            command,
+          ]),
         ];
   const pm = site.packageManager;
   return [

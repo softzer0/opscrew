@@ -20,6 +20,7 @@ import { PlanRefusedError } from "../shared/approvals";
 import { serverWords } from "../shared/server-address";
 import { extraServers, hasExtraServers } from "../shared/servers";
 import { passwordKey } from "../vpn/grants";
+import { appConsequence, appFingerprints, appSecretLines } from "./app-values";
 import { credentialsRecordFile } from "./record";
 import type { GrantLogin } from "./values";
 import type { RotationValues } from "./values-pending";
@@ -148,10 +149,15 @@ export interface ServerRun {
 
 /**
  * The servers a rotation of `steps` runs on: the app's server (its settings change with every
- * service's), then each extra server with a step, in the plan's order. None without a step.
+ * service's), then each extra server with a step, in the plan's order. None without a step, unless
+ * `app`: the app's own secrets change, which only the app's server's run (no step) switches to.
  */
-export function serverRuns(plan: DeployPlan, steps: readonly ServiceStep[]): ServerRun[] {
-  if (steps.length === 0) return [];
+export function serverRuns(
+  plan: DeployPlan,
+  steps: readonly ServiceStep[],
+  app = false,
+): ServerRun[] {
+  if (steps.length === 0 && !app) return [];
   return [APP_SERVER, ...extraServers(plan)]
     .map((server) => ({ server, steps: steps.filter((step) => step.server === server) }))
     .filter((run) => run.server === APP_SERVER || run.steps.length > 0)
@@ -167,10 +173,7 @@ export function serverRuns(plan: DeployPlan, steps: readonly ServiceStep[]): Ser
 
 /** The credentials `input` rotates, by the names `opscrew rotate` takes. */
 function rotatedNames(input: RotationPlan): string[] {
-  return [
-    ...input.services.map((service) => service.name),
-    ...Object.keys(input.values.grants ?? {}).map((key) => `grant:${key}`),
-  ];
+  return input.values.names;
 }
 
 /** What a rotation's approval names and its hash binds. */
@@ -218,6 +221,7 @@ export function rotationHash(
               new: sha256Hex(pair.new),
             })),
           }),
+      ...(input.values.app === undefined ? {} : { appValues: appFingerprints(input.values.app) }),
     }),
   );
 }
@@ -324,9 +328,12 @@ export async function approveRotation(
           ),
           `Deploys resume, ${record} records the rotation, and the recovery copy is refreshed.`,
         ].map((line, i) => `${i + 1}. ${line}`);
+  const consequence = appConsequence(plan, input.values.app);
   const lines = [
+    ...(consequence === undefined ? [] : [consequence.line]),
     `New values made on this computer replace those of ${names} in ${environment}; neither the old nor the new ones are ever shown.`,
     ...credentialLines(plan, input),
+    ...appSecretLines(input.values.app),
     ...steps,
     ...(app === undefined
       ? []
@@ -340,6 +347,7 @@ export async function approveRotation(
     title: `Rotate the credentials of ${names} in ${environment}`,
     details: lines.join("\n"),
     planHash: hash,
+    ...consequence?.guard,
   });
   if (approval.approved) return hash;
   throw new PlanRefusedError({

@@ -103,10 +103,15 @@ export function desiredStacks(
     replaceTokens?: DesiredStacks["replaceTokens"];
     /** The stack Caddy's origin TLS (`RuntimeContext.originTls`), whose variable the stack then holds. */
     originTls?: RuntimeContext["originTls"];
+    /** The previous values a rotation kept (`APP_PREVIOUS_KEYS`), which the stack's Env then holds. */
+    previousValues?: readonly string[];
   },
 ): DesiredStacks {
   const target = portainerTarget(plan.target);
-  const keys = portainerStackEnvKeys(plan, { originTls: opts.originTls });
+  const keys = portainerStackEnvKeys(plan, {
+    originTls: opts.originTls,
+    ...(opts.previousValues === undefined ? {} : { previousValues: opts.previousValues }),
+  });
   const { fingerprints, replaceTokens } = opts;
   return {
     app: plan.app.name,
