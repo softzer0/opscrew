@@ -80,7 +80,7 @@ secret in any test: `fakeSecret(kind)` and `{{FAKE:<kind>}}` (`@opscrew/core/tes
     - New values generated, old kept (`generated_values.json`, a `pending` entry) until done; every value registered with the redactor before anything prints.
     - The plan (credentials, steps, each one's window or consequence) with its hash; approval (`remote-exec`, `--approve <hash>`); GitHub secrets replaced while deploys are held; `rotate.sh` over SSH with the env files and values on stdin; split placement: each extra server's `rotate.sh begin` before the app server's full run and its `rotate.sh finish` after (T2504), each with its own approval file; refused while a move pauses deploys (`OPSCREW_DEPLOY_PAUSED`); the record and the recovery copy after.
     - Deploys paused through the existing GitHub pause (`withDeploysPaused`, `move/deploys.ts`) before the GitHub secrets are replaced and before any extra server's `begin`, released at the end (the servers' holds cover only their own runs); no undo offered on the extra servers once the app's server's run finished (T2504's review).
-    - A failure keeps `pending`, says the step and how to resume or undo; provision calls T2505's two-computer guard (`assertValuesCurrent`) and keeps `generations` among its kept values (`KEPT_VALUES` in `provision/secrets.ts`), or every provision drops the guard's data.
+    - A failure keeps `pending`, says the step and how to resume or undo; provision records the first-seen date of each user token it uses (`tokenFirstSeen`, never the value), calls T2505's two-computer guard (`assertValuesCurrent`) and keeps `generations` among its kept values (`KEPT_VALUES` in `provision/secrets.ts`), or every provision drops the guard's data.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm lint`
   - Effort: xhigh
 
@@ -149,7 +149,7 @@ secret in any test: `fakeSecret(kind)` and `{{FAKE:<kind>}}` (`@opscrew/core/tes
 - [ ] T2515 [US2] The CLI, MCP, the plugin and the guide
   - Owns: `packages/cli/src/commands/rotate*.ts`, `packages/cli/src/commands/secrets.ts`, `packages/cli/src/commands/index.ts`, `packages/mcp-server/src/tools/**`, `plugin/skills/**`, `docs/guide/credential-rotation.md`, `docs/guide/secrets-recovery.md`, `README.md` (its guide list) (+ tests)
   - Depends: T2506–T2514
-  - Accept: plan 13; the CLI's help and errors in plain English; `--json` for the list; the MCP tool read-only; the guide page with every name, mode, window and consequence, the command-line note of R10, and where the old values live until done.
+  - Accept: plan 13; the listing never records a token (`credentialInventory` without `recordTokens`); `github-secrets` joins the kinds `--approve <hash>` grants (`APPROVE_BY_HASH_KINDS`, T2512); the CLI's help and errors in plain English; `--json` for the list; the MCP tool read-only; the guide page with every name, mode, window and consequence, the command-line note of R10, and where the old values live until done.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server && node plugin/validate.mjs && pnpm lint`
   - Effort: high
 
