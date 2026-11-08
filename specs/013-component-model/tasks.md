@@ -686,7 +686,7 @@ Horizon, PostgreSQL and Redis.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew && pnpm lint`, and `OPSCREW_DOCKER_TESTS=1` for the example
   - Effort: medium
 
-- [ ] T1327 [US8] [P] Laravel apps as they are built
+- [x] T1327 [US8] [P] Laravel apps as they are built
   - Owns: `packages/detect/src/**` (+ tests, fixtures), `examples/laravel-app/expected.json`
   - Reads: T1320's changes (`env.ts` `extractPhpEnvReads`, `detect.ts`)
   - Depends: T1320
