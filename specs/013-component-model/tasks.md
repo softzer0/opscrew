@@ -702,4 +702,13 @@ Horizon, PostgreSQL and Redis.
 - [x] T1325 [US8] Live: `examples/php-plain-mysql` on Hetzner (lead; SC-1309)
   - Through init, analyze, interview, design, adapt, provision and verify with no edit to an OpsCrew file; only `public/` served; it reaches MySQL; a second deploy keeps `storage/`; its cron runs.
 
+- [ ] T1328 [US8] What a real plain PHP app showed (found 2026-11-08 deploying one with the US8 build)
+  - Owns: `packages/agents/src/analyze/**`, `packages/secops/src/**` (+ tests)
+  - Accept:
+    - **Analyze:** the "There is no Dockerfile. OpsCrew will add one" risk shows for a PHP app that also has a `package.json`, though Railpack builds it with no Dockerfile: it shows only when OpsCrew's own Dockerfile will build the app (the same rule design uses).
+    - **The secrets scan:** `secrets/generic-high-entropy` reports made-up credentials in an app's tests (`tests/`, `test/`, `__tests__/`, `spec/`, `*Test.php`, `*.test.*`, `*_test.*`) as high; they are at most `info`, said so in the finding. Protocol words and constant names (an OAuth `token_endpoint_auth_methods_supported` list, a `PRODUCT_TOKEN` user-agent string) are not secrets: the rule needs a value that looks random, not a long word.
+    - **Dependencies:** the OSV check reads `composer.lock` (OSV supports it) instead of saying no supported lockfile was found.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/secops && pnpm lint`
+  - Effort: medium
+
 - [ ] T1326 [US8] The release 0.2.6 (lead): `docs/releasing.md`, together with 025 credential rotation (founder, 2026-11-08).
