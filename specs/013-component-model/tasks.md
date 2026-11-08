@@ -612,7 +612,7 @@ The founder's request: teach OpsCrew plain PHP apps and release it as 0.2.6 (res
 US8, FR-1335–FR-1342, SC-1309). Waves: T1319 → {T1320, T1321} → {T1322, T1323} → T1324 → T1325
 (lead) → T1326 (lead).
 
-- [ ] T1319 [US8] The schema of a plain PHP app's facts and plan
+- [x] T1319 [US8] The schema of a plain PHP app's facts and plan
   - Owns: `packages/plan-schema/src/**` (+ tests)
   - Reads: research R10, `facts.ts`, `components.ts`, `plan.ts`
   - Accept:
