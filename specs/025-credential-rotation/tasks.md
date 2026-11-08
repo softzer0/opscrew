@@ -123,7 +123,7 @@ secret in any test: `fakeSecret(kind)` and `{{FAKE:<kind>}}` (`@opscrew/core/tes
 
 ## Phase 5: Wave 4
 
-- [ ] T2512 [P] [US6] The user's tokens
+- [x] T2512 [P] [US6] The user's tokens
   - Owns: `packages/agents/src/rotate/tokens*.ts` (+ tests)
   - Depends: T2505
   - Accept: plan 9: expiry or first-seen per token, `opscrew rotate <token>` checks the new one's permissions, replaces every copy, records the date and names the page to delete the old one.
