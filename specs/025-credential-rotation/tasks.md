@@ -47,7 +47,7 @@ secret in any test: `fakeSecret(kind)` and `{{FAKE:<kind>}}` (`@opscrew/core/tes
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates && pnpm lint`, and `OPSCREW_DOCKER_TESTS=1` for the new Docker tests
   - Effort: xhigh
 
-- [ ] T2504 [P] [US1] The server's `rotate.sh`
+- [x] T2504 [P] [US1] The server's `rotate.sh`
   - Owns: `packages/iac-templates/src/workflow/rotate*.ts` (+ tests), the root export in `packages/iac-templates/src/index.ts`
   - Reads: plan 3; `workflow/snapshots.ts` (the restore's approval file and hold), `workflow/switch.ts` (the switch script)
   - Depends: T2501
