@@ -149,6 +149,14 @@ const DEPENDENCY_SERVICES: Record<DependencyEcosystem, Record<string, ServiceKin
     stripe: ["stripe"],
   },
   composer: {
+    // PHP's own extensions, which a plain PHP app requires instead of a client library.
+    "ext-pdo_mysql": ["mysql"],
+    "ext-mysqli": ["mysql"],
+    "ext-pdo_pgsql": ["postgres"],
+    "ext-pgsql": ["postgres"],
+    "ext-mongodb": ["mongodb"],
+    "ext-redis": ["redis"],
+    "ext-amqp": ["amqp"],
     "predis/predis": ["redis"],
     "mongodb/mongodb": ["mongodb"],
     "mongodb/laravel-mongodb": ["mongodb"],

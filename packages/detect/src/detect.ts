@@ -22,7 +22,14 @@ import {
   isComposeFile,
   prefixedConfigNames,
 } from "./connections";
-import { isClientExposed, isEnvExampleFile, isSecretLikely, parseEnvExampleKeys } from "./env";
+import {
+  type EnvRead,
+  extractPhpEnvReads,
+  isClientExposed,
+  isEnvExampleFile,
+  isSecretLikely,
+  parseEnvExampleKeys,
+} from "./env";
 import { listProjectFiles } from "./files";
 import {
   type AppKindHints,
@@ -324,6 +331,10 @@ export async function detectProjectDetails(
           isWithin(unit.dir, file) &&
           /(?:^|\/)templates\/.+\.html?$/i.test(relativeTo(unit.dir, file)),
       ),
+      plainPhp:
+        frameworks.length === 0 &&
+        unit.manifests.includes(joinRel(unit.dir, "composer.json")) &&
+        fileSet.has(joinRel(unit.dir, "public/index.php")),
     };
     infos.push({
       unit,
@@ -356,7 +367,12 @@ export async function detectProjectDetails(
     .map((dir) => ({
       unit: { dir, manifests: [], dependencies: [] },
       frameworks: [],
-      hints: { nextStaticExport: false, astroServer: false, djangoTemplates: false },
+      hints: {
+        nextStaticExport: false,
+        astroServer: false,
+        djangoTemplates: false,
+        plainPhp: false,
+      },
       roles: new Set(),
       appKind: "unknown",
       nextConfig: undefined,
@@ -415,6 +431,7 @@ export async function detectProjectDetails(
   const inEnvScope = (path: string) => envDirs.some((dir) => isWithin(dir, path));
   const appPackage = primary?.unit.packageJson;
   const appKind: AppKind = primary?.appKind ?? "unknown";
+  const plainPhp = primary?.hints.plainPhp === true;
   const appFrameworkNames = new Set(primary?.frameworks.map((f) => f.name) ?? []);
   const searchDirs = uniqueSorted([appDir, "."]).sort((a, b) => depthOf(b) - depthOf(a));
   const findIn = (name: string) =>
@@ -437,7 +454,15 @@ export async function detectProjectDetails(
   }
   const envTexts = envFiles.map((file) => file.text);
   const envSignals = new Map([...signals].filter(([file]) => inEnvScope(file)));
-  const { envVars, configUrlSchemes, envUrls } = collectEnvVars(envSignals, envFiles);
+  // A plain PHP app's reads of its variables in its PHP code (`vendor/` is never walked).
+  const phpReads: EnvRead[] = [];
+  if (plainPhp) {
+    const phpFiles = scopedFiles.filter((file) => file.endsWith(".php") && inEnvScope(file));
+    await mapLimit(phpFiles, 16, async (file) => {
+      phpReads.push(...extractPhpEnvReads((await read(file)) ?? ""));
+    });
+  }
+  const { envVars, configUrlSchemes, envUrls } = collectEnvVars(envSignals, envFiles, phpReads);
   const envNames = envVars.map((envVar) => envVar.name);
   let composeRedis = false;
   const composeEngines = new Set<ComposeRedisEngine>();
@@ -674,7 +699,7 @@ export async function detectProjectDetails(
     ? (explicitPort ??
       (exposedPort && exposedPort <= 65535 ? exposedPort : undefined) ??
       sourcePort ??
-      defaultPort(primary?.frameworks ?? []))
+      defaultPort(primary?.frameworks ?? [], plainPhp))
     : undefined;
 
   const notes: string[] = [];
@@ -699,6 +724,20 @@ export async function detectProjectDetails(
   const vercelJson = findIn("vercel.json");
   const vercelText = vercelJson ? await read(vercelJson) : undefined;
   const cronJobs = vercelCronJobs(vercelText);
+  // A plain PHP app's `cron.php`, which its host runs every minute.
+  if (plainPhp) {
+    for (const file of ["cron.php", "bin/cron.php"]) {
+      if (!fileSet.has(joinRel(appDir, file))) continue;
+      cronJobs.push({
+        schedule: "* * * * *",
+        command: cdPrefix(`php ${file}`),
+        source: "cron.php",
+      });
+    }
+  }
+  // The folder a plain PHP app writes to and keeps.
+  const keptFiles =
+    plainPhp && scopedFiles.some((file) => isWithin(joinRel(appDir, "storage"), file));
   const platformRouting = vercelRouting(vercelText);
   const sqlite = await detectSqlite({ ...sources, envTexts, dbConnection, serverDatabase });
   const objectStorage = detectObjectStorage(serviceList, runtimeDependencies, signals, envNames);
@@ -820,6 +859,8 @@ export async function detectProjectDetails(
     }
     healthEndpoint = builtInHealthEndpoint(texts);
   }
+  // A plain PHP app answers its front page.
+  if (healthEndpoint === undefined && plainPhp) healthEndpoint = "/";
 
   // Runtime versions. A .NET project file may sit below the app folder (`src/Api/Api.csproj`).
   const dotnetProjects = scopedFiles.filter((f) => f.endsWith(".csproj") && isWithin(appDir, f));
@@ -888,6 +929,7 @@ export async function detectProjectDetails(
     ...(platformRouting ? { platformRouting } : {}),
     ...(hostedServices.length > 0 ? { hostedServices } : {}),
     ...(sqlite ? { sqlite } : {}),
+    ...(keptFiles ? { files: { dir: "storage" } } : {}),
     ...(objectStorage ? { objectStorage } : {}),
     docker: {
       ...(dockerfile ? { dockerfile } : {}),
@@ -895,6 +937,7 @@ export async function detectProjectDetails(
       ...(dockerignore ? { dockerignore } : {}),
     },
     ...(healthEndpoint ? { healthEndpoint } : {}),
+    ...(plainPhp ? { webRoot: "public" } : {}),
     monorepo,
     // Always set: `.` when the facts describe the repository root.
     appDir,
@@ -960,11 +1003,13 @@ async function redisModuleCallers(
  * The app's environment variables: the names the code reads, every name of an example env file,
  * and the names Flask loads by prefix (`app.config.from_prefixed_env()`) from the other committed
  * env files. Values are only looked at for their URL scheme and host (`configUrlSchemes`, each
- * variable's `urlScheme`, and `envUrls`, the first file's URL per variable), never kept.
+ * variable's `urlScheme`, and `envUrls`, the first file's URL per variable), never kept. PHP code's
+ * reads (`phpReads`) add no name: they only give a default to a name found otherwise.
  */
 function collectEnvVars(
   signals: ReadonlyMap<string, SourceSignals>,
   committedEnvFiles: readonly { path: string; text: string }[],
+  phpReads: readonly EnvRead[],
 ): {
   envVars: ProjectFacts["envVars"];
   configUrlSchemes: Set<string>;
@@ -979,10 +1024,12 @@ function collectEnvVars(
   // A variable has a default only when every read in the code has one; names found only in
   // example env files stay required.
   const envDefaults = new Map<string, boolean>();
+  const addRead = (envRead: EnvRead) =>
+    envDefaults.set(envRead.name, (envDefaults.get(envRead.name) ?? true) && envRead.hasDefault);
   for (const [file, found] of signals) {
     for (const envRead of found.envReads) {
       addEnv(envRead.name, file);
-      envDefaults.set(envRead.name, (envDefaults.get(envRead.name) ?? true) && envRead.hasDefault);
+      addRead(envRead);
     }
   }
   const configPrefixes = new Set<string>();
@@ -1002,6 +1049,7 @@ function collectEnvVars(
     const wanted = isEnvExampleFile(file) ? names : prefixedConfigNames(names, configPrefixes);
     for (const name of wanted) addEnv(name, file);
   }
+  for (const envRead of phpReads) if (envFiles.has(envRead.name)) addRead(envRead);
   const envVars = sortStrings(envFiles.keys()).map((name) => ({
     name,
     files: sortStrings(envFiles.get(name) ?? []),

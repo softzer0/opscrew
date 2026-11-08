@@ -1,0 +1,15 @@
+{
+  "name": "acme/guestbook",
+  "description": "A small guestbook made for shared hosting.",
+  "type": "project",
+  "require": {
+    "php": ">=8.3",
+    "ext-pdo_mysql": "*"
+  },
+  "require-dev": {
+    "ext-pdo_pgsql": "*"
+  },
+  "autoload": {
+    "psr-4": { "Guestbook\\": "src/" }
+  }
+}

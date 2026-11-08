@@ -268,6 +268,48 @@ export function extractEnvReads(text: string): EnvRead[] {
     .map(([name, hasDefault]) => ({ name, hasDefault }));
 }
 
+/** An upper-case variable name in single or double quotes. */
+const PHP_NAME = `["']([A-Z][A-Z0-9_]*)["']`;
+
+/**
+ * PHP's reads of a variable, each with the text that gives it a default right after the match:
+ * `env('X', …)` and `->string|int|bool|float('X', …)` a second argument, `getenv('X') ?: …`,
+ * `$_ENV['X'] ?? …` and `$_SERVER['X'] ?? …`.
+ */
+const PHP_READS: readonly { pattern: RegExp; fallback: RegExp }[] = [
+  { pattern: new RegExp(`(?<![\\w$>:])env\\(\\s*${PHP_NAME}`, "g"), fallback: /^\s*,/ },
+  {
+    pattern: new RegExp(`->(?:string|int|bool|float)\\(\\s*${PHP_NAME}`, "g"),
+    fallback: /^\s*,/,
+  },
+  {
+    pattern: new RegExp(`(?<![\\w$>:])getenv\\(\\s*${PHP_NAME}(?:\\s*,[^)]*)?\\s*\\)`, "g"),
+    fallback: /^\s*\?:/,
+  },
+  { pattern: new RegExp(`\\$_(?:ENV|SERVER)\\[\\s*${PHP_NAME}\\s*\\]`, "g"), fallback: /^\s*\?\?/ },
+];
+
+/** PHP fallbacks that are no default: `null` (any case), `exit` and `die`. */
+const PHP_PLACEHOLDER = /^\s*(?:null|exit|die)\b/i;
+
+/**
+ * Every read of an environment variable in PHP code ({@link PHP_READS}), in no particular order,
+ * each with whether it has a real default (an empty string, `null`, `exit` or `die` is none).
+ */
+export function extractPhpEnvReads(text: string): EnvRead[] {
+  return PHP_READS.flatMap(({ pattern, fallback }) =>
+    [...text.matchAll(pattern)].map((match) => {
+      const end = match.index + match[0].length;
+      const after = text.slice(end, end + 200);
+      const operator = fallback.exec(after);
+      const value = operator === null ? undefined : after.slice(operator[0].length);
+      const hasDefault =
+        value !== undefined && isRealDefault(value) && !PHP_PLACEHOLDER.test(value);
+      return { name: match[1] as string, hasDefault };
+    }),
+  );
+}
+
 /** Environment-variable names referenced in source text (sorted, unique). */
 export function extractEnvReferences(text: string): string[] {
   return extractEnvReads(text).map((read) => read.name);

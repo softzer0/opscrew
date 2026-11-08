@@ -102,6 +102,8 @@ export interface AppKindHints {
   astroServer: boolean;
   /** Django project has HTML templates. */
   djangoTemplates: boolean;
+  /** A PHP app with no known framework: `composer.json` and a `public/index.php` front controller. */
+  plainPhp: boolean;
 }
 
 /** Does the unit's dependency list include an Astro server adapter? */
@@ -132,6 +134,8 @@ export function effectiveRoles(
       roles.add(restOnly ? "server" : "fullstack");
     } else roles.add(framework.role);
   }
+  // A plain PHP app renders its pages on the server.
+  if (hints.plainPhp) roles.add("fullstack");
   return roles;
 }
 
@@ -161,8 +165,12 @@ export function isServerUnit(unit: Unit, roles: ReadonlySet<FrameworkRole>): boo
   );
 }
 
-/** Default listening port of the unit's main framework. */
-export function defaultPort(frameworks: readonly DetectedFramework[]): number | undefined {
+/** Default listening port of the unit's main framework (a plain PHP app: Railpack's 8080). */
+export function defaultPort(
+  frameworks: readonly DetectedFramework[],
+  plainPhp: boolean,
+): number | undefined {
+  if (plainPhp) return 8080;
   const names = new Set(frameworks.map((f) => f.name));
   if (["next", "nuxt", "remix", "react-router"].some((n) => names.has(n))) return 3000;
   if (names.has("sveltekit") || names.has("astro")) return 3000;

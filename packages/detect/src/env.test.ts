@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractEnvReads } from "./env";
+import { extractEnvReads, extractPhpEnvReads } from "./env";
 import {
   extractEnvReferences,
   isClientExposed,
@@ -153,6 +153,69 @@ describe("extractEnvReads", () => {
       { name: "API_URL", hasDefault: false },
       { name: "PY_VAR", hasDefault: false },
     ]);
+  });
+});
+
+describe("extractPhpEnvReads", () => {
+  const defaults = (text: string) =>
+    Object.fromEntries(extractPhpEnvReads(text).map((read) => [read.name, read.hasDefault]));
+
+  it("records PHP reads with a default, in single or double quotes", () => {
+    const text = [
+      "<?php",
+      "$a = env('APP_ENV', 'production');",
+      '$b = env("LOG_LEVEL", "info");',
+      "$c = getenv('DB_HOST') ?: '127.0.0.1';",
+      '$d = (int) ($_ENV["DB_PORT"] ?? 3306);',
+      "$e = $_SERVER['DB_DATABASE'] ?? 'app';",
+      "$f = $config->string('MAIL_FROM', 'app@example.test');",
+      '$g = $config->int("QUEUE_TRIES", 3);',
+      "$h = $config->bool('APP_DEBUG', false);",
+      "$i = $config->float('RATE', 1.5);",
+    ].join("\n");
+    expect(defaults(text)).toEqual({
+      APP_DEBUG: true,
+      APP_ENV: true,
+      DB_DATABASE: true,
+      DB_HOST: true,
+      DB_PORT: true,
+      LOG_LEVEL: true,
+      MAIL_FROM: true,
+      QUEUE_TRIES: true,
+      RATE: true,
+    });
+  });
+
+  it("records PHP reads without a default, or with a placeholder one", () => {
+    const text = [
+      "<?php",
+      "$a = env('APP_KEY');",
+      "$b = getenv('DB_USERNAME');",
+      "$c = $_ENV['DB_PASSWORD'] ?? '';",
+      "$d = $_SERVER['API_TOKEN'] ?? null;",
+      "$e = env('SECRET', null);",
+      // getenv's second argument is `local_only`, not a default.
+      "$f = getenv('LOCAL_ONLY', true);",
+      "$g = $config->string('MAIL_HOST');",
+      // A lower-case name is no environment variable.
+      "$h = env('app.name', 'x');",
+      // PHP constants ignore case; `exit` and `die` stop the app.
+      "$i = env('UPPER_NULL', NULL);",
+      "$j = getenv('STOPS') ?: exit;",
+      "$k = $_ENV['DIES'] ?? die('missing');",
+    ].join("\n");
+    expect(defaults(text)).toEqual({
+      API_TOKEN: false,
+      APP_KEY: false,
+      DB_PASSWORD: false,
+      DB_USERNAME: false,
+      DIES: false,
+      LOCAL_ONLY: false,
+      MAIL_HOST: false,
+      SECRET: false,
+      STOPS: false,
+      UPPER_NULL: false,
+    });
   });
 });
 

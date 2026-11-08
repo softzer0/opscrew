@@ -19,6 +19,7 @@ const FIXTURE_NAMES = [
   "monorepo-two-apps",
   "nextjs-prisma-postgres",
   "nextjs-static-export",
+  "php-plain",
   "python-requirements",
   "replit-express",
   "static-vite",
@@ -646,5 +647,144 @@ describe("the app's own Dockerfile", () => {
       "docker/Dockerfile.prod": "FROM node:24\n",
     });
     expect((await detectProject(root)).docker.dockerfile).toBe("docker/Dockerfile.prod");
+  });
+});
+
+describe("plain PHP apps", () => {
+  const php = (composer: Record<string, unknown>, files: Record<string, string> = {}) =>
+    tree({
+      "composer.json": JSON.stringify({ name: "acme/site", ...composer }),
+      "public/index.php": "<?php\necho 'hello';\n",
+      ...files,
+    });
+
+  it("is a server-rendered web app on 8080 serving public/, healthy at /", async () => {
+    const facts = await detectProject(await php({ require: { php: ">=8.3" } }));
+    expect(facts.appKind).toBe("fullstack");
+    expect(facts.port).toBe(8080);
+    expect(facts.healthEndpoint).toBe("/");
+    expect(facts.webRoot).toBe("public");
+    expect(facts.frameworks).toEqual([]);
+  });
+
+  it("stays unknown without public/index.php", async () => {
+    const root = await tree({
+      "composer.json": JSON.stringify({ require: { php: ">=8.3" } }),
+      "index.php": "<?php\necho 'hello';\n",
+    });
+    const facts = await detectProject(root);
+    expect(facts.appKind).toBe("unknown");
+    expect(facts.webRoot).toBeUndefined();
+  });
+
+  it("needs composer.json: public/index.php beside another manifest stays as today", async () => {
+    const root = await tree({
+      "package.json": JSON.stringify({ name: "site", dependencies: { lodash: "^4" } }),
+      "public/index.php": "<?php\necho 'hello';\n",
+      "storage/.gitignore": "*\n!.gitignore\n",
+    });
+    const facts = await detectProject(root);
+    expect(facts.appKind).toBe("unknown");
+    expect(facts.port).toBeUndefined();
+    expect(facts.webRoot).toBeUndefined();
+    expect(facts.files).toBeUndefined();
+  });
+
+  it("runs the services of composer.json's required extensions, never require-dev's", async () => {
+    const facts = await detectProject(
+      await php({
+        require: {
+          "ext-pdo_mysql": "*",
+          "ext-mysqli": "*",
+          "ext-pdo_pgsql": "*",
+          "ext-pgsql": "*",
+          "ext-mongodb": "*",
+          "ext-redis": "*",
+          "ext-amqp": "*",
+        },
+      }),
+    );
+    expect(facts.services.map(({ kind, evidence }) => ({ kind, evidence }))).toEqual([
+      { kind: "amqp", evidence: ["dependency:ext-amqp"] },
+      { kind: "mongodb", evidence: ["dependency:ext-mongodb"] },
+      { kind: "mysql", evidence: ["dependency:ext-mysqli", "dependency:ext-pdo_mysql"] },
+      { kind: "postgres", evidence: ["dependency:ext-pdo_pgsql", "dependency:ext-pgsql"] },
+      { kind: "redis", evidence: ["dependency:ext-redis"] },
+    ]);
+    const dev = await detectProject(await php({ "require-dev": { "ext-pdo_mysql": "*" } }));
+    expect(dev.services).toEqual([]);
+  });
+
+  it("makes a variable optional that PHP code reads with a default, and adds no name", async () => {
+    const facts = await detectProject(
+      await php(
+        { require: {} },
+        {
+          ".env.example": "DB_HOST=\nDB_PORT=\nDB_NAME=\nDB_USERNAME=\nAPP_URL=\n",
+          "src/config.php": [
+            "<?php",
+            "return [",
+            "  'host' => getenv('DB_HOST') ?: 'localhost',",
+            "  'port' => $_ENV['DB_PORT'] ?? 3306,",
+            "  'name' => env('DB_NAME', 'app'),",
+            "  'user' => getenv('DB_USERNAME'),",
+            "  'flag' => getenv('EXTRA_FLAG') ?: 'off',",
+            "];",
+          ].join("\n"),
+          // Read again without a default: the variable is required.
+          "src/db.php": "<?php\n$host = getenv('DB_HOST');\n$port = $_ENV['DB_PORT'] ?? 3306;\n",
+          "assets/app.js": "const name = process.env.DB_NAME;\n",
+        },
+      ),
+    );
+    expect(
+      Object.fromEntries(facts.envVars.map((v) => [v.name, [v.files, v.hasDefault ?? false]])),
+    ).toEqual({
+      APP_URL: [[".env.example"], false],
+      DB_HOST: [[".env.example"], false],
+      DB_NAME: [[".env.example", "assets/app.js"], false],
+      DB_PORT: [[".env.example"], true],
+      DB_USERNAME: [[".env.example"], false],
+    });
+  });
+
+  it("keeps its storage/ folder", async () => {
+    const facts = await detectProject(
+      await php({ require: {} }, { "storage/.gitignore": "*\n!.gitignore\n" }),
+    );
+    expect(facts.files).toEqual({ dir: "storage" });
+    expect((await detectProject(await php({ require: {} }))).files).toBeUndefined();
+  });
+
+  it("runs cron.php at the root or bin/cron.php every minute", async () => {
+    const root = await detectProject(await php({ require: {} }, { "cron.php": "<?php\n" }));
+    expect(root.cronJobs).toEqual([
+      { schedule: "* * * * *", command: "php cron.php", source: "cron.php" },
+    ]);
+    const bin = await detectProject(await php({ require: {} }, { "bin/cron.php": "<?php\n" }));
+    expect(bin.cronJobs).toEqual([
+      { schedule: "* * * * *", command: "php bin/cron.php", source: "cron.php" },
+    ]);
+  });
+
+  it("leaves Laravel's facts as they are", async () => {
+    const facts = await detectProject(
+      await php(
+        { require: { "laravel/framework": "^11.0" } },
+        {
+          ".env.example": "DB_HOST=127.0.0.1\n",
+          "config/database.php": "<?php\nreturn ['host' => env('DB_HOST', '127.0.0.1')];\n",
+          "storage/app/.gitignore": "*\n!.gitignore\n",
+          "bin/cron.php": "<?php\n",
+        },
+      ),
+    );
+    expect(facts.appKind).toBe("fullstack");
+    expect(facts.port).toBe(8000);
+    expect(facts.webRoot).toBeUndefined();
+    expect(facts.files).toBeUndefined();
+    expect(facts.cronJobs).toBeUndefined();
+    expect(facts.healthEndpoint).toBeUndefined();
+    expect(facts.envVars.find((v) => v.name === "DB_HOST")?.hasDefault).toBeUndefined();
   });
 });

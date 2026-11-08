@@ -1,0 +1,69 @@
+{
+  "name": "php-plain",
+  "languages": ["php"],
+  "packageManager": "none",
+  "frameworks": [],
+  "appKind": "fullstack",
+  "platformExport": { "platform": "none", "evidence": [] },
+  "build": {},
+  "port": 8080,
+  "runtimeVersions": { "php": ">=8.3" },
+  "envVars": [
+    {
+      "name": "APP_ENV",
+      "files": [".env.example"],
+      "clientExposed": false,
+      "secretLikely": false,
+      "hasDefault": true
+    },
+    { "name": "APP_URL", "files": [".env.example"], "clientExposed": false, "secretLikely": false },
+    {
+      "name": "DB_DATABASE",
+      "files": [".env.example"],
+      "clientExposed": false,
+      "secretLikely": false,
+      "hasDefault": true
+    },
+    {
+      "name": "DB_HOST",
+      "files": [".env.example"],
+      "clientExposed": false,
+      "secretLikely": false,
+      "hasDefault": true
+    },
+    {
+      "name": "DB_PASSWORD",
+      "files": [".env.example"],
+      "clientExposed": false,
+      "secretLikely": true
+    },
+    {
+      "name": "DB_PORT",
+      "files": [".env.example"],
+      "clientExposed": false,
+      "secretLikely": false,
+      "hasDefault": true
+    },
+    {
+      "name": "DB_USERNAME",
+      "files": [".env.example"],
+      "clientExposed": false,
+      "secretLikely": false
+    },
+    {
+      "name": "LOG_LEVEL",
+      "files": [".env.example"],
+      "clientExposed": false,
+      "secretLikely": false,
+      "hasDefault": true
+    }
+  ],
+  "services": [{ "kind": "mysql", "evidence": ["dependency:ext-pdo_mysql"] }],
+  "cronJobs": [{ "schedule": "* * * * *", "command": "php bin/cron.php", "source": "cron.php" }],
+  "files": { "dir": "storage" },
+  "docker": {},
+  "healthEndpoint": "/",
+  "webRoot": "public",
+  "monorepo": false,
+  "appDir": "."
+}
