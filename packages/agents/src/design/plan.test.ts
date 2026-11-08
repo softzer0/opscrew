@@ -12,7 +12,7 @@ import {
   serviceOf,
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { assembleAppEnv, parseDotenv } from "../shared";
+import { assembleAppEnv, parseDotenv, urlService } from "../shared";
 import {
   autoBuild,
   euCatalog,
@@ -909,5 +909,174 @@ describe("examples/rails-api and examples/laravel-app: production defaults", () 
     const assembled = await assembleAppEnv({ plan, ask: async () => ({ skip: true }) });
     expect(assembled.values.app).toMatchObject({ APP_ENV: "production", APP_DEBUG: "false" });
     expect(serializeArtifact("plan", plan)).not.toContain(assembled.values.app.APP_KEY as string);
+  });
+});
+
+describe("detect's php-plain and laravel-sail fixtures: facts → plan → production environment (US8)", () => {
+  const DOMAIN = "guestbook.example.com";
+  async function fixturePlan(name: string, domain?: string) {
+    const root = fileURLToPath(new URL(`../../../detect/test/fixtures/${name}/`, import.meta.url));
+    const facts = await detectProject(root);
+    const requirements = makeRequirements(
+      domain === undefined ? {} : { dnsProvider: "other", domain },
+    );
+    const [option] = await buildDesignOptions({ facts, requirements, catalog: euCatalog() });
+    if (!option) throw new Error("no option");
+    return optionToPlan(option, {
+      facts,
+      requirements,
+      now: NOW,
+      codeChanges: deriveCodeChanges(facts, autoBuild(facts).builder),
+      build: autoBuild(facts),
+    });
+  }
+  const derived = (name: string, secret = false) => ({ name, secret, source: "derived" });
+
+  it("refuses a kept folder in the user's own image without a WORKDIR, as SQLite's", async () => {
+    const facts = makeFacts({ docker: { dockerfile: "Dockerfile" }, files: { dir: "uploads" } });
+    const requirements = makeRequirements();
+    const [option] = await buildDesignOptions({ facts, requirements, catalog: euCatalog() });
+    if (!option) throw new Error("no option");
+    expect(() =>
+      optionToPlan(option, {
+        facts,
+        requirements,
+        now: NOW,
+        codeChanges: [],
+        build: autoBuild(facts),
+      }),
+    ).toThrow(
+      expect.objectContaining({
+        code: "INVALID_INPUT",
+        message:
+          "The app keeps the folder uploads/ on a persistent volume, but OpsCrew does not know the folder the app runs in, because the last stage of your Dockerfile (Dockerfile) has no WORKDIR with an absolute path. plan.yaml was not changed.",
+      }),
+    );
+    // Railpack's image has a known layout: the folder is kept there.
+    const php = makeFacts({
+      languages: ["php"],
+      packageManager: "none",
+      files: { dir: "uploads" },
+    });
+    const plan = optionToPlan(option, {
+      facts: php,
+      requirements,
+      now: NOW,
+      codeChanges: [],
+      build: autoBuild(php),
+    });
+    expect(plan.app.build?.builder).toBe("railpack");
+    expect(plan.storage).toEqual({ files: { dir: "uploads" } });
+  });
+
+  it("builds a plain PHP app with Railpack from public/, keeps storage/ and runs bin/cron.php", async () => {
+    const plan = await fixturePlan("php-plain", DOMAIN);
+    expect(plan.app.build).toMatchObject({
+      builder: "railpack",
+      runtime: { language: "php" },
+      webRoot: "public",
+    });
+    expect(plan.app).toMatchObject({ port: 8080, healthPath: "/" });
+    expect(plan.codeChanges.map((change) => change.kind)).not.toContain("health-endpoint");
+    expect(plan.services.map((service) => service.kind)).toEqual(["mysql"]);
+    expect(plan.storage).toEqual({ files: { dir: "storage" } });
+    // Files, unlike SQLite, are safe for two web containers at once.
+    expect(plan.deploy.strategy).not.toBe("recreate");
+    expect(plan.processes.cron).toEqual([
+      { name: "cron", schedule: "* * * * *", command: "php bin/cron.php", enabled: true },
+    ]);
+    expect(plan.app.env).toEqual([
+      derived("APP_ENV"),
+      derived("APP_URL"),
+      derived("DATABASE_URL", true),
+      derived("DB_DATABASE"),
+      derived("DB_HOST"),
+      derived("DB_PASSWORD", true),
+      derived("DB_PORT"),
+      derived("DB_USERNAME"),
+      // The only value the user may give: the code has a default for it.
+      { name: "LOG_LEVEL", secret: false, source: "user", optional: true },
+    ]);
+  });
+
+  it("provisions the plain PHP app from an empty env file, its password only where values belong", async () => {
+    const plan = await fixturePlan("php-plain", DOMAIN);
+    const env = await assembleAppEnv({ plan, dotenvText: "" });
+    const password = env.values.services.mysql?.password as string;
+    expect(env.values.app).toMatchObject({
+      APP_ENV: "production",
+      APP_URL: `https://${DOMAIN}`,
+      DB_DATABASE: "app",
+      DB_HOST: "mysql",
+      DB_PASSWORD: password,
+      DB_PORT: "3306",
+      DB_USERNAME: "app",
+    });
+    expect(parseDotenv(env.appEnv).get("DB_PASSWORD")).toBe(password);
+    expect(env.defaulted).toEqual(["LOG_LEVEL"]);
+    expect(env.names.join(" ")).not.toContain(password);
+    expect(serializeArtifact("plan", plan)).not.toContain(password);
+    // Without a domain, the server's address.
+    const bare = await fixturePlan("php-plain");
+    const onAddress = await assembleAppEnv({
+      plan: bare,
+      dotenvText: "",
+      serverHost: "203.0.113.7",
+    });
+    expect(onAddress.values.app.APP_URL).toBe("http://203.0.113.7");
+  });
+
+  it("gives a Laravel app with Sail its PostgreSQL settings and keeps the values that chose its services", async () => {
+    const plan = await fixturePlan("laravel-sail", DOMAIN);
+    expect(plan.app.build).toMatchObject({ builder: "railpack", runtime: { language: "php" } });
+    expect(plan.app.build?.webRoot).toBeUndefined();
+    expect(plan.storage).toEqual({ files: { dir: "storage/app" } });
+    const byName = Object.fromEntries(plan.app.env.map((variable) => [variable.name, variable]));
+    // As host lists: derived, optional as the code has a default.
+    expect(byName.APP_URL).toEqual({ ...derived("APP_URL"), optional: true });
+    for (const name of [
+      "CACHE_STORE",
+      "DB_CONNECTION",
+      "DB_DATABASE",
+      "DB_HOST",
+      "DB_PORT",
+      "DB_USERNAME",
+      "QUEUE_CONNECTION",
+      "SESSION_DRIVER",
+    ]) {
+      expect(byName[name], name).toEqual(derived(name));
+    }
+    expect(byName.DB_PASSWORD).toEqual(derived("DB_PASSWORD", true));
+    expect(byName.REDIS_HOST).toEqual(derived("REDIS_HOST"));
+    expect(byName.REDIS_PASSWORD).toEqual(derived("REDIS_PASSWORD", true));
+    expect(byName.REDIS_PORT).toEqual(derived("REDIS_PORT"));
+    const asked: string[] = [];
+    const env = await assembleAppEnv({
+      plan,
+      ask: async (question) => {
+        asked.push(question.name);
+        return { skip: true };
+      },
+    });
+    // Nothing of its database or Redis is asked.
+    expect(asked.filter((name) => /^(?:DB_|REDIS_(?:HOST|PORT|PASSWORD)$)/.test(name))).toEqual([]);
+    const redis = urlService(plan, "redis");
+    const redisPassword = env.values.services[redis?.name ?? ""]?.password;
+    expect(redisPassword).toMatch(/^[0-9a-f]{64}$/);
+    expect(env.values.app).toMatchObject({
+      REDIS_HOST: redis?.name,
+      REDIS_PASSWORD: redisPassword,
+      REDIS_PORT: "6379",
+      APP_URL: `https://${DOMAIN}`,
+      CACHE_STORE: "redis",
+      DB_CONNECTION: "pgsql",
+      DB_DATABASE: "app",
+      DB_HOST: "db",
+      DB_PASSWORD: env.values.db?.password,
+      DB_PORT: "5432",
+      DB_USERNAME: "app",
+      QUEUE_CONNECTION: "redis",
+      SESSION_DRIVER: "redis",
+    });
   });
 });

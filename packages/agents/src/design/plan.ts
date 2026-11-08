@@ -20,9 +20,10 @@ import { defaultBranchOf } from "../environments/branches";
 import { type LocalhostDesignChoice, localhostTarget } from "../localhost/design";
 import { providerProfile } from "../providers";
 import {
+  addressVariable,
+  choosingSettingValue,
   deepDomainProblem,
   FRAMEWORK_ENV,
-  hostListKind,
   STORAGE_VARIABLES,
   serviceAppVariables,
   serviceUrlKind,
@@ -122,6 +123,7 @@ function targetFor(
       builder: input.build?.builder,
       cron: components.processes.cron.some((job) => job.enabled),
       sqlite: components.storage?.sqlite !== undefined,
+      files: components.storage?.files !== undefined,
     });
   }
   if (target.provider === "portainer") {
@@ -161,6 +163,28 @@ function targetFor(
 const GENERATED_SECRETS =
   /^(?:DJANGO_)?SECRET_KEY$|^(?:NEXTAUTH|AUTH|BETTER_AUTH|SESSION|JWT|COOKIE)_SECRET$|^FLASK_(?:SECRET_KEY|JWT_SECRET_KEY|WTF_CSRF_SECRET_KEY)$/;
 
+/**
+ * The settings a plain PHP app reads as Laravel does, planned `derived` when it reads them: their
+ * production values are Laravel's (`fixedProductionValue`: `production`, `false`).
+ */
+const PLAIN_PHP_FIXED = ["APP_ENV", "APP_DEBUG"] as const;
+
+/**
+ * The variables whose value in the app's example is the evidence that picked a service
+ * (`env:DB_CONNECTION=pgsql`, `env:QUEUE_CONNECTION=redis`), when `owner`'s services give them
+ * that value ({@link choosingSettingValue}).
+ */
+function choosingSettings(facts: ProjectFacts, owner: Pick<Components, "services">): Set<string> {
+  const names = new Set<string>();
+  for (const evidence of facts.services.flatMap((service) => service.evidence)) {
+    const match = /^env:(\w+)=(.+)$/.exec(evidence);
+    if (match?.[1] !== undefined && choosingSettingValue(match[1], owner) === match[2]) {
+      names.add(match[1]);
+    }
+  }
+  return names;
+}
+
 /** Port the app container listens on (static sites are served by Caddy on 8080). */
 export function appPortFor(facts: ProjectFacts): number {
   const fallback = facts.languages.includes("python") ? 8000 : 3000;
@@ -195,8 +219,10 @@ export function withServerThreads(
  * answered. The image's builder comes from `input.build` (Buildpacks and Railpack build an app in a
  * subfolder from that folder), and the deploy strategy from the option's server and SQLite
  * (`deployStrategyFor`). The variables the services and the object storage fill come from the
- * catalog ({@link serviceAppVariables}), and `CRON_SECRET` is generated for route jobs. Every
- * documented default is filled by `DeployPlanSchema`.
+ * catalog ({@link serviceAppVariables}), and `CRON_SECRET` is generated for route jobs. Host lists
+ * and `APP_URL`, a plain PHP app's `APP_ENV` and `APP_DEBUG`, and the values of the app's example
+ * that chose a service ({@link choosingSettings}) are derived; a plain PHP app built by Railpack
+ * gets its web root (`app.build.webRoot`). Every documented default is filled by `DeployPlanSchema`.
  * @throws ZodError when the result is not a valid plan (a bug, never user input).
  */
 export function optionToPlan(option: DesignOption, input: OptionToPlanInput): DeployPlan {
@@ -223,10 +249,11 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
     env.set(variable.name, {
       name: variable.name,
       secret: variable.secretLikely,
-      // Host lists come from the deployment (its domain or server), never from the user.
+      // Host lists and APP_URL come from the deployment (its domain or server), never from the
+      // user.
       source: GENERATED_SECRETS.test(variable.name)
         ? "generated"
-        : hostListKind(variable.name) !== undefined
+        : addressVariable(variable.name)
           ? "derived"
           : "user",
       // A code default for a secret is a development placeholder: production needs a value.
@@ -241,6 +268,13 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
       env.set(name, { name, secret: true, source: "generated" });
     }
   }
+  // A plain PHP app that reads Laravel's names for them gets the same production values.
+  if (facts.webRoot !== undefined) {
+    for (const name of PLAIN_PHP_FIXED) if (env.has(name)) env.set(name, derived(name, false));
+  }
+  // A value of the app's example that chose a service (`DB_CONNECTION=pgsql`) stays that value,
+  // even where the code has a default: without it, the app would not use the service.
+  for (const name of choosingSettings(facts, components)) env.set(name, derived(name, false));
   // Vercel's cron jobs send the generated secret the app checks (FR-1309).
   if (components.processes.cron.some((job) => job.enabled && job.route !== undefined)) {
     env.set("CRON_SECRET", { name: "CRON_SECRET", secret: true, source: "generated" });
@@ -329,6 +363,12 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
               ...(build.builder === "own-dockerfile" && facts.build.workdir !== undefined
                 ? { workdir: facts.build.workdir }
                 : {}),
+              // The folder a plain PHP app serves, so Railpack serves nothing else of it.
+              ...(build.builder === "railpack" &&
+              build.runtime.language === "php" &&
+              facts.webRoot !== undefined
+                ? { webRoot: facts.webRoot }
+                : {}),
             },
           }),
     },
@@ -365,18 +405,21 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
     supplyChain: { sign: serverless === undefined && (requirements.signImages ?? false) },
   });
   for (const variable of storageEnv(facts, plan)) env.set(variable.name, variable);
-  // The SQLite volume is mounted in the folder the app runs in, which OpsCrew must know (the user's
-  // own Dockerfile needs a literal WORKDIR). A database moved into a folder of its own: its
-  // variable points the app there.
+  // The SQLite and kept folders' volumes are mounted in the folder the app runs in, which OpsCrew
+  // must know (the user's own Dockerfile needs a literal WORKDIR). A database moved into a folder
+  // of its own: its variable points the app there.
   const sqlite = components.storage?.sqlite;
+  const files = components.storage?.files;
   const move = sqlite === undefined ? undefined : sqliteMove(facts);
-  if (sqlite !== undefined && appRoot(plan) === undefined) {
+  if ((sqlite !== undefined || files !== undefined) && appRoot(plan) === undefined) {
     const unknown = `OpsCrew does not know the folder the app runs in, because the last stage of your Dockerfile (${plan.app.dockerfile}) has no WORKDIR with an absolute path. plan.yaml was not changed.`;
     throw new OpsCrewError(
       "INVALID_INPUT",
-      move === undefined
-        ? `The app keeps its SQLite database in ${sqlite.dir}/ on a persistent volume, but ${unknown}`
-        : `The app keeps its SQLite database in ${move.from}/, which also holds the app's own files, so OpsCrew would move it to ${move.dir}/ and point ${move.variable} there. It cannot: ${unknown}`,
+      sqlite === undefined
+        ? `The app keeps the folder ${files?.dir}/ on a persistent volume, but ${unknown}`
+        : move === undefined
+          ? `The app keeps its SQLite database in ${sqlite.dir}/ on a persistent volume, but ${unknown}`
+          : `The app keeps its SQLite database in ${move.from}/, which also holds the app's own files, so OpsCrew would move it to ${move.dir}/ and point ${move.variable} there. It cannot: ${unknown}`,
       {
         hint: `Add a WORKDIR with an absolute path to the last stage of ${plan.app.dockerfile} (for example WORKDIR /app), then run \`opscrew analyze\` and \`opscrew design\` again.`,
       },

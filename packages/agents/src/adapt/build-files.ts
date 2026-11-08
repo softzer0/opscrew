@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { exists } from "@opscrew/core";
 import {
   type DockerAssetOptions,
+  filesFolder,
   imageDigest,
   type RenderedFile,
   renderDockerAssets,
@@ -61,8 +62,9 @@ export async function renderDockerFiles(
     dockerfile,
     // The cron service runs supercronic from the app's image.
     ...(supercronic === undefined ? {} : { supercronic }),
-    // The SQLite volume takes the owner of this folder in the image OpsCrew's Dockerfile builds.
-    ...(dockerfile ? { sqliteFolder: sqliteFolder(plan) } : {}),
+    // The SQLite and kept folders' volumes take the owner of these folders in the image OpsCrew's
+    // Dockerfile builds.
+    ...(dockerfile ? { sqliteFolder: sqliteFolder(plan), filesFolder: filesFolder(plan) } : {}),
   };
   // The images the templates have no pin for, found by rendering once without digests.
   const unpinned = new Set<string>();

@@ -27,6 +27,7 @@ import {
   ServiceKindSchema,
 } from "@opscrew/plan-schema";
 import { localhostHostSettingProblem } from "../localhost/preflight";
+import { splitDatabase, sqlDatabases } from "../shared/app-env";
 import { appMemoryLimits, type MemoryLimit, SYSTEM_RESERVE_MB } from "../shared/memory";
 import { backgroundJobLibraries } from "./background-jobs";
 import { convertMoney } from "./cost";
@@ -757,15 +758,29 @@ function cronName(route: string): string {
 }
 
 /**
- * The cron jobs of `vercel.json` (FR-1308, FR-1309), each calling its route; a previous job for
- * the same route keeps its name and whether it runs, and the user's command jobs stay.
+ * The cron jobs of `vercel.json` (FR-1308, FR-1309), each calling its route, and a plain PHP
+ * app's `cron.php` run as a command (FR-1342); a previous job for the same route keeps its name
+ * and whether it runs, and the previous command jobs stay as plan.yaml has them, the `cron.php`
+ * job among them once planned (a previous job that runs the same file, whatever its arguments). A
+ * new job takes a name no previous command job has.
  */
 function cronFor(facts: ProjectFacts, previous: DeployPlan | undefined, notes: Notes): CronJob[] {
   const before = previous?.processes.cron ?? [];
-  const taken = new Set<string>();
+  const taken = new Set(before.flatMap((job) => (job.command === undefined ? [] : [job.name])));
   const jobs: CronJob[] = [];
   for (const found of facts.cronJobs ?? []) {
-    if (found.source !== "vercel.json") continue;
+    if (found.source === "cron.php") {
+      // A previous job that runs the same file (with the user's arguments, say) is that job.
+      const file = found.command.split(/\s+/)[1];
+      if (before.some((job) => job.command?.split(/\s+/).includes(file ?? found.command))) continue;
+      const name = unique("cron", taken);
+      taken.add(name);
+      jobs.push({ name, schedule: found.schedule, command: found.command, enabled: true });
+      if (previous !== undefined) {
+        notes.changed.push(`Added the cron job ${name}: ${found.command} on ${found.schedule}.`);
+      }
+      continue;
+    }
     const old = before.find((job) => job.route === found.route);
     const name = old?.name ?? unique(cronName(found.route), taken);
     taken.add(name);
@@ -985,7 +1000,8 @@ const STANDS_FOR: Readonly<Partial<Record<SelfHostedServiceKind, readonly Servic
  * - services by kind with the catalog's version and memory and one reason each; a kind is kept
  *   external when the interview keeps it, a hosted one unless it answered no
  *   (`keepExternalServices`), or when OpsCrew cannot run it (Cassandra);
- * - workers and cron jobs, and `storage.sqlite` for an app on SQLite;
+ * - workers and cron jobs, `storage.sqlite` for an app on SQLite and `storage.files` for the
+ *   folder an app writes to and keeps (`facts.files`);
  * - object storage for an app with an S3 client only when the interview lets OpsCrew create a
  *   bucket (FR-1316a): the interview's choice, else the cheapest option for where it runs that is
  *   not opt-in, with Garage as a service on the server when it is the choice;
@@ -1096,18 +1112,16 @@ export function designComponents(input: {
   );
   const sqlite =
     facts.sqlite === undefined ? undefined : { dir: sqliteMove(facts)?.dir ?? facts.sqlite.dir };
+  const keptStorage = {
+    ...(sqlite === undefined ? {} : { sqlite }),
+    ...(facts.files === undefined ? {} : { files: { dir: facts.files.dir } }),
+    ...(storage.storage === undefined ? {} : { objectStorage: storage.storage }),
+  };
   const components: Components = {
     app: { memoryMb },
     processes: { workers, cron },
     services,
-    ...(sqlite !== undefined || storage.storage !== undefined
-      ? {
-          storage: {
-            ...(sqlite === undefined ? {} : { sqlite }),
-            ...(storage.storage === undefined ? {} : { objectStorage: storage.storage }),
-          },
-        }
-      : {}),
+    ...(Object.keys(keptStorage).length > 0 ? { storage: keptStorage } : {}),
     externalServices,
   };
 
@@ -1176,6 +1190,27 @@ function componentLines(components: Components, facts: ProjectFacts): string[] {
           ? ""
           : ` The database moves there from ${move.from}/, which also holds the app's own files, and ${move.variable} points ${move.reader} at it.`
       }`,
+    );
+  }
+  const files = components.storage?.files;
+  if (files !== undefined) {
+    lines.push(
+      `The app keeps the files it writes in ${files.dir}/ on a persistent volume: every deploy keeps them, and \`opscrew snapshot\` copies them.`,
+    );
+  }
+  // With two SQL databases, the one whose settings an app reading DB_HOST gets, and why.
+  const database = splitDatabase(components);
+  if (
+    database !== undefined &&
+    sqlDatabases(components).length > 1 &&
+    facts.envVars.some((v) => v.name === "DB_HOST")
+  ) {
+    const why =
+      database.variable === "DATABASE_URL"
+        ? "the database that has DATABASE_URL"
+        : "the first of them";
+    lines.push(
+      `The app reads its database's settings one by one (DB_HOST and the others): they come from ${serviceSpec(database.kind).title} (${database.name}), ${why}.`,
     );
   }
   const licences = new Set<string>();

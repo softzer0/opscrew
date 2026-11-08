@@ -1,7 +1,9 @@
+import type { Dirent } from "node:fs";
 import { readdir } from "node:fs/promises";
-import { join } from "node:path";
-import { formatMoney, OpsCrewError } from "@opscrew/core";
+import { join, relative } from "node:path";
+import { formatMoney, listText, OpsCrewError } from "@opscrew/core";
 import {
+  FILES_VOLUME,
   IMAGES,
   portainerStackName,
   SQLITE_VOLUME,
@@ -26,22 +28,36 @@ export type ObjectStorage = NonNullable<NonNullable<DeployPlan["storage"]>["obje
 type StorageProvider = ObjectStorage["provider"];
 
 /**
- * When a deployed plan on SQLite changes `app.build.builder` so that its image runs as another
- * user: Docker gives the `sqlite` volume its owner only when it creates it, so the volume keeps the
- * old user's and the new image may not write to it. Says how to give it the new owner: with the
- * edge's pinned Caddy image, which every server has and which has `chown`, on a server; with the
- * same as a one-off container in Portainer. For the user's own Dockerfile, the new owner is its
- * image's user. Undefined otherwise.
+ * When a deployed plan on SQLite or with a kept folder changes `app.build.builder` so that its
+ * image runs as another user: Docker gives the `sqlite` and `files` volumes their owner only when
+ * it creates them, so they keep the old user's and the new image may not write to them. Says how
+ * to give each volume both plans have the new owner: with the edge's pinned Caddy image, which
+ * every server has and which has `chown`, on a server; with the same as a one-off container in
+ * Portainer. For the user's own Dockerfile, the new owner is its image's user. Undefined otherwise.
  */
-export function sqliteOwnerWarning(previous: DeployPlan, plan: DeployPlan): string | undefined {
+export function volumeOwnerWarning(previous: DeployPlan, plan: DeployPlan): string | undefined {
   const deployed =
     previous.deployment.firstDeployAt !== undefined &&
     previous.deployment.destroyedAt === undefined;
   const before = previous.app.build?.builder;
   const after = plan.app.build?.builder;
-  if (!deployed || previous.storage?.sqlite === undefined || plan.storage?.sqlite === undefined) {
-    return undefined;
-  }
+  const both = (kind: "sqlite" | "files") =>
+    previous.storage?.[kind] !== undefined && plan.storage?.[kind] !== undefined;
+  const volumes = [
+    ...(both("sqlite")
+      ? [{ name: SQLITE_VOLUME, title: "its SQLite volume", data: "database" }]
+      : []),
+    ...(both("files")
+      ? [
+          {
+            name: FILES_VOLUME,
+            title: `the volume of its kept folder ${plan.storage?.files?.dir}/`,
+            data: "files",
+          },
+        ]
+      : []),
+  ];
+  if (!deployed || volumes.length === 0) return undefined;
   const oldOwner = sqliteVolumeOwner(previous);
   const owner = sqliteVolumeOwner(plan);
   if (before === after || (owner !== undefined && owner === oldOwner)) return undefined;
@@ -50,13 +66,21 @@ export function sqliteOwnerWarning(previous: DeployPlan, plan: DeployPlan): stri
     owner === undefined
       ? ` Put in ${chownTo} the user your Dockerfile's image runs as (its USER), as numbers.`
       : "";
-  const changed = `The app's image is now built with ${after} instead of ${before} (app.build.builder in opscrew/plan.yaml), but its SQLite volume keeps the owner Docker gave it when it was made${oldOwner === undefined ? "" : ` (${oldOwner})`}, so the new version may not be able to write its database.`;
+  const keep = volumes.length === 1 ? "keeps" : "keep";
+  const changed = `The app's image is now built with ${after} instead of ${before} (app.build.builder in opscrew/plan.yaml), but ${listText(volumes.map((v) => v.title))} ${keep} the owner Docker gave ${volumes.length === 1 ? "it" : "them"} when ${volumes.length === 1 ? "it was" : "they were"} made${oldOwner === undefined ? "" : ` (${oldOwner})`}, so the new version may not be able to write its ${listText(volumes.map((v) => v.data))}.`;
   if (plan.target.provider === "portainer") {
-    const volume = `${portainerStackName(plan)}_${SQLITE_VOLUME}`;
-    return `${changed} Before you deploy it, run a one-off container in Portainer with the image ${IMAGES.caddy.ref}, user 0, entrypoint chown and command -R ${chownTo} /d, with the volume ${volume} mounted at /d.${ownImage}`;
+    const names = volumes.map((v) => `${portainerStackName(plan)}_${v.name}`);
+    const mounted =
+      names.length === 1
+        ? `with the volume ${names[0]} mounted at /d`
+        : `once with each of the volumes ${listText(names)} mounted at /d`;
+    return `${changed} Before you deploy it, run a one-off container in Portainer with the image ${IMAGES.caddy.ref}, user 0, entrypoint chown and command -R ${chownTo} /d, ${mounted}.${ownImage}`;
   }
-  const volume = `${plan.app.name}_${SQLITE_VOLUME}`;
-  return `${changed} Before you deploy it, run on the server: \`docker run --rm --user 0 --entrypoint chown -v ${volume}:/d ${IMAGES.caddy.ref} -R ${chownTo} /d\`.${ownImage}`;
+  const commands = volumes.map(
+    (v) =>
+      `\`docker run --rm --user 0 --entrypoint chown -v ${plan.app.name}_${v.name}:/d ${IMAGES.caddy.ref} -R ${chownTo} /d\``,
+  );
+  return `${changed} Before you deploy it, run on the server: ${commands.join(" and ")}.${ownImage}`;
 }
 
 /** What the app is expected to store and serve by its users a month (data-model.md). */
@@ -202,6 +226,31 @@ export function sqliteMove(
 /** Files a SQLite database keeps next to it, and the placeholders that keep a folder in Git. */
 const DATABASE_FILE =
   /(?:\.(?:sqlite3?|db)(?:-(?:wal|shm|journal))?|^\.git(?:keep|ignore)|^\.keep)$/;
+/** The placeholders that keep a folder in Git, and the `.htaccess` that denies the web a folder. */
+const KEPT_FOLDER_FILE = /^(?:\.git(?:keep|ignore)|\.keep|\.htaccess)$/;
+
+/**
+ * The first file (sorted, relative to `dir`) in the app's folder `dir` whose name `allowed` does
+ * not match, ignoring folders; undefined when there is none or `dir` does not exist yet.
+ */
+async function firstOwnFile(
+  root: string,
+  facts: Pick<ProjectFacts, "appDir">,
+  dir: string,
+  allowed: RegExp,
+): Promise<string | undefined> {
+  const base = join(root, facts.appDir, dir);
+  let entries: Dirent[];
+  try {
+    entries = await readdir(base, { recursive: true, withFileTypes: true });
+  } catch {
+    return undefined;
+  }
+  return entries
+    .filter((entry) => !entry.isDirectory() && !allowed.test(entry.name))
+    .map((entry) => relative(base, join(entry.parentPath, entry.name)).replaceAll("\\", "/"))
+    .sort()[0];
+}
 
 /**
  * Refuses SQLite's folder when a persistent volume on it would hide the app's own files from the
@@ -224,16 +273,30 @@ export async function checkSqliteFolder(
       },
     );
   if (dir === ".") throw refuse("holds the app's code");
-  let entries: string[];
-  try {
-    entries = await readdir(join(root, facts.appDir, dir), { recursive: true });
-  } catch {
-    return;
-  }
-  const own = entries
-    .map((entry) => entry.replaceAll("\\", "/"))
-    .filter((entry) => !DATABASE_FILE.test(entry.split("/").at(-1) ?? ""))
-    .sort();
-  const [first] = own;
+  const first = await firstOwnFile(root, facts, dir, DATABASE_FILE);
   if (first !== undefined) throw refuse(`also holds the app's own files (${dir}/${first})`);
+}
+
+/**
+ * Refuses the folder an app writes to and keeps (`storage.files.dir`) as {@link checkSqliteFolder}
+ * refuses SQLite's: when it holds the app's own files, which the volume on it would keep at their
+ * first version. Git's placeholders, a `.htaccess` (a shared-hosting app's, denying the web the
+ * folder) and empty folders are fine, and so is a folder that does not exist yet. (The plan's
+ * schema refuses the app's own folder.)
+ * @throws OpsCrewError `INVALID_INPUT` with the change to make.
+ */
+export async function checkKeptFolder(
+  root: string,
+  facts: Pick<ProjectFacts, "appDir">,
+  dir: string,
+): Promise<void> {
+  const first = await firstOwnFile(root, facts, dir, KEPT_FOLDER_FILE);
+  if (first === undefined) return;
+  throw new OpsCrewError(
+    "INVALID_INPUT",
+    `The app keeps the files it writes in ${dir}/, which also holds the app's own files (${dir}/${first}). OpsCrew keeps that folder on a persistent volume, and the volume would hide new versions of those files from the app. plan.yaml was not changed.`,
+    {
+      hint: `Move the app's own files out of ${dir}/, or have the app write its files to a folder of their own, then run \`opscrew analyze\` and \`opscrew design\` again.`,
+    },
+  );
 }

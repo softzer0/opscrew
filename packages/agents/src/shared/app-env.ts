@@ -3,12 +3,14 @@ import { OpsCrewError } from "@opscrew/core";
 import {
   appRoot,
   appVariables,
+  type DatabaseSettings,
   type GeneratedSecret,
   isClientExposedEnvName,
   type PreviewSecretFormat,
   previewSecret,
   serviceSpec,
   siteHosts,
+  splitDatabaseSettings,
 } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
@@ -76,6 +78,15 @@ export interface EnvQuestion {
 // The host lists (`design` plans them as `derived`, `assembleAppEnv` fills them), from plan-schema,
 // where the deploy job's masking file reads the same names.
 export { type HostListKind, hostListKind } from "@opscrew/plan-schema";
+
+/**
+ * True for a variable that holds the app's own address, which `design` plans as `derived` and
+ * {@link assembleAppEnv} fills from the deployment: the host lists and `APP_URL` (FR-1338). They
+ * hold no secret.
+ */
+export function addressVariable(name: string): boolean {
+  return hostListKind(name) !== undefined || name === "APP_URL";
+}
 
 /**
  * Production settings for frameworks that otherwise start in development, by framework name
@@ -220,11 +231,94 @@ export function serviceUrlKind(name: string): ServiceUrlKind | undefined {
 }
 
 /**
+ * The names an app reads a SQL database's settings by one by one, and the setting each holds
+ * (FR-1337).
+ */
+const SPLIT_SETTINGS: Readonly<Record<string, keyof DatabaseSettings>> = {
+  DB_HOST: "host",
+  DB_PORT: "port",
+  DB_DATABASE: "database",
+  DB_NAME: "database",
+  DB_USERNAME: "user",
+  DB_USER: "user",
+  DB_PASSWORD: "password",
+  DB_PASS: "password",
+};
+
+/**
+ * True for a split setting that holds no secret: a SQL database's host, port, database or user,
+ * or Redis's host or port (their passwords are secrets).
+ */
+export function publicSplitSetting(name: string): boolean {
+  const setting = SPLIT_SETTINGS[name];
+  return (setting !== undefined && setting !== "password") || /^REDIS_(?:HOST|PORT)$/.test(name);
+}
+
+/** The running SQL databases (PostgreSQL, MySQL, MariaDB) of `owner`, a plan or components. */
+export function sqlDatabases(owner: { readonly services: readonly PlanService[] }): PlanService[] {
+  return owner.services.filter(
+    (s) => s.enabled && serviceSpec(s.kind).databaseSettings !== undefined,
+  );
+}
+
+/**
+ * The running SQL database whose settings an app reading `DB_HOST` receives: the one that has
+ * `DATABASE_URL` as its variable, else the first ({@link sqlDatabases}).
+ */
+export function splitDatabase(owner: {
+  readonly services: readonly PlanService[];
+}): PlanService | undefined {
+  const sql = sqlDatabases(owner);
+  return sql.find((s) => s.variable === "DATABASE_URL") ?? sql[0];
+}
+
+/** Laravel's `DB_CONNECTION` for each SQL database. */
+const LARAVEL_CONNECTIONS: Readonly<Partial<Record<SelfHostedServiceKind, string>>> = {
+  postgres: "pgsql",
+  mysql: "mysql",
+  mariadb: "mariadb",
+};
+
+/** The settings that choose a service (Laravel's), and their value while that service runs. */
+const CHOOSING_SETTINGS: Readonly<
+  Record<string, (owner: { readonly services: readonly PlanService[] }) => string | undefined>
+> = {
+  DB_CONNECTION: (owner) => {
+    const database = splitDatabase(owner);
+    return database === undefined ? undefined : LARAVEL_CONNECTIONS[database.kind];
+  },
+  ...Object.fromEntries(
+    ["QUEUE_CONNECTION", "CACHE_STORE", "CACHE_DRIVER", "SESSION_DRIVER"].map((name) => [
+      name,
+      (owner: { readonly services: readonly PlanService[] }) =>
+        urlService(owner, "redis") === undefined ? undefined : "redis",
+    ]),
+  ),
+};
+
+/**
+ * The value of a setting that chooses a service, while that service runs in `owner` (a plan or
+ * design's components): `DB_CONNECTION` the connection of the {@link splitDatabase} (`pgsql`,
+ * `mysql`, `mariadb`), and `QUEUE_CONNECTION`, `CACHE_STORE`, `CACHE_DRIVER` and `SESSION_DRIVER`
+ * `redis` while Valkey, Redis 8 or Dragonfly runs. `design` plans it as `derived` where the
+ * app's example gives it that value; undefined for any other name or without the service.
+ */
+export function choosingSettingValue(
+  name: string,
+  owner: { readonly services: readonly PlanService[] },
+): string | undefined {
+  return CHOOSING_SETTINGS[name]?.(owner);
+}
+
+/**
  * The app's variables each running service gives it, from the catalog (`appVariables`, FR-1314):
  * the conventional names and the service's own `variable`. A name one service has as its
  * `variable` comes only from that one (the database whose variable is `DATABASE_URL` keeps it);
  * a name two services give otherwise comes from the first. Client-exposed names are never filled.
- * Each secret is what `secret` returns for the service and the secret's name.
+ * An app whose variables include `DB_HOST` also gets the settings of its {@link splitDatabase} by
+ * each of {@link SPLIT_SETTINGS}' names it has (FR-1337), and an app with Laravel's split Redis
+ * settings those of the Redis it reaches ({@link urlService}, {@link redisSettings}). Each secret is
+ * what `secret` returns for the service and the secret's name.
  */
 export function serviceAppVariables(
   plan: DeployPlan,
@@ -246,7 +340,53 @@ export function serviceAppVariables(
       values.set(name, value);
     }
   }
+  const reads = new Set(plan.app.env.map((variable) => variable.name));
+  const fill = (settings: Partial<Record<string, string>>) => {
+    for (const [name, value] of Object.entries(settings)) {
+      if (value !== undefined && reads.has(name) && !values.has(name)) values.set(name, value);
+    }
+  };
+  const database = reads.has("DB_HOST") ? splitDatabase(plan) : undefined;
+  const settings =
+    database &&
+    splitDatabaseSettings({ plan, service: database, secretRef: (name) => secret(database, name) });
+  if (settings !== undefined) {
+    fill(
+      Object.fromEntries(
+        Object.entries(SPLIT_SETTINGS).map(([name, setting]) => [name, settings[setting]]),
+      ),
+    );
+  }
+  const redis = urlService(plan, "redis");
+  if (redis !== undefined) fill(redisSettings(plan, redis, secret));
   return values;
+}
+
+/**
+ * Laravel's split Redis settings (`REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD`) of a Valkey, Redis
+ * 8 or Dragonfly: the host and port its address has, and the secret its address logs in with.
+ */
+function redisSettings(
+  plan: DeployPlan,
+  service: PlanService,
+  secret: (service: PlanService, name: string) => string,
+): Record<string, string | undefined> {
+  // The address's parts are read with a stand-in for the secret, whatever characters it has.
+  let login: string | undefined;
+  const address = serviceSpec(service.kind).address({
+    plan,
+    service,
+    secretRef: (name) => {
+      login = name;
+      return "secret";
+    },
+  });
+  const url = new URL(address);
+  return {
+    REDIS_HOST: url.hostname,
+    REDIS_PORT: url.port,
+    REDIS_PASSWORD: login === undefined ? undefined : secret(service, login),
+  };
 }
 
 /** What an object storage variable holds, from its name. */
@@ -353,8 +493,9 @@ export function sqliteVariableValue(name: string, plan: DeployPlan): string | un
 }
 
 /**
- * The app's variables OpsCrew fills from what runs (FR-1314): the services' (catalog names and
- * own variables), the aliases of a running Postgres or Valkey, the object storage's, and
+ * The app's variables OpsCrew fills from what runs (FR-1314): the services' (catalog names, own
+ * variables and the split database settings), the aliases of a running Postgres or Valkey, the
+ * settings that chose a running service ({@link choosingSettingValue}), the object storage's, and
  * `CRON_SECRET` for the cron jobs that call the app's routes.
  */
 export function serviceFilledNames(plan: DeployPlan): Set<string> {
@@ -372,8 +513,15 @@ export function serviceFilledNames(plan: DeployPlan): Set<string> {
     if (alias !== undefined && urlService(plan, alias) !== undefined) names.add(name);
     if (storage && storageVariableKind(name) !== undefined) names.add(name);
     if (sqliteVariableValue(name, plan) !== undefined) names.add(name);
+    if (choosingSettingValue(name, plan) !== undefined) names.add(name);
   }
   return names;
+}
+
+/** `APP_URL`'s value: the domain over HTTPS, else the server's address; undefined with neither. */
+function appUrlValue(plan: DeployPlan, serverHost: string | undefined): string | undefined {
+  if (plan.dns.domain !== undefined) return `https://${plan.dns.domain}`;
+  return serverHost === undefined || serverHost === "" ? undefined : `http://${serverHost}`;
 }
 
 /**
@@ -499,8 +647,10 @@ export interface AppEnvironment {
  * Builds the production environment for the deploy secrets. Values the app needs come from the
  * user (local `.env` only after confirmation, or typed in), are generated (database password, app
  * keys in the format {@link FRAMEWORK_ENV} gives) or derived (DATABASE_URL, REDIS_URL and the app's
- * own names for them pointing at the containers, see {@link serviceUrlKind}; host lists from the
- * domain or the server's address; the fixed settings of {@link FRAMEWORK_ENV}). A generated value
+ * own names for them pointing at the containers, see {@link serviceUrlKind}; the split database
+ * settings; the settings that chose a running service, {@link choosingSettingValue}; host lists
+ * and `APP_URL` from the domain or the server's address; the fixed settings of
+ * {@link FRAMEWORK_ENV}). A generated value
  * or fixed setting the env file of a non-interactive run sets wins, and is not stored as generated.
  * An optional variable (the code has a default) without a value is left unset instead of stopping
  * the run. Values are never logged. With `previewTemplates`, a preview environment's env templates
@@ -567,7 +717,8 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
       aliased === undefined
         ? derived
           ? (storageValue(variable.name, plan, options.storage) ??
-            sqliteVariableValue(variable.name, plan))
+            sqliteVariableValue(variable.name, plan) ??
+            choosingSettingValue(variable.name, plan))
           : undefined
         : serviceSpec(aliased.kind).address({
             plan,
@@ -585,8 +736,11 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
     let value: string | undefined;
     if (serviceUrl !== undefined) {
       value = serviceUrl;
-    } else if (hostList !== undefined) {
-      value = hostListValue(hostList, plan, options.serverHost);
+    } else if (hostList !== undefined || (derived && variable.name === "APP_URL")) {
+      value =
+        hostList === undefined
+          ? appUrlValue(plan, options.serverHost)
+          : hostListValue(hostList, plan, options.serverHost);
       if (value === undefined) {
         unresolved.push(variable.name);
         continue;

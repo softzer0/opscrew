@@ -74,6 +74,52 @@ describe("registerAppSecrets with the environment provision assembled", () => {
     expect(secrets.length).toBeGreaterThanOrEqual(3);
     for (const value of secrets) expect(masked(deps.redactor, value)).toBe(true);
   });
+
+  it("leaves APP_URL, the app's address, alone and masks the split database password", async () => {
+    const base = laravelPlan();
+    const plan = DeployPlanSchema.parse({
+      ...base,
+      app: {
+        ...base.app,
+        env: [
+          { name: "APP_URL", secret: false, source: "derived" },
+          { name: "DB_HOST", secret: false, source: "derived" },
+          { name: "DB_PASSWORD", secret: true, source: "derived" },
+        ],
+      },
+    });
+    const environment = await assembleAppEnv({ plan, dotenvText: "" });
+    const deps = await createTestPhaseDeps();
+    await registerAppSecrets(deps, plan, environment);
+    const { app } = environment.values;
+    expect(app.APP_URL).toBe("https://example.com");
+    expect(masked(deps.redactor, app.APP_URL as string)).toBe(false);
+    expect(app.DB_PASSWORD).toBe(environment.values.services.db?.password);
+    expect(masked(deps.redactor, app.DB_PASSWORD as string)).toBe(true);
+  });
+
+  it("leaves the split settings' hosts, ports and names alone, and masks their passwords", async () => {
+    const deps = await createTestPhaseDeps();
+    // Services placed on another server, reached at its private address.
+    const values = {
+      DB_DATABASE: "orders-database",
+      DB_HOST: "10.200.4.3",
+      DB_PASSWORD: USER_VALUE,
+      DB_PORT: "5432",
+      DB_USERNAME: "orders-owner",
+      REDIS_HOST: "10.200.4.4",
+      REDIS_PASSWORD: "redis-password-0002",
+      REDIS_PORT: "6379",
+    };
+    await registerAppSecrets(deps, laravelPlan(), {
+      values: { app: values, build: {}, services: {} },
+    });
+    for (const name of ["DB_DATABASE", "DB_HOST", "DB_USERNAME", "REDIS_HOST"] as const) {
+      expect(masked(deps.redactor, values[name]), name).toBe(false);
+    }
+    expect(masked(deps.redactor, values.DB_PASSWORD)).toBe(true);
+    expect(masked(deps.redactor, values.REDIS_PASSWORD)).toBe(true);
+  });
 });
 
 describe("registerAppSecrets with the values this computer keeps", () => {

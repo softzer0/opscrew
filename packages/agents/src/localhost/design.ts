@@ -121,7 +121,7 @@ export async function localhostDesignChoice(
  */
 export function localhostTarget(
   choice: LocalhostDesignChoice,
-  app: { builder: ImageBuilder | undefined; cron: boolean; sqlite: boolean },
+  app: { builder: ImageBuilder | undefined; cron: boolean; sqlite: boolean; files: boolean },
 ): LocalhostDeployTarget {
   const matches = choice.source !== undefined && choice.source.arch === choice.arch;
   const builds = buildsLocally(app);

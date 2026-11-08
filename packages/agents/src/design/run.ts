@@ -170,7 +170,7 @@ import {
 } from "./serverless";
 import { ownServerMemory, regionLocations, type ServerApp, sizeFor } from "./sizing";
 import { snapshotDesignLines, withDesignedSnapshots } from "./snapshots";
-import { checkSqliteFolder, sqliteOwnerWarning } from "./storage";
+import { checkKeptFolder, checkSqliteFolder, volumeOwnerWarning } from "./storage";
 import { keptDeploy } from "./strategy";
 import { designWording } from "./wording";
 
@@ -574,8 +574,8 @@ async function readInputs(deps: PhaseDeps, facts?: ProjectFacts): Promise<Design
 /**
  * What runs next to the app ({@link designComponents}, keeping the edits of `previous`: the
  * plan's own, or its source's for a promoted environment), its warnings said, after refusing an SQLite
- * folder a persistent volume cannot take (the folder the database is moved to, when the framework
- * reads its path from the environment, `sqliteMove`).
+ * folder or a kept folder a persistent volume cannot take (for SQLite the folder the database is
+ * moved to, when the framework reads its path from the environment, `sqliteMove`).
  */
 async function componentsFor(
   deps: PhaseDeps,
@@ -585,8 +585,9 @@ async function componentsFor(
   vcpus: number | undefined,
 ): Promise<Designed> {
   const designed = designComponents({ facts, requirements, previous, vcpus });
-  const sqlite = designed.components.storage?.sqlite;
+  const { sqlite, files } = designed.components.storage ?? {};
   if (sqlite !== undefined) await checkSqliteFolder(deps.paths.root, facts, sqlite.dir);
+  if (files !== undefined) await checkKeptFolder(deps.paths.root, facts, files.dir);
   const { warnings, ...rest } = designed;
   for (const warning of warnings) warn(warning);
   return rest;
@@ -1201,7 +1202,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     )) {
       warn(warning);
     }
-    const owner = sqliteOwnerWarning(previous, plan);
+    const owner = volumeOwnerWarning(previous, plan);
     if (owner !== undefined) warn(owner);
   }
   if (plan.target.provider === "localhost" && preview.localhost !== undefined) {
@@ -1446,7 +1447,7 @@ async function unplacedSource(
 
 /**
  * `planned` with what `withSharedParts` copies from `source`: its processes, its services and the
- * `kept` ones, and its SQLite (the rest of `storage` stays the planned one).
+ * `kept` ones, and its SQLite and kept folders (the rest of `storage` stays the planned one).
  */
 function sourceComponents(
   planned: Components,
@@ -1454,9 +1455,13 @@ function sourceComponents(
   kept: readonly PlanService[],
 ): Components {
   const { storage: _storage, ...rest } = planned;
-  const { sqlite: _sqlite, ...ownStorage } = planned.storage ?? {};
-  const sqlite = source.storage?.sqlite;
-  const storage = { ...ownStorage, ...(sqlite === undefined ? {} : { sqlite }) };
+  const { sqlite: _sqlite, files: _files, ...ownStorage } = planned.storage ?? {};
+  const { sqlite, files } = source.storage ?? {};
+  const storage = {
+    ...ownStorage,
+    ...(sqlite === undefined ? {} : { sqlite }),
+    ...(files === undefined ? {} : { files }),
+  };
   return {
     ...rest,
     processes: source.processes,
@@ -1539,7 +1544,8 @@ async function servicesToKeep(
 
 /**
  * The one line design says of the components a plan copied from `source`'s plan, instead of those
- * designed from the code here: its enabled services, workers and cron jobs, and its SQLite folder.
+ * designed from the code here: its enabled services, workers and cron jobs, and its SQLite and
+ * kept folders.
  */
 function copiedComponentsLine(plan: DeployPlan, source: string): string {
   const components = [
@@ -1549,6 +1555,7 @@ function copiedComponentsLine(plan: DeployPlan, source: string): string {
     ...plan.processes.workers.filter((w) => w.enabled).map((worker) => `worker ${worker.name}`),
     ...plan.processes.cron.filter((job) => job.enabled).map((job) => `cron job ${job.name}`),
     ...(plan.storage?.sqlite === undefined ? [] : [`SQLite in ${plan.storage.sqlite.dir}/`]),
+    ...(plan.storage?.files === undefined ? [] : [`the kept folder ${plan.storage.files.dir}/`]),
   ];
   return `Components (copied from ${source}'s plan): ${components.length === 0 ? "none besides the app" : listText(components)}.`;
 }

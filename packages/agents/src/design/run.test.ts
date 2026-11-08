@@ -1,14 +1,16 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { STATIC_PRICES_AS_OF as HETZNER_PRICES_AS_OF } from "@opscrew/connector-hetzner";
 import type { FetchLike } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { fakeSecret, materializeFixture } from "@opscrew/core/testing";
+import { detectProject } from "@opscrew/detect";
 import { cloudTarget } from "@opscrew/iac-templates";
 import {
   type Architecture,
   type DeployPlan,
+  DeployPlanSchema,
   type Requirements,
   readArtifact,
   serviceOf,
@@ -16,6 +18,7 @@ import {
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { runInterview } from "../interview";
+import { promoteWorld } from "../promote/__fixtures__/world";
 import { assembleAppEnv, recordServerAddress } from "../shared";
 import {
   createTestPhaseDeps,
@@ -35,6 +38,10 @@ const TOKEN = "hcloud-test-token-not-a-real-value";
 /** The detect `monorepo-turbo` fixture plus an Express API in `apps/api`. */
 const MONOREPO_FIXTURE = fileURLToPath(
   new URL("./__fixtures__/monorepo-two-apps", import.meta.url),
+);
+/** detect's plain PHP app: MySQL, `public/`, `storage/` and `bin/cron.php`. */
+const PHP_PLAIN_FIXTURE = fileURLToPath(
+  new URL("../../../detect/test/fixtures/php-plain", import.meta.url),
 );
 
 async function setup(
@@ -2041,6 +2048,54 @@ describe("runDesign: components", () => {
     expect(plan.storage).toEqual({ sqlite: { dir: "data" } });
     expect(plan.deploy).toMatchObject({ strategy: "recreate" });
     expect(plan.deploy.reason).toContain("SQLite");
+  });
+
+  it("designs detect's plain PHP app: its web root, kept folder and cron job, said in its summary", async () => {
+    const deps = await createTestPhaseDeps();
+    await cp(PHP_PLAIN_FIXTURE, deps.paths.root, { recursive: true });
+    const facts = await detectProject(deps.paths.root);
+    const ready = await setup(facts, makeRequirements(), { root: deps.paths.root });
+    const result = await runDesign(ready, { catalog: euCatalog() });
+    expect(result.plan.app.build).toMatchObject({ builder: "railpack", webRoot: "public" });
+    expect(result.plan.storage).toEqual({ files: { dir: "storage" } });
+    const text = ready.reporter.text();
+    expect(text).toContain(
+      "The app keeps the files it writes in storage/ on a persistent volume: every deploy keeps them, and `opscrew snapshot` copies them.",
+    );
+    expect(text).toContain("Cron job cron (* * * * *, UTC): php bin/cron.php");
+
+    // A file of the app's own in the kept folder stops design before plan.yaml changes.
+    await writeFile(join(deps.paths.root, "storage", "seed.json"), "{}\n");
+    const before = await readFile(ready.paths.files.plan, "utf8");
+    await expect(runDesign(ready, { catalog: euCatalog() })).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+      message: expect.stringContaining("storage/, which also holds the app's own files"),
+    });
+    expect(await readFile(ready.paths.files.plan, "utf8")).toBe(before);
+  });
+
+  it("names the kept folder a promoted environment copies from its source's plan", async () => {
+    const world = await promoteWorld({
+      staging: (plan) =>
+        DeployPlanSchema.parse({ ...plan, storage: { files: { dir: "storage" } } }),
+    });
+    const { paths } = world.deps;
+    await writeArtifact("architecture", paths.files.architecture, {
+      schemaVersion: 1,
+      generatedAt: "2026-10-11T09:00:00.000Z",
+      generator: { tool: "opscrew", version: "0.0.0-test" },
+      facts: nextPostgresFacts({ name: "shop", git: { defaultBranch: "main" } }),
+      summary: "A shop.",
+      risks: [],
+      aiEnriched: false,
+    });
+    await writeArtifact("requirements", paths.files.requirements, makeRequirements());
+    const prod = await createTestPhaseDeps({ root: paths.root, environment: "prod" });
+    const { plan } = await runDesign(prod, { catalog: euCatalog() });
+    expect(plan.storage?.files).toEqual({ dir: "storage" });
+    expect(prod.reporter.text()).toContain(
+      "Components (copied from staging's plan): PostgreSQL 17 (db) and the kept folder storage/.",
+    );
   });
 
   it("warns when the chosen server keeps less than 15% of its memory free", async () => {

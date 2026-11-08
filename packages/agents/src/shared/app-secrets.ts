@@ -3,7 +3,13 @@ import { OpsCrewError, readTextIfExists, writeFileAtomic } from "@opscrew/core";
 import { type DeployPlan, WireGuardKeySchema } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
-import { type AppEnvironment, fixedProductionValue, hostListKind, parseDotenv } from "./app-env";
+import {
+  type AppEnvironment,
+  addressVariable,
+  fixedProductionValue,
+  parseDotenv,
+  publicSplitSetting,
+} from "./app-env";
 import { readValidJson } from "./files";
 
 /** Private file (0600) beside the deploy key holding generated values between runs. */
@@ -68,9 +74,10 @@ interface AppSecrets {
 
 /**
  * Registers the app's values with the redactor, so none shows in OpsCrew's text: every app and
- * build value except host lists and fixed production words, each service's generated secrets, and
- * the private network's keys, the device logins' passwords and the self-hosted monitoring's
- * passwords this computer keeps.
+ * build value except the app's address (host lists and `APP_URL`, `addressVariable`), the split
+ * settings that hold no secret (`publicSplitSetting`: a host, a port, a database or user name) and
+ * fixed production words, each service's generated secrets, and the private network's keys, the
+ * device logins' passwords and the self-hosted monitoring's passwords this computer keeps.
  * `environment` is the one provision just assembled. Without it, the values this computer keeps:
  * the generated values, and the production values in the file `OPSCREW_APP_ENV_FILE` names.
  * @throws OpsCrewError `INVALID_INPUT` when `OPSCREW_APP_ENV_FILE` names a file that does not exist.
@@ -86,9 +93,14 @@ export async function registerAppSecrets(
       ? await keptSecrets(deps, plan, generated)
       : assembledSecrets(environment);
   for (const [name, value] of Object.entries(named)) {
-    // Host lists hold the domain (or the address), which OpsCrew's own messages show as usual, and
-    // a fixed production setting is a plain word (`production`), masked nowhere.
-    if (hostListKind(name) === undefined && fixedProductionValue(name) !== value) {
+    // Host lists and APP_URL hold the domain (or the address), and DB_HOST and the like a service's
+    // address (a private one on another server), which OpsCrew's own messages show as usual; a
+    // fixed production setting is a plain word (`production`). None is masked.
+    if (
+      !addressVariable(name) &&
+      !publicSplitSetting(name) &&
+      fixedProductionValue(name) !== value
+    ) {
       deps.redactor.addLiteral(value, "app-env");
     }
   }

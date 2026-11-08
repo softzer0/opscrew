@@ -43,11 +43,12 @@ export function portainerHasData(plan: DeployPlan): boolean {
   return snapshotParts(plan).length > 0;
 }
 
-/** True when the designed `components` keep data: a service turned on, or SQLite. */
+/** True when the designed `components` keep data: a service turned on, SQLite or a kept folder. */
 export function componentsKeepData(components: Components): boolean {
   return (
     components.services.some((service) => service.enabled) ||
-    components.storage?.sqlite !== undefined
+    components.storage?.sqlite !== undefined ||
+    components.storage?.files !== undefined
   );
 }
 

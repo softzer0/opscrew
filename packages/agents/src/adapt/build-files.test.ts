@@ -234,6 +234,16 @@ describe.skipIf(GIT === undefined)("runAdapt with the plan's builder", () => {
     expect(other.result.createdFiles).not.toContain("Dockerfile");
   });
 
+  it("makes the kept folder as the app's user when the plan has storage.files", async () => {
+    const on = await adapt((plan) => ({
+      ...withBuild(plan, node24),
+      storage: { files: { dir: "uploads" } },
+    }));
+    const lines = (await on.read("Dockerfile")).split("\n");
+    const user = lines.indexOf("USER node");
+    expect(lines.slice(user + 2, user + 4)).toEqual(["WORKDIR /app/uploads", "WORKDIR /app"]);
+  });
+
   it("checks the user's own Dockerfile against the baseline and lists each finding with its fix", async () => {
     const own = 'FROM node:22-alpine\nWORKDIR /app\nCOPY . .\nCMD ["node", "server.js"]\n';
     const yours = build("own-dockerfile", { language: "node", version: "22" });

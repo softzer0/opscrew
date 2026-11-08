@@ -8,6 +8,7 @@ import {
   type EnvQuestion,
   hostListKind,
   parseDotenv,
+  serviceFilledNames,
   serviceUrlKind,
 } from "./app-env";
 
@@ -685,5 +686,183 @@ describe("assembleAppEnv: a preview environment's env templates (ADR 0026)", () 
       "key-id": "@SECRET:garage-key-id:gk@",
       "secret-key": "@SECRET:garage-secret-key:hex32@",
     });
+  });
+});
+
+describe("assembleAppEnv: a PHP app's settings (US8)", () => {
+  const VERSIONS: Record<string, string> = { mysql: "8.4", mariadb: "12.3", postgres: "17" };
+  const entry = (kind: string, extra: Record<string, unknown> = {}) => ({
+    kind,
+    version: VERSIONS[kind] ?? "8",
+    memoryMb: 512,
+    reason: "The app uses it.",
+    licence: "test",
+    ...extra,
+  });
+  const derived = (name: string, secret = false) => ({ name, secret, source: "derived" as const });
+  const on = (env: Env, services: unknown[], dns?: Record<string, unknown>): DeployPlan =>
+    DeployPlanSchema.parse({ ...plan(env, dns), services });
+  /** The split settings a plain PHP app reads, as design plans them. */
+  const SPLIT: Env = [
+    derived("DB_DATABASE"),
+    derived("DB_HOST"),
+    derived("DB_PASSWORD", true),
+    derived("DB_PORT"),
+    derived("DB_USERNAME"),
+  ];
+
+  it.each([
+    ["mysql", "mysql", "3306"],
+    ["mariadb", "mariadb", "3306"],
+    ["postgres", "db", "5432"],
+  ])(
+    "gives the split settings from %s, its generated password among them",
+    async (kind, host, port) => {
+      const result = await assembleAppEnv({ plan: on(SPLIT, [entry(kind)]), dotenvText: "" });
+      const password = result.values.services[host]?.password;
+      expect(password).toMatch(/^\S{16,}$/);
+      expect(result.values.app).toEqual({
+        DATABASE_URL: expect.stringContaining(`:${password}@${host}:${port}/app`),
+        DB_DATABASE: "app",
+        DB_HOST: host,
+        DB_PASSWORD: password,
+        DB_PORT: port,
+        DB_USERNAME: "app",
+      });
+      expect(result.defaulted).toEqual([]);
+    },
+  );
+
+  it("gives the other names an app reads them by, only with DB_HOST", async () => {
+    const names: Env = [
+      derived("DB_HOST"),
+      derived("DB_NAME"),
+      derived("DB_PASS", true),
+      derived("DB_USER"),
+    ];
+    const result = await assembleAppEnv({
+      plan: on(names, [entry("mysql")]),
+      dotenvText: "",
+      password: () => "pw",
+    });
+    expect(result.values.app).toMatchObject({
+      DB_HOST: "mysql",
+      DB_NAME: "app",
+      DB_PASS: "pw",
+      DB_USER: "app",
+    });
+    // Without DB_HOST the app reads its database another way: DB_NAME is the user's.
+    const own: Env = [{ name: "DB_NAME", secret: false, source: "user" }];
+    const alone = await assembleAppEnv({
+      plan: on(own, [entry("mysql")]),
+      dotenvText: "DB_NAME=shop\n",
+    });
+    expect(alone.values.app.DB_NAME).toBe("shop");
+  });
+
+  it("takes the split settings from the SQL database that has DATABASE_URL", async () => {
+    const result = await assembleAppEnv({
+      plan: on(SPLIT, [
+        entry("postgres", { variable: "POSTGRES_URL" }),
+        entry("mysql", { variable: "DATABASE_URL" }),
+      ]),
+      dotenvText: "",
+      password: () => "pw",
+    });
+    expect(result.values.app).toMatchObject({ DB_HOST: "mysql", DB_PORT: "3306" });
+  });
+
+  it("derives APP_URL from the domain over HTTPS, else the server's address", async () => {
+    const env: Env = [derived("APP_URL")];
+    const domain = await assembleAppEnv({
+      plan: on(env, [], { provider: "none", domain: "shop.example.com", www: true }),
+      dotenvText: "APP_URL=http://localhost\n",
+      serverHost: ADDRESS,
+    });
+    expect(domain.values.app.APP_URL).toBe("https://shop.example.com");
+    const address = await assembleAppEnv({ plan: on(env, []), serverHost: ADDRESS });
+    expect(address.values.app.APP_URL).toBe(`http://${ADDRESS}`);
+    const later = await assembleAppEnv({ plan: on(env, []), dotenvText: "" });
+    expect(later.values.app.APP_URL).toBeUndefined();
+    expect(later.unresolved).toEqual(["APP_URL"]);
+  });
+
+  it("gives a plain PHP app's APP_ENV and APP_DEBUG their production values", async () => {
+    const env: Env = [derived("APP_DEBUG"), derived("APP_ENV")];
+    const result = await assembleAppEnv({ plan: on(env, []), dotenvText: "" });
+    expect(result.values.app).toEqual({ APP_DEBUG: "false", APP_ENV: "production" });
+  });
+
+  it("keeps the values that chose a service: the database's connection and Redis's settings", async () => {
+    const env: Env = [
+      derived("CACHE_STORE"),
+      derived("DB_CONNECTION"),
+      derived("QUEUE_CONNECTION"),
+      derived("SESSION_DRIVER"),
+    ];
+    const valkey = entry("valkey", { options: { mode: "queue" } });
+    const both = on(env, [entry("postgres"), valkey]);
+    const result = await assembleAppEnv({ plan: both, dotenvText: "" });
+    expect(result.values.app).toMatchObject({
+      CACHE_STORE: "redis",
+      DB_CONNECTION: "pgsql",
+      QUEUE_CONNECTION: "redis",
+      SESSION_DRIVER: "redis",
+    });
+    for (const kind of ["mysql", "mariadb"]) {
+      const sql = await assembleAppEnv({
+        plan: on([derived("DB_CONNECTION")], [entry(kind)]),
+        dotenvText: "",
+      });
+      expect(sql.values.app.DB_CONNECTION, kind).toBe(kind);
+    }
+    expect([...serviceFilledNames(both)].sort()).toEqual([
+      "CACHE_STORE",
+      "DATABASE_URL",
+      "DB_CONNECTION",
+      "QUEUE_CONNECTION",
+      "REDIS_URL",
+      "SESSION_DRIVER",
+    ]);
+  });
+
+  it("gives Laravel's split Redis settings from the Redis it reaches, its password among them", async () => {
+    const env: Env = [
+      derived("REDIS_HOST"),
+      derived("REDIS_PASSWORD", true),
+      derived("REDIS_PORT"),
+    ];
+    for (const kind of ["valkey", "redis", "dragonfly"]) {
+      const services = [
+        entry(kind, {
+          name: "cache",
+          version: kind === "dragonfly" ? "2" : "8",
+          options: { mode: "cache" },
+        }),
+      ];
+      const result = await assembleAppEnv({ plan: on(env, services), dotenvText: "" });
+      const password = result.values.services.cache?.password;
+      expect(password, kind).toMatch(/^[0-9a-f]{64}$/);
+      expect(result.values.app, kind).toEqual({
+        REDIS_HOST: "cache",
+        REDIS_PASSWORD: password,
+        REDIS_PORT: "6379",
+        REDIS_URL: `redis://:${password}@cache:6379`,
+      });
+    }
+    // A preview's template keeps the placeholder whole.
+    const preview = await assembleAppEnv({
+      plan: on(env, [entry("valkey", { name: "cache", options: { mode: "cache" } })]),
+      previewTemplates: true,
+    });
+    expect(preview.values.app.REDIS_PASSWORD).toBe("@SECRET:cache-password:hex32@");
+  });
+
+  it("lists the split settings among what the services fill", () => {
+    expect([...serviceFilledNames(on(SPLIT, [entry("mysql")]))].sort()).toEqual([
+      "DATABASE_URL",
+      ...SPLIT.map((variable) => variable.name),
+    ]);
+    expect(serviceFilledNames(on(SPLIT, []))).toEqual(new Set());
   });
 });

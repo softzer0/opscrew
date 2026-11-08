@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+import { detectProject } from "@opscrew/detect";
 import type { ProjectFacts } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { frameworkName, summarizeFacts } from "./summary";
@@ -79,6 +81,37 @@ describe("summarizeFacts for a monorepo with several apps", () => {
     const { summary, risks } = summarizeFacts(facts);
     expect(summary).toContain("mono is an app of unknown type written in TypeScript.");
     expect(risks.join("\n")).toMatch(/could not tell what kind of app/);
+  });
+});
+
+describe("summarizeFacts for PHP apps (US8)", () => {
+  const fixture = (name: string) =>
+    fileURLToPath(new URL(`../../../detect/test/fixtures/${name}/`, import.meta.url));
+
+  it("describes a plain PHP app without the unknown-kind or Dockerfile risks", async () => {
+    const { summary, risks } = summarizeFacts(await detectProject(fixture("php-plain")));
+    expect(summary).toContain("php-plain is a full-stack web app written in PHP.");
+    expect(summary).toContain("It listens on port 8080. Its health check is at `/`.");
+    // Railpack builds it: OpsCrew adds no Dockerfile.
+    expect(risks).toEqual([]);
+  });
+
+  it("does not call Sail's development Dockerfile missing, nor promise one", async () => {
+    const { risks } = summarizeFacts(await detectProject(fixture("laravel-sail")));
+    expect(risks).toEqual([]);
+  });
+
+  it("still says OpsCrew adds a Dockerfile for a stack it has one for", () => {
+    const facts = {
+      ...ambiguousMonorepo(),
+      appKind: "api" as const,
+      monorepo: false,
+      frameworks: [{ name: "express", path: "." }],
+      healthEndpoint: "/health",
+    };
+    expect(summarizeFacts(facts).risks).toEqual([
+      "There is no Dockerfile. OpsCrew will add one when it prepares the code (`opscrew adapt`).",
+    ]);
   });
 });
 

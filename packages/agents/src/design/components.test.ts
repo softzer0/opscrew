@@ -12,7 +12,7 @@ import {
   workerName,
 } from "./components";
 import { sizeFor } from "./sizing";
-import { checkSqliteFolder, storageOffers } from "./storage";
+import { checkKeptFolder, checkSqliteFolder, storageOffers } from "./storage";
 
 type Service = ProjectFacts["services"][number];
 const service = (kind: Service["kind"], ...evidence: string[]): Service => ({ kind, evidence });
@@ -576,6 +576,53 @@ describe("designComponents: workers and cron", () => {
     ]);
     expect(lines.join("\n")).toContain("CRON_SECRET as its bearer token");
   });
+
+  const cronPhp = {
+    schedule: "* * * * *",
+    command: "php bin/cron.php",
+    source: "cron.php" as const,
+  };
+
+  it("runs a plain PHP app's cron.php every minute as a command job", () => {
+    const { components, lines } = designed({ cronJobs: [cronPhp] });
+    expect(components.processes.cron).toEqual([
+      { name: "cron", schedule: "* * * * *", command: "php bin/cron.php", enabled: true },
+    ]);
+    expect(lines).toContain("Cron job cron (* * * * *, UTC): php bin/cron.php");
+  });
+
+  it("keeps the user's edits of the cron.php job, and says when it is new", () => {
+    const facts = makeFacts({ cronJobs: [cronPhp] });
+    const previous = (cron: DeployPlan["processes"]["cron"]): DeployPlan => ({
+      ...testPlan(),
+      processes: { workers: [], cron },
+    });
+    // The user changed its name, schedule and arguments: still the same job, no second copy.
+    const edited = { name: "queue", schedule: "*/5 * * * *", command: "php bin/cron.php --queue" };
+    const kept = designComponents({
+      facts,
+      requirements: makeRequirements(),
+      previous: previous([{ ...edited, enabled: false }]),
+    });
+    expect(kept.components.processes.cron).toEqual([{ ...edited, enabled: false }]);
+    // The user's other command job stays, and the new job takes a name it does not have.
+    const other = {
+      name: "cron",
+      schedule: "@daily",
+      command: "php bin/report.php",
+      enabled: true,
+    };
+    const added = designComponents({
+      facts,
+      requirements: makeRequirements(),
+      previous: previous([other]),
+    });
+    expect(added.components.processes.cron).toEqual([
+      { name: "cron-2", schedule: "* * * * *", command: "php bin/cron.php", enabled: true },
+      other,
+    ]);
+    expect(added.lines).toContain("Added the cron job cron-2: php bin/cron.php on * * * * *.");
+  });
 });
 
 describe("designComponents: storage", () => {
@@ -585,6 +632,59 @@ describe("designComponents: storage", () => {
     });
     expect(components.storage).toEqual({ sqlite: { dir: "storage" } });
     expect(lines.join("\n")).toContain("in storage/ on a persistent volume");
+  });
+
+  it("keeps the folder the app writes to on a volume, apart from Laravel's SQLite folder", () => {
+    const { components, lines } = designed({ files: { dir: "storage" } });
+    expect(components.storage).toEqual({ files: { dir: "storage" } });
+    expect(lines).toContain(
+      "The app keeps the files it writes in storage/ on a persistent volume: every deploy keeps them, and `opscrew snapshot` copies them.",
+    );
+    const laravel = designed({
+      frameworks: [{ name: "laravel", path: "." }],
+      files: { dir: "storage/app" },
+      sqlite: { paths: ["database/database.sqlite"], dir: "database" },
+    });
+    expect(laravel.components.storage).toEqual({
+      sqlite: { dir: "storage/database" },
+      files: { dir: "storage/app" },
+    });
+  });
+
+  it("says which SQL database gives an app reading DB_HOST its settings, with two of them", () => {
+    const reads = (name: string) => ({
+      name,
+      files: [".env.example"],
+      clientExposed: false,
+      secretLikely: false,
+    });
+    const two = {
+      envVars: [reads("DB_HOST"), reads("DB_PORT")],
+      services: [
+        service("mysql", "dependency:ext-pdo_mysql"),
+        service("postgres", "dependency:ext-pdo_pgsql"),
+      ],
+    };
+    const { lines } = designed(two);
+    expect(lines).toContain(
+      "The app reads its database's settings one by one (DB_HOST and the others): they come from PostgreSQL (db), the database that has DATABASE_URL.",
+    );
+    const one = designed({ ...two, services: [service("mysql", "dependency:ext-pdo_mysql")] });
+    expect(one.lines.join("\n")).not.toContain("one by one");
+    // DATABASE_URL is MongoDB's here, so the settings come from the first SQL database.
+    const mongo = designed({
+      envVars: [reads("DB_HOST")],
+      services: [
+        ...two.services,
+        { ...service("mongodb", "dependency:mongodb"), variable: "DATABASE_URL" },
+      ],
+    });
+    expect(mongo.components.services.find((s) => s.kind === "mongodb")?.variable).toBe(
+      "DATABASE_URL",
+    );
+    expect(mongo.lines).toContain(
+      "The app reads its database's settings one by one (DB_HOST and the others): they come from PostgreSQL (db), the first of them.",
+    );
   });
 
   const s3 = {
@@ -1084,5 +1184,24 @@ describe("checkSqliteFolder", () => {
     await expect(checkSqliteFolder(root, { appDir: "." }, "data")).resolves.toBeUndefined();
     await expect(checkSqliteFolder(root, { appDir: "." }, "storage")).resolves.toBeUndefined();
     await expect(checkSqliteFolder(root, { appDir: "." }, "db")).resolves.toBeUndefined();
+  });
+
+  it("checks the kept folder as SQLite's: Git's placeholders, .htaccess and empty folders only", async () => {
+    const root = await repo({
+      "storage/.gitignore": "*\n",
+      // A shared-hosting app's: it denies the web the folder, and is no app data.
+      "storage/.htaccess": "Require all denied\n",
+      "storage/app/public/.gitignore": "*\n",
+      "web/app/index.php": "<?php\n",
+    });
+    await expect(checkKeptFolder(root, { appDir: "." }, "storage")).resolves.toBeUndefined();
+    await expect(checkKeptFolder(root, { appDir: "." }, "storage/app")).resolves.toBeUndefined();
+    await expect(checkKeptFolder(root, { appDir: "." }, "uploads")).resolves.toBeUndefined();
+    await expect(checkKeptFolder(root, { appDir: "." }, "web")).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+      message:
+        "The app keeps the files it writes in web/, which also holds the app's own files (web/app/index.php). OpsCrew keeps that folder on a persistent volume, and the volume would hide new versions of those files from the app. plan.yaml was not changed.",
+      hint: "Move the app's own files out of web/, or have the app write its files to a folder of their own, then run `opscrew analyze` and `opscrew design` again.",
+    });
   });
 });

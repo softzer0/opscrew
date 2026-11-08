@@ -9,7 +9,13 @@ import { environmentPaths } from "../environments/paths";
 import { sharedPartsSource } from "../environments/shared-parts";
 import { createTestPhaseDeps, ScriptedRunner, testPlan } from "../testing";
 import { DIGEST, FakeComputer, localPlan, localProject } from "./__fixtures__/computer";
-import { githubRegistry, imageSource, type LocalRegistry, resolveLocalImage } from "./image";
+import {
+  githubRegistry,
+  imageSource,
+  type LocalRegistry,
+  planBuildsLocally,
+  resolveLocalImage,
+} from "./image";
 import { appFolder } from "./services";
 
 /** The image dev's own workflow built and its local runner deployed. */
@@ -277,5 +283,34 @@ describe("githubRegistry", () => {
 
     const first = await createTestPhaseDeps({ runner, fetch, env });
     expect((await githubRegistry(first)).image).toBe("ghcr.io/acme/shop");
+  });
+});
+
+describe("planBuildsLocally with a kept folder", () => {
+  /** A plan whose image `builder` builds, with the kept folder `uploads/` or without it. */
+  function plan(builder: "own-dockerfile" | "generated-dockerfile", files: boolean): DeployPlan {
+    const base = testPlan();
+    return DeployPlanSchema.parse({
+      ...base,
+      app: {
+        ...base.app,
+        build: {
+          builder,
+          chosen: "user",
+          reason: "The test chose it.",
+          runtime: { language: "node", version: "24" },
+          probe: "none",
+          ...(builder === "own-dockerfile" ? { workdir: "/app" } : {}),
+        },
+      },
+      ...(files ? { storage: { files: { dir: "uploads" } } } : {}),
+    });
+  }
+
+  it("leaves the user's own Dockerfile to GitHub Actions, which makes the folder the app user's", () => {
+    expect(planBuildsLocally(plan("own-dockerfile", false))).toBe(true);
+    expect(planBuildsLocally(plan("own-dockerfile", true))).toBe(false);
+    // OpsCrew's Dockerfile makes the folder itself.
+    expect(planBuildsLocally(plan("generated-dockerfile", true))).toBe(true);
   });
 });

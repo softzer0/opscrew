@@ -21,6 +21,7 @@ import {
   ScriptedRunner,
   type TestPhaseDeps,
 } from "../testing";
+import { type LocalhostDesignChoice, localhostTarget } from "./design";
 import { resolveLocalImage } from "./image";
 import { localhostHostSettingProblem } from "./preflight";
 import { localRoots } from "./services";
@@ -301,5 +302,21 @@ describe("the interview and the provider profile for this computer", () => {
       displayName: "This computer",
       tokenVars: [],
     });
+  });
+});
+
+describe("localhostTarget with a kept folder", () => {
+  const choice: LocalhostDesignChoice = { arch: "amd64", ports: { https: 443, http: 80 } };
+  const app = { builder: "own-dockerfile" as const, cron: false, sqlite: false, files: false };
+
+  it("pulls the image of the user's own Dockerfile when the build makes the kept folder, as for SQLite", () => {
+    expect(localhostTarget(choice, app).image).toBe("local-build");
+    expect(localhostTarget(choice, { ...app, files: true }).image).toBe("registry");
+    expect(localhostTarget(choice, { ...app, sqlite: true }).image).toBe("registry");
+  });
+
+  it("builds OpsCrew's Dockerfile here: it makes the folder itself", () => {
+    const generated = { ...app, builder: "generated-dockerfile" as const, files: true };
+    expect(localhostTarget(choice, generated).image).toBe("local-build");
   });
 });

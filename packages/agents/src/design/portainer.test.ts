@@ -24,6 +24,7 @@ import {
 } from "../testing";
 import {
   buildPortainerOption,
+  componentsKeepData,
   PORTAINER_HOST_NOTE,
   PORTAINER_OPTION_ID,
   portainerBackupsNote,
@@ -406,5 +407,20 @@ describe("runDesign's snapshots in an existing Portainer (024 FR-2410)", () => {
   it("proposes none when the data matters little", async () => {
     const deps = await setup(onCloudflare(), CONNECTION, nextPostgresFacts());
     expect((await runDesign(deps)).plan.snapshots).toBeUndefined();
+  });
+});
+
+describe("componentsKeepData", () => {
+  it("counts a kept folder as data, as SQLite", () => {
+    const components = {
+      app: { memoryMb: 512 },
+      processes: { workers: [], cron: [] },
+      services: [],
+      externalServices: [],
+    };
+    expect(componentsKeepData(components)).toBe(false);
+    expect(componentsKeepData({ ...components, storage: { files: { dir: "storage" } } })).toBe(
+      true,
+    );
   });
 });

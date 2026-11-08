@@ -100,15 +100,17 @@ export async function imageSource(
 
 /**
  * True when this computer can build the app's image as GitHub Actions does: from OpsCrew's
- * Dockerfile, or the user's own one when the build adds nothing to it (no cron job, no SQLite).
+ * Dockerfile (which makes SQLite's and the kept folder itself), or the user's own one when the
+ * build adds nothing to it (no cron job, no SQLite, no kept folder `files`).
  */
 export function buildsLocally(app: {
   builder: ImageBuilder | undefined;
   cron: boolean;
   sqlite: boolean;
+  files: boolean;
 }): boolean {
   if (app.builder === undefined || app.builder === "generated-dockerfile") return true;
-  return app.builder === "own-dockerfile" && !app.cron && !app.sqlite;
+  return app.builder === "own-dockerfile" && !app.cron && !app.sqlite && !app.files;
 }
 
 /** {@link buildsLocally} for a plan. */
@@ -117,6 +119,7 @@ export function planBuildsLocally(plan: DeployPlan): boolean {
     builder: plan.app.build?.builder,
     cron: plan.processes.cron.some((job) => job.enabled),
     sqlite: plan.storage?.sqlite !== undefined,
+    files: plan.storage?.files !== undefined,
   });
 }
 
