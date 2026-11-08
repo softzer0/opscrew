@@ -5,11 +5,9 @@ feature gets its own `specs/NNN-name/` folder when it starts, and its section he
 there. The lead keeps this file current. Research for a feature goes in that feature's
 `research.md`, never only in an agent's memory, so every session on every machine has it.
 
-Done: 000–023. 022's two opt-ins (previews on another environment's server, and below the app's
-own zone), [023 retarget anywhere](023-retarget-anywhere/) and 019's database rollback (below)
-were built and passed their live passes on 2026-11-06, and shipped together as 0.2.4 that day.
-Being built: 024 snapshots and restores as commands (the founder's go-ahead, 2026-11-06, the
-evening 0.2.4 shipped).
+Done: 000–024. [024 snapshots and restores as commands](024-snapshots-and-restores/) passed
+every live pass on its final code by 2026-11-08 and shipped as 0.2.5 that day.
+Next: 025 credential rotation, once the founder gives the go-ahead.
 
 ## 019 Rollback
 
@@ -200,7 +198,7 @@ Placed before AWS so AWS joins as just another target.
 
 ## 024 Snapshots and restores as commands
 
-In progress (2026-11-06): [research](024-snapshots-and-restores/research.md),
+Done (2026-11-08, released in 0.2.5): [research](024-snapshots-and-restores/research.md),
 [spec](024-snapshots-and-restores/spec.md), [plan](024-snapshots-and-restores/plan.md),
 [tasks](024-snapshots-and-restores/tasks.md). The sketch below is the roadmap's, kept as the
 founder's input.
