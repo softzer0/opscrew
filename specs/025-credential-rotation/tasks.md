@@ -115,7 +115,7 @@ secret in any test: `fakeSecret(kind)` and `{{FAKE:<kind>}}` (`@opscrew/core/tes
 - [ ] T2511 [P] [US8] The Cloudflare tokens, the state passphrase and the add-ons
   - Owns: `packages/agents/src/rotate/infra*.ts`, `packages/agents/src/rotate/addons*.ts`, `packages/agents/src/shared/engine.ts`, `packages/agents/src/shared/secret-files.ts`, `packages/agents/src/secrets/**` (+ tests)
   - Depends: T2502, T2506
-  - Accept: plan 8 and 10: `access-token` and `tunnel-token` by an approved `-replace` plan, then their copies; `state-passphrase` by the fallback apply, then the file; `monitoring`, `portainer`, `beszel`; `recovery-key` (today's code moved, `opscrew secrets rotate` removed).
+  - Accept: plan 8 and 10: `access-token` and `tunnel-token` by an approved `-replace` plan, then their copies; `state-passphrase` by the fallback apply, then the file, and every engine call from then on (`shared/engine.ts`, drift, status, destroy) passing `stateKeyName` of the state file as the key's `name` (T2502); `monitoring`, `portainer`, `beszel`; `recovery-key` (today's code moved, `opscrew secrets rotate` removed).
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm lint`
   - Effort: xhigh
 
