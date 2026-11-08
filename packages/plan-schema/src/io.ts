@@ -9,11 +9,15 @@ import { parseDocument, stringify } from "yaml";
 import type { z } from "zod";
 import { type AppRecord, AppRecordSchema } from "./apps";
 import { type Architecture, ArchitectureSchema } from "./architecture";
+import { type CredentialsRecord, CredentialsRecordSchema } from "./credentials";
 import { type DeployPlan, DeployPlanSchema } from "./plan";
 import { type Requirements, RequirementsSchema } from "./requirements";
 
-/** The committed OpsCrew artefacts: a further app's record, then each app's three. */
-export type ArtifactKind = "app" | "architecture" | "requirements" | "plan";
+/**
+ * The committed OpsCrew artefacts: a further app's record, each app's three, then the record of
+ * its credentials' dates.
+ */
+export type ArtifactKind = "app" | "architecture" | "requirements" | "plan" | "credentials";
 
 /** All artefact kinds, in pipeline order. */
 export const ARTIFACT_KINDS = [
@@ -21,6 +25,7 @@ export const ARTIFACT_KINDS = [
   "architecture",
   "requirements",
   "plan",
+  "credentials",
 ] as const satisfies readonly ArtifactKind[];
 
 interface ArtifactMap {
@@ -28,6 +33,7 @@ interface ArtifactMap {
   architecture: Architecture;
   requirements: Requirements;
   plan: DeployPlan;
+  credentials: CredentialsRecord;
 }
 
 /** The validated value type of an artefact kind. */
@@ -39,6 +45,7 @@ export const ARTIFACT_SCHEMAS = {
   architecture: ArchitectureSchema,
   requirements: RequirementsSchema,
   plan: DeployPlanSchema,
+  credentials: CredentialsRecordSchema,
 } as const satisfies Record<ArtifactKind, z.ZodType>;
 
 /** Repo-relative location of each artefact (the first app's; a further app's are in its folder). */
@@ -47,6 +54,7 @@ export const ARTIFACT_FILES: Record<ArtifactKind, string> = {
   architecture: "opscrew/architecture.json",
   requirements: "opscrew/requirements.yaml",
   plan: "opscrew/plan.yaml",
+  credentials: "opscrew/credentials.yaml",
 };
 
 /** Next step shown when an artefact is invalid. */
@@ -55,6 +63,8 @@ const ARTIFACT_HINTS: Record<ArtifactKind, string> = {
   architecture: "Run `opscrew analyze` to regenerate it.",
   requirements: "Run `opscrew interview` to answer the questions again.",
   plan: "Run `opscrew design` to regenerate the plan, or fix the field shown above.",
+  credentials:
+    "Fix the field shown above: the file holds only dates and generations, never a value.",
 };
 
 /** Next step shown when an artefact does not exist yet. */
@@ -63,6 +73,7 @@ const ARTIFACT_MISSING_HINTS: Record<ArtifactKind, string> = {
   architecture: "Run `opscrew analyze` to create it.",
   requirements: "Run `opscrew interview` to answer the deployment questions.",
   plan: "Run `opscrew design` to create the plan (after `opscrew analyze` and `opscrew interview`).",
+  credentials: "Run `opscrew rotate` to rotate a credential; it creates the file.",
 };
 
 /** First line of every YAML artefact. */
@@ -209,7 +220,7 @@ function serializeTo<K extends ArtifactKind>(kind: K, value: ArtifactOf<K>, file
 
 /**
  * Validates and serialises an artefact deterministically (same value, same bytes; LF endings).
- * `architecture` is 2-space JSON; `requirements` and `plan` are YAML with a header comment.
+ * `architecture` is 2-space JSON; the others are YAML with a header comment.
  * @throws ArtifactError with code `ARTIFACT_INVALID` (invalid data is never serialised).
  */
 export function serializeArtifact<K extends ArtifactKind>(kind: K, value: ArtifactOf<K>): string {

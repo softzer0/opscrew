@@ -554,6 +554,8 @@ export const ObservabilityCheckSchema = z.strictObject({
   webhook: z
     .enum(["slack", "discord", "ntfy"], { error: 'must be "slack", "discord" or "ntfy"' })
     .optional(),
+  /** Flags credentials older than `credentials.maxAgeDays`. Absent: off. */
+  credentials: z.boolean().optional(),
 });
 
 /** The add-ons' default container memory limits in MB. */
@@ -1590,6 +1592,13 @@ export function keepSnapshotsOf(plan: { deploy: { keepSnapshots?: number | undef
   return plan.deploy.keepSnapshots ?? 3;
 }
 
+/** The age in days after which a credential is due for rotation: `credentials.maxAgeDays`, or 365. */
+export function credentialMaxAgeDaysOf(plan: {
+  credentials?: { maxAgeDays?: number | undefined } | undefined;
+}): number {
+  return plan.credentials?.maxAgeDays ?? 365;
+}
+
 /** The database kinds a snapshot dumps and a rollback restores. */
 export const DATABASE_KINDS = ["postgres", "mysql", "mariadb", "mongodb"] as const;
 
@@ -1945,6 +1954,11 @@ const DeployPlanFieldsSchema = z.strictObject({
   portainer: PortainerSchema.optional(),
   /** The scheduled check and the Beszel and Grafana Cloud add-ons; absent (or a part absent) is off. */
   observability: ObservabilitySchema.optional(),
+  /**
+   * Credential ages: older than `maxAgeDays` is due for rotation. Absent: 365 (read it with
+   * `credentialMaxAgeDaysOf`).
+   */
+  credentials: z.strictObject({ maxAgeDays: z.int().min(30).max(3650).optional() }).optional(),
   /** Informational copy of approvals; the approval store is authoritative. */
   approvals: z
     .array(

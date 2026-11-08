@@ -90,6 +90,7 @@ describe("plan.observability", () => {
           enabled?: boolean | undefined;
           intervalMinutes?: 5 | 10 | 15 | 20 | 30 | 60 | undefined;
           webhook?: "slack" | "discord" | "ntfy" | undefined;
+          credentials?: boolean | undefined;
         }
       | undefined
     >();

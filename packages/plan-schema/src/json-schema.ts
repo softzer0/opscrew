@@ -6,6 +6,7 @@ const TITLES: Record<ArtifactKind, string> = {
   architecture: "OpsCrew architecture (opscrew/architecture.json)",
   requirements: "OpsCrew requirements (opscrew/requirements.yaml)",
   plan: "OpsCrew deploy plan (opscrew/plan.yaml)",
+  credentials: "OpsCrew credential dates (opscrew/credentials.yaml)",
 };
 
 /**

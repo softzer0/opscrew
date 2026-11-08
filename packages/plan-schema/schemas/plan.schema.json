@@ -1783,6 +1783,9 @@
             "webhook": {
               "type": "string",
               "enum": ["slack", "discord", "ntfy"]
+            },
+            "credentials": {
+              "type": "boolean"
             }
           },
           "additionalProperties": false
@@ -2083,6 +2086,17 @@
           },
           "required": ["where", "versions", "retention"],
           "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "credentials": {
+      "type": "object",
+      "properties": {
+        "maxAgeDays": {
+          "type": "integer",
+          "minimum": 30,
+          "maximum": 3650
         }
       },
       "additionalProperties": false
