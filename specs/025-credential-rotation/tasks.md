@@ -138,7 +138,7 @@ secret in any test: `fakeSecret(kind)` and `{{FAKE:<kind>}}` (`@opscrew/core/tes
 - [ ] T2514 [P] [US1] Restores after a rotation
   - Owns: `packages/agents/src/snapshot/**`, `packages/agents/src/rollback/database*.ts`, `packages/iac-templates/src/workflow/snapshots.ts` (the `about.json` generation only) (+ tests)
   - Depends: T2503, T2506
-  - Accept: plan 12: each snapshot records the generations; a restore of an older one sets the current values with the old as the login; the earlier generations kept while a snapshot needs them.
+  - Accept: plan 12: each snapshot records the generations; a restore of an older one sets the current values with the old as the login (MySQL and MariaDB: root first, since their app-password commands log in as root); the earlier generations kept while a snapshot needs them.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/iac-templates && pnpm lint`
   - Effort: high
 

@@ -84,6 +84,14 @@ A new optional `rotation` field on `ServiceSpec`:
   and Garage too, since their tools and start read the env: R10).
 Kinds without a recipe (none today) are refused with the reason.
 
+A running container never needs its env's value after a rotation (lead, 2026-11-08, from T2503):
+a service whose start or health check reads the password after its first start keeps it in a
+container file (the container's filesystem, not the data volume), written from the env only when
+missing; `begin` and `finish` rewrite that file. A `docker restart` or a reboot keeps the rotated
+value, a later deploy's recreate writes it from the new env file, and no service restarts for a
+rotation. ClickHouse's user file and NATS's token file follow the same rule. `rotate.sh` switches
+only the app, never `compose up` the services.
+
 ### 3. Servers: one script, `rotate.sh`, over SSH
 
 Run from this computer over SSH (the deploy key, through the tunnel when public SSH is closed),
