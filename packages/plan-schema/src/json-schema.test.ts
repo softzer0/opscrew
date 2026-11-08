@@ -139,6 +139,34 @@ describe("JSON Schema export", () => {
     });
   });
 
+  it("exports a plain PHP app's web root, kept folder and cron.php jobs", () => {
+    const schemas = toJsonSchemas();
+    const dir = { required: ["dir"], additionalProperties: false };
+    expect(schemas.plan).toMatchObject({
+      properties: {
+        app: { properties: { build: { properties: { webRoot: { type: "string" } } } } },
+        storage: { properties: { files: dir } },
+      },
+    });
+    const job = (field: string, source: string) => ({
+      required: ["schedule", field, "source"],
+      properties: { source: { const: source } },
+    });
+    expect(schemas.architecture).toMatchObject({
+      properties: {
+        facts: {
+          properties: {
+            webRoot: { type: "string" },
+            files: dir,
+            cronJobs: {
+              items: { oneOf: [job("route", "vercel.json"), job("command", "cron.php")] },
+            },
+          },
+        },
+      },
+    });
+  });
+
   it("renders deterministic 2-space JSON with a trailing newline", () => {
     const first = renderJsonSchemaFiles();
     expect(renderJsonSchemaFiles()).toEqual(first);

@@ -624,6 +624,15 @@ describe("the plan's rules for the server-less targets", () => {
         message: `is refused with ${name}: an SQLite database keeps its file on a server's disk, and ${name} has none; use a hosted database, or choose a server target`,
       },
     ]);
+    const files = DeployPlanSchema.safeParse(
+      await serverlessPlan(target, { storage: { files: { dir: "storage" } } }),
+    );
+    expect(issues(files)).toEqual([
+      {
+        path: "storage.files",
+        message: `is refused with ${name}: a kept folder lives on a server's disk, and ${name} has none; keep the app's files in object storage, or choose a server target`,
+      },
+    ]);
   });
 
   it.each(targets)(

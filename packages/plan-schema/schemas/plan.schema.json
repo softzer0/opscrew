@@ -281,6 +281,10 @@
             "workdir": {
               "type": "string",
               "pattern": "^\\/(?:[^/\\s\\\\$]+(?:\\/[^/\\s\\\\$]+)*)?$"
+            },
+            "webRoot": {
+              "type": "string",
+              "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
             }
           },
           "required": ["builder", "chosen", "reason", "runtime", "probe"],
@@ -1250,6 +1254,17 @@
       "type": "object",
       "properties": {
         "sqlite": {
+          "type": "object",
+          "properties": {
+            "dir": {
+              "type": "string",
+              "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
+            }
+          },
+          "required": ["dir"],
+          "additionalProperties": false
+        },
+        "files": {
           "type": "object",
           "properties": {
             "dir": {
@@ -2500,6 +2515,10 @@
                 "workdir": {
                   "type": "string",
                   "pattern": "^\\/(?:[^/\\s\\\\$]+(?:\\/[^/\\s\\\\$]+)*)?$"
+                },
+                "webRoot": {
+                  "type": "string",
+                  "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
                 }
               },
               "required": ["builder", "chosen", "reason", "runtime", "probe"],

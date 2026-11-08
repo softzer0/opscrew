@@ -284,14 +284,24 @@ export const ProjectFactsSchema = z.strictObject({
     )
     .min(1)
     .optional(),
-  /** Scheduled calls of the app's routes. Absent when none. */
+  /**
+   * Scheduled jobs: calls of the app's routes from `vercel.json`, or a plain PHP app's
+   * `cron.php` run as a command. Absent when none.
+   */
   cronJobs: z
     .array(
-      z.strictObject({
-        schedule: z.string().min(1),
-        route: UrlPathSchema,
-        source: z.literal("vercel.json"),
-      }),
+      z.discriminatedUnion("source", [
+        z.strictObject({
+          schedule: z.string().min(1),
+          route: UrlPathSchema,
+          source: z.literal("vercel.json"),
+        }),
+        z.strictObject({
+          schedule: z.string().min(1),
+          command: CommandLineSchema,
+          source: z.literal("cron.php"),
+        }),
+      ]),
     )
     .min(1)
     .optional(),
@@ -317,6 +327,8 @@ export const ProjectFactsSchema = z.strictObject({
       dir: RepoPathSchema,
     })
     .optional(),
+  /** A folder the app writes to and keeps (a plain PHP app's `storage`), relative to the app. */
+  files: z.strictObject({ dir: RepoPathSchema }).optional(),
   /** The app's S3 client. Absent without one. */
   objectStorage: z
     .strictObject({
@@ -334,6 +346,8 @@ export const ProjectFactsSchema = z.strictObject({
     dockerignore: RepoPathSchema.optional(),
   }),
   healthEndpoint: UrlPathSchema.optional(),
+  /** The folder a plain PHP app serves, relative to the app (`public`). Absent for others. */
+  webRoot: RepoPathSchema.optional(),
   monorepo: z.boolean(),
   /** Repo-relative directory of the app the facts describe (`.` for the repository root). */
   appDir: RepoPathSchema,

@@ -765,6 +765,7 @@ function cronFor(facts: ProjectFacts, previous: DeployPlan | undefined, notes: N
   const taken = new Set<string>();
   const jobs: CronJob[] = [];
   for (const found of facts.cronJobs ?? []) {
+    if (found.source !== "vercel.json") continue;
     const old = before.find((job) => job.route === found.route);
     const name = old?.name ?? unique(cronName(found.route), taken);
     taken.add(name);

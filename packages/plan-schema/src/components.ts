@@ -259,5 +259,7 @@ const ObjectStorageSchema = z.strictObject({
 export const StorageSchema = z.strictObject({
   /** SQLite's database folder, relative to the app; a persistent volume. */
   sqlite: z.strictObject({ dir: RepoPathSchema }).optional(),
+  /** A folder of the app kept across deploys, relative to the app; a persistent volume. */
+  files: z.strictObject({ dir: RepoPathSchema }).optional(),
   objectStorage: ObjectStorageSchema.optional(),
 });

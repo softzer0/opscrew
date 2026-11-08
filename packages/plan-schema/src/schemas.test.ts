@@ -1949,6 +1949,7 @@ describe("DeployPlan image build, deploy strategy, supply chain and deploy tags"
       probe: "node" | "python" | "ruby" | "php" | "wget" | "bash" | "none";
       automatic?: "generated-dockerfile" | "own-dockerfile" | "buildpacks" | "railpack";
       workdir?: string;
+      webRoot?: string;
     }>();
     for (const probe of ["node", "python", "ruby", "php", "wget", "bash", "none"]) {
       expect(DeployPlanSchema.parse(withBuild(plan, { ...build, probe })).app.build?.probe).toBe(

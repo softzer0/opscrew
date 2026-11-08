@@ -1164,6 +1164,12 @@ function checkServerlessTarget(
       `is refused with ${name}: an SQLite database keeps its file on a server's disk, and ${name} has none; use a hosted database, or choose a server target`,
     );
   }
+  if (plan.storage?.files !== undefined) {
+    issue(
+      ["storage", "files"],
+      `is refused with ${name}: a kept folder lives on a server's disk, and ${name} has none; keep the app's files in object storage, or choose a server target`,
+    );
+  }
   if (plan.storage?.objectStorage !== undefined) {
     issue(
       ["storage", "objectStorage"],
@@ -1488,53 +1494,72 @@ const DomainUrlSchema = z
  * How the app's image is built. Design sets it; with `chosen: user` later designs keep the user's
  * builder unless the baseline or the architecture rules it out.
  */
-export const AppBuildSchema = z.strictObject({
-  builder: ImageBuilderSchema,
-  /** `auto`: design chose the builder. `user`: the user set it. */
-  chosen: z.enum(["auto", "user"]),
-  /** One plain sentence naming the fact that decided the builder. */
-  reason: z.string().min(1),
-  /**
-   * What the builder is given: the version as the app declares it, else OpsCrew's default for the
-   * language. Only `other` may leave the version out.
-   */
-  runtime: z
-    .strictObject({
-      language: RuntimeLanguageSchema,
-      version: z
-        .string()
-        .regex(/^\d+(?:\.\d+){0,2}$/, {
-          message: "must be a version such as `24`, `3.13` or `4.0.7`",
-        })
-        .optional(),
-    })
-    .superRefine((runtime, ctx) => {
-      if (runtime.language !== "other" && runtime.version === undefined) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["version"],
-          message: 'is required for every language except "other"',
-        });
-      }
-    }),
-  /**
-   * How the app service's Compose health check probes the health route, for a tool the image
-   * has: the app's runtime (`node`, `python`, `ruby`, `php`), busybox `wget` (static sites on
-   * Caddy), bash's `/dev/tcp` (images with bash but no interpreter, such as Go, Java, .NET and
-   * Rust), or `none` (the user's own Dockerfile keeps its own `HEALTHCHECK`). Set by design.
-   */
-  probe: z.enum(["node", "python", "ruby", "php", "wget", "bash", "none"]),
-  /**
-   * The builder an automatic choice would pick, recorded by design so a failed deploy can name it
-   * when the user chose another one.
-   */
-  automatic: ImageBuilderSchema.optional(),
-  /**
-   * For the user's own Dockerfile only: the working directory of its last stage, where the app
-   * runs in the image, as detection read it (`facts.build.workdir`). Set by design.
-   */
-  workdir: AbsolutePathSchema.optional(),
-});
+export const AppBuildSchema = z
+  .strictObject({
+    builder: ImageBuilderSchema,
+    /** `auto`: design chose the builder. `user`: the user set it. */
+    chosen: z.enum(["auto", "user"]),
+    /** One plain sentence naming the fact that decided the builder. */
+    reason: z.string().min(1),
+    /**
+     * What the builder is given: the version as the app declares it, else OpsCrew's default for the
+     * language. Only `other` may leave the version out.
+     */
+    runtime: z
+      .strictObject({
+        language: RuntimeLanguageSchema,
+        version: z
+          .string()
+          .regex(/^\d+(?:\.\d+){0,2}$/, {
+            message: "must be a version such as `24`, `3.13` or `4.0.7`",
+          })
+          .optional(),
+      })
+      .superRefine((runtime, ctx) => {
+        if (runtime.language !== "other" && runtime.version === undefined) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["version"],
+            message: 'is required for every language except "other"',
+          });
+        }
+      }),
+    /**
+     * How the app service's Compose health check probes the health route, for a tool the image
+     * has: the app's runtime (`node`, `python`, `ruby`, `php`), busybox `wget` (static sites on
+     * Caddy), bash's `/dev/tcp` (images with bash but no interpreter, such as Go, Java, .NET and
+     * Rust), or `none` (the user's own Dockerfile keeps its own `HEALTHCHECK`). Set by design.
+     */
+    probe: z.enum(["node", "python", "ruby", "php", "wget", "bash", "none"]),
+    /**
+     * The builder an automatic choice would pick, recorded by design so a failed deploy can name it
+     * when the user chose another one.
+     */
+    automatic: ImageBuilderSchema.optional(),
+    /**
+     * For the user's own Dockerfile only: the working directory of its last stage, where the app
+     * runs in the image, as detection read it (`facts.build.workdir`). Set by design.
+     */
+    workdir: AbsolutePathSchema.optional(),
+    /**
+     * For a plain PHP app built by Railpack only: the folder it serves, relative to the app
+     * (`public`), so the rest of the app is never served. Set by design from `facts.webRoot`.
+     */
+    webRoot: RepoPathSchema.optional(),
+  })
+  .superRefine((build, ctx) => {
+    if (
+      build.webRoot !== undefined &&
+      (build.builder !== "railpack" || build.runtime.language !== "php")
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["webRoot"],
+        message:
+          'is only for a PHP app built by Railpack (builder "railpack", runtime.language "php"); remove it',
+      });
+    }
+  });
 export type AppBuild = z.output<typeof AppBuildSchema>;
 
 /** How a new version replaces the running one (`plan.deploy`). */
@@ -1649,7 +1674,7 @@ export function snapshotOffsiteOf(plan: { snapshots?: Snapshots | undefined }):
  * True when each release snapshots the app's data: on a cloud server, the user's own server, this
  * computer or the user's Portainer, outside a preview environment, with `deploy.snapshots` true, or
  * absent outside prod, and something a release snapshot copies, on the app's server or an extra
- * one: the `sqlite` volume, an enabled service of the {@link ONLINE_SNAPSHOT_KINDS}, or one of a
+ * one: the `sqlite` or kept-files volume, an enabled service of the {@link ONLINE_SNAPSHOT_KINDS}, or one of a
  * stop-only kind named in `deploy.snapshotStop`.
  */
 export function snapshotsOn(
@@ -1664,7 +1689,9 @@ export function snapshotsOn(
       service.enabled &&
       (ONLINE_SNAPSHOT_KINDS.some((kind) => kind === service.kind) || stop.includes(service.name)),
   );
-  if (!copied && plan.storage?.sqlite === undefined) return false;
+  if (!copied && plan.storage?.sqlite === undefined && plan.storage?.files === undefined) {
+    return false;
+  }
   return plan.deploy.snapshots ?? plan.environment?.name !== undefined;
 }
 
@@ -2129,8 +2156,8 @@ function checkSnapshots(plan: DeployPlanFields, ctx: z.RefinementCtx): void {
 
 /**
  * Worker and service names are unique within the app (each is a Compose service), a self-hosted
- * Postgres excludes an external one, and an app on SQLite stops its old copy before starting the
- * new one.
+ * Postgres excludes an external one, an app on SQLite stops its old copy before starting the
+ * new one, and the kept folder is neither the app's folder nor SQLite's, inside it or around it.
  */
 function checkComponents(plan: DeployPlanFields, ctx: z.RefinementCtx): void {
   const names = new Set<string>();
@@ -2180,6 +2207,21 @@ function checkComponents(plan: DeployPlanFields, ctx: z.RefinementCtx): void {
       message:
         'must be "recreate" when storage.sqlite is set: one SQLite database cannot serve the old and the new copy of the app at once',
     });
+  }
+  const files = plan.storage?.files;
+  if (files !== undefined) {
+    const dir = cleanRepoPath(files.dir);
+    const sqlite = plan.storage?.sqlite && cleanRepoPath(plan.storage.sqlite.dir);
+    const nested = (a: string, b: string) => a === b || a.startsWith(`${b}/`);
+    const message =
+      dir === "."
+        ? "must be a folder inside the app, not the app's folder itself: a deploy replaces the app's files; name the folder the app writes to, for example storage"
+        : sqlite !== undefined && (nested(dir, sqlite) || nested(sqlite, dir))
+          ? `must be apart from SQLite's folder (storage.sqlite.dir ${sqlite}): each is its own volume; keep the database in a folder of its own`
+          : undefined;
+    if (message !== undefined) {
+      ctx.addIssue({ code: "custom", path: ["storage", "files", "dir"], message });
+    }
   }
 }
 

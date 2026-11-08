@@ -389,23 +389,46 @@
           "minItems": 1,
           "type": "array",
           "items": {
-            "type": "object",
-            "properties": {
-              "schedule": {
-                "type": "string",
-                "minLength": 1
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "schedule": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "route": {
+                    "type": "string",
+                    "pattern": "^\\/\\S*$"
+                  },
+                  "source": {
+                    "type": "string",
+                    "const": "vercel.json"
+                  }
+                },
+                "required": ["schedule", "route", "source"],
+                "additionalProperties": false
               },
-              "route": {
-                "type": "string",
-                "pattern": "^\\/\\S*$"
-              },
-              "source": {
-                "type": "string",
-                "const": "vercel.json"
+              {
+                "type": "object",
+                "properties": {
+                  "schedule": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "command": {
+                    "type": "string",
+                    "pattern": "^[^\\r\\n\\0]*\\S[^\\r\\n\\0]*$"
+                  },
+                  "source": {
+                    "type": "string",
+                    "const": "cron.php"
+                  }
+                },
+                "required": ["schedule", "command", "source"],
+                "additionalProperties": false
               }
-            },
-            "required": ["schedule", "route", "source"],
-            "additionalProperties": false
+            ]
           }
         },
         "platformRouting": {
@@ -613,6 +636,17 @@
           "required": ["paths", "dir"],
           "additionalProperties": false
         },
+        "files": {
+          "type": "object",
+          "properties": {
+            "dir": {
+              "type": "string",
+              "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
+            }
+          },
+          "required": ["dir"],
+          "additionalProperties": false
+        },
         "objectStorage": {
           "type": "object",
           "properties": {
@@ -655,6 +689,10 @@
         "healthEndpoint": {
           "type": "string",
           "pattern": "^\\/\\S*$"
+        },
+        "webRoot": {
+          "type": "string",
+          "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
         },
         "monorepo": {
           "type": "boolean"
