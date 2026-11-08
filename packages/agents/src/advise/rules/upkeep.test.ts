@@ -2,6 +2,7 @@ import type { DependabotAlert, DependabotPull } from "@opscrew/connector-github"
 import type { CheckResult } from "@opscrew/contracts";
 import { HOST_CHECKS } from "@opscrew/secops";
 import { describe, expect, it } from "vitest";
+import type { Credential, CredentialDate } from "../../rotate/inventory";
 import { testPlan } from "../../testing";
 import { pagesTestPlan } from "../../testing/pages";
 import { sitePlan } from "../../testing/serverless";
@@ -10,6 +11,7 @@ import {
   AT,
   afterAt,
   hostCheck,
+  ids,
   readingsOf,
   SERVER_ADDRESS,
   validated,
@@ -354,5 +356,119 @@ describe("upkeepRules: targets", () => {
         "upkeep.env.github-token",
       ]);
     }
+  });
+});
+
+describe("upkeepRules: credentials' ages", () => {
+  const DAY = 86_400_000;
+  /** A credential dated `days` before the readings (and `extraMs` more). */
+  function credential(
+    name: string,
+    days: number,
+    o: Partial<Credential> & { source?: CredentialDate["source"]; extraMs?: number } = {},
+  ): Credential {
+    const { source = "rotated", extraMs = 0, ...rest } = o;
+    const at = new Date(Date.parse(AT) - days * DAY - extraMs).toISOString();
+    return {
+      name,
+      kind: "service",
+      rotation: { mode: "seamless" },
+      changes: "The new password is set beside the old one, so nothing stops.",
+      date: { at, source },
+      ...rest,
+    };
+  }
+  function aged(
+    credentials: Credential[],
+    plan = testPlan(),
+    tokens: Readings["upkeep"]["tokens"] = [],
+  ) {
+    return rules(readingsOf(plan, { upkeep: { pulls: [], tokens, hostChecks: {}, credentials } }));
+  }
+
+  it("proposes rotating a credential older than a year, with the command", () => {
+    expect(aged([credential("db", 400)])).toEqual([
+      {
+        id: "upkeep.env.rotate-db",
+        category: "upkeep",
+        urgency: "soon",
+        title: "Rotate db, last rotated more than 365 days ago",
+        reasons: [
+          {
+            text: "db was last rotated on 2025-10-01, more than 365 days ago",
+            figure: "400 days old",
+            basis: { kind: "plan" },
+          },
+          {
+            text: "The new password is set beside the old one, so nothing stops",
+            basis: { kind: "plan" },
+          },
+        ],
+        apply: { kind: "command", command: "opscrew rotate db" },
+      },
+    ]);
+  });
+
+  it("flags only past the age: not at 365 days, just past it yes", () => {
+    expect(aged([credential("db", 364)])).toEqual([]);
+    expect(aged([credential("db", 365)])).toEqual([]);
+    expect(ids(aged([credential("db", 365, { extraMs: 1000 })]))).toEqual(["upkeep.env.rotate-db"]);
+  });
+
+  it("uses the plan's credentials.maxAgeDays", () => {
+    const plan = { ...testPlan(), credentials: { maxAgeDays: 90 } };
+    expect(aged([credential("db", 89)], plan)).toEqual([]);
+    const [proposal] = aged([credential("db", 91)], plan);
+    expect(proposal?.title).toBe("Rotate db, last rotated more than 90 days ago");
+  });
+
+  it("says where each date comes from, and adds the environment's flags", () => {
+    const readings = readingsOf(testPlan(), {
+      flags: " --env staging",
+      upkeep: {
+        pulls: [],
+        tokens: [],
+        hostChecks: {},
+        credentials: [
+          credential("deploy-key", 400, { source: "made", kind: "ssh-key" }),
+          credential("app", 400, { source: "first-deploy", kind: "app-secret" }),
+          credential("hetzner", 400, { source: "first-seen", kind: "user-token" }),
+        ],
+      },
+    });
+    const proposals = rules(readings);
+    expect(proposals.map((p) => p.title)).toEqual([
+      "Rotate deploy-key, made more than 365 days ago",
+      "Rotate app, made more than 365 days ago",
+      "Replace the hetzner token, first seen more than 365 days ago",
+    ]);
+    expect(proposals.map((p) => p.reasons[0]?.text)).toEqual([
+      "deploy-key was made on 2025-10-01, more than 365 days ago",
+      "app was made at the first deploy, on 2025-10-01, more than 365 days ago",
+      "The hetzner token was first seen on this computer on 2025-10-01, more than 365 days ago",
+    ]);
+    expect(proposals[0]?.apply).toEqual({
+      kind: "command",
+      command: "opscrew rotate deploy-key --env staging",
+    });
+  });
+
+  it("skips a credential without a date, one with nothing to rotate, and a token with an expiry", () => {
+    const { date: _date, ...undated } = credential("cache", 400);
+    expect(
+      aged(
+        [
+          undated,
+          credential("broker", 400, { rotation: { mode: "none" } }),
+          credential("github", 400, { kind: "user-token", source: "first-seen" }),
+        ],
+        testPlan(),
+        [{ service: "github", expiresAt: afterAt(100) }],
+      ),
+    ).toEqual([]);
+  });
+
+  it("says nothing when the credentials weren't read", () => {
+    expect(rules(upkeep({}))).toEqual([]);
   });
 });

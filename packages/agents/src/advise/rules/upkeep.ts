@@ -1,15 +1,19 @@
 /**
  * Advise's upkeep and security rules (spec US7): Dependabot's alerts and pull requests, the
  * servers' security updates, a required reboot and `secure`'s failing host checks, and the GitHub
- * and Cloudflare tokens' expiry. They apply to every target.
+ * and Cloudflare tokens' expiry, and the credentials older than `credentials.maxAgeDays`. They
+ * apply to every target.
  */
 import { CLOUDFLARE_TOKEN_PAGE } from "@opscrew/connector-cloudflare";
 import { type CheckResult, SEVERITIES } from "@opscrew/contracts";
 import { listText, plural } from "@opscrew/core";
+import { credentialMaxAgeDaysOf } from "@opscrew/plan-schema";
 import { couldNotRun } from "@opscrew/secops";
+import type { CredentialDate } from "../../rotate/inventory";
 import { type Proposal, type Readings, THRESHOLDS } from "../types";
+import { PLAN, withoutStop } from "./shared";
 
-/** The upkeep and security proposals: Dependabot, security updates, host checks, tokens. */
+/** The upkeep and security proposals: Dependabot, security updates, host checks, tokens, ages. */
 export function upkeepRules(readings: Readings): Proposal[] {
   return [
     ...dependabotProposals(readings),
@@ -17,6 +21,7 @@ export function upkeepRules(readings: Readings): Proposal[] {
       hostProposals(readings, server, results),
     ),
     ...tokenProposals(readings),
+    ...ageProposals(readings),
   ];
 }
 
@@ -204,6 +209,53 @@ function tokenProposals(readings: Readings): Proposal[] {
           kind: "manual",
           text: `Create a new token with the same permissions at ${token.page} and put it in ${token.variable}`,
         },
+      },
+    ];
+  });
+}
+
+/** How a credential's date reads in a title (`made`) and in its reason (`was made on`). */
+const DATE_WORDS: Record<CredentialDate["source"], { title: string; reason: string }> = {
+  rotated: { title: "last rotated", reason: "was last rotated on" },
+  made: { title: "made", reason: "was made on" },
+  "first-deploy": { title: "made", reason: "was made at the first deploy, on" },
+  "first-seen": { title: "first seen", reason: "was first seen on this computer on" },
+};
+
+/**
+ * Each credential dated more than `credentials.maxAgeDays` ago (spec US7, research R9), with the
+ * command that rotates it. One without a date or with nothing to rotate is skipped, and so is a
+ * user's token whose expiry was read: its expiry warning is {@link tokenProposals}'.
+ */
+function ageProposals(readings: Readings): Proposal[] {
+  const maxDays = credentialMaxAgeDaysOf(readings.plan);
+  const expiring = new Set<string>(readings.upkeep.tokens.map((t) => t.service));
+  return (readings.upkeep.credentials ?? []).flatMap((credential): Proposal[] => {
+    const { name, kind, rotation, date } = credential;
+    if (date === undefined || rotation.mode === "none") return [];
+    if (kind === "user-token" && expiring.has(name)) return [];
+    const age = (Date.parse(readings.at) - Date.parse(date.at)) / DAY_MS;
+    if (age <= maxDays) return [];
+    const words = DATE_WORDS[date.source];
+    const token = kind === "user-token";
+    const ago = `more than ${maxDays} days ago`;
+    return [
+      {
+        id: `upkeep.env.rotate-${name}`,
+        category: "upkeep",
+        urgency: "soon",
+        title: token
+          ? `Replace the ${name} token, ${words.title} ${ago}`
+          : `Rotate ${name}, ${words.title} ${ago}`,
+        reasons: [
+          {
+            text: `${token ? `The ${name} token` : name} ${words.reason} ${date.at.slice(0, 10)}, ${ago}`,
+            figure: `${plural(Math.floor(age), "day")} old`,
+            basis: PLAN,
+          },
+          { text: withoutStop(credential.changes), basis: PLAN },
+        ],
+        apply: { kind: "command", command: `opscrew rotate ${name}${readings.flags}` },
       },
     ];
   });

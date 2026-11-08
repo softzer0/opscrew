@@ -6,6 +6,7 @@ import type { DependabotAlerts, DependabotPull, IssueDates } from "@opscrew/conn
 import type { CheckResult, ComputeOffer, ProviderExtras, ProviderId } from "@opscrew/contracts";
 import type { DeployPlan, Requirements } from "@opscrew/plan-schema";
 import { z } from "zod";
+import type { Credential } from "../rotate/inventory";
 import type { ResourceReading } from "../status";
 
 /**
@@ -197,6 +198,8 @@ export interface Readings {
     pulls: DependabotPull[];
     /** The tokens' expiry, ISO 8601, for the tokens that have one. */
     tokens: { service: "github" | "cloudflare"; expiresAt: string }[];
+    /** The environment's credentials with their dates; absent when not read. */
+    credentials?: Credential[];
     /** `secure`'s host checks per server, by the plan's name. */
     hostChecks: Record<string, CheckResult[]>;
   };

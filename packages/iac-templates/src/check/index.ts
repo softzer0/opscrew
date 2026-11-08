@@ -1,7 +1,12 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are GitHub Actions expressions, not JavaScript templates.
 import { createHash } from "node:crypto";
 import { OpsCrewError } from "@opscrew/core";
-import { type DeployPlan, isServerlessTarget, snapshotScheduleOf } from "@opscrew/plan-schema";
+import {
+  credentialMaxAgeDaysOf,
+  type DeployPlan,
+  isServerlessTarget,
+  snapshotScheduleOf,
+} from "@opscrew/plan-schema";
 import type {
   CheckConfig,
   CheckEnvironment,
@@ -12,6 +17,7 @@ import type {
 import { CHECK_SCRIPT } from "../generated/check";
 import { ACTIONS, RUNTIME_DEFAULTS } from "../pins";
 import { siteHosts } from "../runtime";
+import { artefactsFolder } from "../runtime-dir";
 import { tunnelMode } from "../tunnel";
 import type { RenderedFile } from "../types";
 import {
@@ -107,7 +113,9 @@ export function checkServerSecret(servers: readonly ServerEntry[]): string {
  *   an environment, which reads its disk over SSH from that runner;
  * - `opscrew/check/check.json`: each environment's hostnames, health path and server, by id and
  *   the name of the secret with its address, never an address, and with scheduled snapshots on,
- *   the app's folder and the servers with its data;
+ *   the app's folder and the servers with its data, and with `check.credentials` on, the app's
+ *   rotation record (checked out with the check's folder), the environment's name in it and
+ *   `credentials.maxAgeDays`;
  * - `opscrew/check/check.mjs`, the same in every repository.
  *
  * The interval and the webhook are the repository's: the first app's prod plan's, else every 15
@@ -127,6 +135,12 @@ export function renderCheck(input: {
    * `<provider>-<app name>` (`hetzner-shop`, `own-shop`).
    */
   serverIds?: Readonly<Record<string, string>>;
+  /**
+   * For each environment with `check.credentials` on, by {@link checkEnvironmentKey}: the names
+   * of the credentials the check dates (OpsCrew's, never the user's own tokens) and what
+   * `opscrew rotate` adds for it (` --env staging`, or empty).
+   */
+  credentials?: Readonly<Record<string, { names: readonly string[]; flags: string }>>;
 }): RenderedFile[] {
   const { repo } = input;
   const plans = input.plans
@@ -163,6 +177,9 @@ export function renderCheck(input: {
         ...(server === undefined ? {} : { server }),
         ...(extraServers.length === 0 ? {} : { extraServers }),
         ...(snapshots === undefined ? {} : { snapshots }),
+        ...(plan.observability?.check?.credentials === true
+          ? { credentials: credentialsOf(plan, input.credentials?.[checkEnvironmentKey(plan)]) }
+          : {}),
       },
     };
   });
@@ -187,6 +204,41 @@ export function renderCheck(input: {
     },
     { path: `${CHECK_DIR}/check.mjs`, content: CHECK_SCRIPT, kind: "workflow" },
   ];
+}
+
+/**
+ * The app's rotation record, from the repository's root: beside its prod plan, holding every
+ * environment (`opscrew/credentials.yaml`, a further app's `opscrew/apps/<key>/credentials.yaml`).
+ */
+function credentialsRecordPath(plan: DeployPlan): string {
+  return `${artefactsFolder(plan, "prod")}/credentials.yaml`;
+}
+
+/**
+ * check.json's credentials of `plan`'s environment: its record, its name there, the age, its
+ * first deploy and `given`'s names and flags.
+ * @throws OpsCrewError `INTERNAL` without `given`: the caller must name the credentials.
+ */
+function credentialsOf(
+  plan: DeployPlan,
+  given: { names: readonly string[]; flags: string } | undefined,
+): NonNullable<CheckEnvironment["credentials"]> {
+  if (given === undefined) {
+    throw new OpsCrewError(
+      "INTERNAL",
+      `OpsCrew gave the scheduled check no credentials for ${checkEnvironmentKey(plan)}, whose plan has check.credentials on.`,
+      { hint: "This is a bug in OpsCrew; please report it." },
+    );
+  }
+  const since = plan.deployment.firstDeployAt;
+  return {
+    record: credentialsRecordPath(plan),
+    environment: environmentName(plan),
+    maxAgeDays: credentialMaxAgeDaysOf(plan),
+    ...(since === undefined ? {} : { since }),
+    names: [...given.names],
+    flags: given.flags,
+  };
 }
 
 /** The repository's order: the first app, then the further apps by key; prod, then by name. */
@@ -328,7 +380,7 @@ function workflow(
       runsOn: CHECK_RUNNER,
       concurrency: "opscrew-check",
       steps: [
-        ...CHECKOUT,
+        ...checkout(recordFolders(config)),
         ...runStep(
           [...(overSsh.length > 0 ? [CHECK_SECRETS.sshKey, ...overSsh] : []), ...webhook],
           "",
@@ -349,7 +401,7 @@ function workflow(
           runsOn: `[self-hosted, ${runnerLabel(plan)}]`,
           concurrency: `opscrew-check-disk-${server.id}`,
           steps: [
-            ...CHECKOUT,
+            ...checkout([]),
             `- uses: ${ACTIONS.setupNode}`,
             "  with:",
             `    node-version: ${JSON.stringify(RUNTIME_DEFAULTS.node)}`,
@@ -370,13 +422,33 @@ function serversOf(environment: CheckEnvironment): CheckServer[] {
   ];
 }
 
-/** Only the check's folder, and the job's token stays out of git's settings. */
-const CHECKOUT = [
-  `- uses: ${ACTIONS.checkout}`,
-  "  with:",
-  `    sparse-checkout: ${CHECK_DIR}`,
-  "    persist-credentials: false",
-];
+/**
+ * The folders of the rotation records check.json names besides `opscrew`: the checkout of
+ * `opscrew/check` (in git's cone mode, `actions/checkout`'s default) has the files of `opscrew`
+ * itself, so only a further app's folder is added.
+ */
+function recordFolders(config: CheckConfig): string[] {
+  const folders = config.environments.flatMap(({ credentials }) =>
+    credentials === undefined
+      ? []
+      : [credentials.record.slice(0, credentials.record.lastIndexOf("/"))],
+  );
+  return [...new Set(folders)].filter((folder) => folder !== "opscrew");
+}
+
+/**
+ * Only the check's folder and `folders`, and the job's token stays out of git's settings.
+ */
+function checkout(folders: readonly string[]): string[] {
+  return [
+    `- uses: ${ACTIONS.checkout}`,
+    "  with:",
+    ...(folders.length === 0
+      ? [`    sparse-checkout: ${CHECK_DIR}`]
+      : ["    sparse-checkout: |", ...[CHECK_DIR, ...folders].map((folder) => `      ${folder}`)]),
+    "    persist-credentials: false",
+  ];
+}
 
 /** The step that runs check.mjs with `args` and the secrets named in `secrets`. */
 function runStep(secrets: readonly string[], args: string): string[] {

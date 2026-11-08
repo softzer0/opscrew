@@ -448,6 +448,104 @@ describe("renderCheck with scheduled snapshots", () => {
   });
 });
 
+describe("renderCheck: the credentials' ages", () => {
+  const plan = testPlan({ domain: "example.com" });
+  const sparse = (files: RenderedFile[]) =>
+    parse(workflowOf(files)).jobs.check.steps[0].with["sparse-checkout"];
+  const FIRST_DEPLOY = "2025-09-23T12:00:00.000Z";
+
+  it("names each environment's record, age, first deploy, credentials and flags with check.credentials on", () => {
+    const longer = DeployPlanSchema.parse({
+      ...plan,
+      credentials: { maxAgeDays: 200 },
+      deployment: { ...plan.deployment, firstDeployAt: FIRST_DEPLOY },
+    });
+    const files = renderCheck({
+      plans: [
+        withCheck(longer, { credentials: true }),
+        withCheck(inEnvironment(plan, { name: "staging" }), { credentials: true }),
+        withCheck(ofApp(plan, "admin"), { credentials: true }),
+        withCheck(ofApp(inEnvironment(plan, { name: "staging" }), "docs")),
+      ],
+      repo: PUBLIC,
+      credentials: {
+        "shop/prod": { names: ["db", "deploy-key"], flags: " --env prod" },
+        "shop/staging": { names: ["db"], flags: " --env staging" },
+        "admin/prod": { names: ["app:SECRET_KEY_BASE"], flags: " --app admin" },
+      },
+    });
+    expect(
+      configOf(files).environments.map((e: { key: string; credentials?: unknown }) => [
+        e.key,
+        e.credentials,
+      ]),
+    ).toEqual([
+      [
+        "shop/prod",
+        {
+          record: "opscrew/credentials.yaml",
+          environment: "prod",
+          maxAgeDays: 200,
+          since: FIRST_DEPLOY,
+          names: ["db", "deploy-key"],
+          flags: " --env prod",
+        },
+      ],
+      [
+        "shop/staging",
+        {
+          record: "opscrew/credentials.yaml",
+          environment: "staging",
+          maxAgeDays: 365,
+          names: ["db"],
+          flags: " --env staging",
+        },
+      ],
+      [
+        "admin/prod",
+        {
+          record: "opscrew/apps/admin/credentials.yaml",
+          environment: "prod",
+          maxAgeDays: 365,
+          names: ["app:SECRET_KEY_BASE"],
+          flags: " --app admin",
+        },
+      ],
+      ["docs/staging", undefined],
+    ]);
+    // A further app's record is checked out beside the check's folder.
+    expect(sparse(files)).toBe("opscrew/check\nopscrew/apps/admin\n");
+  });
+
+  it("refuses an environment with check.credentials on whose credentials it wasn't given", () => {
+    expect(() =>
+      renderCheck({ plans: [withCheck(plan, { credentials: true })], repo: PUBLIC }),
+    ).toThrow(/no credentials for shop\/prod/);
+  });
+
+  it("leaves check.json and the workflow as they are with it off", () => {
+    const off = renderCheck({ plans: [withCheck(ofApp(plan, "admin"))], repo: PUBLIC });
+    expect(configOf(off).environments[0].credentials).toBeUndefined();
+    expect(sparse(off)).toBe("opscrew/check");
+    expect(off).toEqual(
+      renderCheck({
+        plans: [withCheck(ofApp(plan, "admin"), { credentials: false })],
+        repo: PUBLIC,
+      }),
+    );
+    // The first app's record is in `opscrew`, which the checkout of `opscrew/check` has.
+    const first = (credentials: boolean) =>
+      workflowOf(
+        renderCheck({
+          plans: [withCheck(plan, { credentials })],
+          repo: PUBLIC,
+          credentials: { "shop/prod": { names: ["db"], flags: "" } },
+        }),
+      );
+    expect(first(true)).toBe(first(false));
+  });
+});
+
 describe("the generated copy of check.mjs", () => {
   it("matches check/check.mjs (run gen:modules after editing it)", () => {
     expect(CHECK_SCRIPT).toBe(readCheckScript());

@@ -172,6 +172,7 @@ describe("runAdvise: one server", () => {
       "Dependabot alerts",
       "Dependabot's open pull requests",
       "the GitHub token's expiry",
+      "the credentials' dates",
     ]);
     // No tokens here: the dated static prices, said so.
     expect(report.notRead).toEqual([
@@ -200,6 +201,28 @@ describe("runAdvise: one server", () => {
     expect(report.checked).toContain("the scheduled check's issues of the last 14 days");
     expect(ids(report)).toContain("reliability.env.check-flaps");
     expect(ids(report)).not.toContain("reliability.env.check");
+  });
+
+  it("lists a credential older than credentials.maxAgeDays, writing no record", async () => {
+    // The first deploy 400 days before NOW, the deploy key made then.
+    const base = onePlan();
+    const plan = DeployPlanSchema.parse({
+      ...base,
+      deployment: { ...base.deployment, firstDeployAt: inDays(-400) },
+    });
+    const s = await oneServer({ plan });
+    const report = valid(await runAdvise(s.deps, plan, s.options));
+    expect(report.checked).toContain("the credentials' dates");
+    expect(byId(report, "upkeep.env.rotate-deploy-key")).toMatchObject({
+      urgency: "soon",
+      title: "Rotate deploy-key, made more than 365 days ago",
+      apply: { kind: "command", command: "opscrew rotate deploy-key" },
+    });
+    const files = Object.keys(await tree(s.deps.paths.root));
+    expect(files.filter((f) => f.endsWith("credentials.yaml"))).toEqual([]);
+    const longer = DeployPlanSchema.parse({ ...plan, credentials: { maxAgeDays: 500 } });
+    const later = await runAdvise(s.deps, longer, s.options);
+    expect(ids(later).filter((id) => id.startsWith("upkeep.env.rotate-"))).toEqual([]);
   });
 
   it("reads the Cloudflare token's expiry when one is configured", async () => {

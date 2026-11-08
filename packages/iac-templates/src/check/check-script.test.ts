@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fakeSecret } from "@opscrew/core/testing";
+import { type CredentialsRecord, serializeArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CHECK_COMMAND,
@@ -118,6 +119,8 @@ class World {
   pagesRead: number[] = [];
   clock = START;
   config = config();
+  /** The checkout's committed files, by their path from the repository's root. */
+  files = new Map<string, string>();
 
   constructor() {
     // A pull request with the label and a marker is never taken for an issue.
@@ -164,6 +167,7 @@ class World {
         return disk;
       },
       local: async () => this.localDisk,
+      repoFile: async (path) => this.files.get(path),
       sleep: async (ms) => {
         this.sleeps.push(ms);
         this.clock = new Date(this.clock.getTime() + ms);
@@ -1099,6 +1103,180 @@ describe.skipIf(!inShell("stat") || !inShell("tail"))("CHECK_COMMAND in a real s
     );
     expect(summary).toContain(
       "- blog/prod/snapshot/hetzner-example-app: not checked (see the log)",
+    );
+  });
+});
+
+describe("old credentials", () => {
+  const RECORD = "opscrew/credentials.yaml";
+  const daysBefore = (days: number) => new Date(START.getTime() - days * 86_400_000).toISOString();
+  type Entries = CredentialsRecord["environments"][string];
+
+  /**
+   * The world with PROD's credentials `names` (by default those `prod` has) checked at
+   * `maxAgeDays`, its record holding `prod` (none with `prod` undefined).
+   */
+  function credentialsWorld(
+    prod: Entries | undefined,
+    o: { maxAgeDays?: number; since?: string; names?: string[]; flags?: string } = {},
+  ) {
+    const world = new World();
+    const { maxAgeDays = 365, names = Object.keys(prod ?? {}), flags = "", since } = o;
+    world.config = config({
+      environments: [
+        {
+          ...PROD,
+          credentials: {
+            record: RECORD,
+            environment: "prod",
+            maxAgeDays,
+            ...(since === undefined ? {} : { since }),
+            names,
+            flags,
+          },
+        },
+      ],
+    });
+    if (prod !== undefined) world.files.set(RECORD, record(prod));
+    return world;
+  }
+
+  /** The record as OpsCrew writes it, with `prod` and an old credential of `staging`. */
+  function record(prod: Entries): string {
+    return serializeArtifact("credentials", {
+      schemaVersion: 1,
+      environments: {
+        prod,
+        staging: { db: { madeAt: daysBefore(900), generation: 1 } },
+      },
+    });
+  }
+
+  const titles = (world: World) => world.open().map((issue) => issue.title);
+
+  it("opens an issue for each credential of the environment older than the age, and closes it once rotated", async () => {
+    const world = credentialsWorld({
+      db: { madeAt: daysBefore(400), generation: 1 },
+      // Exactly the age: not older.
+      cache: { madeAt: daysBefore(500), rotatedAt: daysBefore(365), generation: 2 },
+      "app:SECRET_KEY_BASE": { rotatedAt: daysBefore(366), generation: 3 },
+      "deploy-key": { madeAt: daysBefore(100), generation: 1 },
+    });
+    expect(await run(env(), world.io())).toBe(0);
+    expect(titles(world)).toEqual([
+      "OpsCrew check: example-app (prod) credential db is older than 365 days",
+      "OpsCrew check: example-app (prod) credential app:SECRET_KEY_BASE is older than 365 days",
+    ]);
+    const [db] = world.open();
+    expect(db?.body).toContain("<!-- opscrew-check:example-app/prod/credential/db -->");
+    expect(db?.body).toContain(
+      "The credential db of example-app (prod) was made on 2025-09-23, 400 days ago: more than 365 days.",
+    );
+    expect(db?.body).toContain("To rotate it, run `npx opscrew rotate db` in this repository.");
+    expect(world.open()[1]?.body).toContain(
+      "The credential app:SECRET_KEY_BASE of example-app (prod) was last rotated on 2025-10-27, 366 days ago: more than 365 days.",
+    );
+
+    // db rotated: its issue closes; the other stays.
+    world.files.set(
+      RECORD,
+      record({
+        db: { madeAt: daysBefore(400), rotatedAt: START.toISOString(), generation: 2 },
+        "app:SECRET_KEY_BASE": { rotatedAt: daysBefore(366), generation: 3 },
+      }),
+    );
+    world.later(60);
+    expect(await run(env(), world.io())).toBe(0);
+    expect(db?.state_reason).toBe("completed");
+    expect(titles(world)).toEqual([
+      "OpsCrew check: example-app (prod) credential app:SECRET_KEY_BASE is older than 365 days",
+    ]);
+  });
+
+  it("uses the age check.json gives", async () => {
+    const world = credentialsWorld(
+      { "deploy-key": { madeAt: daysBefore(100), generation: 1 } },
+      { maxAgeDays: 90 },
+    );
+    expect(await run(env(), world.io())).toBe(0);
+    expect(titles(world)).toEqual([
+      "OpsCrew check: example-app (prod) credential deploy-key is older than 90 days",
+    ]);
+  });
+
+  it("dates a credential the record lacks from the first deploy, as advise does, even without a record yet", async () => {
+    const names = ["db", "deploy-key"];
+    const fresh = credentialsWorld(undefined, { since: daysBefore(400), names });
+    expect(await run(env(), fresh.io())).toBe(0);
+    expect(titles(fresh)).toEqual([
+      "OpsCrew check: example-app (prod) credential db is older than 365 days",
+      "OpsCrew check: example-app (prod) credential deploy-key is older than 365 days",
+    ]);
+    expect(fresh.open()[0]?.body).toContain(
+      "The credential db of example-app (prod) dates from the first deploy, on 2025-09-23, 400 days ago: more than 365 days.",
+    );
+
+    // The record's date wins over the first deploy.
+    const rotated = credentialsWorld(
+      { db: { rotatedAt: daysBefore(10), generation: 2 } },
+      { since: daysBefore(400), names },
+    );
+    expect(await run(env(), rotated.io())).toBe(0);
+    expect(titles(rotated)).toEqual([
+      "OpsCrew check: example-app (prod) credential deploy-key is older than 365 days",
+    ]);
+
+    // Before the first deploy, a credential without a record entry has no date.
+    const undeployed = credentialsWorld(undefined, { names });
+    expect(await run(env(), undeployed.io())).toBe(0);
+    expect(undeployed.open()).toEqual([]);
+  });
+
+  it("checks only the names check.json gives, never a user's token the record has", async () => {
+    const world = credentialsWorld(
+      {
+        db: { madeAt: daysBefore(400), generation: 1 },
+        hetzner: { rotatedAt: daysBefore(800), generation: 2 },
+      },
+      { names: ["db"] },
+    );
+    expect(await run(env(), world.io())).toBe(0);
+    expect(titles(world)).toEqual([
+      "OpsCrew check: example-app (prod) credential db is older than 365 days",
+    ]);
+  });
+
+  it("gives the exact command for the app and environment", async () => {
+    const world = credentialsWorld(
+      { db: { madeAt: daysBefore(400), generation: 1 } },
+      { flags: " --app admin --env staging" },
+    );
+    expect(await run(env(), world.io())).toBe(0);
+    expect(world.open()[0]?.body).toContain(
+      "To rotate it, run `npx opscrew rotate db --app admin --env staging` in this repository.",
+    );
+  });
+
+  it("reads no record when check.json has no credentials for the environment", async () => {
+    const world = new World();
+    world.files.set(RECORD, record({ db: { madeAt: daysBefore(900), generation: 1 } }));
+    const io = world.io();
+    const repoFile = vi.fn(io.repoFile);
+    expect(await run(env(), { ...io, repoFile })).toBe(0);
+    expect(repoFile).not.toHaveBeenCalled();
+    expect(world.open()).toEqual([]);
+  });
+
+  it("keeps its issues open while the record can't be read", async () => {
+    const world = credentialsWorld({ db: { madeAt: daysBefore(400), generation: 1 } });
+    expect(await run(env(), world.io())).toBe(0);
+    expect(world.open()).toHaveLength(1);
+
+    world.files.set(RECORD, "environments:\n  prod: [not, the, form]\n");
+    expect(await run(env(), world.io())).toBe(0);
+    expect(world.open()).toHaveLength(1);
+    expect(world.logs).toContain(
+      "::warning::opscrew/credentials.yaml is not in the form OpsCrew writes, so the credentials of example-app (prod) were not checked. Restore it from the repository's history.",
     );
   });
 });

@@ -24,6 +24,7 @@ import { sharedPreviewsLimit } from "../previews/host";
 import { providerProfile } from "../providers";
 import { renderedServers } from "../provision/disk-guard";
 import type { ProvisionServices } from "../provision/types";
+import { credentialInventory } from "../rotate/inventory";
 import { ownServerHardening } from "../secure/own";
 import { hostChecksFor } from "../secure/servers";
 import {
@@ -419,8 +420,9 @@ async function readServerHistory(
  * Everything advise's rules read about `plan`'s environment, read-only: per server its figures now
  * (as `status` reads them) and its 14 days from the self-hosted stack, `secure`'s host checks, the
  * plan (each server OpsCrew created as provision last rendered it), the interview's answers, the
- * providers' prices, Dependabot's alerts and pull requests, the GitHub and Cloudflare tokens' expiry
- * and the scheduled check's issues; with what was read (`checked`). Every remote command is fixed
+ * providers' prices, Dependabot's alerts and pull requests, the GitHub and Cloudflare tokens' expiry,
+ * the scheduled check's issues and the credentials' dates (names and dates only, nothing
+ * recorded); with what was read (`checked`). Every remote command is fixed
  * and read-only, audited by its reader as `remote-exec`. `flags` are the environment's ` --app …`/
  * ` --env …` for the commands it names.
  */
@@ -439,14 +441,24 @@ export async function readAdvice(
     asDeployed(deps, plan),
     sharedPreviewsLimit(deps.paths),
   ]);
-  const [prices, servers, history, github, cloudflare] = await Promise.all([
+  const [prices, servers, history, github, cloudflare, credentials] = await Promise.all([
     priceLists(deps, deployedPlan, requirements.value),
     Promise.all(names.map((name) => readServer(deps, plan, name, services, flags))),
     readServerHistory(deps, plan, services, flags),
     readGitHub(deps, plan, options.github, since),
     readCloudflare(deps, options.cloudflare),
+    // Read only: a token seen for the first time is not recorded (no `recordTokens`).
+    attempt(deps, "the credentials' dates", () => credentialInventory(deps, plan)),
   ]);
-  const read: Lines[] = [requirements, ...servers, history, prices, github, cloudflare];
+  const read: Lines[] = [
+    requirements,
+    ...servers,
+    history,
+    prices,
+    github,
+    cloudflare,
+    credentials,
+  ];
   const readings: Readings = {
     at: at.toISOString(),
     servers: Object.fromEntries(
@@ -466,6 +478,7 @@ export async function readAdvice(
       ...(github.dependabot === undefined ? {} : { dependabot: github.dependabot }),
       pulls: github.pulls,
       tokens: [...github.tokens, ...cloudflare.tokens],
+      ...(credentials.value === undefined ? {} : { credentials: credentials.value }),
       hostChecks: Object.fromEntries(
         names.flatMap((name, i) => {
           const checks = servers[i]?.checks;

@@ -50,7 +50,7 @@ describe("checkFiles", () => {
         hostKey: ED25519_FINGERPRINT,
       });
     }
-    const files = await checkFiles(deps.paths, prod, REPO);
+    const files = await checkFiles(deps, prod, REPO);
     expect(files.map((file) => file.path)).toEqual([
       ".github/workflows/opscrew-check.yml",
       "opscrew/check/check.json",
@@ -86,7 +86,7 @@ describe("checkFiles", () => {
       observability: { check: { enabled: false } },
     });
     // This run turns the check on for staging (not written yet).
-    const files = await checkFiles(deps.paths, staging, REPO);
+    const files = await checkFiles(deps, staging, REPO);
     const config = JSON.parse(files[1]?.content ?? "");
     expect(config.environments.map((environment: { key: string }) => environment.key)).toEqual([
       "shop/prod",
@@ -94,7 +94,7 @@ describe("checkFiles", () => {
     ]);
     for (const file of files) expect(file.content).not.toContain(SERVER_IPV4);
     // The same plans render the same files.
-    expect(await checkFiles(deps.paths, staging, REPO)).toEqual(files);
+    expect(await checkFiles(deps, staging, REPO)).toEqual(files);
   });
 
   it("renders nothing when no plan has the check on", async () => {
@@ -105,6 +105,6 @@ describe("checkFiles", () => {
     const isPublic = async (): Promise<boolean> => {
       throw new Error("visibility read without the check");
     };
-    await expect(checkFiles(deps.paths, plan, { ...REPO, isPublic })).resolves.toEqual([]);
+    await expect(checkFiles(deps, plan, { ...REPO, isPublic })).resolves.toEqual([]);
   });
 });

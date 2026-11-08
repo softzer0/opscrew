@@ -8,7 +8,9 @@
 //   command (CHECK_COMMAND below), or on the server's own runner (`node check.mjs --only
 //   disk:<server id>`);
 // - with scheduled snapshots on, whether the last one of each app on each server with its data
-//   failed, or its copy off the server did, which the same command reads with the disk.
+//   failed, or its copy off the server did, which the same command reads with the disk;
+// - with the credentials' ages on, each credential the committed rotation record
+//   (opscrew/credentials.yaml, names and dates only) dates more than the plan's age ago.
 //
 // A failing check opens a GitHub issue labelled opscrew-check, one per check, and closes it when
 // the check passes again. With a webhook set (Slack, Discord or ntfy), the same text is posted
@@ -108,7 +110,8 @@ export async function run(env, io) {
   const servers = new Map(
     config.environments.flatMap(serversOf).map((server) => [server.id, server]),
   );
-  const all = config.environments.flatMap((environment) => checksOf(environment, servers));
+  const records = only === undefined ? await readRecords(config, io) : new Map();
+  const all = config.environments.flatMap((environment) => checksOf(environment, servers, records));
   const checks = all.filter((check) =>
     only === undefined
       ? check.server === undefined || check.server.via === "github"
@@ -218,8 +221,10 @@ export async function run(env, io) {
     }
   }
   if (only === undefined) {
+    // The credentials of a record that could not be read are unknown, not gone.
+    const unread = [...records].flatMap(([key, dates]) => (dates ? [] : [`${key}/credential/`]));
     for (const [key, issue] of open) {
-      if (!known.has(key)) {
+      if (!known.has(key) && !unread.some((prefix) => key.startsWith(prefix))) {
         await report.close(
           issue,
           key,
@@ -297,9 +302,10 @@ function pauseText(pause) {
 /**
  * The checks of one environment of check.json, each with its key; `servers` are every
  * environment's servers by id, as an environment's scheduled snapshots can be on a server another
- * environment lists.
+ * environment lists. `records` are the credentials' dates of each environment whose record was
+ * read ({@link readRecords}).
  */
-function checksOf(environment, servers) {
+function checksOf(environment, servers, records) {
   const checks = environment.hosts.flatMap((host) => [
     { key: `${environment.key}/https/${host.hostname}`, kind: "https", environment, host },
     {
@@ -320,6 +326,15 @@ function checksOf(environment, servers) {
       environment,
       server,
       app: snapshots.app,
+    });
+  }
+  for (const [name, date] of records.get(environment.key) ?? []) {
+    checks.push({
+      key: `${environment.key}/credential/${name}`,
+      kind: "credential",
+      environment,
+      name,
+      date,
     });
   }
   return checks;
@@ -347,7 +362,10 @@ function appLabel(key) {
 /** What a key names, for the text of a closed issue. */
 function describe(key) {
   if (key === INACTIVITY_KEY) return "GitHub's 60-day rule for scheduled checks";
-  const [, , kind, target] = key.split("/");
+  const [, , kind, ...rest] = key.split("/");
+  // A credential's name can hold a slash (`grant:laptop/cache`).
+  const target = rest.join("/");
+  if (kind === "credential") return `${appLabel(key)}, the age of the credential ${target}`;
   const what =
     {
       https: "HTTPS",
@@ -363,7 +381,131 @@ function runCheck(check, thresholds, read, io) {
   if (check.kind === "https") return checkHttps(check, thresholds, io);
   if (check.kind === "certificate") return checkCertificate(check, thresholds, io);
   if (check.kind === "snapshot") return checkSnapshot(check, read, io);
+  if (check.kind === "credential") return checkCredential(check, io);
   return checkDisk(check, thresholds, read, io);
+}
+
+/**
+ * @typedef {object} CredentialDate
+ * @property {string} at
+ * @property {"rotated" | "made" | "first-deploy"} source
+ */
+
+/**
+ * The dates of each environment's credentials that check.json names (with
+ * `observability.check.credentials` on), by the environment's key: each name's in its rotation
+ * record, else the environment's first deploy (`since`), as `opscrew advise` dates them; a name
+ * with neither is left out, and so is any other entry of the record. `undefined` for a record
+ * that can't be read, which is logged.
+ * @returns {Promise<Map<string, Map<string, CredentialDate> | undefined>>}
+ */
+async function readRecords(config, io) {
+  const records = new Map();
+  for (const environment of config.environments) {
+    const wanted = environment.credentials;
+    if (wanted === undefined) continue;
+    const label = appLabel(environment.key);
+    let text;
+    try {
+      text = await io.repoFile(wanted.record);
+    } catch (error) {
+      io.log(
+        `::warning::${wanted.record} could not be read (${errorCode(error)}), so the credentials of ${label} were not checked.`,
+      );
+      records.set(environment.key, undefined);
+      continue;
+    }
+    // A record not committed yet dates every credential from the first deploy.
+    const recorded = text === undefined ? new Map() : recordDates(text, wanted.environment);
+    if (recorded === undefined) {
+      io.log(
+        `::warning::${wanted.record} is not in the form OpsCrew writes, so the credentials of ${label} were not checked. Restore it from the repository's history.`,
+      );
+      records.set(environment.key, undefined);
+      continue;
+    }
+    const dates = new Map();
+    for (const name of wanted.names) {
+      const date =
+        recorded.get(name) ??
+        (wanted.since === undefined ? undefined : { at: wanted.since, source: "first-deploy" });
+      if (date !== undefined) dates.set(name, date);
+    }
+    records.set(environment.key, dates);
+  }
+  return records;
+}
+
+/**
+ * The dates of `environment`'s credentials in a rotation record's YAML, as OpsCrew writes it
+ * (`environments`, then each environment, each credential's name, and its `madeAt`, `rotatedAt`
+ * and `generation`, two spaces deeper each): each credential's last rotation, else when it was
+ * made. Names and dates only; the record never holds a value. `undefined` for any other form.
+ * @returns {Map<string, CredentialDate> | undefined}
+ */
+function recordDates(text, environment) {
+  const entries = new Map();
+  let inEnvironments = false;
+  let inEnvironment = false;
+  let entry;
+  for (const line of text.split(/\r?\n/)) {
+    if (line.trim() === "" || line.trimStart().startsWith("#")) continue;
+    const match = /^( *)([^\s"'][^\s]*?|"[^"]*"|'[^']*'):(?: +(.*))?$/.exec(line);
+    if (match === null || match[1].length % 2 !== 0) return undefined;
+    const depth = match[1].length / 2;
+    const key = unquote(match[2]);
+    const value = match[3] === undefined ? undefined : unquote(match[3].trim());
+    if (depth === 0) {
+      inEnvironments = key === "environments";
+      continue;
+    }
+    if (!inEnvironments || depth > 3) return undefined;
+    // Below `environments`, only a credential's fields have a value; an empty map is `{}`.
+    if (depth < 3 ? value !== undefined && value !== "{}" : value === undefined) return undefined;
+    if (depth === 1) {
+      inEnvironment = key === environment;
+      entry = undefined;
+    } else if (depth === 2) {
+      entry = inEnvironment ? {} : undefined;
+      if (entry !== undefined) entries.set(key, entry);
+    } else if (entry !== undefined) {
+      entry[key] = value;
+    }
+  }
+  const dates = new Map();
+  for (const [name, { madeAt, rotatedAt }] of entries) {
+    const at = rotatedAt ?? madeAt;
+    if (at === undefined) continue;
+    if (Number.isNaN(Date.parse(at))) return undefined;
+    dates.set(name, { at, source: rotatedAt === undefined ? "made" : "rotated" });
+  }
+  return dates;
+}
+
+/** A YAML scalar without its quotes. */
+function unquote(text) {
+  return /^(".*"|'.*')$/.test(text) ? text.slice(1, -1) : text;
+}
+
+/** A credential made or last rotated more than the environment's `maxAgeDays` ago. */
+function checkCredential(check, io) {
+  const { name, date, environment } = check;
+  const { maxAgeDays, flags } = environment.credentials;
+  const ms = io.now().getTime() - Date.parse(date.at);
+  const days = Math.floor(ms / DAY_MS);
+  const label = appLabel(check.key);
+  io.log(`${label}: the credential ${name} is ${plural(days, "day")} old.`);
+  if (ms <= maxAgeDays * DAY_MS) return null;
+  const when = {
+    rotated: "was last rotated",
+    made: "was made",
+    "first-deploy": "dates from the first deploy,",
+  }[date.source];
+  return {
+    title: `OpsCrew check: ${label} credential ${name} is older than ${maxAgeDays} days`,
+    what: `The credential ${name} of ${label} ${when} on ${date.at.slice(0, 10)}, ${plural(days, "day")} ago: more than ${maxAgeDays} days.`,
+    hint: `To rotate it, run \`npx opscrew rotate ${name}${flags}\` in this repository. This issue closes once the rotation's new date is committed.`,
+  };
 }
 
 /** The health path over HTTPS: any status below 400 passes, after up to `tries` tries. */
@@ -972,6 +1114,12 @@ if (
     tlsDaysLeft,
     ssh: sshRead,
     local: localRead,
+    // The workflow runs it from the checkout's root.
+    repoFile: (path) =>
+      readFile(path, "utf8").catch((error) => {
+        if (error?.code === "ENOENT") return undefined;
+        throw error;
+      }),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     now: () => new Date(),
     log: (line) => console.log(line),

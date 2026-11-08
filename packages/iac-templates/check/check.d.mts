@@ -39,6 +39,23 @@ export interface CheckEnvironment {
    * checked. Absent when they are off, or no server with its data is read.
    */
   snapshots?: { app: string; servers: string[] };
+  /**
+   * With `observability.check.credentials` on: the app's committed rotation record (its path from
+   * the repository's root), the environment's name in it, the age in days from which a
+   * credential's date opens an issue, the environment's first deploy (`since`, the date of a
+   * credential the record has no date for; absent before it), the names of the credentials it
+   * checks (never the user's own tokens, whose expiry is the providers'), and what
+   * `npx opscrew rotate <name>` adds for this app and environment (`flags`, ` --env staging`, or
+   * empty). Absent when off.
+   */
+  credentials?: {
+    record: string;
+    environment: string;
+    maxAgeDays: number;
+    since?: string;
+    names: string[];
+    flags: string;
+  };
 }
 
 export interface CheckServer {
@@ -91,6 +108,8 @@ export interface CheckIo {
   ssh(server: ServerReach, key: string): Promise<string>;
   /** {@link CHECK_COMMAND}'s output on this machine. */
   local(): Promise<string>;
+  /** A file of the checkout, by its path from the repository's root; `undefined` when absent. */
+  repoFile(path: string): Promise<string | undefined>;
   sleep(ms: number): Promise<void>;
   now(): Date;
   log(line: string): void;

@@ -49,11 +49,11 @@ const CHECK_FILE_PATHS = [
  * them.
  */
 export async function deploySetupCheck(
-  deps: Pick<PhaseDeps, "paths" | "runner" | "reporter">,
+  deps: Pick<PhaseDeps, "paths" | "env" | "clock" | "runner" | "reporter">,
   plan: DeployPlan,
   github: Pick<GitHubSetup, "api" | "owner" | "repo">,
 ): Promise<{ files: RenderedFile[]; removed: string[] }> {
-  const files = await checkFiles(deps.paths, plan, {
+  const files = await checkFiles(deps, plan, {
     owner: github.owner,
     name: github.repo,
     isPublic: async () => !(await github.api.getRepo(github.owner, github.repo)).private,
