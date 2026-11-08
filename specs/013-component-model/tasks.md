@@ -676,7 +676,7 @@ Horizon, PostgreSQL and Redis.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm lint`
   - Effort: high
 
-- [ ] T1324 [US8] The example, the matrix and the guide
+- [x] T1324 [US8] The example, the matrix and the guide
   - Owns: `examples/php-plain-mysql/**`, `packages/cli/test/e2e/**`, `docs/guide/builders.md`, `docs/guide/databases.md`, `docs/guide/components.md`, `docs/guide/workers-and-cron.md`, `docs/guide/snapshots.md`, `plugin/skills/**`
   - Depends: T1320, T1321, T1322, T1323
   - Accept:
