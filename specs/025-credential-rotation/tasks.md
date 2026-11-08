@@ -34,7 +34,7 @@ secret in any test: `fakeSecret(kind)` and `{{FAKE:<kind>}}` (`@opscrew/core/tes
 
 ## Phase 2: Wave 1 (parallel)
 
-- [ ] T2503 [P] [US1] The catalog's rotation recipes
+- [x] T2503 [P] [US1] The catalog's rotation recipes
   - Owns: `packages/iac-templates/src/catalog/**` (+ tests), `packages/iac-templates/src/docker/rotation*.test.ts`
   - Reads: research R2–R5, R10; plan 2
   - Depends: T2501
@@ -130,7 +130,7 @@ secret in any test: `fakeSecret(kind)` and `{{FAKE:<kind>}}` (`@opscrew/core/tes
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm lint`
   - Effort: high
 
-- [ ] T2513 [P] [US7] Ages in advise and the check
+- [x] T2513 [P] [US7] Ages in advise and the check
   - Owns: `packages/agents/src/advise/**`, `packages/iac-templates/src/check/**`, `packages/iac-templates/check/**` (+ tests)
   - Depends: T2505
   - Accept: plan 11: advise's rule at `credentials.maxAgeDays`; the check with `check.credentials` opens an issue for an old credential, reading only the committed record.
