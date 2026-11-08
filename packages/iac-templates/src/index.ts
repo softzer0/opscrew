@@ -63,8 +63,10 @@ export * from "./workflow";
 export { schemaRecordPath } from "./workflow/migrations";
 export { previewWorkflowPath, renderPreviewWorkflow } from "./workflow/preview";
 export {
+  inContainer,
   ROTATE_APPROVAL_FILE,
   ROTATE_DIR,
+  ROTATE_LOG,
   type RotateStep,
   renderRotateScript,
   rotateApprovalLine,
@@ -83,6 +85,7 @@ export {
   partRestore,
   ROLLBACK_APPROVAL_FILE,
   rollbackApprovalLine,
+  SNAPSHOT_GENERATIONS,
   snapshotTakenPath,
 } from "./workflow/snapshots";
 export { FAILED_DEPLOY_DIR, RESTORE_HELD, ROTATION_HOLDER } from "./workflow/switch";

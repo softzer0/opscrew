@@ -17,6 +17,7 @@ import {
   processServices,
   RESTORE_HELD,
   ROTATION_HOLDER,
+  SNAPSHOT_GENERATIONS,
   serviceSpec,
 } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
@@ -263,6 +264,15 @@ export function rotateLocalServices(
       async writeValues(which, values) {
         await rewrite(values, which);
         await compose(recreated(values));
+      },
+      // The app's folder's generations file, which its snapshots name (T2514), as on a server.
+      async generation(service, generation) {
+        const file = join(folder, SNAPSHOT_GENERATIONS);
+        const others = ((await readTextIfExists(file)) ?? "")
+          .split("\n")
+          .filter((line) => line !== "" && !line.startsWith(`${service} `));
+        await mkdir(dirname(file), { recursive: true });
+        await writeFileAtomic(file, `${[...others, `${service} ${generation}`].join("\n")}\n`);
       },
       async switchApp() {
         await compose(["app", ...processServices(plan)]);

@@ -137,11 +137,11 @@ export class FakeSnapshotServer {
   remote(host = "server"): RemoteExec {
     return {
       host,
-      run: async (command) => {
+      run: async (command, options) => {
         this.commands.push(command);
         const answered = this.answer?.(command);
         if (answered !== undefined) return answered;
-        return this.sh(command);
+        return this.sh(command, options?.input);
       },
     };
   }
@@ -150,9 +150,11 @@ export class FakeSnapshotServer {
    * Runs the command under `sh` in the folder, with `df` answering `df.out`, `flock` failing
    * while `lock.held` exists (the start lock held by another run), and `docker` the services'
    * containers: `images/<service>` holds the image a service's container runs (none without the
-   * file).
+   * file); `docker compose up` and `docker exec` are logged in `docker.log`, each exec as
+   * `<OPSCREW_OLD>|<OPSCREW_NEW>|<arguments>` in `exec.log` (fake values only), failing with
+   * `exec.exit`. `input` is the command's stdin.
    */
-  sh(command: string): CommandResult {
+  sh(command: string, input?: string): CommandResult {
     // A login that reaches Docker through passwordless sudo: `sudo -n sh -c '<command>'`.
     const sudo = /^sudo -n sh -c ('(?:[^']|'\\'')*')$/s.exec(command)?.[1];
     const wrapped = WRAPPED.exec(sudo === undefined ? command : unquote(sudo));
@@ -166,13 +168,22 @@ export class FakeSnapshotServer {
     const docker = [
       "docker() {",
       '  case "$1" in',
-      '    compose) if [ -f "images/$4" ]; then echo "c-$4"; fi ;;',
+      '    compose) if [ "$2" = up ]; then echo "$*" >> docker.log; elif [ -f "images/$4" ]; then echo "c-$4"; fi ;;',
+      '    exec) echo "$*" >> docker.log; shift; printf "%s|%s|%s\n" "${OPSCREW_OLD:-}" "${OPSCREW_NEW:-}" "$*" >> exec.log; if [ -f exec.fails ] && [ "$(cat exec.fails)" -gt 0 ]; then echo $(( $(cat exec.fails) - 1 )) > exec.fails; return 1; fi; if [ -f exec.exit ]; then return "$(cat exec.exit)"; fi ;;',
       '    inspect) cat "images/${4#c-}" ;;',
       "  esac",
       "}",
     ].join("\n");
-    const script = `df() { cat df.out; }\nflock() { [ ! -f lock.held ]; }\n${docker}\ncd ${shellQuote(this.dir)} || exit 3\n${inner}`;
-    const run = spawnSync("sh", ["-c", script], { encoding: "utf8" });
+    // With `clock` (Unix seconds), `date +%s` reads it and `sleep` moves it on at once.
+    const clock = [
+      'date() { if [ "$1" = +%s ] && [ -f clock ]; then cat clock; else command date "$@"; fi; }',
+      'sleep() { if [ -f clock ]; then echo $(( $(cat clock) + $1 )) > clock; else command sleep "$@"; fi; }',
+    ].join("\n");
+    const script = `df() { cat df.out; }\nflock() { [ ! -f lock.held ]; }\n${clock}\n${docker}\ncd ${shellQuote(this.dir)} || exit 3\n${inner}`;
+    const run = spawnSync("sh", ["-c", script], {
+      encoding: "utf8",
+      ...(input === undefined ? {} : { input }),
+    });
     return { exitCode: run.status ?? 1, stdout: run.stdout, stderr: run.stderr };
   }
 

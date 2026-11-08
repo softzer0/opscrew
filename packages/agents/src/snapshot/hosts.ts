@@ -25,8 +25,8 @@ export interface ScriptHost {
   audit: string;
   /** True for this computer, whose parts belong to no server. */
   local: boolean;
-  /** Runs `command` (POSIX sh) in the app's folder as the deploy user. */
-  run(command: string, timeoutMs: number): Promise<CommandResult>;
+  /** Runs `command` (POSIX sh) in the app's folder as the deploy user, `input` on its stdin. */
+  run(command: string, timeoutMs: number, input?: string): Promise<CommandResult>;
 }
 
 /** The exit code of a command whose machine has no app's folder. */
@@ -73,9 +73,10 @@ export async function serverHost(run: SnapshotRun, server: string): Promise<Scri
     where: `on ${serverWords(server)}`,
     audit: `server ${server}`,
     local: false,
-    run: (command, timeoutMs) =>
+    run: (command, timeoutMs, input) =>
       docker.run(`cd ${shellQuote(dir)} || exit ${NO_FOLDER}; ${asDeploy(command)}`, {
         timeoutMs,
+        ...(input === undefined ? {} : { input }),
       }),
   };
 }
@@ -91,8 +92,11 @@ export async function computerHost(run: SnapshotRun): Promise<ScriptHost> {
     where: "on this computer",
     audit: "this computer",
     local: true,
-    run: (command, timeoutMs) =>
-      exec.run(`cd ${dir} || exit ${NO_FOLDER}; ${command}`, { timeoutMs }),
+    run: (command, timeoutMs, input) =>
+      exec.run(`cd ${dir} || exit ${NO_FOLDER}; ${command}`, {
+        timeoutMs,
+        ...(input === undefined ? {} : { input }),
+      }),
   };
 }
 

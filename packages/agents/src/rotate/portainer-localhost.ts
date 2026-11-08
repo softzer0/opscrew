@@ -113,6 +113,12 @@ export interface DockerRotationTarget {
   /** The values `which` in place where the app and its services read them. */
   writeValues(which: keyof ValuePair, values: RotationValues): Promise<void>;
   /**
+   * Records `generation` as the one of `service`'s values that its snapshots name (T2514, as
+   * `rotate.sh` does on a server): the new one once its data logs in with the new value, the old
+   * one again once an undo puts the old value back (this computer).
+   */
+  generation?(service: string, generation: number): Promise<void>;
+  /**
    * The app (and every service whose step recreates it) switched to the values in place: the new
    * ones under the rotation's `approval`, the old ones (an undo) without one.
    */
@@ -293,6 +299,8 @@ interface Unit {
 /** A unit of the undo, run once the rotation's units done reached `after`. */
 interface UndoUnit extends Unit {
   after: number;
+  /** The service whose data it changes back, if one. */
+  service?: string;
 }
 
 /** One of a step's commands, as its conditions allow (a failed check is no failure). */
@@ -331,6 +339,7 @@ function rotationUnits(
   values: RotationValues,
   hash: string,
   approval?: ApprovalRecord,
+  generations?: ReadonlyMap<string, number>,
 ) {
   const units: Unit[] = [];
   const runs = steps.filter((step) => step.runs);
@@ -340,11 +349,14 @@ function rotationUnits(
   const begun = new Map<ServiceStep, number[]>();
   /** The first unit that changes a container, which the switch back changes again. */
   let firstChange: number | undefined;
+  /** Each `restart` step's unit. */
+  const restarted = new Map<ServiceStep, number>();
   for (const step of runs) {
     if (step.rotation.mode === "restart") {
       const { restart } = target;
       if (restart === undefined) continue;
       firstChange ??= units.length;
+      restarted.set(step, units.length);
       units.push({
         what: `restarting ${step.service.name} with its new value`,
         run: () => restart(step, values),
@@ -360,6 +372,7 @@ function rotationUnits(
     });
     if (mine.length > 0) begun.set(step, mine);
   }
+  const written = units.length;
   units.push({ what: "writing the new values", run: () => target.writeValues("new", values) });
   const switching = units.length;
   units.push({
@@ -393,6 +406,7 @@ function rotationUnits(
               what: `changing ${step.service.name} back to its old value`,
               after: unit,
               run: () => runCommand(target, step, step.begin[i] as RotationStep, true),
+              service: step.service.name,
             }))
             .reverse(),
     ),
@@ -412,10 +426,62 @@ function rotationUnits(
             : `undoing the change of ${step.service.name}`,
         after: start,
         run: () => runCommand(target, step, command, step.undo === undefined),
+        service: step.service.name,
       }));
     }),
   ];
+  if (target.generation !== undefined && generations !== undefined) {
+    recordGenerations(target, runs, generations, { units, undo, begun, restarted, written });
+  }
   return { units, undo, limit, switching };
+}
+
+/**
+ * Adds to `units` and `undo` the generations `target` records (T2514), as `rotate.sh` does: a
+ * service's next one once its data logs in with the new value (after its last `begin`, after its
+ * restart, with the new values written for a `dual` one created again or one without `begin`), its
+ * previous one with the last undo unit that changes its data back (with the old values written for
+ * one no `begin` changed).
+ */
+function recordGenerations(
+  target: DockerRotationTarget,
+  runs: readonly ServiceStep[],
+  generations: ReadonlyMap<string, number>,
+  at: {
+    units: Unit[];
+    undo: UndoUnit[];
+    begun: ReadonlyMap<ServiceStep, number[]>;
+    restarted: ReadonlyMap<ServiceStep, number>;
+    written: number;
+  },
+): void {
+  const record = target.generation as NonNullable<DockerRotationTarget["generation"]>;
+  const then = (unit: Unit | undefined, service: string, generation: number) => {
+    if (unit === undefined) return;
+    const run = unit.run;
+    unit.run = async () => {
+      await run();
+      await record(service, generation);
+    };
+  };
+  const forward = new Map<string, number>();
+  for (const step of runs) {
+    const unit =
+      at.restarted.get(step) ??
+      (step.rotation.mode === "dual" && step.rotation.recreate
+        ? at.written
+        : at.begun.get(step)?.at(-1)) ??
+      at.written;
+    const name = step.service.name;
+    forward.set(name, Math.max(forward.get(name) ?? 0, unit));
+  }
+  for (const [service, unit] of forward) {
+    const next = generations.get(service);
+    if (next === undefined) continue;
+    then(at.units[unit], service, next);
+    const back = at.undo.findLast((each) => each.service === service) ?? at.undo[0];
+    then(back, service, next - 1);
+  }
 }
 
 // --- The run ------------------------------------------------------------------------------------
@@ -714,6 +780,15 @@ function audit(
   });
 }
 
+/** Each of the services `names`' generation once rotated: the record's, one more (T2514). */
+async function nextGenerations(
+  deps: PhaseDeps,
+  names: readonly string[],
+): Promise<Map<string, number>> {
+  const record = (await readCredentialsRecord(deps)).environments[deps.paths.environment] ?? {};
+  return new Map(names.map((name) => [name, (record[name]?.generation ?? 1) + 1]));
+}
+
 /** The units from the first one not done, each recorded once done; then the end. */
 async function runRotation(
   deps: PhaseDeps,
@@ -725,7 +800,14 @@ async function runRotation(
 ): Promise<DockerRotation> {
   const { again, approval } = input;
   const { hash } = pending;
-  const { units, limit } = rotationUnits(target, steps, pending, hash, approval);
+  const { units, limit } = rotationUnits(
+    target,
+    steps,
+    pending,
+    hash,
+    approval,
+    await nextGenerations(deps, pending.names),
+  );
   let done = pending.done ?? 0;
   await audit(
     deps,
@@ -776,7 +858,14 @@ async function undoRotation(
   again: string,
 ): Promise<DockerUndo> {
   const { hash } = pending;
-  const { undo, limit } = rotationUnits(target, steps, pending, hash);
+  const { undo, limit } = rotationUnits(
+    target,
+    steps,
+    pending,
+    hash,
+    undefined,
+    await nextGenerations(deps, pending.names),
+  );
   const done = pending.done ?? 0;
   if (pending.step === "switched" || done > limit) {
     throw new OpsCrewError(

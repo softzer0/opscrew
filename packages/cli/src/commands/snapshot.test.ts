@@ -283,7 +283,8 @@ describe("opscrew snapshot list", () => {
     };
     expect(await run(ctx, "snapshot", "list", "--env", "staging", "--key-file", "age.txt")).toBe(0);
     expect(lastCall(fake.calls, "listSnapshots").args).toEqual([
-      { identity: `# a key\n${identity}\n` },
+      // The CLI's listing forgets the earlier generations no snapshot needs (T2514).
+      { forgetUnneeded: true, identity: `# a key\n${identity}\n` },
     ]);
     expect(ctx.output).toContain("in the off-server bucket shop-staging-backups");
     expect(`${ctx.output}${ctx.errors}`).not.toContain(identity);

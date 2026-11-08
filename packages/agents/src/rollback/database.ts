@@ -38,6 +38,7 @@ import type { PhaseDeps } from "../context";
 import { appFolder } from "../localhost/services";
 import { NOTHING_CHANGED } from "../promote/shared";
 import { serverWords } from "../shared/server-address";
+import { rotatedLogins } from "../snapshot/generations";
 import { type About, aboutOf } from "../snapshot/store";
 import { serverShell } from "../status/servers";
 import type { RollbackServices } from "./index";
@@ -441,7 +442,8 @@ function notOffered(
  *    target's `about.json` on each extra server that holds part of the snapshot (Portainer:
  *    below);
  * 2. it offers the snapshot when every server that holds part of it has the target's complete
- *    snapshot (a folder without `about.json`, such as 0.2.4's, is none), down migrations when both
+ *    snapshot (a folder without `about.json`, such as 0.2.4's, is none) and none of its copies
+ *    holds a service's logins from before a rotation ({@link rotatedLogins}), down migrations when both
  *    records exist and a count tool's count did not grow going back, and keep, always;
  * 3. it takes `--database`, refusing a choice not offered with its reason (`PHASE_PRECONDITION`,
  *    nothing changed); else, with several offers, asks `chooseDatabase`; else the default: the
@@ -585,7 +587,15 @@ export async function databaseStep(
     const each = restoring.length === 0 ? "the server keeps" : "each server keeps";
     why.snapshot = `${where} ${missing.length > 1 ? "keep" : "keeps"} no complete snapshot of ${input.words}: a deploy takes one when it replaces a version, and ${each} those of the last ${keepSnapshotsOf(plan)}.`;
   } else {
-    offers.push(snapshotOffer(taken, input.words));
+    const { rotated, ahead } = await rotatedLogins(deps, abouts.values(), run.flags);
+    // A copy ahead of this computer's record: the snapshot isn't offered, keep still is.
+    if (ahead !== undefined) {
+      why.snapshot = ahead;
+    } else if (rotated.length > 0) {
+      why.snapshot = rotatedReason(run, rotated, targetHex as string, input.words);
+    } else {
+      offers.push(snapshotOffer(taken, input.words));
+    }
   }
   if (migrations === undefined) {
     why.migrations = unreadReason(run, "migrations");
@@ -782,6 +792,21 @@ async function choose(
     return options.chooseDatabase({ offers: [...offers], default: fallback });
   }
   return fallback;
+}
+
+/**
+ * Why the snapshot of the target named `words` (its digest's `hex`) is not offered when it holds
+ * the logins of `rotated` from before their rotation (025 plan.md 12.): the rollback's run restores
+ * it on the server, which has only the current values; `opscrew restore` sets those again.
+ */
+function rotatedReason(
+  run: RollbackRun,
+  rotated: readonly string[],
+  hex: string,
+  words: string,
+): string {
+  const one = rotated.length === 1;
+  return `${listText(rotated)} ${one ? "was" : "were"} rotated after the snapshot of ${words} was taken, and ${one ? "its copy holds its" : "their copies hold their"} logins of then: the rollback's run restores it on the server, where only the current passwords are, so the app could not log in to ${one ? "it" : "them"}. Roll back with --database keep, then run \`opscrew restore ${hex}${run.flags}\`, which gives ${one ? "it" : "them"} the current passwords again.`;
 }
 
 /**

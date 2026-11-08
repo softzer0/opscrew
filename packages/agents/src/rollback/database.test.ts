@@ -10,6 +10,7 @@ import { localPlan } from "../localhost/__fixtures__/computer";
 import { appFolder } from "../localhost/services";
 import { splitPlan } from "../network/__fixtures__/plans";
 import { digestOf, inEnvironment } from "../promote/__fixtures__/world";
+import { credentialsRecordFile } from "../rotate/record";
 import { recordOwnServer, recordServerAddress, updateServerAddresses } from "../shared";
 import { SH_AVAILABLE } from "../snapshot/__fixtures__/server";
 import {
@@ -310,6 +311,51 @@ describe.skipIf(!SH_AVAILABLE)("the database step on a server", () => {
     expect(chosen.lines[1]).toBe(
       "Kept as they are, since the snapshot holds no copy of them: kafka (it must stop for its copy, and deploy.snapshotStop doesn't name it), mq (it had no container yet), cache (it had no container yet), the app's SQLite files (the volume was empty) and the app's kept folder (its volume did not exist yet).",
     );
+  });
+
+  it("refuses a snapshot whose copy of a service's volumes holds its logins from before a rotation, not a dump's (025)", async () => {
+    const base = serverPlan({ environment: "staging" });
+    const plan = serverPlan({
+      environment: "staging",
+      extra: {
+        services: [base.services[0], { ...base.services[0], name: "mq", kind: "rabbitmq" }],
+        deploy: { snapshotStop: ["mq"] },
+      },
+    });
+    const { deps, folder, step } = await world(plan);
+    await folder.snapshot(hex(TARGET), TAKEN, [
+      { name: "db", kind: "postgres", file: "db.dump", size: 4 },
+      { name: "mq", kind: "rabbitmq", file: "mq.tar", size: 4, generation: 2 },
+    ]);
+    const rotated = async (mq: number) =>
+      writeArtifact("credentials", credentialsRecordFile(deps.paths), {
+        schemaVersion: 1,
+        environments: {
+          staging: {
+            db: { rotatedAt: "2026-10-11T11:45:00.000Z", generation: 3 },
+            mq: { rotatedAt: "2026-10-11T11:45:00.000Z", generation: mq },
+          },
+        },
+      });
+    // The dump leaves PostgreSQL's users as they are: rotated since, it is still offered.
+    await rotated(2);
+    expect((await step()).choice).toBe("snapshot");
+    await rotated(3);
+    const refused = await failure(step({ database: "snapshot" }));
+    expect(refused.message).toBe(
+      `mq was rotated after the snapshot of ${WORDS} was taken, and its copy holds its logins of then: the rollback's run restores it on the server, where only the current passwords are, so the app could not log in to it. Roll back with --database keep, then run \`opscrew restore ${hex(TARGET)} --env staging\`, which gives it the current passwords again. Nothing was changed.`,
+    );
+    expect((await step()).choice).toBe("keep");
+    // A copy of a later generation than the record (this computer's record is behind): the
+    // snapshot isn't offered, but a rollback of the code alone still is.
+    await rotated(1);
+    expect((await step()).choice).toBe("keep");
+    const ahead = await failure(step({ database: "snapshot" }));
+    expect(ahead.code).toBe("PHASE_PRECONDITION");
+    expect(ahead.message).toContain(
+      "holds mq at a later generation of its values (2) than this computer's rotation record (1)",
+    );
+    expect(ahead.message).toContain("`opscrew secrets restore --env staging`");
   });
 
   it("reads nothing on prod without snapshots or down migrations, and says why each is refused", async () => {

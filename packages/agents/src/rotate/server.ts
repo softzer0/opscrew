@@ -812,9 +812,18 @@ async function runRotation(
     flags,
     reused !== undefined && reused.step !== "planned" ? reused.hash : undefined,
   );
+  // Each service's generation once rotated, which `rotate.sh` records for the snapshots (T2514);
+  // a device login touches no snapshot's data.
+  const now = (await readCredentialsRecord(deps)).environments[environment] ?? {};
   const runs = serverRuns(
     plan,
-    [...serviceSteps(plan, services), ...grantSteps(grants)],
+    [
+      ...serviceSteps(plan, services).map((s) => ({
+        ...s,
+        step: { ...s.step, generation: (now[s.service.name]?.generation ?? 1) + 1 },
+      })),
+      ...grantSteps(grants),
+    ],
     app.length > 0,
   );
   const hosts = new Map<string, RotateHost>();

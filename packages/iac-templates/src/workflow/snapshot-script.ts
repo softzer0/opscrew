@@ -270,6 +270,8 @@ function pruneScheduled(keep: number): string[] {
  * - it copies every part but those `--skip` names, and of the stop-only ones only those named for
  *   its kind (`deploy.snapshotStop`, `snapshots.schedule.stop`) or with `--stop`; the others it
  *   lists as left out.
+ * While a credential rotation holds the app, one by hand is refused and a scheduled one is skipped
+ * with a warning in its log (T2514): the services' data may be part-way between two values.
  * On success it keeps only the newest release or scheduled snapshots and prints the id.
  */
 function takeCommand(plan: DeployPlan, server: string): string[] {
@@ -280,6 +282,7 @@ function takeCommand(plan: DeployPlan, server: string): string[] {
     "snapshot_cmd_take() {",
     '  _kind="${1:-}"',
     '  case "$_kind" in manual | release | scheduled) shift ;; *) snapshot_usage; return 1 ;; esac',
+    `  if [ "$_kind" = manual ]; then ${rotationHeldStop(plan, "OpsCrew took no snapshot: ", "return 1", "_holder")}; fi`,
     '  case "$_kind" in',
     `    release) _stop=${shellQuote(stopOnly(plan, server, plan.deploy.snapshotStop ?? []))} ;;`,
     `    scheduled) _stop=${shellQuote(stopOnly(plan, server, schedule?.stop ?? []))} ;;`,
@@ -329,7 +332,8 @@ function takeCommand(plan: DeployPlan, server: string): string[] {
           // A deploy held the lock past the slot's tick, or the slot ran already.
           `      if [ -e ${SNAPSHOTS_DIR}/"$_id" ]; then return 0; fi`,
           `      (umask 077 && mkdir -p ${SNAPSHOTS_DIR} && : > ${SCHEDULED_LOG})`,
-          `      exec >> ${SCHEDULED_LOG} 2>&1 ;;`,
+          `      exec >> ${SCHEDULED_LOG} 2>&1`,
+          `      ${rotationHeldStop(plan, "Warning: OpsCrew skipped this scheduled snapshot: ", "return 0", "_holder")} ;;`,
         ]),
     "    *)",
     `      if [ -n "$_id" ] && [ -e ${SNAPSHOTS_DIR}/"$_id" ]; then`,
@@ -376,7 +380,7 @@ function takeCommand(plan: DeployPlan, server: string): string[] {
 }
 
 /**
- * `snapshot_cmd_restore <id> [--only <service>]` (024 plan.md 3. and 6.): refuses before any change
+ * `snapshot_cmd_restore <id> [--only <service>] [--no-wait <service>]...` (024 plan.md 3. and 6.): refuses before any change
  * without the one-time approval for exactly this restore ({@link RESTORE_APPROVAL_FILE}, read and
  * removed at once, as the rollback's), while a credential rotation holds the app
  * ({@link rotationStop}), or when the snapshot is not complete. On the app's server
@@ -400,12 +404,17 @@ function restoreCommand(plan: DeployPlan, server: string): string[] {
     '  _id="$1"',
     "  shift",
     '  snapshot_id "$_id" || return 1',
-    '  _only=""',
-    '  if [ "$#" -gt 0 ]; then',
-    '    if [ "$#" -ne 2 ] || [ "$1" != --only ]; then snapshot_usage; return 1; fi',
+    '  _only=""; _nowait=""',
+    '  while [ "$#" -gt 0 ]; do',
+    '    [ "$#" -ge 2 ] || { snapshot_usage; return 1; }',
     '    snapshot_known "$2" || return 1',
-    '    _only="$2"',
-    "  fi",
+    '    case "$1" in',
+    '      --only) [ -z "$_only" ] || { snapshot_usage; return 1; }; _only="$2" ;;',
+    '      --no-wait) _nowait="$_nowait $2" ;;',
+    "      *) snapshot_usage; return 1 ;;",
+    "    esac",
+    "    shift 2",
+    "  done",
     `  if [ ! -f ${file} ]; then`,
     `    echo ${shellQuote(`A restore needs its one-time approval on this server (${file}), which opscrew restore writes once you approve it, so nothing was changed. Run opscrew restore.`)} >&2`,
     "    return 1",
@@ -458,11 +467,16 @@ function restoreCommand(plan: DeployPlan, server: string): string[] {
     "    return 1",
     "  fi",
     '  echo "saved $_saved"',
+    // The services opscrew restore gives their current values start without waiting for their
+    // health checks, which log in; it waits for them once their values are set (T2514).
+    '  SNAPSHOT_NO_WAIT="$_nowait"',
     '  if snapshot_restore "$_id" $_parts; then',
+    '    SNAPSHOT_NO_WAIT=""',
     ...start,
     `    ${said("OpsCrew restored the snapshot %s. The data from just before the restore is the snapshot %s.")} "$_id" "$_saved" >&2`,
     "    return 0",
     "  fi",
+    '  SNAPSHOT_NO_WAIT=""',
     '  if snapshot_restore "$_saved" $_parts; then',
     ...start,
     `    ${said(`Restoring the snapshot %s failed, so OpsCrew put the data back as it was before the restore (the snapshot %s)${app ? "%s" : ""}: nothing changed. ${note}`)} "$_id" "$_saved" ${app ? '"$_starts" ' : ""}${folder} >&2`,
@@ -515,7 +529,7 @@ function holdCommands(plan: DeployPlan): string[] {
  * - `take <manual|release|scheduled> [--skip <service>]... [--stop <service>]... [--id <id>]
  *   [--version sha256:<hex>]` prints the new snapshot's id; exits 1 when a copy failed, 2 when the
  *   disk is too full;
- * - `restore <id> [--only <service>]` (its approval: {@link restoreApprovalLine});
+ * - `restore <id> [--only <service>] [--no-wait <service>]...` (its approval: {@link restoreApprovalLine});
  * - on the app's server, `hold` and `resume` ({@link holdCommands});
  * - `list` prints each snapshot's `about.json`, one per line;
  * - `delete <id>` removes a snapshot;
@@ -540,7 +554,7 @@ export function snapshotScript(plan: DeployPlan, server: string = APP_SERVER): s
   const take = `take <manual|release|scheduled> [--skip <service>]... [--stop <service>]... [--id <id>] [--version sha256:<hex>]`;
   const commands = [
     take,
-    "restore <id> [--only <service>]",
+    "restore <id> [--only <service>] [--no-wait <service>]...",
     ...(app ? ["hold", "resume"] : []),
     "list",
     "delete <id>",

@@ -368,7 +368,7 @@ jobs:
           ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/apps/shop/snapshot.sh.new && mv -f /srv/apps/shop/snapshot.sh.new /srv/apps/shop/snapshot.sh' <<'SNAPSHOT'
           # OpsCrew's snapshots of shop's data on the app's server, generated from opscrew/plan.yaml; each deploy uploads it.
           #   sh snapshot.sh take <manual|release|scheduled> [--skip <service>]... [--stop <service>]... [--id <id>] [--version sha256:<hex>]
-          #   sh snapshot.sh restore <id> [--only <service>]
+          #   sh snapshot.sh restore <id> [--only <service>] [--no-wait <service>]...
           #   sh snapshot.sh hold
           #   sh snapshot.sh resume
           #   sh snapshot.sh list
@@ -429,7 +429,10 @@ jobs:
             done
           }
           snapshot_start() {
-            docker compose up -d --no-deps --no-recreate --wait "$1" >> .snapshots/snapshot.log 2>&1
+            case " \${SNAPSHOT_NO_WAIT:-} " in
+              *" $1 "*) docker compose up -d --no-deps --no-recreate "$1" >> .snapshots/snapshot.log 2>&1 ;;
+              *) docker compose up -d --no-deps --no-recreate --wait "$1" >> .snapshots/snapshot.log 2>&1 ;;
+            esac
           }
           snapshot_tar() {
             _ran="$(docker compose ps -q "$1")"
@@ -499,7 +502,10 @@ jobs:
                   _about_file="$(part_file "$_about_part")"
                   _about_image="$(part_image "$_about_part")"
                   if [ -n "$_about_image" ]; then _about_image=",\\"image\\":\\"$_about_image\\""; fi
-                  printf '{"name":"%s","kind":"%s","file":"%s","size":%s%s}' "$_about_part" "$(part_kind "$_about_part")" "$_about_file" "$(wc -c < "$_about_folder/$_about_file" | tr -d ' ')" "$_about_image" ;;
+                  _about_generation=""
+                  case " $SNAPSHOT_ONLINE " in *" $_about_part "*) ;; *) if [ -f .snapshots/generations ]; then _about_generation="$(awk -v s="$_about_part" '$1 == s && $2 ~ /^[1-9][0-9]*$/ { g = $2 } END { if (g != "") print g }' .snapshots/generations)"; fi ;; esac
+                  if [ -n "$_about_generation" ]; then _about_generation=",\\"generation\\":$_about_generation"; fi
+                  printf '{"name":"%s","kind":"%s","file":"%s","size":%s%s%s}' "$_about_part" "$(part_kind "$_about_part")" "$_about_file" "$(wc -c < "$_about_folder/$_about_file" | tr -d ' ')" "$_about_image" "$_about_generation" ;;
                 *) printf '{"name":"%s","kind":"%s","skipped":true}' "$_about_part" "$(part_kind "$_about_part")" ;;
               esac
             done
@@ -550,7 +556,7 @@ jobs:
             done
           }
           snapshot_usage() {
-            echo 'Usage: sh snapshot.sh take <manual|release|scheduled> [--skip <service>]... [--stop <service>]... [--id <id>] [--version sha256:<hex>] | restore <id> [--only <service>] | hold | resume | list | delete <id> | offsite <id>' >&2
+            echo 'Usage: sh snapshot.sh take <manual|release|scheduled> [--skip <service>]... [--stop <service>]... [--id <id>] [--version sha256:<hex>] | restore <id> [--only <service>] [--no-wait <service>]... | hold | resume | list | delete <id> | offsite <id>' >&2
           }
           snapshot_id() {
             case "$1" in
@@ -570,6 +576,7 @@ jobs:
           snapshot_cmd_take() {
             _kind="\${1:-}"
             case "$_kind" in manual | release | scheduled) shift ;; *) snapshot_usage; return 1 ;; esac
+            if [ "$_kind" = manual ]; then _holder="held $(cat .snapshots/.held 2> /dev/null || true)"; case "$_holder" in "held rotation "*) printf 'OpsCrew took no snapshot: a credential rotation holds the app (the rotation of the plan %s), so its services may have new values the app does not use yet: finish the rotation with opscrew rotate, or put the old values back with opscrew rotate --undo, then try again.\\n' "\${_holder#held rotation }" >&2; return 1 ;; esac; fi
             case "$_kind" in
               release) _stop='' ;;
               scheduled) _stop='' ;;
@@ -652,12 +659,17 @@ jobs:
             _id="$1"
             shift
             snapshot_id "$_id" || return 1
-            _only=""
-            if [ "$#" -gt 0 ]; then
-              if [ "$#" -ne 2 ] || [ "$1" != --only ]; then snapshot_usage; return 1; fi
+            _only=""; _nowait=""
+            while [ "$#" -gt 0 ]; do
+              [ "$#" -ge 2 ] || { snapshot_usage; return 1; }
               snapshot_known "$2" || return 1
-              _only="$2"
-            fi
+              case "$1" in
+                --only) [ -z "$_only" ] || { snapshot_usage; return 1; }; _only="$2" ;;
+                --no-wait) _nowait="$_nowait $2" ;;
+                *) snapshot_usage; return 1 ;;
+              esac
+              shift 2
+            done
             if [ ! -f .restore-snapshot ]; then
               echo 'A restore needs its one-time approval on this server (.restore-snapshot), which opscrew restore writes once you approve it, so nothing was changed. Run opscrew restore.' >&2
               return 1
@@ -709,11 +721,14 @@ jobs:
               return 1
             fi
             echo "saved $_saved"
+            SNAPSHOT_NO_WAIT="$_nowait"
             if snapshot_restore "$_id" $_parts; then
+              SNAPSHOT_NO_WAIT=""
               if [ -z "$_held" ]; then docker compose start app; fi
               printf 'OpsCrew restored the snapshot %s. The data from just before the restore is the snapshot %s.\\n' "$_id" "$_saved" >&2
               return 0
             fi
+            SNAPSHOT_NO_WAIT=""
             if snapshot_restore "$_saved" $_parts; then
               if [ -z "$_held" ]; then docker compose start app; fi
               printf 'Restoring the snapshot %s failed, so OpsCrew put the data back as it was before the restore (the snapshot %s)%s: nothing changed. The output of the copies and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data, so it is not printed here).\\n' "$_id" "$_saved" "$_starts" "$APPS_DIR"/shop >&2

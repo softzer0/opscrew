@@ -6,15 +6,16 @@
  * from this computer). Read-only.
  */
 import { listText, OpsCrewError } from "@opscrew/core";
-import { APP_SERVER } from "@opscrew/plan-schema";
+import { APP_SERVER, snapshotOffsiteOf } from "@opscrew/plan-schema";
 import { formatUtc } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
 import { sizeText } from "../retarget/texts";
 import { shortDigest } from "../rollback/versions";
 import { serverWords } from "../shared/server-address";
+import { forgetUnneededGenerations } from "./generations";
 import { dataHosts, hostFailure, READ_TIMEOUT_MS, type ScriptHost, scriptCommand } from "./hosts";
 import { type PortainerPlace, portainerListing, portainerPlace } from "./portainer";
-import { providerSnapshots } from "./provider";
+import { cloudProviders, providerSnapshots, serverApi } from "./provider";
 import {
   bucketAbout,
   bucketCopies,
@@ -83,7 +84,14 @@ export async function dataListings(run: SnapshotRun): Promise<PlaceListing[]> {
 /** A part of `about` as the list shows it, on `server`. */
 function serviceOf(entry: About["services"][number], server: string | undefined): SnapshotService {
   const base = { name: entry.name, kind: entry.kind, ...(server === undefined ? {} : { server }) };
-  if ("file" in entry) return { ...base, state: "copied", size: entry.size };
+  if ("file" in entry) {
+    return {
+      ...base,
+      state: "copied",
+      size: entry.size,
+      ...(entry.generation === undefined ? {} : { generation: entry.generation }),
+    };
+  }
   return { ...base, state: "failed" in entry ? "failed" : "skipped" };
 }
 
@@ -144,20 +152,25 @@ export interface ListSnapshotsOptions extends SnapshotCommandOptions {
    */
   identity?: string;
   services?: RestoreServices;
+  /**
+   * The CLI's `snapshot list`: once every snapshot was read, forgets the earlier generations of
+   * values none needs (T2514). Without it the listing changes nothing (the MCP tool's).
+   */
+  forgetUnneeded?: boolean;
 }
 
 /**
  * The copies in the bucket (`bucket`) whose snapshot no machine holds any more (`known` are the
  * ids the machines hold): with `identity`, each part's `about.json` decrypted here and merged as
  * the machines' are, `where` the bucket; without it, only their ids, said in a line, since nothing
- * else of them can be read without the key.
+ * else of them can be read without the key: then `undefined`.
  */
 async function bucketEntries(
   run: SnapshotRun,
   bucket: OffsiteBucket,
   known: ReadonlySet<string>,
   identity: string | undefined,
-): Promise<SnapshotEntry[]> {
+): Promise<SnapshotEntry[] | undefined> {
   const copies = [...bucketCopies(await bucketObjects(run, bucket))].filter(
     ([id]) => !known.has(id),
   );
@@ -166,7 +179,7 @@ async function bucketEntries(
     run.deps.reporter.warn(
       `The off-server bucket ${bucket.name} also holds ${copies.length === 1 ? "the copy" : "the copies"} ${listText(copies.map(([id]) => id))}, which no server holds any more. Their records are encrypted: run \`opscrew snapshot list${run.flags} --key-file <path>\` with the recovery copy's age key file to list what they hold.`,
     );
-    return [];
+    return undefined;
   }
   const listings: Pick<PlaceListing, "name" | "server" | "listing">[] = [];
   for (const [id, servers] of copies) {
@@ -213,6 +226,9 @@ async function readableBucket(
  * bucket holds ({@link bucketEntries}; the bucket is left out with a warning when this computer
  * has no key for it or no rclone) and, on servers OpsCrew created, the providers' whole-server
  * snapshots. A record that does not read as the store's contract is left out with a warning.
+ * With `forgetUnneeded` (the CLI's), once every snapshot was read (each record, the bucket's with the
+ * off-server copy on, and each provider's whole-server snapshots), the earlier generations of
+ * values none of them needs are forgotten ({@link forgetUnneededGenerations}).
  * @throws OpsCrewError `PHASE_PRECONDITION` for a site, and when a machine is not reachable or
  * its listing fails.
  */
@@ -239,11 +255,17 @@ export async function listSnapshots(
     bucket === undefined
       ? []
       : await bucketEntries(run, bucket, new Set(data.map((entry) => entry.id)), options.identity);
-  const whole =
-    snapshotTarget(run) === "servers"
-      ? (await providerSnapshots(run)).map((found) => found.entry)
-      : [];
-  return [...data, ...copies, ...whole].sort(newestFirst);
+  const servers = snapshotTarget(run) === "servers";
+  const whole = servers ? (await providerSnapshots(run)).map((found) => found.entry) : [];
+  const everyOne =
+    listings.every(({ listing }) => listing.unreadable === 0) &&
+    copies !== undefined &&
+    (bucket !== undefined || snapshotOffsiteOf(run.plan) === undefined) &&
+    (!servers || cloudProviders(run).every((provider) => serverApi(run, provider) !== undefined));
+  if (options.forgetUnneeded === true && everyOne && copies !== undefined) {
+    await forgetUnneededGenerations(deps, [...data, ...copies, ...whole]);
+  }
+  return [...data, ...(copies ?? []), ...whole].sort(newestFirst);
 }
 
 /** A kind of snapshot in words. */

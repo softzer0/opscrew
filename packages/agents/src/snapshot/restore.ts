@@ -8,7 +8,9 @@
  *   approval file the script requires; it copies the data as it is now and puts that copy back on
  *   failure. The app's server's `snapshot.sh hold` runs first and `snapshot.sh resume` after (D8):
  *   while held, no restore lets a request through or starts the app. A pre-release snapshot is
- *   restored by its digest the same way (D18: `restore <hex> --only <s>`).
+ *   restored by its digest the same way (D18: `restore <hex> --only <s>`). A service rotated since
+ *   its copy gets its current values again once its machine's restore is done (025 plan.md 12.,
+ *   {@link restoreRelogins}); when that fails, its data is put back like a failed restore's.
  * - **The user's Portainer:** through its Docker API ({@link restoreInPortainer}).
  * - **`--from offsite`:** the copy is downloaded and decrypted on this computer and streamed into
  *   the snapshots' folder first ({@link copyToServer}); the servers never hold the key.
@@ -28,6 +30,7 @@ import { APP_SERVER, snapshotOffsiteOf } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { NOTHING_CHANGED } from "../promote/shared";
 import { APPROVAL_SECONDS } from "../rollback/database";
+import { type Relogin, reloginCommand, restoreRelogins } from "./generations";
 import {
   dataHosts,
   hostFailure,
@@ -63,6 +66,9 @@ import { aboutOf, requireSnapshotId, versionLine } from "./store";
 
 /** How long one machine's restore may take: its copy first, then the restore. */
 const RESTORE_TIMEOUT_MS = 6 * 60 * 60_000;
+
+/** How long giving the restored services their current values may take: a service's recreation. */
+const RELOGIN_TIMEOUT_MS = 10 * 60_000;
 
 /**
  * The version that runs on a machine, as `snapshot.sh`'s `snapshot_version` records it:
@@ -237,8 +243,9 @@ async function restoreOnHosts(
   const allow = options.allowOtherVersion === true;
   checkVersion(run, id, snapshotVersion(holders), running, allow);
   checkImages(run, id, holders, allow);
+  const relogins = await restoreRelogins(run, id, holders);
   const where = `on ${listText(holders.map((holder) => holder.name))}`;
-  await approveRestore(run, { id, holders, where, options, approvalFile: true });
+  await approveRestore(run, { id, holders, where, options, approvalFile: true, relogins });
   // 4. The copies from the bucket, then the restores.
   for (const holder of holders.filter((each) => copies.has(each.server))) {
     const host = hosts.get(holder.server) as ScriptHost;
@@ -249,7 +256,7 @@ async function restoreOnHosts(
       record: records.get(holder.server) as BucketAbout,
     });
   }
-  const saved = await restoreEach(run, id, options, holders, hosts, app);
+  const saved = await restoreEach(run, id, options, holders, hosts, app, relogins);
   const restored = holders.flatMap((holder) =>
     holder.parts.map((part) => ({
       name: part.name,
@@ -281,12 +288,24 @@ interface Outcome {
 async function restoreOn(
   run: SnapshotRun,
   host: ScriptHost,
-  input: { id: string; only?: string; parts: readonly string[]; action: string },
+  input: {
+    id: string;
+    only?: string;
+    parts: readonly string[];
+    action: string;
+    /** The services it starts without waiting for their health checks (their re-login's). */
+    noWait?: readonly string[];
+  },
 ): Promise<Outcome> {
   const { deps } = run;
   const { id, only } = input;
   const expiry = Math.floor(deps.clock.now().getTime() / 1000) + APPROVAL_SECONDS;
-  const args = ["restore", id, ...(only === undefined ? [] : ["--only", only])];
+  const args = [
+    "restore",
+    id,
+    ...(only === undefined ? [] : ["--only", only]),
+    ...(input.noWait ?? []).flatMap((service) => ["--no-wait", service]),
+  ];
   let written: CommandResult | undefined;
   let result: CommandResult | undefined;
   try {
@@ -341,6 +360,46 @@ async function restoreOn(
   };
 }
 
+/**
+ * Gives the services of `relogins` restored on `host` their current values
+ * ({@link reloginCommand}, the values on stdin), audited; returns the error when it failed. Nothing
+ * runs without one.
+ */
+async function reloginOn(
+  run: SnapshotRun,
+  host: ScriptHost,
+  id: string,
+  relogins: readonly Relogin[],
+): Promise<OpsCrewError | undefined> {
+  if (relogins.length === 0) return undefined;
+  const { deps } = run;
+  const names = listText(relogins.map((relogin) => relogin.service));
+  const their = relogins.length === 1 ? "its" : "their";
+  deps.reporter.step(`Giving ${names} ${their} current passwords again ${host.where}`);
+  const { command, input } = reloginCommand(relogins);
+  const result = await host
+    .run(command, RELOGIN_TIMEOUT_MS, input)
+    .catch(
+      (error: unknown): CommandResult => ({ exitCode: 255, stdout: "", stderr: String(error) }),
+    );
+  await deps.audit
+    .append({
+      kind: "remote-exec",
+      actor: "opscrew",
+      action: "set the current passwords of restored services",
+      target: host.audit,
+      decision: "approved",
+      detail: `${id}: ${relogins.map((relogin) => `${relogin.service} from generation ${relogin.from} to ${relogin.to}`).join(", ")}: ${result.exitCode === 0 ? "done" : "failed"}`,
+    })
+    .catch((error: unknown) => {
+      deps.reporter.warn(
+        `OpsCrew could not write "set the current passwords of restored services" ${host.where} in its audit log: ${deps.redactor.redact(errorMessage(error))}`,
+      );
+    });
+  if (result.exitCode === 0) return undefined;
+  return hostFailure(run, host, result, `give ${names} ${their} current passwords again`);
+}
+
 /** A machine whose data may be partly changed, with its copy from just before when it is known. */
 interface Stuck {
   host: ScriptHost;
@@ -388,6 +447,7 @@ async function restoreAll(
     hosts: ReadonlyMap<string, ScriptHost>;
     saved: Record<string, string>;
     begun: ScriptHost[];
+    relogins: readonly Relogin[];
   },
 ): Promise<Failed | undefined> {
   const { deps } = run;
@@ -397,22 +457,29 @@ async function restoreAll(
     const host = hosts.get(holder.server) as ScriptHost;
     deps.reporter.step(`Restoring the snapshot ${id} ${host.where}`);
     begun.push(host);
+    const relogins = input.relogins.filter((relogin) => relogin.server === holder.server);
     const outcome = await restoreOn(run, host, {
       id,
       ...(only === undefined ? {} : { only }),
       parts: holder.parts.map((part) => part.name),
       action: "restore a snapshot",
+      noWait: relogins.map((relogin) => relogin.service),
     });
     if (outcome.saved !== undefined) saved[holder.server] = outcome.saved;
+    let said: string;
+    const left: Stuck[] = [];
     if (outcome.state === "restored") {
       done.push(holder);
-      continue;
+      const failed = await reloginOn(run, host, id, relogins);
+      if (failed === undefined) continue;
+      // Its data is put back below with the others restored.
+      said = failed.message;
+    } else {
+      said = (outcome.error as OpsCrewError).message;
+      if (outcome.state === "stuck") {
+        left.push({ host, ...(outcome.saved === undefined ? {} : { copy: outcome.saved }) });
+      }
     }
-    const said = (outcome.error as OpsCrewError).message;
-    const left: Stuck[] =
-      outcome.state === "stuck"
-        ? [{ host, ...(outcome.saved === undefined ? {} : { copy: outcome.saved }) }]
-        : [];
     const failedBack: Stuck[] = [];
     for (const restored of [...done].reverse()) {
       const back = hosts.get(restored.server) as ScriptHost;
@@ -468,6 +535,7 @@ async function restoreEach(
   holders: readonly Holder[],
   hosts: ReadonlyMap<string, ScriptHost>,
   app: ScriptHost,
+  relogins: readonly Relogin[],
 ): Promise<Record<string, string>> {
   const { deps, flags } = run;
   const ordered = [
@@ -501,6 +569,7 @@ async function restoreEach(
       hosts,
       saved,
       begun,
+      relogins,
     });
   } catch (error) {
     if (begun.length === 0) {

@@ -40,7 +40,12 @@ import {
   restoreApprovalLine,
   snapshotScript,
 } from "./snapshot-script";
-import { SNAPSHOT_FUNCTIONS, snapshotParts, snapshotScheduleLines } from "./snapshots";
+import {
+  SNAPSHOT_FUNCTIONS,
+  SNAPSHOT_GENERATIONS,
+  snapshotParts,
+  snapshotScheduleLines,
+} from "./snapshots";
 import {
   appHoldCommands,
   HELD_ROLLBACK,
@@ -428,6 +433,48 @@ describe.skipIf(!shWorks())("snapshot.sh", { timeout: 120_000 }, () => {
       expect(running("kafka")).toBe(true);
     });
 
+    it("records the generation of a stop-only service's volume copy, the only one with its logins", () => {
+      server();
+      write(at(SNAPSHOT_GENERATIONS), "db 3\nmq 2\ncache x\nqueue 3\nkafka 2\nkafka 4\n");
+      const result = snap(["take", "manual", "--stop", "kafka"]);
+      expect(result.status, result.output).toBe(0);
+      const entry = (name: string) =>
+        about(result.stdout).services.find((s: { name: string }) => s.name === name);
+      // Its last line counts.
+      expect(entry("kafka")).toMatchObject({ name: "kafka", file: "kafka.tar", generation: 4 });
+      // A part left out, the dumps' and caches' copies (no login in them), and SQLite: nothing.
+      expect(entry("mq")).toEqual({ name: "mq", kind: "rabbitmq", skipped: true });
+      for (const name of ["db", "cache", "queue", "dfq", "sqlite"]) {
+        expect(Object.keys(entry(name))).not.toContain("generation");
+      }
+      // The file is no snapshot.
+      expect(snap(["list"]).stdout.split("\n")).toHaveLength(1);
+    });
+
+    it("refuses a snapshot by hand while a rotation holds the app, and skips a scheduled one with a warning", () => {
+      server();
+      write(at(".snapshots/.held"), `rotation ${"c".repeat(64)}\n`);
+      const manual = snap(["take", "manual"]);
+      expect(manual.status).toBe(1);
+      expect(manual.stderr).toContain(
+        `OpsCrew took no snapshot: a credential rotation holds the app (the rotation of the plan ${"c".repeat(64)})`,
+      );
+      expect(snapshots().filter((name) => !name.startsWith("."))).toEqual([]);
+
+      const plan = withSnapshots(BASE, { snapshots: { schedule: { every: "6h", keep: 2 } } });
+      server(plan);
+      const slot = Date.UTC(2026, 10, 6, 18) / 1000;
+      const scheduled = snap(["take", "scheduled"], { FAKE_NOW: String(slot + 120) }, plan);
+      expect(scheduled.status, scheduled.output).toBe(0);
+      expect(read(at(".snapshots/scheduled.log"))).toContain(
+        "Warning: OpsCrew skipped this scheduled snapshot: a credential rotation holds the app",
+      );
+      expect(snapshots().filter((name) => !name.startsWith("."))).toEqual([]);
+      // A restore's own hold takes nothing away: only a rotation's refuses.
+      write(at(".snapshots/.held"), "");
+      expect(snap(["take", "manual"]).status).toBe(0);
+    });
+
     it("lists an empty SQLite volume as skipped", () => {
       server();
       write(`${work}/data/sqlite`, "");
@@ -688,6 +735,23 @@ describe.skipIf(!shWorks())("snapshot.sh", { timeout: 120_000 }, () => {
       expect(without.status).toBe(1);
       expect(without.stderr).toContain(`The snapshot ${other.stdout} holds no copy of kafka`);
       expect(callAt("compose stop app")).toBe(-1);
+    });
+
+    it("starts a service --no-wait names without waiting for its health check, and waits for the others", () => {
+      const id = taken();
+      approve(id);
+      const result = snap(["restore", id, "--no-wait", "mq"]);
+      expect(result.status, result.output).toBe(0);
+      for (const part of PARTS) expect(data(part)).toBe(`${part} rows of before`);
+      // After the copy just before (which waits for both again), the restore's own starts.
+      const starts = calls().filter((call) => /compose up -d --no-deps --no-recreate/.test(call));
+      expect(starts.slice(-2)).toEqual([
+        "docker compose up -d --no-deps --no-recreate --wait kafka",
+        "docker compose up -d --no-deps --no-recreate mq",
+      ]);
+      expect(starts).toContain("docker compose up -d --no-deps --no-recreate --wait mq");
+      approve(id);
+      expect(snap(["restore", id, "--no-wait", "nope"]).stderr).toContain("nope is no service");
     });
 
     it("restores every part exactly: requests held, the app stopped, the data copied first", () => {

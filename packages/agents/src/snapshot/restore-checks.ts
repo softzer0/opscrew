@@ -10,6 +10,7 @@ import { formatUtc } from "@opscrew/secops";
 import { NOTHING_CHANGED } from "../promote/shared";
 import { APPROVAL_SECONDS } from "../rollback/database";
 import { shortDigest } from "../rollback/versions";
+import { type Relogin, reloginLines } from "./generations";
 import type { RestoreServices } from "./restore-offsite";
 import type { SnapshotRun } from "./run";
 import { type About, KIND_WORDS } from "./store";
@@ -203,11 +204,14 @@ export interface RestoreApproval {
   options: RestoreSnapshotOptions;
   /** True on servers and this computer, where a one-time approval file guards the script. */
   approvalFile: boolean;
+  /** The restored services rotated since their copy, given their current values once back. */
+  relogins?: readonly Relogin[];
 }
 
 /**
  * The SHA-256 the restore's approval is bound to: the environment, the snapshot's id, the services
- * put back on each machine, each machine's `about.json` bytes, and where the copy comes from.
+ * put back on each machine, each machine's `about.json` bytes, where the copy comes from, and each
+ * restored service rotated since with the generations it goes from and to (no value).
  */
 export function restoreHash(run: SnapshotRun, input: RestoreApproval): string {
   return sha256Hex(
@@ -221,6 +225,16 @@ export function restoreHash(run: SnapshotRun, input: RestoreApproval): string {
         services: holder.parts.map((part) => part.name),
         about: holder.text,
       })),
+      ...(input.relogins === undefined || input.relogins.length === 0
+        ? {}
+        : {
+            relogins: input.relogins.map(({ server, service, from, to }) => ({
+              server,
+              service,
+              from,
+              to,
+            })),
+          }),
     }),
   );
 }
@@ -255,6 +269,7 @@ export async function approveRestore(run: SnapshotRun, input: RestoreApproval): 
     ...(options.allowOtherVersion === true
       ? ["Only the data goes back (--allow-other-version): the version that runs now stays."]
       : []),
+    ...reloginLines(input.relogins ?? []),
     "While it runs, the app's requests wait and the app stops until its data is back. OpsCrew first copies the data as it is now, and puts that copy back if the restore fails.",
     ...(holders.length > 1
       ? [

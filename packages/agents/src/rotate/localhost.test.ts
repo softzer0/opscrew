@@ -416,6 +416,13 @@ describe("rotateLocalServices", () => {
     const record = await readArtifact("credentials", credentialsRecordFile(w.deps.paths));
     expect(Object.keys(record.environments.prod ?? {}).sort()).toEqual(["cache", "db", "files"]);
     expect(await exists(pendingRotationFile(w.deps))).toBe(false);
+    // The snapshots here name each service's new generation, as on a server (T2514).
+    expect((await envFile(w, ".snapshots/generations")).split("\n").sort()).toEqual([
+      "",
+      "cache 2",
+      "db 2",
+      "files 2",
+    ]);
     expectNoValue(w, [...w.old.values(), ...now.values()]);
   });
 
@@ -439,8 +446,10 @@ describe("rotateLocalServices", () => {
     expect(await heldByRotation(w.deps, "held")).toBeUndefined();
     expect(await heldByRotation(w.deps, "restored")).toBeUndefined();
 
-    // The values this computer keeps stay the old ones until the rotation is done.
+    // The values this computer keeps stay the old ones until the rotation is done; the snapshots
+    // here name the new generation of each service whose begin ran (T2514).
     expect(await current(w)).toEqual(w.old);
+    expect(await envFile(w, ".snapshots/generations")).toBe("db 2\ncache 2\n");
     const next = await pendingNew(w);
     w.docker.failCompose.clear();
     w.docker.execs.length = 0;
@@ -451,6 +460,11 @@ describe("rotateLocalServices", () => {
     expect(await envFile(w, "db.env")).toBe(envFilesOf(w.plan, w.old)["db.env"]);
     expect(await held(w)).toBeUndefined();
     expect(await exists(pendingRotationFile(w.deps))).toBe(false);
+    expect((await envFile(w, ".snapshots/generations")).split("\n").sort()).toEqual([
+      "",
+      "cache 1",
+      "db 1",
+    ]);
     // Postgres's begin again with the values swapped.
     expect(w.docker.execs.find((e) => e.service === "db")?.env).toEqual({
       old: next.get("db/password"),

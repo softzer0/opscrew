@@ -21,6 +21,7 @@ import {
   rotateInput,
 } from "./rotate";
 import { RESTORE_APPROVAL_FILE, restoreApprovalLine, snapshotScript } from "./snapshot-script";
+import { SNAPSHOT_GENERATIONS } from "./snapshots";
 import { rollbackCommands, switchCommands } from "./switch";
 
 /**
@@ -735,6 +736,76 @@ describe.skipIf(!shWorks())("rotate.sh", { timeout: 180_000 }, () => {
       for (const call of ["db change", "cache add", "jobs add", "stream change", "cache drop"]) {
         expect(ran(call), call).toBe(tries(call));
       }
+    });
+  });
+
+  describe("records each service's generation for the snapshots, one whose value logs in", () => {
+    /** Each service's generation once rotated; before, one less (`db`, `search`, `stream`: none). */
+    const NEXT: Record<string, number> = { db: 2, cache: 3, jobs: 5, search: 2, stream: 2 };
+    const steps = STEPS.map((step) => ({ ...step, generation: NEXT[step.service] }));
+    const recorded = (service: string) =>
+      Number(
+        lines(at(SNAPSHOT_GENERATIONS))
+          .find((line) => line.startsWith(`${service} `))
+          ?.split(" ")[1] ?? 1,
+      );
+    /** The data of each service logs in with the value of the generation recorded. */
+    function expectLogsIn(): void {
+      for (const service of SERVICES) {
+        const generation = recorded(service);
+        const which = generation === NEXT[service] ? "new" : "old";
+        if (which === "old") expect(generation, service).toBe((NEXT[service] ?? 0) - 1);
+        if (service === "search") {
+          // A restart service runs on the env file it was created from.
+          expect(read(`${work}/created/search`), service).toBe(envFiles(which)["search.env"]);
+        } else {
+          expect(valid(service), `${service} at generation ${generation}`).toContain(
+            value(service)[which],
+          );
+        }
+      }
+      // A service the rotation doesn't change keeps its line.
+      expect(lines(at(SNAPSHOT_GENERATIONS))).toContain("other 7");
+    }
+    beforeEach(() => write(at(SNAPSHOT_GENERATIONS), "cache 2\njobs 4\nother 7\n"));
+
+    it("names the new ones once rotated, owner-only", () => {
+      approve();
+      const done = run([HASH], {}, { steps });
+      expect(done.status, done.output).toBe(0);
+      expect(lines(at(SNAPSHOT_GENERATIONS)).sort()).toEqual(
+        ["cache 3", "db 2", "jobs 5", "other 7", "search 2", "stream 2"].sort(),
+      );
+      if (!windows) expect(mode(at(SNAPSHOT_GENERATIONS))).toBe("600");
+    });
+
+    it.each([
+      ["a swap's change", { EXEC_FAIL: "stream change" }],
+      ["a dual's change, after another's", { EXEC_FAIL: "jobs add" }],
+      ["a restart", { UP_FAIL: "search" }],
+      ["the env files and the restarts", { UP_FAIL: "stream" }],
+      ["the app's switch", { HEALTH_FAIL: "1" }],
+    ])("after a failure at %s, and after its undo", (_at, env) => {
+      approve();
+      expect(run([HASH], env, { steps }).status).not.toBe(0);
+      expectLogsIn();
+      approve("undo");
+      const undone = run(["--undo", HASH], {}, { steps });
+      expect(undone.status, undone.output).toBe(0);
+      expectLogsIn();
+      for (const service of SERVICES) {
+        expect(recorded(service), service).toBe((NEXT[service] ?? 0) - 1);
+      }
+    });
+
+    it("after a failure once the old values are being dropped, and once it goes on", () => {
+      approve();
+      expect(run([HASH], { EXEC_FAIL: "cache drop" }, { steps }).status).not.toBe(0);
+      expectLogsIn();
+      approve();
+      expect(run([HASH], {}, { steps }).status).toBe(0);
+      expectLogsIn();
+      for (const service of SERVICES) expect(recorded(service), service).toBe(NEXT[service]);
     });
   });
 

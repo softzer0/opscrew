@@ -3,7 +3,7 @@ import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
 import { shellQuote } from "../runtime/services";
 import { maskFileScript } from "./index";
 import { opscrew, said } from "./shared";
-import { SNAPSHOTS_DIR } from "./snapshots";
+import { SNAPSHOT_GENERATIONS, SNAPSHOTS_DIR } from "./snapshots";
 import {
   appFolder,
   approvalExpiry,
@@ -105,6 +105,14 @@ export interface RotateStep {
    * swapped does not (Garage's key), after the app's switch back; they see the values swapped too.
    */
   undo?: readonly RotateStepCommand[];
+  /**
+   * The generation the service's values have once rotated (the rotation record's, one more than
+   * now; the same on each step of the service), which {@link SNAPSHOT_GENERATIONS} records once its
+   * data logs in with the new value, and the one before once an undo puts the old value back, so a
+   * snapshot taken meanwhile names values its data logs in with (025 plan.md 12.). Nothing is
+   * recorded without it.
+   */
+  generation?: number;
 }
 
 /**
@@ -165,14 +173,17 @@ interface UndoUnit {
   what: string;
   when?: string;
   lines: string[];
+  /** The service whose data it changes back, if one. */
+  service?: string;
 }
 
 /**
- * `command` in the service's container `$rot_c`, with step `n`'s values (`swapped` for an undo): a
- * conditional one runs only when each `when` check succeeds and each `unless` check fails, and a
- * check's outcome is no failure.
+ * `command` in the service's container `$rot_c`, with step `n`'s values (`$rot_old_<n>` and
+ * `$rot_new_<n>`, `swapped` for an undo) as `OPSCREW_OLD` and `OPSCREW_NEW` only, its output in
+ * {@link ROTATE_LOG}: a conditional one runs only when each `when` check succeeds and each `unless`
+ * check fails, and a check's outcome is no failure.
  */
-function inContainer(command: RotateStepCommand, n: number, swapped: boolean): string {
+export function inContainer(command: RotateStepCommand, n: number, swapped: boolean): string {
   const [old, now] = swapped ? ["new", "old"] : ["old", "new"];
   const exec = (words: RotateCommand) =>
     `OPSCREW_OLD="$rot_${old}_${n}" OPSCREW_NEW="$rot_${now}_${n}" docker exec -e OPSCREW_OLD -e OPSCREW_NEW "$rot_c" ${words.map(shellQuote).join(" ")} < /dev/null >> ${ROTATE_LOG} 2>&1`;
@@ -319,6 +330,8 @@ export function renderRotateScript(
   const firstOf = (service: string, unit: number) => {
     if (!first.has(service)) first.set(service, unit);
   };
+  /** Each `restart` step's unit, by the step's index. */
+  const restarted = new Map<number, number>();
   steps.forEach((step, i) => {
     if (step.mode === "restart") {
       const unit = push({
@@ -326,6 +339,7 @@ export function renderRotateScript(
         what: `restarting ${step.service} with its new value`,
         lines: [...write(step.envFile), recreate([step.service])],
       });
+      restarted.set(i, unit);
       firstOf(step.service, unit);
       return;
     }
@@ -376,7 +390,67 @@ export function renderRotateScript(
     }
   });
 
+  // The generations snapshots record (SNAPSHOT_GENERATIONS): a service's new one once its data logs
+  // in with the new value: after its last `begin` (both values work in a `dual` one, only the new
+  // in a `swap`), after its restart, and for a `dual` one created again (Garage's key, which its
+  // start makes) or one without `begin`, with the env files.
+  const generationOf = (service: string) =>
+    steps.find((step) => step.service === service && step.generation !== undefined)?.generation;
+  const recorded = new Map<string, number>();
+  steps.forEach((step, i) => {
+    const unit =
+      restarted.get(i) ??
+      (step.mode === "dual" && step.recreate ? envUnit : begun.get(i)?.at(-1)?.unit) ??
+      envUnit;
+    recorded.set(step.service, Math.max(recorded.get(step.service) ?? 0, unit));
+  });
+  for (const [service, unit] of recorded) {
+    const generation = generationOf(service);
+    if (generation !== undefined) {
+      units[unit - 1]?.lines.push(`rot_generation ${service} ${generation}`);
+    }
+  }
+  /** The line that records the generation before the rotation of `service` again, if any. */
+  const before = (service: string) => {
+    const generation = generationOf(service);
+    return generation === undefined ? [] : [`rot_generation ${service} ${generation - 1}`];
+  };
+
   const reversed = [...steps.entries()].reverse();
+  // Each `begin` command that ran, again with the values swapped, the last first.
+  const swappedBegins = reversed.flatMap(([i, step]): UndoUnit[] => {
+    if (step.undo !== undefined) return [];
+    return (begun.get(i) ?? [])
+      .map(({ command, unit }) => ({
+        what: `changing ${step.service} back to its old value`,
+        when: `[ "$rot_done" -ge ${unit} ]`,
+        lines: inService(step, i, command, true),
+        service: step.service,
+      }))
+      .reverse();
+  });
+  // Once the app is back on the old values: each begun step's `finish` swapped, or its own undo.
+  const swappedFinishes = reversed.flatMap(([i, step]): UndoUnit[] => {
+    const start = begun.get(i)?.[0];
+    if (start === undefined) return [];
+    const what =
+      step.undo === undefined
+        ? `dropping the new value of ${step.service}`
+        : `undoing the change of ${step.service}`;
+    return (step.undo ?? step.finish).map((command) => ({
+      what,
+      when: `[ "$rot_done" -ge ${start.unit} ]`,
+      lines: inService(step, i, command, true),
+      service: step.service,
+    }));
+  });
+  // The generation before the rotation recorded again with the last undo unit that changes the
+  // service's data back: only the old value works from then on.
+  const changedBack = [...swappedBegins, ...swappedFinishes];
+  for (const service of new Set(changedBack.flatMap((unit) => unit.service ?? []))) {
+    changedBack.findLast((unit) => unit.service === service)?.lines.push(...before(service));
+  }
+  const undone = (service: string) => changedBack.some((unit) => unit.service === service);
   const undos: UndoUnit[] = [
     {
       what: "putting the old env files back",
@@ -387,6 +461,9 @@ export function renderRotateScript(
           `mv -f ${file}.new ${file}`,
         ]),
         ...mask,
+        ...[...recorded.keys()]
+          .filter((service) => !undone(service) && !services.includes(service))
+          .flatMap(before),
       ],
     },
     ...(services.length === 0
@@ -396,21 +473,11 @@ export function renderRotateScript(
             what: `restarting ${services.join(", ")} with the old values`,
             lines: services.map(
               (service) =>
-                `if [ "$rot_done" -ge ${(first.get(service) ?? envUnit) - 1} ]; then ${recreate([service], true)}; fi`,
+                `if [ "$rot_done" -ge ${(first.get(service) ?? envUnit) - 1} ]; then ${[recreate([service], true), ...(undone(service) ? [] : before(service))].join("; ")}; fi`,
             ),
           },
         ]),
-    // Each `begin` command that ran, again with the values swapped, the last first.
-    ...reversed.flatMap(([i, step]): UndoUnit[] => {
-      if (step.undo !== undefined) return [];
-      return (begun.get(i) ?? [])
-        .map(({ command, unit }) => ({
-          what: `changing ${step.service} back to its old value`,
-          when: `[ "$rot_done" -ge ${unit} ]`,
-          lines: inService(step, i, command, true),
-        }))
-        .reverse();
-    }),
+    ...swappedBegins,
     ...(app
       ? [
           {
@@ -420,20 +487,7 @@ export function renderRotateScript(
           },
         ]
       : []),
-    // Once the app is back on the old values: each begun step's `finish` swapped, or its own undo.
-    ...reversed.flatMap(([i, step]): UndoUnit[] => {
-      const start = begun.get(i)?.[0];
-      if (start === undefined) return [];
-      const what =
-        step.undo === undefined
-          ? `dropping the new value of ${step.service}`
-          : `undoing the change of ${step.service}`;
-      return (step.undo ?? step.finish).map((command) => ({
-        what,
-        when: `[ "$rot_done" -ge ${start.unit} ]`,
-        lines: inService(step, i, command, true),
-      }));
-    }),
+    ...swappedFinishes,
   ];
 
   const rotate = opscrew(plan, "rotate");
@@ -504,6 +558,11 @@ export function renderRotateScript(
     "rot_save() {",
     `  printf '%s %s %s\\n' "$rot_hash" "$rot_done" "$rot_undone" > ${STATE}.new`,
     `  mv -f ${STATE}.new ${STATE}`,
+    "}",
+    // A service's generation in SNAPSHOT_GENERATIONS, replaced at once.
+    "rot_generation() {",
+    `  { grep -v "^$1 " ${SNAPSHOT_GENERATIONS} 2> /dev/null || true; printf '%s %s\\n' "$1" "$2"; } > ${SNAPSHOT_GENERATIONS}.new`,
+    `  mv -f ${SNAPSHOT_GENERATIONS}.new ${SNAPSHOT_GENERATIONS}`,
     "}",
     "rot_container() {",
     '  rot_c="$(docker compose ps -q "$1")"',

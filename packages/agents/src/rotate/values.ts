@@ -29,7 +29,7 @@ import {
  * The values each credential had at its earlier generations, by its name, then the generation
  * (`"1"`, `"2"`…), then the secret: what a restore of an older snapshot logs in with (T2514).
  */
-const HistorySchema = z.record(
+export const HistorySchema = z.record(
   z.string(),
   z.record(z.string(), z.record(z.string(), z.string().min(1))),
 );

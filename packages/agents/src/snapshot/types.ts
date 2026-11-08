@@ -51,6 +51,11 @@ export interface SnapshotService {
    */
   state: "copied" | "skipped" | "failed";
   size?: number;
+  /**
+   * The generation of the service's values its copy was taken under, as the rotation record
+   * counts them (feature 025), when above its first.
+   */
+  generation?: number;
 }
 
 /** One snapshot, as `opscrew snapshot list` shows it, the same in `--json`. */

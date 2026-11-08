@@ -467,6 +467,10 @@ describe("rotateServices on one server", () => {
       cache: { "1": { password: w.old.services.cache?.password }, "2": { password: one } },
     });
     expect(values.generations).toEqual({ cache: 3 });
+    // Each run's rotate.sh records the generation the record gives the service next (T2514).
+    const scripts = w.servers.app.runs.map((run) => run.script);
+    expect(scripts[0]).toContain("rot_generation cache 2");
+    expect(scripts.at(-1)).toContain("rot_generation cache 3");
     const approval = w.handler.requests.find((r) => r.kind === "remote-exec");
     expect(approval?.details).toContain("cache (Valkey), its password: seamless");
   });

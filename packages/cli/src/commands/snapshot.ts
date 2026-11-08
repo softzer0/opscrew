@@ -234,7 +234,9 @@ export function register(program: Command, ctx: CliContext): void {
       ...(json ? { reporter: quietReporter(ctx.reporter) } : {}),
     });
     const services = servicesOf(ctx).snapshot;
+    // The CLI's listing forgets the earlier generations no snapshot needs any more (T2514).
     const snapshots = await listSnapshots(deps, {
+      forgetUnneeded: true,
       ...(identity === undefined ? {} : { identity }),
       ...(services === undefined ? {} : { services }),
     });

@@ -32,6 +32,18 @@ export function snapshotAboutPath(id: string): string {
   return `${SNAPSHOTS_DIR}/${id}/about.json`;
 }
 
+/**
+ * The generation of each service's values on the server, in the app's folder (025 plan.md 12.):
+ * one `<service> <generation>` line per service rotated there, the generation the rotation record
+ * (`opscrew/credentials.yaml`) gives it; a service it does not name has its first values,
+ * generation 1. Numbers only, never a value. `rotate.sh` writes it as each service's data takes
+ * its new value (and the old again on an undo), and a rotation on this computer the same. The
+ * `about.json` of a volume copy of a stop-only kind, the only copy that holds the service's logins,
+ * records the generation it was taken under, so a restore of an older one knows the values its
+ * data logs in with; a whole server's own file gives its services' (T2520).
+ */
+export const SNAPSHOT_GENERATIONS = `${SNAPSHOTS_DIR}/generations`;
+
 /** The one-time approval of a rollback that changes the data (plan.md 12.3), in the app's folder. */
 export const ROLLBACK_APPROVAL_FILE = ".rollback-database";
 
@@ -664,7 +676,8 @@ function partCase(
  *   the service's container's volumes, stdin and stdout passed, its errors appended to the log;
  * - `snapshot_stop <service>`: 023's clean stop: 120 seconds, then the container must have exited
  *   on its own (not killed: exit 137) or never started;
- * - `snapshot_start <service>`: its own container started again, once healthy;
+ * - `snapshot_start <service>`: its own container started again, once healthy (at once for one
+ *   `SNAPSHOT_NO_WAIT` names: its health check may log in with values it gets only then);
  * - `snapshot_tar` and `snapshot_untar`: a stop-only service's copy (stopped cleanly alone, its
  *   volumes tarred, started again when it ran, or a message how to start it) and restore (stopped,
  *   emptied, its folders untarred, started);
@@ -673,7 +686,8 @@ function partCase(
  * - `snapshot_running` ({@link snapshotRunning}) and `snapshot_version` ({@link snapshotVersionFunction});
  * - `snapshot_about <id> <kind> <taken> <version> <folder> [<part>]...`: prints `about.json`, one
  *   line, as the store's contract has it (024 plan.md 1.): `version` the 64-hex digest or empty,
- *   each part's kind, file, size and image (a service's), or `skipped` for the parts not given;
+ *   each part's kind, file, size, image (a service's) and, for a stop-only part,
+ *   generation (where {@link SNAPSHOT_GENERATIONS} names one), or `skipped` for the parts not given;
  * - `snapshot_take <id> <kind> <version> [<part>]...`: empties the log, copies each part into
  *   `.snapshots/<id>.taking` (by hand) or `<id>.partial`, the disk checked before and after each,
  *   writes `taken` and then `about.json` (a part with nothing to copy skipped), and renames it
@@ -733,7 +747,11 @@ export function snapshotFunctions(plan: DeployPlan, server: string, folder: stri
       "  done",
     ]),
     ...shellFunction("snapshot_start", [
-      `  docker compose up -d --no-deps --no-recreate --wait "$1" >> ${log} 2>&1`,
+      // One SNAPSHOT_NO_WAIT names starts without waiting for its health check (T2514).
+      '  case " ${SNAPSHOT_NO_WAIT:-} " in',
+      `    *" $1 "*) docker compose up -d --no-deps --no-recreate "$1" >> ${log} 2>&1 ;;`,
+      `    *) docker compose up -d --no-deps --no-recreate --wait "$1" >> ${log} 2>&1 ;;`,
+      "  esac",
     ]),
     ...shellFunction("snapshot_tar", [
       '  _ran="$(docker compose ps -q "$1")"',
@@ -785,7 +803,11 @@ export function snapshotFunctions(plan: DeployPlan, server: string, folder: stri
       '        _about_file="$(part_file "$_about_part")"',
       '        _about_image="$(part_image "$_about_part")"',
       '        if [ -n "$_about_image" ]; then _about_image=",\\"image\\":\\"$_about_image\\""; fi',
-      `        printf '{"name":"%s","kind":"%s","file":"%s","size":%s%s}' "$_about_part" "$(part_kind "$_about_part")" "$_about_file" "$(wc -c < "$_about_folder/$_about_file" | tr -d ' ')" "$_about_image" ;;`,
+      '        _about_generation=""',
+      // Only a volume copy of a stop-only kind holds its logins (T2514).
+      `        case " $SNAPSHOT_ONLINE " in *" $_about_part "*) ;; *) if [ -f ${SNAPSHOT_GENERATIONS} ]; then _about_generation="$(awk -v s="$_about_part" '$1 == s && $2 ~ /^[1-9][0-9]*$/ { g = $2 } END { if (g != "") print g }' ${SNAPSHOT_GENERATIONS})"; fi ;; esac`,
+      '        if [ -n "$_about_generation" ]; then _about_generation=",\\"generation\\":$_about_generation"; fi',
+      `        printf '{"name":"%s","kind":"%s","file":"%s","size":%s%s%s}' "$_about_part" "$(part_kind "$_about_part")" "$_about_file" "$(wc -c < "$_about_folder/$_about_file" | tr -d ' ')" "$_about_image" "$_about_generation" ;;`,
       `      *) printf '{"name":"%s","kind":"%s","skipped":true}' "$_about_part" "$(part_kind "$_about_part")" ;;`,
       "    esac",
       "  done",
