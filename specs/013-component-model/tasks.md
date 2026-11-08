@@ -666,7 +666,7 @@ Horizon, PostgreSQL and Redis.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm lint`
   - Effort: high
 
-- [ ] T1323 [US8] [P] The kept folder on day 2
+- [x] T1323 [US8] [P] The kept folder on day 2
   - Owns: `packages/agents/src/snapshot/**`, `packages/agents/src/destroy/**`, `packages/agents/src/retarget/**`, `packages/agents/src/move/**`, `packages/agents/src/environments/**`, `packages/agents/src/promote/**`, `packages/agents/src/status/**` (+ tests)
   - Reads: research R10 and T1321's names; every day-2 use of `storage.sqlite` (`snapshot/restore-portainer.ts`, `destroy/checks.ts`, `destroy/own.ts`, `retarget/window.ts`, `retarget/start.ts`, `environments/shared-parts.ts`)
   - Depends: T1319, T1321
