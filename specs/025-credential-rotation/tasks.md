@@ -84,7 +84,7 @@ secret in any test: `fakeSecret(kind)` and `{{FAKE:<kind>}}` (`@opscrew/core/tes
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm lint`
   - Effort: xhigh
 
-- [ ] T2507 [P] [US1] Portainer and this computer
+- [x] T2507 [P] [US1] Portainer and this computer
   - Owns: `packages/agents/src/rotate/portainer*.ts`, `packages/agents/src/rotate/localhost*.ts`, `packages/connectors/portainer/src/**` (+ tests)
   - Depends: T2503, T2505
   - Accept: plan 4: `begin`/`finish` through Portainer's Docker exec, the values by a stack plan (by fingerprint); this computer through local Docker; the same plan, approval and record as T2506. On this computer, a rotation's hold (`held rotation <hash>`, T2504) gets its own message in `localhost/apply.ts` (which checks `back === "held"` today).
