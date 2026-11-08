@@ -36,6 +36,7 @@ import { privateAddress } from "./network";
 export {
   CRON_ROUTE_MEMORY_MB,
   cronMemoryMb,
+  FILES_VOLUME,
   hostSettingsServices,
   publishedOnNetwork,
   SQLITE_VOLUME,
@@ -123,7 +124,8 @@ export function siteHosts(plan: DeployPlan): string[] {
  * no host port, so a second copy can start next to it. Every container of the app's image has the
  * memory limit its plan entry gives (`app.memoryMb` for the app and the release command; cron's
  * from `cronMemoryMb`),
- * and on SQLite the volume `sqlite` on the database's folder ({@link appVolumes}).
+ * on SQLite the volume `sqlite` on the database's folder, and with a kept folder the volume `files`
+ * on it ({@link appVolumes}).
  * On this computer (the localhost target) the project is `opscrew-<app>`, apart from any Compose
  * project of the user's own, the services keep their data in its named volumes, their settings
  * files and the crontab are inline configs, and the app's images are pulled only when this computer
@@ -133,7 +135,7 @@ export function siteHosts(plan: DeployPlan): string[] {
  * With `o.seed` (a preview's seed command) a `seed` service like `release` runs it, also only
  * through `docker compose run seed`.
  * @throws OpsCrewError `INVALID_INPUT` for a service OpsCrew cannot run as planned, or a SQLite
- * folder in an image whose app folder OpsCrew does not know.
+ * or kept folder in an image whose app folder OpsCrew does not know.
  */
 export function renderCompose(plan: DeployPlan, o: { seed?: string } = {}): RenderedFile {
   if (plan.target.provider === "portainer") throw notForPortainer();

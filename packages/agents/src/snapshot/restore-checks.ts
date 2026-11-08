@@ -58,9 +58,17 @@ export interface Holder {
   parts: SnapshotPart[];
 }
 
-/** A part in words: `db (PostgreSQL)`, `sqlite (the app's SQLite files)`. */
+/**
+ * A part in words: `db (PostgreSQL)`, `sqlite (the app's SQLite files)`, `files (the app's kept
+ * folder)`.
+ */
 export function partWords(part: Pick<SnapshotPart, "name" | "kind">): string {
-  const kind = part.kind === "sqlite" ? "the app's SQLite files" : serviceSpec(part.kind).title;
+  const kind =
+    part.kind === "sqlite"
+      ? "the app's SQLite files"
+      : part.kind === "files"
+        ? "the app's kept folder"
+        : serviceSpec(part.kind).title;
   return `${part.name} (${kind})`;
 }
 

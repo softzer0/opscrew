@@ -100,6 +100,7 @@ export {
   DEPLOY_SECRETS,
   deploySecretName,
   environmentTag,
+  filesFolder,
   githubEnvironment,
   ROLLBACK_INPUTS,
   runnerLabel,

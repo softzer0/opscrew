@@ -7,7 +7,7 @@ import {
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { IMAGES } from "../pins";
-import { inEnvironment, ofApp } from "../workflow/__fixtures__/plans";
+import { inEnvironment, ofApp, splitPlan } from "../workflow/__fixtures__/plans";
 import { GARAGE_STORAGE, withServices } from "./__fixtures__/plans";
 import {
   appVariables,
@@ -19,6 +19,7 @@ import {
   pinnedVersion,
   SERVICE_SPECS,
   serviceSpec,
+  splitDatabaseSettings,
 } from "./index";
 import type { ServiceContext } from "./types";
 
@@ -315,6 +316,34 @@ describe("the app's variables", () => {
       MYSQL_URL: "mysql://app:<password>@mysql:3306/app",
     });
     expect(serviceSpec("mysql").address(c)).toBe("mysql://app:<password>@mysql:3306/app");
+  });
+
+  it("give PostgreSQL, MySQL and MariaDB their split settings, the password by reference", () => {
+    expect(splitDatabaseSettings(only("postgres"))).toEqual({
+      host: "db",
+      port: "5432",
+      database: "app",
+      user: "app",
+      password: "<password>",
+    });
+    for (const kind of ["mysql", "mariadb"] as const) {
+      expect(splitDatabaseSettings(only(kind)), kind).toEqual({
+        host: kind,
+        port: "3306",
+        database: "app",
+        user: "app",
+        password: "<password>",
+      });
+    }
+    // The host the address has: an extra server's private address.
+    const split = splitPlan();
+    expect(splitDatabaseSettings(ctx(split, "orders"))?.host).toBe("10.200.4.3");
+    expect(serviceSpec("mysql").address(ctx(split, "orders"))).toBe(
+      "mysql://app:<password>@10.200.4.3:3306/app",
+    );
+    for (const kind of ["mongodb", "valkey", "clickhouse"] as const) {
+      expect(splitDatabaseSettings(only(kind)), kind).toBeUndefined();
+    }
   });
 
   it("leave REDIS_URL to a queue instance, so a separate cache gets only its own variable", () => {

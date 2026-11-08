@@ -16,7 +16,7 @@ import {
   kafkaTool,
   SERVICE_SPECS,
 } from "./entries";
-import type { ServiceContext, ServiceSpec } from "./types";
+import type { DatabaseSettings, ServiceContext, ServiceSpec } from "./types";
 
 export { DRAGONFLY_MIN_VCPUS, grantHashSecret, hasLogin, kafkaTool, SERVICE_SPECS };
 
@@ -114,6 +114,15 @@ export function appVariables(ctx: ServiceContext): Record<string, string> {
   const address = spec.address(ctx);
   const variables = spec.conventionalVariables(ctx, address);
   return ctx.variable === undefined ? variables : { ...variables, [ctx.variable]: address };
+}
+
+/**
+ * The settings of the SQL database of `ctx` one by one (PostgreSQL, MySQL, MariaDB), for an app
+ * that reads them apart rather than as one URL: the host its address names, its port, database and
+ * user, and the password as `ctx.secretRef` gives it. Undefined for every other kind.
+ */
+export function splitDatabaseSettings(ctx: ServiceContext): DatabaseSettings | undefined {
+  return serviceSpec(ctx.service.kind).databaseSettings?.(ctx);
 }
 
 /**

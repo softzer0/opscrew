@@ -73,8 +73,51 @@ export function supercronicArch(plan: DeployPlan): PinArch | undefined {
   return hasCronJobs(plan) ? buildArch(plan) : undefined;
 }
 
-/** The characters a SQLite folder's path may have. */
-const SQLITE_FOLDER = /^\/[A-Za-z0-9._/-]+$/;
+/**
+ * The characters the path of a folder in the app's image that OpsCrew names in the image build,
+ * the workflow's scripts and Compose's short mount syntax may have (SQLite's folder, the kept
+ * folder, the web root).
+ */
+const IMAGE_FOLDER = /^\/[A-Za-z0-9._/-]+$/;
+
+/**
+ * `folder`, a folder of the app's image named by `field` in the plan and called `title` in plain
+ * text.
+ * @throws OpsCrewError `INVALID_INPUT` when its path has a character other than
+ * {@link IMAGE_FOLDER}'s; `hint` says what to do.
+ */
+export function imageFolder(
+  plan: DeployPlan,
+  folder: string,
+  o: { title: string; field: string; hint: string },
+): string {
+  if (IMAGE_FOLDER.test(folder)) return folder;
+  throw new OpsCrewError(
+    "INVALID_INPUT",
+    `${o.title} ${folder} (${o.field} in ${planFilePath(plan)}) has a character OpsCrew cannot use there: only letters, digits, ".", "_", "-" and "/" work.`,
+    { hint: o.hint },
+  );
+}
+
+/**
+ * `appRoot(plan)/<dir>` for a folder the app keeps on a persistent volume (`what`: "its SQLite
+ * database in data/", "the folder storage/").
+ * @throws OpsCrewError `INVALID_INPUT` when OpsCrew does not know the folder the app runs in (the
+ * user's own Dockerfile without a `WORKDIR` detection could read).
+ */
+function keptFolder(plan: DeployPlan, dir: string, what: string): string {
+  const root = appRoot(plan);
+  if (root === undefined) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `The app keeps ${what} on a persistent volume, but OpsCrew does not know the folder the app runs in: the last stage of your Dockerfile (${plan.app.dockerfile}) has no WORKDIR with an absolute path.`,
+      {
+        hint: `Add a WORKDIR with an absolute path to the last stage of ${plan.app.dockerfile} (for example WORKDIR /app), then run \`opscrew analyze\` and \`opscrew design\` again.`,
+      },
+    );
+  }
+  return posix.join(root, dir).replace(/\/$/, "");
+}
 
 /**
  * The SQLite database's folder in the app's image, `appRoot(plan)/<storage.sqlite.dir>`, which the
@@ -82,42 +125,43 @@ const SQLITE_FOLDER = /^\/[A-Za-z0-9._/-]+$/;
  * @throws OpsCrewError `INVALID_INPUT` when OpsCrew does not know the folder the app runs in (the
  * user's own Dockerfile without a `WORKDIR` detection could read), when the folder is the app's
  * own (the volume would hide its code), or when its path has a character other than
- * {@link SQLITE_FOLDER}'s, which the seal's `RUN`, its `printf` and Compose's short mount syntax
+ * {@link IMAGE_FOLDER}'s, which the seal's `RUN`, its `printf` and Compose's short mount syntax
  * cannot hold.
  */
 export function sqliteFolder(plan: DeployPlan): string | undefined {
   const dir = plan.storage?.sqlite?.dir;
   if (dir === undefined) return undefined;
-  const root = appRoot(plan);
-  if (root === undefined) {
-    throw new OpsCrewError(
-      "INVALID_INPUT",
-      `The app keeps its SQLite database in ${dir}/ on a persistent volume, but OpsCrew does not know the folder the app runs in: the last stage of your Dockerfile (${plan.app.dockerfile}) has no WORKDIR with an absolute path.`,
-      {
-        hint: `Add a WORKDIR with an absolute path to the last stage of ${plan.app.dockerfile} (for example WORKDIR /app), then run \`opscrew analyze\` and \`opscrew design\` again.`,
-      },
-    );
-  }
-  const folder = posix.join(root, dir).replace(/\/$/, "");
+  const folder = keptFolder(plan, dir, `its SQLite database in ${dir}/`);
   const ownFolder =
     "Move the database into a folder of its own, for example data/ (data/app.sqlite3), change the app's database path to it, then run `opscrew analyze` and `opscrew design` again.";
-  if (folder === root) {
+  if (folder === appRoot(plan)) {
     throw new OpsCrewError(
       "INVALID_INPUT",
-      `storage.sqlite.dir in ${planFilePath(plan)} is the app's own folder (${root}), so the SQLite volume would hide the app's code from its image.`,
+      `storage.sqlite.dir in ${planFilePath(plan)} is the app's own folder (${folder}), so the SQLite volume would hide the app's code from its image.`,
       { hint: ownFolder },
     );
   }
-  if (!SQLITE_FOLDER.test(folder)) {
-    throw new OpsCrewError(
-      "INVALID_INPUT",
-      `The SQLite folder ${folder} (storage.sqlite.dir in ${planFilePath(plan)}) has a character OpsCrew cannot use there: only letters, digits, ".", "_", "-" and "/" work.`,
-      {
-        hint: "Rename the database's folder (for example to data/), change the app's database path to it, then run `opscrew analyze` and `opscrew design` again.",
-      },
-    );
-  }
-  return folder;
+  return imageFolder(plan, folder, {
+    title: "The SQLite folder",
+    field: "storage.sqlite.dir",
+    hint: "Rename the database's folder (for example to data/), change the app's database path to it, then run `opscrew analyze` and `opscrew design` again.",
+  });
+}
+
+/**
+ * The kept folder in the app's image, `appRoot(plan)/<storage.files.dir>`, which the volume `files`
+ * keeps; undefined without `storage.files`. The plan's schema refuses the app's own folder.
+ * @throws OpsCrewError `INVALID_INPUT` as {@link sqliteFolder} does: an app folder OpsCrew does
+ * not know, or a character the seal and Compose cannot hold.
+ */
+export function filesFolder(plan: DeployPlan): string | undefined {
+  const dir = plan.storage?.files?.dir;
+  if (dir === undefined) return undefined;
+  return imageFolder(plan, keptFolder(plan, dir, `the folder ${dir}/`), {
+    title: "The kept folder",
+    field: "storage.files.dir",
+    hint: "Rename the folder (for example to storage/), change the app's paths to it, then run `opscrew analyze` and `opscrew design` again.",
+  });
 }
 
 /**

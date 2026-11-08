@@ -689,6 +689,46 @@ describe("the SQLite folder in the image of an app on SQLite", () => {
   });
 });
 
+describe("the kept folder in the image of an app with one (storage.files)", () => {
+  const withFolders = (sample: ProjectFacts, folders: { sqlite?: string; files?: string }) =>
+    renderDockerAssets(sample, {
+      appPort: sample.port ?? 3000,
+      healthPath: "/health",
+      ...(folders.sqlite === undefined ? {} : { sqliteFolder: folders.sqlite }),
+      ...(folders.files === undefined ? {} : { filesFolder: folders.files }),
+    })[0]?.content ?? "";
+  const { viteApp: _static, ...servers } = ALL;
+  const note = (title: string, field: string) =>
+    `# ${title} (${field} in opscrew/plan.yaml), made as the app's user: Docker gives a new volume on it the folder's owner.`;
+
+  it.each(Object.entries(servers))(
+    "makes it in %s after the app's user, after SQLite's, then returns to /app",
+    (_name, sample) => {
+      const after = (folders: { sqlite?: string; files?: string }) => {
+        const lines = withFolders(sample, folders).split("\n");
+        const user = lines.findLastIndex((line) => line.startsWith("USER "));
+        return lines.slice(user + 1, user + 6);
+      };
+      expect(after({ files: "/app/uploads" }).slice(0, 3)).toEqual([
+        note("The kept folder", "storage.files"),
+        "WORKDIR /app/uploads",
+        "WORKDIR /app",
+      ]);
+      expect(after({ sqlite: "/app/data", files: "/app/uploads" })).toEqual([
+        note("SQLite's folder", "storage.sqlite"),
+        "WORKDIR /app/data",
+        note("The kept folder", "storage.files"),
+        "WORKDIR /app/uploads",
+        "WORKDIR /app",
+      ]);
+    },
+  );
+
+  it("leaves a static site's image as it was", () => {
+    expect(withFolders(viteApp, { files: "/app/uploads" })).toBe(dockerfileOf(viteApp));
+  });
+});
+
 describe("renderDockerAssets for an app in a subfolder (facts.appDir)", () => {
   for (const [name, sample] of Object.entries(SUBFOLDER)) {
     it(`renders ${name} into its folder`, () => {

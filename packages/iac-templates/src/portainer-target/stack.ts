@@ -493,7 +493,8 @@ function volumeNames(plan: DeployPlan, services: RenderedServices, web: Portaine
 
 /**
  * The Docker volumes the app stack creates (`<stack>_<volume>`): each service's data
- * (`<service>_data`, for example `db_data`), a SQLite database's (`sqlite`), Caddy's certificates
+ * (`<service>_data`, for example `db_data`), a SQLite database's (`sqlite`), the kept folder's
+ * (`files`), Caddy's certificates
  * in `caddy` mode, the snapshots' `snapshots` and `snapshot_tools` when the stack uses them, and
  * last the stamp's {@link portainerVersionVolume}. Stack deletion keeps them; they go only with data
  * deletion.
@@ -568,7 +569,8 @@ function stackHeader(plan: DeployPlan): string {
  * see {@link portainerStackEnvKeys}; OpsCrew's own values are `OPSCREW_*` variables, see
  * {@link PORTAINER_STACK_VARIABLES} and {@link portainerServiceVariable}); the release command runs
  * as the one-off service `release` the app, its workers and cron wait for; the services keep their
- * data in named volumes, and the app's image its SQLite database in `sqlite`; Caddy's configuration, the services' settings files and the crontab are
+ * data in named volumes, and the app's image its SQLite database in `sqlite` and its kept folder
+ * in `files`; Caddy's configuration, the services' settings files and the crontab are
  * inline (`configs.<name>.content`, Compose 2.23 or newer), so no file sits next to the stack; the
  * web mode adds a cloudflared service (`tunnel`), publishes the chosen port (`proxy`) or ports
  * 80/443 (`caddy`); every service rotates its logs and runs with `no-new-privileges`. Portainer

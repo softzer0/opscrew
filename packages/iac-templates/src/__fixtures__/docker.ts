@@ -1,5 +1,14 @@
 import { spawnSync } from "node:child_process";
 
+/** The PHP base of the tests on Docker: Composer's image, PHP on Alpine. */
+export const COMPOSER_IMAGE =
+  "composer:2@sha256:8de2184c6de224f4689e8f80ed5f5edaf0030b6b8b7839a22a2bcb6722ac87d0";
+
+/** Whether the local Docker has the image `ref`. */
+export function hasImage(ref: string): boolean {
+  return spawnSync("docker", ["image", "inspect", ref], { stdio: "ignore" }).status === 0;
+}
+
 /** What {@link docker} runs with: its folder, its stdin, its environment and its time limit. */
 export interface DockerOptions {
   cwd?: string;

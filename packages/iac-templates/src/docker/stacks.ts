@@ -97,20 +97,32 @@ export const GENERATED_USERS = {
   python: { name: "app", uid: 10001, owner: "10001:10001" },
 } as const;
 
+/** The folders of the image a volume keeps, absolute: SQLite's and the kept folder's. */
+export interface KeptFolders {
+  /** SQLite's folder (`storage.sqlite`). */
+  sqlite?: string | undefined;
+  /** The kept folder (`storage.files`). */
+  files?: string | undefined;
+}
+
 /**
- * The runtime stage's `USER` line, then for an app on SQLite the database's folder (`sqlite`,
- * absolute): `WORKDIR` makes a missing folder as that user (the app's files are already theirs),
- * so Docker gives a new volume on it that owner; the stage then returns to `/app`. The note names
- * the app's plan (`planFile`).
+ * The runtime stage's `USER` line, then each folder a volume keeps (`kept`): `WORKDIR` makes a
+ * missing folder as that user (the app's files are already theirs), so Docker gives a new volume on
+ * it that owner; the stage then returns to `/app`. The notes name the app's plan (`planFile`).
  */
-function runAs(user: string, sqlite: string | undefined, planFile: string): string[] {
-  if (sqlite === undefined) return [`USER ${user}`];
-  return [
-    `USER ${user}`,
-    `# SQLite's folder (storage.sqlite in ${planFile}), made as the app's user: Docker gives a new volume on it the folder's owner.`,
-    `WORKDIR ${sqlite}`,
-    "WORKDIR /app",
+function runAs(user: string, kept: KeptFolders, planFile: string): string[] {
+  const made = (folder: string | undefined, title: string, field: string) =>
+    folder === undefined
+      ? []
+      : [
+          `# ${title} (${field} in ${planFile}), made as the app's user: Docker gives a new volume on it the folder's owner.`,
+          `WORKDIR ${folder}`,
+        ];
+  const folders = [
+    ...made(kept.sqlite, "SQLite's folder", "storage.sqlite"),
+    ...made(kept.files, "The kept folder", "storage.files"),
   ];
+  return folders.length === 0 ? [`USER ${user}`] : [`USER ${user}`, ...folders, "WORKDIR /app"];
 }
 
 /** The first lines of every Dockerfile, with the note when its base is pinned by tag only. */
@@ -553,7 +565,7 @@ export function nextStandaloneDockerfile(
   base: BaseImage,
   releaseCommand?: string,
   cron?: PinArch,
-  sqlite?: string,
+  kept: KeptFolders = {},
 ): string {
   const dir = appDirectory(facts);
   const atRoot = dir === ".";
@@ -617,7 +629,7 @@ export function nextStandaloneDockerfile(
     ...supercronic(cron, planFile),
     `ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=${port} HOSTNAME=0.0.0.0`,
     copyFromBuild("/out", "./"),
-    ...runAs(GENERATED_USERS.node.name, sqlite, planFile),
+    ...runAs(GENERATED_USERS.node.name, kept, planFile),
     `EXPOSE ${port}`,
     `CMD ["sh", ${JSON.stringify(NEXT_START_SCRIPT)}]`,
     "",
@@ -637,7 +649,7 @@ export function nodeServerDockerfile(
   base: BaseImage,
   releaseCommand?: string,
   cron?: PinArch,
-  sqlite?: string,
+  kept: KeptFolders = {},
 ): string {
   const dir = appDirectory(facts);
   const runtime = runtimePackageManager(
@@ -665,7 +677,7 @@ export function nodeServerDockerfile(
     `ENV NODE_ENV=production PORT=${port} HOST=0.0.0.0`,
     "COPY --from=build --chown=node:node /app ./",
     ...runtime.lines,
-    ...runAs(GENERATED_USERS.node.name, sqlite, planFile),
+    ...runAs(GENERATED_USERS.node.name, kept, planFile),
     `EXPOSE ${port}`,
     `CMD ["sh", "-c", ${JSON.stringify(runtime.start)}]`,
     "",
@@ -981,13 +993,13 @@ export function fastapiDockerfile(
   port: number,
   base: BaseImage,
   cron?: PinArch,
-  sqlite?: string,
+  kept: KeptFolders = {},
 ): string {
   return [
     ...pythonBase("python-fastapi", port, facts, base, cron, planFile),
     "# uvicorn serves the app; it is added (pinned) only when the dependencies do not install it.",
     pythonServer("uvicorn"),
-    ...runAs(GENERATED_USERS.python.name, sqlite, planFile),
+    ...runAs(GENERATED_USERS.python.name, kept, planFile),
     `EXPOSE ${port}`,
     `CMD ["sh", "-c", "uvicorn ${uvicornTarget(facts)} --host 0.0.0.0 --port \${PORT}"]`,
     "",
@@ -1013,7 +1025,7 @@ export function djangoDockerfile(
   port: number,
   base: BaseImage,
   cron?: PinArch,
-  sqlite?: string,
+  kept: KeptFolders = {},
 ): string {
   const module = pythonStart(facts)?.match(/([\w.]+)\.wsgi/)?.[1] ?? facts.name.replace(/-/g, "_");
   return [
@@ -1025,7 +1037,7 @@ export function djangoDockerfile(
     "# The key below is a throwaway value for this step only; the real SECRET_KEY is set when the",
     "# container runs.",
     `RUN export ${DJANGO_BUILD_KEY} && ${DJANGO_COLLECTSTATIC}`,
-    ...runAs(GENERATED_USERS.python.name, sqlite, planFile),
+    ...runAs(GENERATED_USERS.python.name, kept, planFile),
     `EXPOSE ${port}`,
     facts.build.releaseCommand === undefined
       ? "# Run migrations as part of your release process (for example `python manage.py migrate`)."
@@ -1042,12 +1054,12 @@ export function pythonGenericDockerfile(
   port: number,
   base: BaseImage,
   cron?: PinArch,
-  sqlite?: string,
+  kept: KeptFolders = {},
 ): string {
   const start = pythonStart(facts) ?? "python main.py";
   return [
     ...pythonBase("python-generic", port, facts, base, cron, planFile),
-    ...runAs(GENERATED_USERS.python.name, sqlite, planFile),
+    ...runAs(GENERATED_USERS.python.name, kept, planFile),
     `EXPOSE ${port}`,
     `CMD ["sh", "-c", ${JSON.stringify(start)}]`,
     "",

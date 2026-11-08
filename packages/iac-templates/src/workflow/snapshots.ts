@@ -12,7 +12,7 @@ import {
 } from "@opscrew/plan-schema";
 import { dataDirs, serviceSpec } from "../catalog";
 import { IMAGES } from "../pins";
-import { SQLITE_VOLUME } from "../runtime";
+import { FILES_VOLUME, SQLITE_VOLUME } from "../runtime";
 import { shellQuote } from "../runtime/services";
 import { planFilePath, printfFormat, serverLogNote } from "./shared";
 
@@ -56,11 +56,11 @@ export const SNAPSHOT_SCRIPT = "snapshot.sh";
  */
 export const SNAPSHOT_FUNCTIONS = `OPSCREW_SNAPSHOT_FUNCTIONS=1 . ./${SNAPSHOT_SCRIPT}`;
 
-/** One part of a snapshot: a service that keeps data, or the app's SQLite volume. */
+/** One part of a snapshot: a service that keeps data, the app's SQLite volume or its kept folder. */
 export interface SnapshotPart {
-  /** The service's name, or `sqlite` for the app's SQLite volume. */
+  /** The service's name; `sqlite` for the app's SQLite volume, `files` for its kept folder's. */
   name: string;
-  kind: SelfHostedServiceKind | "sqlite";
+  kind: SelfHostedServiceKind | "sqlite" | "files";
   /** Its file in the snapshot's folder (024 plan.md 1.). */
   file: string;
   /** Copied while it runs; otherwise stopped alone for its copy. */
@@ -69,7 +69,7 @@ export interface SnapshotPart {
   mode?: "cache" | "queue";
   /**
    * The image the service runs, as its Compose service pins it, which `about.json` records with
-   * its copy; none for the SQLite volume.
+   * its copy; none for the app's volumes.
    */
   image?: string;
 }
@@ -92,9 +92,10 @@ function redisProtocolKind(kind: string): kind is (typeof REDIS_PROTOCOL_KINDS)[
 /**
  * The parts of a snapshot on `server` (the app's by default, or an extra server's name), in the
  * plan's order: each enabled service placed there, then on the app's server the app's SQLite
- * volume. The four databases' dumps are `<service>.dump`, Valkey's, Redis's and Dragonfly's
- * copies `<service>.rdb`, the SQLite volume `sqlite.tar` (D6) and every other kind's volumes
- * `<service>.tar` (024 plan.md 1., the store's contract).
+ * volume and its kept folder's volume. The four databases' dumps are `<service>.dump`, Valkey's,
+ * Redis's and Dragonfly's copies `<service>.rdb`, the SQLite volume `sqlite.tar` (D6), the kept
+ * folder `files.tar` and every other kind's volumes `<service>.tar` (024 plan.md 1., the store's
+ * contract). The kept folder is copied while the app runs, as its files are.
  */
 export function snapshotParts(plan: DeployPlan, server: string = APP_SERVER): SnapshotPart[] {
   const services = servicesOn(plan, server).map((service): SnapshotPart => {
@@ -112,11 +113,17 @@ export function snapshotParts(plan: DeployPlan, server: string = APP_SERVER): Sn
       image: IMAGES[serviceSpec(service.kind).image].ref,
     };
   });
-  const sqlite: SnapshotPart[] =
-    server === APP_SERVER && plan.storage?.sqlite !== undefined
-      ? [{ name: "sqlite", kind: "sqlite", file: "sqlite.tar", online: true }]
-      : [];
-  return [...services, ...sqlite];
+  if (server !== APP_SERVER) return services;
+  const { sqlite, files } = plan.storage ?? {};
+  return [
+    ...services,
+    ...(sqlite === undefined
+      ? []
+      : [{ name: "sqlite", kind: "sqlite", file: "sqlite.tar", online: true } as const]),
+    ...(files === undefined
+      ? []
+      : [{ name: "files", kind: "files", file: "files.tar", online: true } as const]),
+  ];
 }
 
 /**
@@ -401,8 +408,8 @@ export interface PartRestore {
   stop: boolean;
   /**
    * Busybox sh, as root, with the service's data volumes read-write at their folders (the app's
-   * SQLite volume at `/data`), that puts the copy at `from` (`-`: on stdin) back in place of the
-   * data there.
+   * SQLite volume or kept folder's volume at `/data`), that puts the copy at `from` (`-`: on stdin)
+   * back in place of the data there.
    */
   put?: (from: string) => string;
   /**
@@ -447,11 +454,11 @@ export function onlineCopy(part: SnapshotPart, file: string): string | undefined
  * The exact restore of `part` ({@link PartRestore}): the four databases as 019 restores them;
  * Valkey and Redis as `dump.rdb` for a cache (removed once it is loaded), and as the base of a new
  * append-only folder for a queue; Dragonfly as its only `dump` file for a queue, and with
- * `DFLY LOAD` while it runs for a cache; the SQLite volume (the app stopped) and every stop-only
- * kind's folders emptied and untarred.
+ * `DFLY LOAD` while it runs for a cache; the SQLite volume and the kept folder's (the app stopped)
+ * and every stop-only kind's folders emptied and untarred.
  */
 export function partRestore(part: SnapshotPart): PartRestore {
-  if (part.kind === "sqlite") {
+  if (part.kind === "sqlite" || part.kind === "files") {
     return {
       stop: false,
       put: (from) => `find /data -mindepth 1 -delete && tar -C /data -xpf ${from}`,
@@ -518,9 +525,10 @@ function serverRestore(part: SnapshotPart, file: string): string[] {
   const restore = partRestore(part);
   const { name: service } = part;
   const put = restore.put?.("-");
-  if (part.kind === "sqlite") {
+  if (part.kind === "sqlite" || part.kind === "files") {
     return [
-      "snapshot_sqlite_volume || return 1",
+      // `snapshot_sqlite_volume` or `snapshot_files_volume` (appVolumeFunction).
+      `snapshot_${part.kind}_volume || return 1`,
       `docker run --rm -i --network none -v "$_volume":/data ${IMAGES.busybox.ref} sh -c ${shellQuote(put ?? "")} < ${file} >> ${SNAPSHOT_LOG} 2>&1`,
     ];
   }
@@ -545,12 +553,20 @@ function serverRestore(part: SnapshotPart, file: string): string[] {
   ];
 }
 
+/** The kept folder's copy: one tar of the folder `dir`, to stdout. */
+export function filesTar(dir: string): string {
+  return `tar -C ${dir} -cf - .`;
+}
+
 /**
  * How each part is copied into `.snapshots/$2` and restored from there (024 plan.md 2., research
  * R7): the four databases as 019 dumps them; Valkey and Redis with `--rdb` from a one-off of their
  * own image; Dragonfly with `SAVE RDB`, copied out read-only; the SQLite volume with
- * {@link SQLITE_COPY} (exit 3 when it is empty: the part is skipped); every other kind stopped
- * alone, its volumes tarred. Each is restored as {@link partRestore} says ({@link serverRestore}).
+ * {@link SQLITE_COPY} (exit 3 when it is empty: the part is skipped); the kept folder's volume
+ * read-only, as one tar ({@link filesTar}) from busybox; every other kind stopped alone, its
+ * volumes tarred. An app's volume that does not exist yet (the deploy that adds SQLite or the kept
+ * folder snapshots before the app first starts with it) has nothing to copy: exit 3, skipped. Each
+ * is restored as {@link partRestore} says ({@link serverRestore}), which fails without its volume.
  */
 function partCommands(part: SnapshotPart): PartCommands {
   const file = `.snapshots/"$2"/${part.file}`;
@@ -559,8 +575,17 @@ function partCommands(part: SnapshotPart): PartCommands {
     const volume = `--network none -v "$_volume":/data`;
     return {
       take: [
-        "snapshot_sqlite_volume || return 1",
+        "snapshot_sqlite_volume || return 3",
         `docker run --rm ${volume} ${IMAGES.python.ref} ${pythonOneLine(SQLITE_COPY)} /data < /dev/null > ${file} 2>> ${SNAPSHOT_LOG}`,
+      ],
+      restore,
+    };
+  }
+  if (part.kind === "files") {
+    return {
+      take: [
+        "snapshot_files_volume || return 3",
+        `docker run --rm --network none -v "$_volume":/data:ro ${IMAGES.busybox.ref} sh -c ${shellQuote(filesTar("/data"))} < /dev/null > ${file} 2>> ${SNAPSHOT_LOG}`,
       ],
       restore,
     };
@@ -592,6 +617,18 @@ function shellFunction(name: string, body: readonly string[]): string[] {
   return [`${name}() {`, ...body, "}"];
 }
 
+/**
+ * The shell function `name` that sets `$_volume` to the app's volume `volume` (the SQLite
+ * volume's, the kept folder's) of its Compose project, and fails when it does not exist. It never
+ * makes one: Docker would give a new volume root as its owner, not the app's user.
+ */
+function appVolumeFunction(name: string, volume: string): string[] {
+  return shellFunction(name, [
+    `  _volume="\${COMPOSE_PROJECT_NAME:-$(basename "$PWD")}_${volume}"`,
+    '  docker volume inspect "$_volume" > /dev/null 2>&1',
+  ]);
+}
+
 /** A `case "$1"` over the parts, each branch `branch(part)`'s lines; `fallback` for any other. */
 function partCase(
   parts: readonly SnapshotPart[],
@@ -617,7 +654,7 @@ function partCase(
  * while they run; the functions' own variables start with `_`, so they never change the start
  * script's:
  * - `part_file <part>`, `part_kind <part>`, `part_image <part>`: the part's file, kind and image
- *   (nothing for the SQLite volume);
+ *   (nothing for the SQLite volume and the kept folder's);
  * - `snapshot_room`: whether the folder's disk has 1 GiB and 10% free; otherwise it removes the
  *   partial snapshots and fails;
  * - `snapshot_run <folder> <rw|ro> <service> <script>`: `script` in a one-off container of the
@@ -718,12 +755,10 @@ export function snapshotFunctions(plan: DeployPlan, server: string, folder: stri
       '  snapshot_start "$1"',
     ]),
     ...(parts.some((part) => part.kind === "sqlite")
-      ? // The app's SQLite volume, `$_volume`; never made here: Docker would give a new volume
-        // root as its owner, not the app's user.
-        shellFunction("snapshot_sqlite_volume", [
-          `  _volume="\${COMPOSE_PROJECT_NAME:-$(basename "$PWD")}_${SQLITE_VOLUME}"`,
-          '  docker volume inspect "$_volume" > /dev/null 2>&1',
-        ])
+      ? appVolumeFunction("snapshot_sqlite_volume", SQLITE_VOLUME)
+      : []),
+    ...(parts.some((part) => part.kind === "files")
+      ? appVolumeFunction("snapshot_files_volume", FILES_VOLUME)
       : []),
     ...shellFunction(
       "part_take",
@@ -768,7 +803,8 @@ export function snapshotFunctions(plan: DeployPlan, server: string, folder: stri
       '  for _take_part in "$@"; do',
       "    _take_rc=0",
       '    (umask 077; part_take "$_take_part" "$_take_folder") || _take_rc=$?',
-      // 3: nothing to copy (an empty SQLite volume), which the snapshot lists as skipped.
+      // 3: nothing to copy (an empty SQLite volume, or an app's volume not made yet), which the
+      // snapshot lists as skipped.
       '    if [ "$_take_rc" -eq 3 ]; then',
       '      rm -f "$_take_in"/"$(part_file "$_take_part")"',
       '    elif [ "$_take_rc" -ne 0 ]; then',

@@ -15,7 +15,7 @@ import { privateAddress } from "../runtime/network";
 import { shellQuote } from "../runtime/services";
 import { planFilePath } from "../workflow/shared";
 import type { ServiceInitStep } from "../workflow/switch";
-import type { ServiceContext, ServiceHealthcheck, ServiceSpec } from "./types";
+import type { DatabaseSettings, ServiceContext, ServiceHealthcheck, ServiceSpec } from "./types";
 
 const BOTH_TARGETS: ServiceSpec["targets"] = ["server", "portainer"];
 const PASSWORD = { name: "password", format: "hex32" } as const;
@@ -57,6 +57,17 @@ function xmlHeader(plan: DeployPlan, ...lines: string[]): string[] {
 /** A URL the app logs in with: `<scheme>://<user>:<password>@<service>:<port><path>`. */
 function loginUrl(ctx: ServiceContext, scheme: string, port: number, path: string): string {
   return `${scheme}://app:${ctx.secretRef(PASSWORD.name)}@${serviceHost(ctx)}:${port}${path}`;
+}
+
+/** A SQL database's settings one by one: the user and database `app`, as its {@link loginUrl}. */
+function sqlSettings(ctx: ServiceContext, port: number): DatabaseSettings {
+  return {
+    host: serviceHost(ctx),
+    port: String(port),
+    database: "app",
+    user: "app",
+    password: ctx.secretRef(PASSWORD.name),
+  };
 }
 
 /** True for a Valkey, Redis 8 or Dragonfly in queue mode. */
@@ -113,6 +124,7 @@ const POSTGRES: ServiceSpec = {
   // Prisma, Sequelize, dj-database-url, Rails and the Go and Rust drivers accept both.
   address: (ctx) => loginUrl(ctx, "postgresql", 5432, "/app"),
   conventionalVariables: (_ctx, url) => ({ DATABASE_URL: url }),
+  databaseSettings: (ctx) => sqlSettings(ctx, 5432),
   targets: BOTH_TARGETS,
 };
 
@@ -417,6 +429,7 @@ const MYSQL: ServiceSpec = {
   secrets: [PASSWORD, ROOT_PASSWORD],
   address: (ctx) => loginUrl(ctx, "mysql", 3306, "/app"),
   conventionalVariables: (_ctx, url) => ({ DATABASE_URL: url }),
+  databaseSettings: (ctx) => sqlSettings(ctx, 3306),
   targets: BOTH_TARGETS,
 };
 
@@ -449,6 +462,7 @@ const MARIADB: ServiceSpec = {
   secrets: [PASSWORD, ROOT_PASSWORD],
   address: (ctx) => loginUrl(ctx, "mysql", 3306, "/app"),
   conventionalVariables: (_ctx, url) => ({ DATABASE_URL: url }),
+  databaseSettings: (ctx) => sqlSettings(ctx, 3306),
   targets: BOTH_TARGETS,
 };
 

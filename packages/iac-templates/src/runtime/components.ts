@@ -13,7 +13,7 @@ import { runtimeDir } from "../runtime-dir";
 import { BESZEL_PORT, PORTAINER_PORT } from "../tunnel";
 import type { RenderContext, RenderedFile } from "../types";
 import { BUILDPACKS_RUN_USER, RAILPACK_USER } from "../workflow/build";
-import { planFilePath, sqliteFolder } from "../workflow/shared";
+import { filesFolder, planFilePath, sqliteFolder } from "../workflow/shared";
 import { RUBY_WITHOUT_RUBYOPT } from "./healthcheck";
 import { servicesRunningOn } from "./move";
 import { dashboardAddress, publishedAddress } from "./network";
@@ -41,7 +41,10 @@ export interface RenderedServices {
   services: Record<string, object>;
   /** What the app, its workers and cron wait for. */
   dependsOn: Record<string, { condition: string }>;
-  /** Named volumes to declare: the services', then the SQLite volume (see {@link appVolumes}). */
+  /**
+   * Named volumes to declare: the services', then the SQLite volume and the kept folder's (see
+   * {@link appVolumes}).
+   */
   volumes: string[];
   /** Portainer and this computer: the settings files, inline (`configs.<name>.content`). */
   configs: Record<string, { content: string }>;
@@ -280,9 +283,10 @@ export function renderServices(
     };
     rendered.dependsOn[service.name] = { condition: "service_healthy" };
   }
-  // Named from the plan alone, so destroy can list it even when the plan cannot be rendered.
-  if (plan.storage?.sqlite !== undefined && server === APP_SERVER) {
-    rendered.volumes.push(SQLITE_VOLUME);
+  // Named from the plan alone, so destroy can list them even when the plan cannot be rendered.
+  if (server === APP_SERVER) {
+    if (plan.storage?.sqlite !== undefined) rendered.volumes.push(SQLITE_VOLUME);
+    if (plan.storage?.files !== undefined) rendered.volumes.push(FILES_VOLUME);
   }
   return rendered;
 }
@@ -349,6 +353,9 @@ export function publishedOnNetwork(
 /** The volume of the app's Compose project that keeps a SQLite database's folder. */
 export const SQLITE_VOLUME = "sqlite";
 
+/** The volume of the app's Compose project that keeps the app's kept folder (`storage.files`). */
+export const FILES_VOLUME = "files";
+
 /**
  * The owner (`uid:gid`) Docker gives the SQLite volume when it creates it: the user the app's
  * image runs as, for the plan's builder. Undefined for the user's own Dockerfile, whose user
@@ -371,14 +378,19 @@ export function sqliteVolumeOwner(plan: DeployPlan): string | undefined {
 /**
  * The `volumes` of a container of the app's image (the app, the release command, the workers and
  * cron): its `own` mounts, then for an app on SQLite the volume `sqlite` on the database's folder
- * ({@link sqliteFolder}); `{}` when there are none. Docker gives a new volume the owner of that
- * folder in the image, which the image makes the app's user's (the generated Dockerfile, or the
- * seal of the other builders).
- * @throws OpsCrewError `INVALID_INPUT` for a SQLite folder OpsCrew cannot mount.
+ * ({@link sqliteFolder}), then with a kept folder the volume `files` on it ({@link filesFolder});
+ * `{}` when there are none. Docker gives a new volume the owner of that folder in the image, which
+ * the image makes the app's user's (the generated Dockerfile, or the seal of the other builders).
+ * @throws OpsCrewError `INVALID_INPUT` for a folder OpsCrew cannot mount.
  */
 export function appVolumes(plan: DeployPlan, own: readonly string[] = []): { volumes?: string[] } {
-  const folder = sqliteFolder(plan);
-  const all = [...own, ...(folder === undefined ? [] : [`${SQLITE_VOLUME}:${folder}`])];
+  const sqlite = sqliteFolder(plan);
+  const files = filesFolder(plan);
+  const all = [
+    ...own,
+    ...(sqlite === undefined ? [] : [`${SQLITE_VOLUME}:${sqlite}`]),
+    ...(files === undefined ? [] : [`${FILES_VOLUME}:${files}`]),
+  ];
   return all.length > 0 ? { volumes: all } : {};
 }
 
@@ -522,7 +534,8 @@ export interface ProcessBase {
  * The enabled workers, each its own service of the app's image, and the `cron` service when a
  * cron job is enabled: no published port, no health check (an image's own would only mark them
  * unhealthy), a memory limit (cron's from {@link cronMemoryMb}), a stop grace
- * period, `deploy.replicas` for a worker's count, and the SQLite volume ({@link appVolumes}).
+ * period, `deploy.replicas` for a worker's count, and the SQLite and kept folder's volumes
+ * ({@link appVolumes}).
  */
 export function renderProcesses(plan: DeployPlan, base: ProcessBase): Record<string, object> {
   const end = (memoryMb: number) => ({

@@ -4,16 +4,24 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fakeSecret } from "@opscrew/core/testing";
-import type { DeployPlan, ImageBuilder, RuntimeLanguage } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  DeployPlanSchema,
+  type ImageBuilder,
+  type RuntimeLanguage,
+} from "@opscrew/plan-schema";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testContext, testPlan } from "../__fixtures__/plans";
+import { withServices } from "../catalog/__fixtures__/plans";
 import { ACTIONS, IMAGES, type PinArch, TOOLS, toolDownloadUrl } from "../pins";
 import {
   jobYaml,
   NIGHTLY,
+  plainPhp,
   serverPlan,
   withBuild,
+  withFiles,
   withPlan,
   withProcesses,
   withSqlite,
@@ -52,6 +60,8 @@ function buildJob(plan: DeployPlan): BuildJob {
 function planFor(builder: ImageBuilder, language: RuntimeLanguage = "go"): DeployPlan {
   return withBuild(serverPlan(), builder, { language });
 }
+/** {@link serverPlan} with no service, on a hosted Supabase. */
+const noServices = () => testPlan({ domain: "shop.example.com", postgres: false });
 const step = (job: BuildJob, id: string) => job.steps.find((s) => s.id === id || s.name === id);
 /** `owner/name@<sha>` of a pin in ACTIONS (without the ` # vX` comment). */
 const action = (key: keyof typeof ACTIONS) => ACTIONS[key].split(" #")[0];
@@ -413,7 +423,7 @@ describe("Railpack", () => {
 
   it("has no version setting to hand Railpack for PHP, which reads composer.json itself", () => {
     for (const language of ["php", "other"] as const) {
-      const job = buildJob(withBuild(serverPlan(), "railpack", { language }));
+      const job = buildJob(withBuild(noServices(), "railpack", { language }));
       expect(step(job, "prepare")?.run).toContain("values=()");
       expect(String(step(job, "railpack")?.with?.secrets)).not.toContain("RAILPACK_");
     }
@@ -426,6 +436,99 @@ describe("Railpack", () => {
     const install = job.steps.find((s) => s.name?.startsWith("Install Railpack"))?.run ?? "";
     expect(install).toContain("-arm64-unknown-linux-musl.tar.gz");
     expect(install).toContain(TOOLS.railpack.sha256.arm64);
+  });
+
+  describe("a plain PHP app's web root (app.build.webRoot)", () => {
+    it("is handed to Railpack's plan, and the build reads it as a BuildKit secret", () => {
+      const job = buildJob(plainPhp(noServices()));
+      expect(step(job, "prepare")?.run).toContain(
+        "values=(--env RAILPACK_PHP_ROOT_DIR=/app/public)",
+      );
+      // Railpack's frontend reads every value of its plan as a secret: without it the build fails.
+      expect(String(step(job, "railpack")?.with?.secrets).split("\n")[0]).toBe(
+        "RAILPACK_PHP_ROOT_DIR=/app/public",
+      );
+    });
+
+    it("is in the folder the app runs in", () => {
+      const base = noServices();
+      const subfolder = DeployPlanSchema.parse({
+        ...base,
+        app: { ...base.app, dockerfile: "apps/web/Dockerfile" },
+      });
+      const job = buildJob(withBuild(subfolder, "railpack", { language: "php", webRoot: "web/" }));
+      expect(step(job, "prepare")?.run).toContain(
+        "values=(--env RAILPACK_PHP_ROOT_DIR=/app/apps/web/web)",
+      );
+    });
+
+    it("refuses a folder name the workflow's script cannot hold", () => {
+      expect(() =>
+        rendered(withBuild(serverPlan(), "railpack", { language: "php", webRoot: "my site" })),
+      ).toThrow(
+        'The web root /app/my site (app.build.webRoot in opscrew/plan.yaml) has a character OpsCrew cannot use there: only letters, digits, ".", "_", "-" and "/" work.',
+      );
+    });
+
+    it("leaves a PHP app without one as before: Railpack's own setting is never set", () => {
+      const job = jobYaml(rendered(planFor("railpack", "php")), "build");
+      expect(job).not.toContain("RAILPACK_PHP_ROOT_DIR");
+      expect(job).not.toContain("chmod");
+    });
+  });
+
+  describe("a PHP app's drivers for its services (RAILPACK_PHP_EXTENSIONS)", () => {
+    const settings = (plan: DeployPlan) => {
+      const job = buildJob(plan);
+      return {
+        prepare: step(job, "prepare")?.run ?? "",
+        secrets: String(step(job, "railpack")?.with?.secrets).split("\n"),
+      };
+    };
+    const php = (plan: DeployPlan) => withBuild(plan, "railpack", { language: "php" });
+
+    it("are handed to Railpack's plan and read as a BuildKit secret, each once and sorted", () => {
+      const every = DeployPlanSchema.parse({
+        ...withServices([
+          { kind: "postgres", name: "db" },
+          { kind: "mysql", name: "orders" },
+          { kind: "mariadb", name: "shopdb" },
+          { kind: "valkey", name: "cache" },
+          { kind: "dragonfly", name: "queue", options: { mode: "queue" } },
+          { kind: "mongodb", name: "docs" },
+          { kind: "rabbitmq", name: "mq" },
+        ]),
+        externalServices: ["redis", "stripe"],
+      });
+      const setting = "RAILPACK_PHP_EXTENSIONS=mongodb,pdo_mysql,pdo_pgsql,redis";
+      const { prepare, secrets } = settings(php(every));
+      expect(prepare).toContain(`values=(--env ${setting})`);
+      expect(secrets[0]).toBe(setting);
+    });
+
+    it("come from the services the app keeps where they are hosted too", () => {
+      const external = DeployPlanSchema.parse({ ...noServices(), externalServices: ["mysql"] });
+      expect(settings(php(external)).prepare).toContain(
+        "values=(--env RAILPACK_PHP_EXTENSIONS=pdo_mysql)",
+      );
+    });
+
+    it("follow the web root of a plain PHP app, and come for a Laravel app too", () => {
+      expect(settings(plainPhp(serverPlan())).prepare).toContain(
+        "values=(--env RAILPACK_PHP_ROOT_DIR=/app/public --env RAILPACK_PHP_EXTENSIONS=pdo_pgsql)",
+      );
+      expect(settings(php(serverPlan())).secrets[0]).toBe("RAILPACK_PHP_EXTENSIONS=pdo_pgsql");
+    });
+
+    it("are left out without such a service, and for every other language", () => {
+      const queueOnly = withServices([{ kind: "rabbitmq", name: "mq" }]);
+      expect(settings(php(queueOnly)).prepare).toContain("values=()");
+      expect(settings(php(noServices())).prepare).toContain("values=()");
+      const node = buildJob(
+        withBuild(serverPlan(), "railpack", { language: "node", version: "24" }),
+      );
+      expect(JSON.stringify(node)).not.toContain("RAILPACK_PHP_EXTENSIONS");
+    });
   });
 });
 
@@ -761,6 +864,91 @@ describe.skipIf(!bashWorks())("the build scripts in bash", { timeout: 60_000 }, 
     });
   });
 
+  describe("the kept folder (storage.files), owned by the app's user as SQLite's", () => {
+    const from = `FROM ghcr.io/acme/shop:build-${"f".repeat(40)}@${DIGEST}`;
+
+    it("Railpack: with the writable folders and SQLite's, before uid 10001", () => {
+      expect(sealOf(withFiles(planFor("railpack", "rust"), { dir: "uploads" }))).toBe(
+        [
+          from,
+          "RUN mkdir -p /app/uploads && chown -R 10001:10001 /app/uploads",
+          "USER 10001:10001",
+          "",
+        ].join("\n"),
+      );
+      const both = withFiles(withSqlite(planFor("railpack", "rust"), { dir: "data" }), {
+        dir: "uploads",
+      });
+      expect(sealOf(both).split("\n")[1]).toBe(
+        "RUN mkdir -p /app/data /app/uploads && chown -R 10001:10001 /app/data /app/uploads",
+      );
+    });
+
+    it("Buildpacks: made by root for the run image's user, beside SQLite's", () => {
+      expect(sealOf(withFiles(planFor("buildpacks"), { dir: "uploads" }))).toBe(
+        [
+          from,
+          "USER root",
+          "RUN mkdir -p /workspace/uploads && chown -R 1002:1001 /workspace/uploads",
+          "USER 1002:1001",
+          "",
+        ].join("\n"),
+      );
+      expect(sealOf(withFiles(withSqlite(planFor("buildpacks")), { dir: "uploads" }))).toContain(
+        "RUN mkdir -p /workspace/storage /workspace/uploads && chown -R 1002:1001 /workspace/storage /workspace/uploads\n",
+      );
+    });
+
+    it("an own Dockerfile: sealed for the kept folder alone, WORKDIR making each folder", () => {
+      const own = withFiles(planFor("own-dockerfile"), { dir: "uploads", workdir: "/srv/app" });
+      expect(sealOf(own)).toBe(
+        [from, "WORKDIR /srv/app/uploads", "WORKDIR /srv/app", ""].join("\n"),
+      );
+      expect(step(buildJob(own), "own")?.with?.tags).toBe(
+        "${{ steps.image.outputs.name }}:build-${{ github.sha }}",
+      );
+      const both = withFiles(withSqlite(planFor("own-dockerfile"), { workdir: "/srv/app" }), {
+        dir: "uploads",
+      });
+      expect(sealOf(both)).toBe(
+        [from, "WORKDIR /srv/app/storage", "WORKDIR /srv/app/uploads", "WORKDIR /srv/app", ""].join(
+          "\n",
+        ),
+      );
+    });
+  });
+
+  describe("a plain PHP app's folder, which accepts new files", () => {
+    const from = `FROM ghcr.io/acme/shop:build-${"f".repeat(40)}@${DIGEST}`;
+    const frankenphp =
+      'RUN bin="$(command -v frankenphp)" && cp "$bin" "$bin.new" && mv "$bin.new" "$bin"';
+
+    it("is mode 1777, as /tmp; the seal makes no storage link and keeps FrankenPHP's line", () => {
+      expect(sealOf(withFiles(plainPhp(serverPlan())))).toBe(
+        [
+          from,
+          "RUN mkdir -p /app/storage && chown -R 10001:10001 /app/storage",
+          "RUN chmod 1777 /app",
+          frankenphp,
+          "USER 10001:10001",
+          "",
+        ].join("\n"),
+      );
+    });
+
+    it("gives the app's user only the folders a volume keeps, none of Laravel's", () => {
+      expect(sealOf(plainPhp(serverPlan()))).toBe(
+        [from, "RUN chmod 1777 /app", frankenphp, "USER 10001:10001", ""].join("\n"),
+      );
+      const both = withFiles(withSqlite(plainPhp(serverPlan()), { dir: "data" }), {
+        dir: "uploads",
+      });
+      expect(sealOf(both).split("\n")[1]).toBe(
+        "RUN mkdir -p /app/data /app/uploads && chown -R 10001:10001 /app/data /app/uploads",
+      );
+    });
+  });
+
   it("retries railpack prepare only on its temporary-failure exit code and hashes the non-secret values", () => {
     const script = step(buildJob(planFor("railpack")), "prepare")?.run ?? "";
     const fake = [
@@ -793,5 +981,15 @@ describe.skipIf(!bashWorks())("the build scripts in bash", { timeout: 60_000 }, 
         .trim()
         .split("\n"),
     ).toHaveLength(1);
+  });
+
+  it("gives railpack prepare a plain PHP app's web root and drivers before the build values", () => {
+    const script = step(buildJob(plainPhp(serverPlan())), "prepare")?.run ?? "";
+    const fake = 'railpack() { echo "$@" >> "$RUNNER_TEMP/calls"; }';
+    const result = bash(`${fake}\n${script}`, { BUILD_ENV: "A=1\n", BUILD_SECRETS: "" });
+    expect(result.status, result.output).toBe(0);
+    expect(readFileSync(join(work, "tmp", "calls"), "utf8")).toMatch(
+      / --env RAILPACK_PHP_ROOT_DIR=\/app\/public --env RAILPACK_PHP_EXTENSIONS=pdo_pgsql --env A=1\n$/,
+    );
   });
 });

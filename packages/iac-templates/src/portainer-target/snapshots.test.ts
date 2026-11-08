@@ -17,7 +17,7 @@ import { parse } from "yaml";
 import { testContext } from "../__fixtures__/plans";
 import { IMAGES, TOOLS, toolDownloadUrl } from "../pins";
 import { shellQuote } from "../runtime/services";
-import { withSqlite } from "../workflow/__fixtures__/plans";
+import { withFiles, withSqlite } from "../workflow/__fixtures__/plans";
 import { shWorks } from "../workflow/__fixtures__/sh";
 import { SQLITE_COPY } from "../workflow/snapshots";
 import { portainerTestPlan } from "./__fixtures__/plans";
@@ -480,6 +480,39 @@ describe("the parts and environments for a snapshot by hand", () => {
     // Stop-only kinds are not among them.
     expect(parts.map((part) => part.name)).not.toContain("rabbitmq");
     expect(scheduled.stack.services["snapshots-queue"]?.volumes).toContain("queue_data:/data:ro");
+  });
+
+  it("copies the kept folder as files.tar with busybox's tar, its volume read-only, no sqlite3", () => {
+    const kept = withFiles(scheduledPlan, { dir: "uploads" });
+    const [files, ...others] = portainerSnapshotParts(kept).reverse();
+    expect(others.map((part) => part.name)).toEqual(["sqlite", "queue", "db"]);
+    expect(files).toEqual({
+      name: "files",
+      kind: "files",
+      file: "files.tar",
+      online: true,
+      image: IMAGES.busybox.ref,
+      mounts: [{ volume: "files", target: "/files", readOnly: true }],
+      copy: `tar -C /files -cf - . > "$t"`,
+    });
+    const scheduledFiles = render(kept).stack.services["snapshots-files"];
+    const releaseFiles = render(staging(withFiles(snapshotPlan(), { dir: "uploads" }))).stack
+      .services["snapshot-files"];
+    for (const service of [scheduledFiles, releaseFiles]) {
+      expect(service?.image).toBe(IMAGES.busybox.ref);
+      expect(service?.user).toBe("0:0");
+      expect(service?.network_mode).toBe("none");
+      expect(service?.volumes).toEqual(["files:/files:ro", "snapshots:/snapshots"]);
+      expect(service?.mem_limit).toBe("32m");
+      const text = script(service);
+      expect(text).toContain('t="$1"/files.tar.tmp');
+      expect(text).toContain(`(umask 077 && tar -C /files -cf - . > "$t"); r=$?`);
+      expect(text).not.toContain("sqlite3");
+      expect(shParses(text)).toBe(true);
+    }
+    expect(script(render(kept).stack.services.snapshots)).toContain(
+      `printf '{"name":"files","kind":"files","file":"files.tar","size":%s}' "$(stat -c %s "$1"/files.tar)"`,
+    );
   });
 
   it("gives each service's environment as the stack does, its secrets as stack variables", () => {

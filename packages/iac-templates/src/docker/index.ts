@@ -60,6 +60,11 @@ export interface DockerAssetOptions {
    * runtime stage of a server image makes it as the app's user, so the volume on it is theirs.
    */
   sqliteFolder?: string;
+  /**
+   * The kept folder in the image for an app with one (`filesFolder(plan)`): made as the app's user,
+   * as SQLite's folder is.
+   */
+  filesFolder?: string;
 }
 
 /** Port the container listens on for a stack. */
@@ -79,22 +84,22 @@ function dockerfile(
   const python = () => pythonImage(pythonMinor(facts, build), resolve);
   const release = options.app ? options.app.releaseCommand : facts.build.releaseCommand;
   const cron = options.supercronic;
-  const sqlite = options.sqliteFolder;
+  const kept = { sqlite: options.sqliteFolder, files: options.filesFolder };
   // The app's Dockerfile serves all its environments: its notes name the app's prod plan.
   const planFile = planFilePath({ app: { key: options.app?.key } }, "prod");
   switch (stack) {
     case "next-standalone":
-      return nextStandaloneDockerfile(facts, planFile, port, node(), release, cron, sqlite);
+      return nextStandaloneDockerfile(facts, planFile, port, node(), release, cron, kept);
     case "node-server":
-      return nodeServerDockerfile(facts, planFile, port, node(), release, cron, sqlite);
+      return nodeServerDockerfile(facts, planFile, port, node(), release, cron, kept);
     case "static-spa":
       return staticSpaDockerfile(facts, planFile, node(), cron);
     case "python-fastapi":
-      return fastapiDockerfile(facts, planFile, port, python(), cron, sqlite);
+      return fastapiDockerfile(facts, planFile, port, python(), cron, kept);
     case "python-django":
-      return djangoDockerfile(facts, planFile, port, python(), cron, sqlite);
+      return djangoDockerfile(facts, planFile, port, python(), cron, kept);
     case "python-generic":
-      return pythonGenericDockerfile(facts, planFile, port, python(), cron, sqlite);
+      return pythonGenericDockerfile(facts, planFile, port, python(), cron, kept);
   }
 }
 

@@ -61,6 +61,20 @@ export interface ServiceHealthcheck {
   startSeconds?: number;
 }
 
+/**
+ * A SQL database's settings one by one, for an app that reads them apart rather than as one URL
+ * (`DB_HOST`, `DB_PORT`, …): each the value of an environment variable, the password as the
+ * service's secret reference ({@link ServiceContext.secretRef}).
+ */
+export interface DatabaseSettings {
+  /** The host the service's address names: its Compose name, or an extra server's address. */
+  host: string;
+  port: string;
+  database: string;
+  user: string;
+  password: string;
+}
+
 /** One kind of backing service: everything the renderers and design need to run it. */
 export interface ServiceSpec {
   /** The kind in `plan.services[].kind`. */
@@ -128,6 +142,8 @@ export interface ServiceSpec {
    * catalog's `appVariables` adds the app's own detected name.
    */
   conventionalVariables: (ctx: ServiceContext, address: string) => Record<string, string>;
+  /** A SQL database's (PostgreSQL, MySQL, MariaDB) settings one by one, as its address has them. */
+  databaseSettings?: (ctx: ServiceContext) => DatabaseSettings;
   /**
    * The container's open-file limit, soft and hard alike, for an engine that needs more than
    * Docker's default (OpenSearch and Elasticsearch: 65536).

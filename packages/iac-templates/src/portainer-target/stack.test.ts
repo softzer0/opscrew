@@ -14,7 +14,7 @@ import { IMAGES } from "../pins";
 import { renderCaddyfile } from "../runtime";
 import { renderServices } from "../runtime/components";
 import { serviceLogging } from "../runtime/services";
-import { withSqlite } from "../workflow/__fixtures__/plans";
+import { withFiles, withSqlite } from "../workflow/__fixtures__/plans";
 import { portainerTestPlan, TEST_ENV } from "./__fixtures__/plans";
 import {
   fillPortainerStack,
@@ -778,6 +778,36 @@ describe("the components in a stack", () => {
     );
     expect(() => renderPortainerStack(unknownFolder, ctx)).toThrow("has no WORKDIR");
     expect(portainerStackVolumes(unknownFolder)).toContain("opscrew-shop_sqlite");
+  });
+
+  it("keeps the kept folder in the volume files, mounted in every container of the app's image", () => {
+    const kept = withFiles(withSqlite(components, { dir: "data" }), { dir: "uploads" });
+    const doc = stack(renderPortainerStack(kept, ctx).content);
+    for (const name of ["app", "release", "worker", "cron"]) {
+      expect(doc.services[name]?.volumes, name).toEqual(["sqlite:/app/data", "files:/app/uploads"]);
+    }
+    expect(doc.services.mysql?.volumes).toEqual(["mysql_data:/var/lib/mysql"]);
+    expect(Object.keys(doc.volumes ?? {})).toEqual([
+      "mysql_data",
+      "rabbitmq_data",
+      "kafka_data",
+      "kafka_secrets",
+      "kafka_config",
+      "sqlite",
+      "files",
+      "snapshots",
+      "version",
+    ]);
+    // Data deletion removes it with the other volumes, also when the stack cannot be rendered.
+    expect(portainerStackVolumes(kept)).toContain("opscrew-shop_files");
+    const unknownFolder = withFiles(
+      DeployPlanSchema.parse({
+        ...components,
+        app: { ...components.app, build: { ...components.app.build, builder: "own-dockerfile" } },
+      }),
+    );
+    expect(() => renderPortainerStack(unknownFolder, ctx)).toThrow("has no WORKDIR");
+    expect(portainerStackVolumes(unknownFolder)).toContain("opscrew-shop_files");
   });
 });
 

@@ -1,6 +1,13 @@
 import type { SelfHostedServiceKind } from "@opscrew/plan-schema";
 import { describe, expectTypeOf, it } from "vitest";
-import type { GeneratedSecret, ImagePinKey, ServiceContext, ServiceSpec } from "../index";
+import {
+  type DatabaseSettings,
+  type GeneratedSecret,
+  type ImagePinKey,
+  type ServiceContext,
+  type ServiceSpec,
+  splitDatabaseSettings,
+} from "../index";
 
 describe("the service catalog's types", () => {
   it("describe a service as the contract does, from the package root", () => {
@@ -14,5 +21,13 @@ describe("the service catalog's types", () => {
     expectTypeOf<ServiceSpec["conventionalVariables"]>()
       .parameter(0)
       .toEqualTypeOf<ServiceContext>();
+  });
+
+  it("give agents a SQL database's split settings from the package root", () => {
+    expectTypeOf(splitDatabaseSettings).parameter(0).toEqualTypeOf<ServiceContext>();
+    expectTypeOf(splitDatabaseSettings).returns.toEqualTypeOf<DatabaseSettings | undefined>();
+    expectTypeOf<keyof DatabaseSettings>().toEqualTypeOf<
+      "host" | "port" | "database" | "user" | "password"
+    >();
   });
 });

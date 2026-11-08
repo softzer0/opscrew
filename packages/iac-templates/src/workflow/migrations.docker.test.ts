@@ -42,7 +42,7 @@ import {
 } from "@opscrew/plan-schema";
 import { afterAll, describe, expect, it } from "vitest";
 import { parse, stringify } from "yaml";
-import { docker } from "../__fixtures__/docker";
+import { COMPOSER_IMAGE as COMPOSER, docker, hasImage } from "../__fixtures__/docker";
 import { testPlan } from "../__fixtures__/plans";
 import { serviceSpec } from "../catalog";
 import { onThisComputer } from "../edge/__fixtures__/localhost";
@@ -60,11 +60,9 @@ const RUN = randomBytes(3).toString("hex");
 const EXAMPLES = fileURLToPath(new URL("../../../../examples/", import.meta.url));
 const FIXTURES = fileURLToPath(new URL("./__fixtures__/migrations/", import.meta.url));
 
-/** The test images' bases besides the pinned Node and Python ones. */
+/** The Rails images' base; Composer's is the fixtures' `COMPOSER_IMAGE`. */
 const RUBY =
   "ruby:3.4-slim@sha256:3e76621a6e7771cacf9fff99c0399baae41fc56fe58547bc846ff72c6a27c527";
-const COMPOSER =
-  "composer:2@sha256:8de2184c6de224f4689e8f80ed5f5edaf0030b6b8b7839a22a2bcb6722ac87d0";
 
 const NODE_IMAGE = [
   `FROM ${IMAGES.nodeAlpine.ref}`,
@@ -468,11 +466,6 @@ function columns(project: Project, c: Case): string[] {
 
 /** The record's lines, sorted: Django's follow the order the migrations ran in. */
 const recordLines = (text: string | undefined) => (text ?? "").split("\n").filter(Boolean).sort();
-
-/** Whether the local Docker has `ref`. */
-function hasImage(ref: string): boolean {
-  return spawnSync("docker", ["image", "inspect", ref], { stdio: "ignore" }).status === 0;
-}
 
 /** The base images this run pulled, removed at the end. */
 const BASES = [IMAGES.nodeAlpine.ref, IMAGES.python.ref, IMAGES.postgres.ref, RUBY, COMPOSER];

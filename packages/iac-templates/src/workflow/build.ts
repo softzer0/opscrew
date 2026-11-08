@@ -1,5 +1,11 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are bash and GitHub Actions syntax, not JavaScript templates.
-import type { DeployPlan, RuntimeLanguage } from "@opscrew/plan-schema";
+import { posix } from "node:path";
+import type {
+  DeployPlan,
+  RuntimeLanguage,
+  SelfHostedServiceKind,
+  ServiceKind,
+} from "@opscrew/plan-schema";
 import { appRoot } from "../app-root";
 import { SECRET_FILE_PATTERNS } from "../docker";
 import { supercronicAdd } from "../docker/stacks";
@@ -13,8 +19,10 @@ import {
   DOCKER_CONTEXT_HOST,
   environmentName,
   environmentTag,
+  filesFolder,
   GHCR_LOGIN,
   hasCronJobs,
+  imageFolder,
   imageSubpath,
   job,
   ROLLING_BACK,
@@ -68,9 +76,54 @@ function versionSetting(
 }
 
 /**
+ * Railpack's setting for the folder a plain PHP app serves (`app.build.webRoot`), in the image:
+ * without it Railpack 0.42 serves the whole app folder, its private files too (research R10).
+ * Undefined without a web root.
+ * @throws OpsCrewError `INVALID_INPUT` for a folder name the workflow's script cannot hold.
+ */
+function webRootSetting(plan: DeployPlan): string | undefined {
+  const webRoot = plan.app.build?.webRoot;
+  const root = appRoot(plan);
+  if (webRoot === undefined || root === undefined) return undefined;
+  const folder = imageFolder(plan, posix.join(root, webRoot).replace(/\/$/, ""), {
+    title: "The web root",
+    field: "app.build.webRoot",
+    hint: "Rename the folder the app serves (for example to public/), then run `opscrew analyze` and `opscrew design` again.",
+  });
+  return `RAILPACK_PHP_ROOT_DIR=${folder}`;
+}
+
+/** The PHP extension a service's kind needs, as `install-php-extensions` names it. */
+const PHP_DRIVERS: Partial<Record<SelfHostedServiceKind | ServiceKind, string>> = {
+  postgres: "pdo_pgsql",
+  mysql: "pdo_mysql",
+  mariadb: "pdo_mysql",
+  valkey: "redis",
+  redis: "redis",
+  dragonfly: "redis",
+  mongodb: "mongodb",
+};
+
+/**
+ * Railpack's setting for the extensions a PHP app's services need ({@link PHP_DRIVERS}), each
+ * once and sorted: the services OpsCrew runs, on or off (the app's code needs the driver wherever
+ * the service runs), and those the app keeps where they are hosted. Railpack 0.42 installs the
+ * extensions `composer.json` asks for, `pdo_pgsql` only with `DB_CONNECTION=pgsql` in its own
+ * environment and `redis` never (a spike, 2026-11-08), so an app on them would be built without
+ * its driver. Undefined for another language or without such a service.
+ */
+function phpExtensionsSetting(plan: DeployPlan): string | undefined {
+  if (plan.app.build?.runtime.language !== "php") return undefined;
+  const kinds = [...plan.services.map((service) => service.kind), ...plan.externalServices];
+  const drivers = [...new Set(kinds.flatMap((kind) => PHP_DRIVERS[kind] ?? []))].sort();
+  return drivers.length === 0 ? undefined : `RAILPACK_PHP_EXTENSIONS=${drivers.join(",")}`;
+}
+
+/**
  * The folders under `/app` a framework writes to, which the Railpack seal gives to the app's user
  * (Rails for Ruby, Laravel for PHP): Railpack images run as root, and uid 10001 cannot create
- * them in the root-owned `/app`. The web root (`public`) stays root's.
+ * them in the root-owned `/app`. The web root (`public`) stays root's. A plain PHP app (one with
+ * `app.build.webRoot`) gets none of them, only the folders a volume keeps.
  */
 const RAILPACK_WRITABLE: Partial<Record<RuntimeLanguage, readonly string[]>> = {
   ruby: ["tmp", "log", "storage", "db"],
@@ -78,20 +131,36 @@ const RAILPACK_WRITABLE: Partial<Record<RuntimeLanguage, readonly string[]>> = {
 };
 
 /**
- * More seal lines per language. PHP: FrankenPHP's binary carries the file capability
- * `cap_net_bind_service`, which Compose's `cap_drop: ALL` with no-new-privileges cannot grant, so
- * starting it fails ("Operation not permitted"). The app listens on its own port (8080 by
- * default), not a low one, so the seal copies the binary over itself, which drops the capability.
+ * PHP's seal line: FrankenPHP's binary carries the file capability `cap_net_bind_service`, which
+ * Compose's `cap_drop: ALL` with no-new-privileges cannot grant, so starting it fails ("Operation
+ * not permitted"). The app listens on its own port (8080 by default), not a low one, so the seal
+ * copies the binary over itself, which drops the capability.
+ */
+const FRANKENPHP_SEAL =
+  'RUN bin="$(command -v frankenphp)" && cp "$bin" "$bin.new" && mv "$bin.new" "$bin"';
+
+/**
  * Railpack's Laravel start runs `php artisan storage:link`, which uid 10001 cannot do in the
  * root-owned web root, so the seal makes the link (`public/storage` → `storage/app/public`) and
  * the start finds it already there.
  */
-const RAILPACK_SEAL: Partial<Record<RuntimeLanguage, readonly string[]>> = {
-  php: [
-    'RUN bin="$(command -v frankenphp)" && cp "$bin" "$bin.new" && mv "$bin.new" "$bin"',
-    "RUN if [ -d /app/public ]; then ln -sfn ../storage/app/public /app/public/storage; fi",
-  ],
-};
+const LARAVEL_STORAGE_LINK =
+  "RUN if [ -d /app/public ]; then ln -sfn ../storage/app/public /app/public/storage; fi";
+
+/**
+ * More seal lines per language: for PHP {@link FRANKENPHP_SEAL}, then for an app without a web
+ * root (Laravel) {@link LARAVEL_STORAGE_LINK}; with one (a plain PHP app), first the app's folder
+ * ({@link appRoot}) mode 1777, as `/tmp`: the app's user may create files there (a web installer
+ * writes its settings file through a temporary file and a rename), but the sticky bit keeps it
+ * from changing, replacing or removing the image's files, root's. Such a file lasts until the next
+ * deploy.
+ */
+function railpackSeal(plan: DeployPlan): string[] {
+  if (plan.app.build?.runtime.language !== "php") return [];
+  return plan.app.build.webRoot === undefined
+    ? [FRANKENPHP_SEAL, LARAVEL_STORAGE_LINK]
+    : [`RUN chmod 1777 ${appRoot(plan)}`, FRANKENPHP_SEAL];
+}
 
 /** The user every Railpack image runs as after the seal. */
 export const RAILPACK_USER = "10001:10001";
@@ -179,25 +248,33 @@ function supercronicSeal(plan: DeployPlan): string[] {
 export const BUILDPACKS_RUN_USER = "1002:1001";
 
 /**
- * The seal's lines that make an app's SQLite folder ({@link sqliteFolder}) the app's user's, so
- * Docker gives a new volume on it that owner; none without SQLite. Buildpacks: the app's files
- * belong to the build user, so root makes the folder for the run image's user, which the image
- * runs as again. The user's own Dockerfile: `WORKDIR` makes the folder as the image's user, with
- * or without a shell in the image, and then returns to the app's folder; a folder the Dockerfile
- * already copies keeps its owner. (Railpack's seal adds it to its writable folders.)
+ * The folders of the app's image that a volume keeps: SQLite's ({@link sqliteFolder}), then the
+ * kept folder ({@link filesFolder}).
  */
-function sqliteSeal(plan: DeployPlan): string[] {
-  const folder = sqliteFolder(plan);
-  if (folder === undefined) return [];
+function keptFolders(plan: DeployPlan): string[] {
+  return [sqliteFolder(plan), filesFolder(plan)].filter((folder) => folder !== undefined);
+}
+
+/**
+ * The seal's lines that make the folders a volume keeps ({@link keptFolders}) the app's user's,
+ * so Docker gives a new volume on each that owner; none without them. Buildpacks: the app's files
+ * belong to the build user, so root makes the folders for the run image's user, which the image
+ * runs as again. The user's own Dockerfile: `WORKDIR` makes each folder as the image's user, with
+ * or without a shell in the image, and then returns to the app's folder; a folder the Dockerfile
+ * already copies keeps its owner. (Railpack's seal adds them to its writable folders.)
+ */
+function keptFoldersSeal(plan: DeployPlan): string[] {
+  const folders = keptFolders(plan);
+  if (folders.length === 0) return [];
   switch (plan.app.build?.builder) {
     case "buildpacks":
       return [
         "USER root",
-        `RUN mkdir -p ${folder} && chown -R ${BUILDPACKS_RUN_USER} ${folder}`,
+        `RUN mkdir -p ${folders.join(" ")} && chown -R ${BUILDPACKS_RUN_USER} ${folders.join(" ")}`,
         `USER ${BUILDPACKS_RUN_USER}`,
       ];
     case "own-dockerfile":
-      return [`WORKDIR ${folder}`, `WORKDIR ${appRoot(plan)}`];
+      return [...folders.map((folder) => `WORKDIR ${folder}`), `WORKDIR ${appRoot(plan)}`];
     default:
       return [];
   }
@@ -205,22 +282,24 @@ function sqliteSeal(plan: DeployPlan): string[] {
 
 /**
  * True when the build pushes a `build-<commit>` intermediate that a seal build turns into the
- * final image: Buildpacks, Railpack, and the user's own Dockerfile when the plan has cron jobs or
- * SQLite.
+ * final image: Buildpacks, Railpack, and the user's own Dockerfile when the plan has cron jobs,
+ * SQLite or a kept folder.
  */
 function sealsImage(plan: DeployPlan): boolean {
   const builder = plan.app.build?.builder;
+  const { sqlite, files } = plan.storage ?? {};
   return (
     builder === "buildpacks" ||
     builder === "railpack" ||
-    (builder === "own-dockerfile" && (hasCronJobs(plan) || plan.storage?.sqlite !== undefined))
+    (builder === "own-dockerfile" &&
+      (hasCronJobs(plan) || sqlite !== undefined || files !== undefined))
   );
 }
 
 /**
  * `generated-dockerfile` and `own-dockerfile` (and a plan without a builder yet). OpsCrew's own
  * Dockerfile already holds supercronic when the plan has cron jobs, and the SQLite folder; the
- * user's own one builds `build-<commit>` instead, and the seal adds them.
+ * user's own one builds `build-<commit>` instead, and the seal adds them and the kept folder.
  */
 function dockerfileSteps(plan: DeployPlan): string[] {
   const source = [
@@ -246,7 +325,7 @@ function dockerfileSteps(plan: DeployPlan): string[] {
     "    provenance: false",
     "    cache-from: type=gha",
     "    cache-to: type=gha,mode=max",
-    ...sealSteps(plan, "own", [...supercronicSeal(plan), ...sqliteSeal(plan)]),
+    ...sealSteps(plan, "own", [...supercronicSeal(plan), ...keptFoldersSeal(plan)]),
   ];
 }
 
@@ -468,27 +547,31 @@ function buildpacksSteps(plan: DeployPlan): string[] {
       "fi",
       'echo "digest=$digest" >> "$GITHUB_OUTPUT"',
     ]),
-    ...sealSteps(plan, "pack", [...supercronicSeal(plan), ...sqliteSeal(plan)]),
+    ...sealSteps(plan, "pack", [...supercronicSeal(plan), ...keptFoldersSeal(plan)]),
   ];
 }
 
 /**
  * Railpack: installs the pinned CLI (checksum from pins.ts), plans the build with the runtime
- * version, the non-secret build values and the names of the secret ones, and builds
- * `build-<commit>` with its frontend, all values as BuildKit secrets; then the seal, which gives
- * uid 10001 the framework's writable folders and the SQLite folder, and makes the image run as it.
+ * version, a plain PHP app's web root ({@link webRootSetting}), a PHP app's drivers
+ * ({@link phpExtensionsSetting}), the non-secret build values and the names of the secret ones,
+ * and builds `build-<commit>` with its frontend, all values as BuildKit secrets; then the seal,
+ * which gives uid 10001 the framework's writable folders and the folders a volume keeps
+ * ({@link keptFolders}), adds the language's lines ({@link railpackSeal}), and makes the image run
+ * as it.
  */
 function railpackSteps(plan: DeployPlan): string[] {
   const context = JSON.stringify(plan.app.buildContext || ".");
   const language = plan.app.build?.runtime.language ?? "other";
-  const sqlite = sqliteFolder(plan);
-  const writable = [
-    ...new Set([
-      ...(RAILPACK_WRITABLE[language] ?? []).map((dir) => `/app/${dir}`),
-      ...(sqlite === undefined ? [] : [sqlite]),
-    ]),
-  ];
-  const setting = versionSetting(plan, RAILPACK_VERSION_SETTING);
+  // A plain PHP app (a web root) writes to its kept folder, not to Laravel's folders.
+  const framework =
+    plan.app.build?.webRoot === undefined ? (RAILPACK_WRITABLE[language] ?? []) : [];
+  const writable = [...new Set([...framework.map((dir) => `/app/${dir}`), ...keptFolders(plan)])];
+  const settings = [
+    versionSetting(plan, RAILPACK_VERSION_SETTING),
+    webRootSetting(plan),
+    phpExtensionsSetting(plan),
+  ].filter((setting) => setting !== undefined);
   return [
     ...installTool(plan, "railpack", "Railpack"),
     "- id: prepare",
@@ -500,7 +583,7 @@ function railpackSteps(plan: DeployPlan): string[] {
       "set -euo pipefail",
       "# The plan lists the names; the build reads the values as BuildKit secrets. Railpack",
       "# never sees a secret value here, only its name.",
-      setting === undefined ? "values=()" : `values=(--env ${setting})`,
+      `values=(${settings.map((setting) => `--env ${setting}`).join(" ")})`,
       ...envPairs("values", '"${BUILD_ENV:-}"'),
       ...envPairs("values", '"${BUILD_SECRETS:-}"', '"${line%%=*}="'),
       "for attempt in 1 2 3; do",
@@ -538,7 +621,7 @@ function railpackSteps(plan: DeployPlan): string[] {
     "      secrets-hash=${{ steps.prepare.outputs.hash }}",
     "    # The frontend reads every value the plan lists as a secret, the runtime version too.",
     "    secrets: |",
-    ...(setting === undefined ? [] : [`      ${setting}`]),
+    ...settings.map((setting) => `      ${setting}`),
     `      ${secret(plan, DEPLOY_SECRETS.buildEnv)}`,
     `      ${secret(plan, DEPLOY_SECRETS.buildSecrets)}`,
     "    cache-from: type=gha,scope=railpack",
@@ -549,7 +632,7 @@ function railpackSteps(plan: DeployPlan): string[] {
         : [
             `RUN mkdir -p ${writable.join(" ")} && chown -R ${RAILPACK_USER} ${writable.join(" ")}`,
           ]),
-      ...(RAILPACK_SEAL[language] ?? []),
+      ...railpackSeal(plan),
       ...supercronicSeal(plan),
       `USER ${RAILPACK_USER}`,
     ]),
@@ -637,14 +720,14 @@ export function buildReads(plan: DeployPlan): string[] {
 /**
  * The `build` job: builds the image with the plan's builder on a runner of the server's
  * architecture and pushes it to GHCR (`app.build` absent: the Dockerfile, as before). Buildpacks,
- * Railpack and, with cron jobs or SQLite, the user's own Dockerfile push
+ * Railpack and, with cron jobs, SQLite or a kept folder, the user's own Dockerfile push
  * `<name>:build-<commit tag>` first, then a seal build, which adds supercronic when the plan has
- * cron jobs and makes the SQLite folder the app's user's ({@link sqliteSeal}). Every builder ends
- * in one `build-push-action` build with a mode=max provenance and an SBOM. Outputs: `image`, the final
- * index digest reference, and `tag`, `<name>:<commit tag>` (the commit for prod, `<commit>-<env>`
- * for another environment: {@link environmentTag}). Then the optional report-only scan. A rollback
- * dispatch skips it: its image exists already. `condition` replaces that `if:` (the preview
- * workflow's).
+ * cron jobs and makes the folders a volume keeps the app's user's ({@link keptFoldersSeal}).
+ * Every builder ends in one `build-push-action` build with a mode=max provenance and an SBOM.
+ * Outputs: `image`, the final index digest reference, and `tag`, `<name>:<commit tag>` (the commit
+ * for prod, `<commit>-<env>` for another environment: {@link environmentTag}). Then the optional
+ * report-only scan. A rollback dispatch skips it: its image exists already. `condition` replaces
+ * that `if:` (the preview workflow's).
  *
  * In a preview environment's workflow (`environment.previews`) the pull request's build is tagged
  * `pr-<number>-<commit>`, its intermediate `build-pr-<number>-<commit>` and its Buildpacks cache

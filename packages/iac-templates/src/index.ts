@@ -12,8 +12,10 @@ export {
   pinnedVersion,
   SERVICE_SPECS,
   serviceSpec,
+  splitDatabaseSettings,
 } from "./catalog";
 export type {
+  DatabaseSettings,
   GeneratedSecret,
   ImagePinKey,
   ServiceConfigFile,

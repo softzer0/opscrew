@@ -12,10 +12,16 @@ import { dataDirs, serviceSpec } from "../catalog";
 import { AGE_BINARY, ageFunctions, OFFSITE_PREFIX, rcloneSettings } from "../offsite";
 import { IMAGES } from "../pins";
 import { portainerTarget } from "../providers";
-import { memoryLimit, type RenderedServices, SQLITE_VOLUME } from "../runtime/components";
+import {
+  FILES_VOLUME,
+  memoryLimit,
+  type RenderedServices,
+  SQLITE_VOLUME,
+} from "../runtime/components";
 import { composeLiteral, hardened, shellQuote } from "../runtime/services";
 import {
   DRAGONFLY_SAVE,
+  filesTar,
   onlineCopy,
   REDIS_CLIENTS,
   type SnapshotPart,
@@ -54,10 +60,10 @@ const TOOLS_VOLUME = "snapshot_tools";
 
 /**
  * The stack's volumes for its snapshots, by their keys: `snapshots` whenever the plan has data (a
- * stateful service or the `sqlite` volume), which `opscrew snapshot` can copy by hand, or the
- * off-server copy is on, and the off-server copy's `snapshot_tools`; none otherwise. With the
- * `snapshots` volume, the stamp writes the running image there, so every snapshot knows its
- * version.
+ * stateful service, the `sqlite` volume or the `files` volume), which `opscrew snapshot` can copy
+ * by hand, or the off-server copy is on, and the off-server copy's `snapshot_tools`; none
+ * otherwise. With the `snapshots` volume, the stamp writes the running image there, so every
+ * snapshot knows its version.
  */
 export function snapshotVolumes(plan: DeployPlan): string[] {
   const offsite = snapshotOffsiteOf(plan) !== undefined;
@@ -67,31 +73,39 @@ export function snapshotVolumes(plan: DeployPlan): string[] {
 
 /**
  * One file of a snapshot on Portainer: an online part of the servers' ({@link snapshotParts}; its
- * name also its markers' name), a service's dump or the tar of the app's SQLite volume. The stack's
- * scheduled and pre-release parts run `copy`, and so can a one-off by hand.
+ * name also its markers' name), a service's dump or the tar of the app's SQLite volume or kept
+ * folder. The stack's scheduled and pre-release parts run `copy`, and so can a one-off by hand.
  */
 export interface PortainerSnapshotPart extends SnapshotPart {
-  /** The service it copies; undefined for SQLite. */
+  /** The service it copies; undefined for the app's volumes. */
   service?: PlanService;
-  /** The image that runs `copy`: the service's own pinned image, the pinned python for SQLite. */
+  /**
+   * The image that runs `copy`: the service's own pinned image, the pinned python for SQLite, the
+   * pinned busybox for the kept folder.
+   */
   image: string;
   /**
    * The part's mounts besides the snapshots volume, by the stack's volume key, the only ones its
-   * container gets: SQLite's `sqlite` volume read-write at `/sqlite`; a service's data volumes
-   * read-only at its data folders (`queue_data` at `/data`).
+   * container gets: SQLite's `sqlite` volume read-write at `/sqlite`; the kept folder's `files`
+   * read-only at `/files`; a service's data volumes read-only at its data folders (`queue_data` at
+   * `/data`).
    */
   mounts: { volume: string; target: string; readOnly: boolean }[];
   /**
    * Writes the copy to the file `"$t"` (sh, as root), inside the part's container: a service's
    * part with the service's environment (`portainerServiceEnvironment`) on the stack's network
-   * and its data volumes read-only; SQLite with the `sqlite` volume read-write at `/sqlite`. Exit
-   * 3: nothing to copy yet (an empty SQLite volume), the part is skipped.
+   * and its data volumes read-only; SQLite with the `sqlite` volume read-write at `/sqlite`; the
+   * kept folder as one tar of `/files`. Exit 3: nothing to copy yet (an empty SQLite volume), the
+   * part is skipped.
    */
   copy: string;
 }
 
 /** Where the SQLite part mounts the app's `sqlite` volume. */
 const SQLITE_MOUNT = "/sqlite";
+
+/** Where the kept folder's part mounts the app's `files` volume. */
+const FILES_MOUNT = "/files";
 
 /** A part's own mounts as Compose `volumes:` entries. */
 function mountEntries(part: PortainerSnapshotPart): string[] {
@@ -107,12 +121,21 @@ function mountEntries(part: PortainerSnapshotPart): string[] {
  * Valkey and Redis copy as on servers ({@link onlineCopy}); Dragonfly saves the file itself (it has
  * no SYNC for `--rdb`), which the part reads from its data volume; the app's SQLite volume runs the
  * servers' program (plan.md D6): the whole volume as one tar, exit 3 when it is empty, which `take`
- * records as skipped. The stack's parts run these.
+ * records as skipped; the kept folder is one tar of its volume, as on servers. The stack's parts
+ * run these.
  */
 export function portainerSnapshotParts(plan: DeployPlan): PortainerSnapshotPart[] {
   return snapshotParts(plan)
     .filter((part) => part.online)
     .map((part): PortainerSnapshotPart => {
+      if (part.kind === "files") {
+        return {
+          ...part,
+          image: IMAGES.busybox.ref,
+          mounts: [{ volume: FILES_VOLUME, target: FILES_MOUNT, readOnly: true }],
+          copy: `${filesTar(FILES_MOUNT)} > "$t"`,
+        };
+      }
       const service = plan.services.find((each) => each.name === part.name);
       if (part.kind === "sqlite" || service === undefined) {
         return {
@@ -260,6 +283,9 @@ export interface StackSnapshots {
 /** The SQLite part's memory limit: Python and SQLite's page cache. */
 const SQLITE_MEMORY_MB = 128;
 
+/** The kept folder's part's memory limit: busybox's tar. */
+const FILES_MEMORY_MB = 32;
+
 /** The finalizers' memory limit: a busybox shell loop. */
 const FINALIZER_MEMORY_MB = 16;
 
@@ -269,7 +295,8 @@ const OFFSITE_MEMORY_MB = 256;
 /**
  * A container that runs `part`'s `script`, as root, with the part's `mounts` and the snapshots
  * volume: a service's part on the service's own pinned image, with its environment, on the
- * stack's network; the SQLite part on the pinned python image with no network.
+ * stack's network; the parts of the app's volumes (SQLite on the pinned python image, the kept
+ * folder on busybox) with no network.
  */
 function partContainer(
   part: PortainerSnapshotPart,
@@ -288,7 +315,7 @@ function partContainer(
       environment,
       ...run,
       volumes: [...mountEntries(part), SNAPSHOTS_MOUNT],
-      ...memoryLimit(SQLITE_MEMORY_MB),
+      ...memoryLimit(part.kind === "files" ? FILES_MEMORY_MB : SQLITE_MEMORY_MB),
       ...hardened(),
     };
   }

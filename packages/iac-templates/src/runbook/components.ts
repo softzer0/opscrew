@@ -7,7 +7,7 @@ import { storageRootDir } from "../infra/storage";
 import { portainerStackName } from "../portainer-target/stack";
 import { usesCloudflare } from "../predicates";
 import { STORAGE_NAMES } from "../prices";
-import { cronMemoryMb } from "../runtime/components";
+import { cronMemoryMb, FILES_VOLUME } from "../runtime/components";
 import { runtimeDir } from "../runtime-dir";
 import { tunnelMode } from "../tunnel";
 import { planFilePath } from "../workflow/shared";
@@ -60,8 +60,8 @@ export function dataCell(plan: DeployPlan, backups: string, external: string): s
 /**
  * "Components": each container of the app's Compose project (on a server) or stack (in the
  * user's Portainer) with what it runs, its memory limit and where it keeps its data
- * (`/srv/data/<app>/<name>` or a Docker volume), the cron jobs (UTC) and the SQLite volume, and
- * how to change them.
+ * (`/srv/data/<app>/<name>` or a Docker volume), the cron jobs (UTC), the SQLite volume and the
+ * kept folder's, and how to change them.
  */
 export function componentsSection(plan: DeployPlan, environments?: readonly string[]): string[] {
   const portainer = inPortainer(plan);
@@ -120,6 +120,14 @@ export function componentsSection(plan: DeployPlan, environments?: readonly stri
     lines.push(
       `The app's SQLite database is in \`${sqlite.dir}/\`, on the Docker volume \`${project}_sqlite\`, which every deploy`,
       "keeps. Each deploy stops the old version before the new one starts, so two copies never write to it at once.",
+      "",
+    );
+  }
+  const files = plan.storage?.files;
+  if (files !== undefined) {
+    lines.push(
+      `The app's kept folder \`${files.dir}/\` is on the Docker volume \`${project}_${FILES_VOLUME}\`, which every deploy keeps: the web process,`,
+      "its workers and its cron all see the same files.",
       "",
     );
   }

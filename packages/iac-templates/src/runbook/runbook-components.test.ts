@@ -1,7 +1,8 @@
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { testContext, testPlan } from "../__fixtures__/plans";
-import { renderRunbook } from "./index";
+import { portainerTestPlan } from "../portainer-target/__fixtures__/plans";
+import { componentsSection, renderRunbook } from "./index";
 
 const ctx = testContext({ projectId: "shop-0123456789ab" });
 
@@ -76,6 +77,25 @@ describe("the runbook's components, edge and storage key", () => {
     );
     expect(text).not.toContain("/srv/data/shop`");
     expect(section(text, "Components")).toContain("on the Docker volume `shop_sqlite`");
+  });
+
+  it("names the kept folder's Docker volume, on a server and in Portainer", () => {
+    const base = testPlan({ postgres: false });
+    const plan = DeployPlanSchema.parse({ ...base, storage: { files: { dir: "storage" } } });
+    const components = section(renderRunbook(plan, ctx).content, "Components");
+    expect(components).toContain(
+      "The app's kept folder `storage/` is on the Docker volume `shop_files`, which every deploy keeps: the web process,\nits workers and its cron all see the same files.",
+    );
+    expect(section(renderRunbook(base, ctx).content, "Components")).not.toContain("kept folder");
+    // Portainer's runbook has the same section.
+    const portainer = portainerTestPlan();
+    const stack = DeployPlanSchema.parse({
+      ...portainer,
+      storage: { files: { dir: "data/files" } },
+    });
+    expect(componentsSection(stack).join("\n")).toContain(
+      "The app's kept folder `data/files/` is on the Docker volume `opscrew-shop_files`, which every deploy keeps",
+    );
   });
 
   it("lists each component with its memory limit and its data under /srv/data/<app>/<name>", () => {

@@ -20,13 +20,16 @@ import { testContext, testPlan } from "../__fixtures__/plans";
 import { serviceSpec } from "../catalog";
 import { withServices } from "../catalog/__fixtures__/plans";
 import { localhostPlan } from "../edge/__fixtures__/localhost";
+import { IMAGES } from "../pins";
 import { renderCompose, renderEdgeSite, renderRuntimeFiles } from "../runtime";
 import { runtimeDir } from "../runtime-dir";
 import {
   inEnvironment,
   NIGHTLY,
+  plainPhp,
   splitPlan,
   withBuild,
+  withFiles,
   withPlan,
   withProcesses,
   withSqlite,
@@ -47,6 +50,7 @@ import {
   ROLLBACK_APPROVAL_FILE,
   RUNNING_FILE,
   rollbackApprovalLine,
+  SNAPSHOT_FUNCTIONS,
   snapshotFunctions,
   snapshotParts,
 } from "./snapshots";
@@ -100,13 +104,15 @@ const fourDatabases = inEnvironment(
  * `/snapshot/<file>` there, unless RESTORE_FAIL names the folder, or `<folder>:<service>` (it then leaves the database
  * `partial`); a copy writes it to `<folder>/<file>`, unless DUMP_FAIL names the service, and with
  * FILL_DISK fills the disk ($WORK/disk-full). A busybox one-off with a service's volumes, or the
- * SQLite volume's Python one-off, reads or writes the data on stdin and stdout. Failures print SECRET_ROW, as a
+ * SQLite volume's Python one-off (the kept folder's busybox one-off: $WORK/db-files), reads or
+ * writes the data on stdin and stdout. Failures print SECRET_ROW, as a
  * database's error can quote a row. kamal-proxy's `deploy` routes to a copy ($WORK/routes/<app>)
  * unless the copy's image is in UNHEALTHY; its `pause` and `resume` mark $WORK/paused. With
  * KILL_AT_STOP, `compose stop` kills the script that runs it, as a cancelled run would end; with
  * KILL_AT_RESTORE, a restore leaves its database `partial` and kills every process up to the
  * workflow step's (STEP_PID), as a cancel mid-restore would. A service NO_CONTAINER names has no
- * container yet, and `compose port` answers PRIVATE_ADDRESS.
+ * container yet, and `compose port` answers PRIVATE_ADDRESS. The app's volumes NO_VOLUME names
+ * (`sqlite`, `files`) do not exist yet.
  */
 const FAKE_DOCKER = [
   "#!/bin/sh",
@@ -114,6 +120,7 @@ const FAKE_DOCKER = [
   ...COMPOSE_PROLOGUE,
   'case "$1 $2" in',
   '  "network inspect") test -f "$WORK/network-$3" ;;',
+  '  "volume inspect") case " ${NO_VOLUME:-} " in *" ${3##*_} "*) exit 1 ;; esac ;;',
   '  "network create") touch "$WORK/network-$3" ;;',
   '  "compose ps")',
   '    case " ${NO_CONTAINER:-} " in *" $last "*) exit 0 ;; esac',
@@ -161,7 +168,7 @@ const FAKE_DOCKER = [
   '    service=""; script=""; p1=""',
   '    for arg in "$@"; do',
   '      if [ "$p1" = --volumes-from ]; then service="${arg%%:*}"; service="${service#p-}"; fi',
-  '      if [ "$p1" = -v ]; then service=sqlite; fi',
+  '      if [ "$p1" = -v ]; then case "$arg" in *_files:*) service=files ;; *) service=sqlite ;; esac; fi',
   '      if [ "$p1" = -c ]; then script="$arg"; fi',
   '      p1="$arg"',
   "    done",
@@ -1107,9 +1114,11 @@ describe.skipIf(!shWorks())(
         withServices([{ kind: "valkey", name: "queue", options: { mode: "queue" } }]),
         { name: "staging" },
       );
-      for (const [label, plan, part, file] of [
-        ["SQLite", sqliteOnly, "sqlite", "sqlite.tar"],
-        ["Valkey", valkeyOnly, "queue", "queue.rdb"],
+      const filesOnly = withFiles(plainPhp(inEnvironment(withServices([]), { name: "staging" })));
+      for (const [label, plan, part, kind, file] of [
+        ["SQLite", sqliteOnly, "sqlite", "sqlite", "sqlite.tar"],
+        ["Valkey", valkeyOnly, "queue", "valkey", "queue.rdb"],
+        ["a kept folder", filesOnly, "files", "files", "files.tar"],
       ] as const) {
         it(`snapshots an app with only ${label} before its release, and a rollback restores it`, () => {
           upload(plan);
@@ -1125,7 +1134,7 @@ describe.skipIf(!shWorks())(
             id: A,
             kind: "release",
             version: `sha256:${A}`,
-            services: [{ name: part, kind: part === "sqlite" ? "sqlite" : "valkey", file }],
+            services: [{ name: part, kind, file }],
           });
 
           setDb(`${part} rows of B\n`, part);
@@ -1139,6 +1148,39 @@ describe.skipIf(!shWorks())(
           expect(paused()).toBe(false);
         });
       }
+
+      it.each([
+        ["the kept folder", filesOnly, "files"],
+        ["SQLite", sqliteOnly, "sqlite"],
+      ] as const)(
+        "skips %s while its volume does not exist yet: the deploy that adds it goes on",
+        (_label, plan, part) => {
+          upload(plan);
+          write(at(".env"), `APP_IMAGE=${image(A)}\n`);
+          const deployed = run(switchCommands(plan, []), B, "deploy", { NO_VOLUME: part });
+          expect(deployed.status, deployed.output).toBe(0);
+          expect(JSON.parse(read(`.snapshots/${A}/about.json`) ?? "").services).toEqual([
+            { name: part, kind: part, skipped: true },
+          ]);
+          expect(existsSync(at(`.snapshots/${A}/${part}.tar`))).toBe(false);
+        },
+      );
+
+      it("still refuses to restore the kept folder without its volume", () => {
+        upload(filesOnly);
+        write(at(".env"), `APP_IMAGE=${image(A)}\n`);
+        setDb("files rows of A\n", "files");
+        const deployed = run(switchCommands(filesOnly, []), B, "deploy");
+        expect(deployed.status, deployed.output).toBe(0);
+        expect(read(`.snapshots/${A}/files.tar`)).toBe("files rows of A\n");
+        setDb("files rows of B\n", "files");
+        const restore = [`cd "${appDir()}"`, SNAPSHOT_FUNCTIONS, `snapshot_restore ${A} files`];
+        const missing = run(restore, B, undefined, { NO_VOLUME: "files" });
+        expect(missing.status).toBe(1);
+        expect(db("files")).toBe("files rows of B\n");
+        expect(run(restore, B).status).toBe(0);
+        expect(db("files")).toBe("files rows of A\n");
+      });
     });
   },
 );
@@ -1983,5 +2025,59 @@ describe("each part's exact restore, the same on servers and in Portainer", () =
     expect(kafka.put?.(`${FROM}/kafka.tar`)).toContain(
       `tar -C / -xpf ${FROM}/kafka.tar var/lib/kafka/data`,
     );
+  });
+
+  it("puts the kept folder's files back exactly, its volume at /data, as SQLite's", () => {
+    const [files] = snapshotParts(withFiles(plainPhp(withServices([]))));
+    if (files === undefined) throw new Error("no part files");
+    expect(partRestore(files)).toEqual({ stop: false, put: expect.any(Function) });
+    expect(partRestore(files).put?.(`${FROM}/files.tar`)).toBe(
+      `find /data -mindepth 1 -delete && tar -C /data -xpf ${FROM}/files.tar`,
+    );
+  });
+});
+
+describe("the kept folder's part of a snapshot", () => {
+  const sqlite = withSqlite(
+    withBuild(withServices([{ kind: "postgres", name: "db" }]), "railpack"),
+  );
+  const kept = withFiles(sqlite, { dir: "uploads" });
+  const functions = (plan: DeployPlan) =>
+    snapshotFunctions(plan, "app", '"$APPS_DIR"/shop').join("\n");
+
+  it("is the volume files, copied as files.tar while the app runs, after SQLite's", () => {
+    expect(snapshotParts(kept).slice(1)).toEqual([
+      { name: "sqlite", kind: "sqlite", file: "sqlite.tar", online: true },
+      { name: "files", kind: "files", file: "files.tar", online: true },
+    ]);
+    // Only the app's server holds it.
+    expect(snapshotParts(withFiles(splitPlan()), "data").map((part) => part.name)).toEqual([
+      "db",
+      "docs",
+    ]);
+  });
+
+  it("is copied and restored with tar in a busybox one-off on its volume, never with sqlite3", () => {
+    const text = functions(kept);
+    expect(text).toContain(
+      '  _volume="${COMPOSE_PROJECT_NAME:-$(basename "$PWD")}_files"\n  docker volume inspect "$_volume" > /dev/null 2>&1',
+    );
+    const lines = text.split("\n");
+    expect(lines).toContain(
+      `      docker run --rm --network none -v "$_volume":/data:ro ${IMAGES.busybox.ref} sh -c 'tar -C /data -cf - .' < /dev/null > .snapshots/"$2"/files.tar 2>> .snapshots/snapshot.log`,
+    );
+    expect(lines).toContain(
+      `      docker run --rm -i --network none -v "$_volume":/data ${IMAGES.busybox.ref} sh -c 'find /data -mindepth 1 -delete && tar -C /data -xpf -' < .snapshots/"$2"/files.tar >> .snapshots/snapshot.log 2>&1`,
+    );
+    // A volume not made yet is nothing to copy (3), but a restore needs it (1).
+    expect(lines.filter((line) => line.includes("snapshot_files_volume || return"))).toEqual([
+      "      snapshot_files_volume || return 3",
+      "      snapshot_files_volume || return 1",
+    ]);
+  });
+
+  it("leaves a plan without it as it was", () => {
+    expect(snapshotParts(sqlite).map((part) => part.name)).toEqual(["db", "sqlite"]);
+    expect(functions(sqlite)).not.toMatch(/_files|files\.tar/);
   });
 });

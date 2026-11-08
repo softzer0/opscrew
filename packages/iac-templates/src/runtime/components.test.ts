@@ -9,7 +9,7 @@ import { parse } from "yaml";
 import { serviceSpec } from "../catalog";
 import { GARAGE_STORAGE, type ServiceEntry, withServices } from "../catalog/__fixtures__/plans";
 import { IMAGES } from "../pins";
-import { withBuild, withSqlite } from "../workflow/__fixtures__/plans";
+import { plainPhp, withBuild, withFiles, withSqlite } from "../workflow/__fixtures__/plans";
 import {
   CRON_ROUTE_MEMORY_MB,
   hostSettingsServices,
@@ -765,6 +765,77 @@ describe("SQLite", () => {
     expect(doc.services.app?.volumes).toBeUndefined();
     expect(doc.services.worker?.volumes).toBeUndefined();
     expect(doc.services.cron?.volumes).toEqual(["./crontab:/etc/opscrew/crontab:ro"]);
+    expect(doc.volumes).toBeUndefined();
+  });
+});
+
+describe("the kept folder (storage.files)", () => {
+  /** A plain PHP app with a release command, a worker and a cron job, on MySQL. */
+  const base = plainPhp(
+    withApp(withServices([{ kind: "mysql" }]), {
+      workers: [{ name: "worker", command: "php bin/worker.php", source: "user" }],
+      cron: [{ name: "cron", schedule: "* * * * *", command: "php bin/cron.php" }],
+    }),
+  );
+  const app = DeployPlanSchema.parse({
+    ...base,
+    app: { ...base.app, releaseCommand: "php bin/migrate.php" },
+  });
+
+  it("is the volume files at the folder, in every container of the app's image", () => {
+    const doc = parse(renderCompose(withFiles(app)).content);
+    for (const name of ["app", "release", "worker"]) {
+      expect(doc.services[name]?.volumes, name).toEqual(["files:/app/storage"]);
+    }
+    expect(doc.services.cron?.volumes).toEqual([
+      "./crontab:/etc/opscrew/crontab:ro",
+      "files:/app/storage",
+    ]);
+    expect(doc.services.mysql?.volumes).not.toContain("files:/app/storage");
+    expect(doc.volumes).toEqual({ files: {} });
+  });
+
+  it("comes after SQLite's volume, each at its own folder, after the services' volumes", () => {
+    const kafka = withFiles(
+      withSqlite(withBuild(withServices([{ kind: "kafka" }]), "railpack"), { dir: "data" }),
+      { dir: "uploads" },
+    );
+    const doc = parse(renderCompose(kafka).content);
+    expect(doc.services.app?.volumes).toEqual(["sqlite:/app/data", "files:/app/uploads"]);
+    expect(Object.keys(doc.volumes)).toEqual([
+      "kafka_data",
+      "kafka_secrets",
+      "kafka_config",
+      "sqlite",
+      "files",
+    ]);
+  });
+
+  it("is mounted at the folder the app runs in, for each builder", () => {
+    const at = (plan: DeployPlan) => services(withFiles(plan, { dir: "uploads" })).app?.volumes;
+    expect(at(withBuild(app, "buildpacks"))).toEqual(["files:/workspace/uploads"]);
+    expect(at(withBuild(app, "generated-dockerfile"))).toEqual(["files:/app/uploads"]);
+    expect(
+      services(withFiles(withBuild(app, "own-dockerfile"), { workdir: "/srv/app" })).app?.volumes,
+    ).toEqual(["files:/srv/app/storage"]);
+  });
+
+  it("refuses an own Dockerfile whose working directory OpsCrew does not know", () => {
+    expect(() => renderCompose(withFiles(withBuild(app, "own-dockerfile")))).toThrow(
+      "The app keeps the folder storage/ on a persistent volume, but OpsCrew does not know the folder the app runs in: the last stage of your Dockerfile (Dockerfile) has no WORKDIR with an absolute path.",
+    );
+  });
+
+  it("refuses a folder name the Compose file and the image build cannot hold", () => {
+    expect(() => renderCompose(withFiles(app, { dir: "my files" }))).toThrow(
+      'The kept folder /app/my files (storage.files.dir in opscrew/plan.yaml) has a character OpsCrew cannot use there: only letters, digits, ".", "_", "-" and "/" work.',
+    );
+  });
+
+  it("is left out without storage.files", () => {
+    const doc = parse(renderCompose(app).content);
+    expect(doc.services.app?.volumes).toBeUndefined();
+    expect(doc.services.worker?.volumes).toBeUndefined();
     expect(doc.volumes).toBeUndefined();
   });
 });

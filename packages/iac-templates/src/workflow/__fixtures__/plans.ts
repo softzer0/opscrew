@@ -10,7 +10,7 @@ import { withServices } from "../../catalog/__fixtures__/plans";
 
 /**
  * `plan` with `app.build` set to `builder` for `language` (default Go 1.26, chosen by design, with
- * the probe design records).
+ * the probe design records), and a plain PHP app's `webRoot`.
  */
 export function withBuild(
   plan: DeployPlan,
@@ -20,6 +20,7 @@ export function withBuild(
     version?: string;
     chosen?: "auto" | "user";
     automatic?: ImageBuilder;
+    webRoot?: string;
   } = {},
 ): DeployPlan {
   const language = o.language ?? "go";
@@ -34,9 +35,15 @@ export function withBuild(
         runtime: { language, ...(language === "other" ? {} : { version: o.version ?? "1.26" }) },
         probe: designProbe(builder, language),
         ...(o.automatic === undefined ? {} : { automatic: o.automatic }),
+        ...(o.webRoot === undefined ? {} : { webRoot: o.webRoot }),
       },
     },
   });
+}
+
+/** A plain PHP app's plan from `plan`: Railpack, PHP 8.4, serving `public`. */
+export function plainPhp(plan: DeployPlan): DeployPlan {
+  return withBuild(plan, "railpack", { language: "php", version: "8.4", webRoot: "public" });
 }
 
 /** `plan` with the given top-level sections replaced (and parsed again). */
@@ -250,5 +257,26 @@ export function withSqlite(
     },
     storage: { ...plan.storage, sqlite: { dir: o.dir ?? "storage" } },
     deploy: { ...plan.deploy, strategy: "recreate" },
+  });
+}
+
+/**
+ * `plan` with a kept folder, `storage.files.dir` `dir` (default `storage`), and for the user's own
+ * Dockerfile the folder the app runs in (`workdir`).
+ */
+export function withFiles(
+  plan: DeployPlan,
+  o: { dir?: string; workdir?: string } = {},
+): DeployPlan {
+  const build = plan.app.build;
+  return DeployPlanSchema.parse({
+    ...plan,
+    app: {
+      ...plan.app,
+      ...(build === undefined || o.workdir === undefined
+        ? {}
+        : { build: { ...build, workdir: o.workdir } }),
+    },
+    storage: { ...plan.storage, files: { dir: o.dir ?? "storage" } },
   });
 }
