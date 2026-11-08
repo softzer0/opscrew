@@ -117,9 +117,21 @@ secret in any test: `fakeSecret(kind)` and `{{FAKE:<kind>}}` (`@opscrew/core/tes
 - [ ] T2511 [P] [US8] The Cloudflare tokens, the state passphrase and the add-ons
   - Owns: `packages/agents/src/rotate/infra*.ts`, `packages/agents/src/rotate/addons*.ts`, `packages/agents/src/shared/engine.ts`, `packages/agents/src/shared/secret-files.ts`, `packages/agents/src/secrets/**` (+ tests)
   - Depends: T2502, T2506
-  - Accept: plan 8 and 10: `access-token` and `tunnel-token` by an approved `-replace` plan, then their copies (own servers in tunnel mode: `module.access`, the Tunnel; Portainer with `redeploy: "cloudflare"`: `module.access` (the webhook's token) and `module.portainer_tunnel`, found by T2505's review); `state-passphrase` by the fallback apply, then the file, and every engine call from then on (`shared/engine.ts`, drift, status, destroy) passing `stateKeyName` of the state file as the key's `name` (T2502); `monitoring`, `portainer`, `beszel`; `recovery-key` (today's code moved, `opscrew secrets rotate` removed); and the deploy key's object at the provider (`hcloud_ssh_key.deploy`, `digitalocean_ssh_key.deploy`) replaced in the deploy-key rotation's own approved plan once the new key proved itself, so the next provision plans no replacement (T2508's review; the server keeps its keys: `ssh_keys` is in `ignore_changes`).
+  - Accept: plan 8 and 10: `access-token` by an approved `-replace` plan and `tunnel-token` by the Tunnel's secret changed in place through the Cloudflare connector (R11, `packages/connectors/cloudflare/src/**` in Owns for that call), then their copies (own servers in tunnel mode: `module.access`, the Tunnel; Portainer with `redeploy: "cloudflare"`: `module.access` (the webhook's token) and `module.portainer_tunnel`, found by T2505's review); `state-passphrase` by the fallback apply of every state the passphrase encrypts (the app's, storage, backups, the Pages verification), then the file, and every engine call from then on (`shared/engine.ts`, drift, status, destroy) passing `stateKeyName` of the state file as the key's `name` (T2502), proved by a real-engine test of two rotations in a row; `portainer` (`monitoring` and `beszel`: T2519); `recovery-key` (today's code moved, `opscrew secrets rotate` removed); and the deploy key's object at the provider (`hcloud_ssh_key.deploy`, `digitalocean_ssh_key.deploy`) replaced in the deploy-key rotation's own approved plan once the new key proved itself, so the next provision plans no replacement (T2508's review; the server keeps its keys: `ssh_keys` is in `ignore_changes`).
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm lint`
   - Effort: xhigh
+
+- [ ] T2519 [P] [US8] Monitoring and Beszel (split from T2511, whose report found they need provision's add-on paths)
+  - Owns: `packages/agents/src/rotate/addons-monitoring*.ts`, `packages/agents/src/rotate/addons-beszel*.ts`, `packages/agents/src/provision/monitoring.ts`, `packages/agents/src/addons/**`, the add-on step builders in `packages/connectors/ssh-host/src/**` (+ tests)
+  - Depends: T2506
+  - Accept: plan 10:
+    - `monitoring`: Grafana's admin password through Grafana's API or CLI in its container, then its env, and the monitoring's PostgreSQL login through the PostgreSQL recipe.
+    - `beszel`: the hub's password, the agent's token and the hub's key, through provision's add-on host plans, each approved by its hash.
+    - Both work even though the values apply only at first start: the running add-on is changed, not just its env.
+    - Shared monitoring owned by another environment is rotated from that environment only.
+    - The record and the recovery copy are updated as T2506 does.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/connector-ssh-host && pnpm typecheck && pnpm lint`
+  - Effort: high
 
 ## Phase 5: Wave 4
 
@@ -147,9 +159,9 @@ secret in any test: `fakeSecret(kind)` and `{{FAKE:<kind>}}` (`@opscrew/core/tes
 ## Phase 6: Surfaces
 
 - [ ] T2515 [US2] The CLI, MCP, the plugin and the guide
-  - Owns: `packages/cli/src/commands/rotate*.ts`, `packages/cli/src/commands/secrets.ts`, `packages/cli/src/commands/index.ts`, `packages/mcp-server/src/tools/**`, `plugin/skills/**`, `docs/guide/credential-rotation.md`, `docs/guide/secrets-recovery.md`, `README.md` (its guide list) (+ tests)
+  - Owns: `packages/cli/src/commands/rotate*.ts`, `packages/cli/src/commands/secrets.ts`, `packages/cli/src/commands/index.ts`, `packages/agents/src/index.ts` (the rotations' exports), `packages/agents/src/secrets/index.ts` (the `publishRotatedKey` re-export, removed), `packages/mcp-server/src/tools/**`, `plugin/skills/**`, `docs/guide/credential-rotation.md`, `docs/guide/secrets-recovery.md`, `README.md` (its guide list) (+ tests)
   - Depends: T2506–T2514
-  - Accept: plan 13; the listing never records a token (`credentialInventory` without `recordTokens`); `github-secrets` joins the kinds `--approve <hash>` grants (`APPROVE_BY_HASH_KINDS`, T2512); the CLI's help and errors in plain English; `--json` for the list; the MCP tool read-only; the guide page with every name, mode, window and consequence, the command-line note of R10, and where the old values live until done.
+  - Accept: plan 13; the listing never records a token (`credentialInventory` without `recordTokens`); `github-secrets` joins the kinds `--approve <hash>` grants (`APPROVE_BY_HASH_KINDS`, T2512); the CLI's help and errors in plain English; `--json` for the list; the MCP tool read-only; the guide page with every name, mode, window and consequence, the command-line note of R10, and where the old values live until done; `opscrew secrets rotate` removed (the CLI command and its test, the MCP hint naming it, the `publishRotatedKey` re-export), since `opscrew rotate recovery-key` replaces it (T2511).
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server && node plugin/validate.mjs && pnpm lint`
   - Effort: high
 

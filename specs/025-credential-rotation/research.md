@@ -251,6 +251,33 @@ env must name the new key before any restart once the old one is deleted; a NATS
 closes the old clients, so its swap is a restart in effect (the app's clients reconnect with the
 new token after the switch).
 
+## R11. The Tunnel token without an outage (2026-11-08, T2511's report)
+
+Replacing the Tunnel (`-replace` of `cloudflare_zero_trust_tunnel_cloudflared`) fails while its
+connector runs: Cloudflare refuses to delete a connected tunnel (error 1022). So that path means
+stopping cloudflared, applying and starting it again, and what the tunnel serves is down for minutes.
+Cloudflare documents a path without that outage ("Rotate a token without service disruption"):
+- Refresh the token. In the API, `PATCH /accounts/{account_id}/cfd_tunnel/{tunnel_id}` takes
+  `tunnel_secret` (random, base64, at least 32 bytes), and its response holds the new `token`.
+  `GET …/cfd_tunnel/{tunnel_id}/token` returns the current token. There is no other refresh endpoint.
+- "cloudflared can no longer establish new connections to Cloudflare using the old token. However,
+  existing connectors will remain active and the tunnel will continue serving traffic."
+- Restart the connectors on the new token, half at a time. With two replicas there is no gap. With
+  one there is a gap of one restart and reconnect, seconds, though Cloudflare gives no figure.
+- Provider v5: `tunnel_secret` is `Optional`, `Sensitive` and has no plan modifier, so it does not
+  force a replacement. OpsCrew doesn't set it in configuration, so changing it through the API leaves
+  no drift.
+- Not confirmed (T2516's live pass settles it): the field's description says "locally-managed", but
+  Cloudflare's rotation page applies the same PATCH to token-run tunnels.
+
+Decision (lead): `tunnel-token` changes the secret through the Cloudflare connector, under the
+rotation's own plan approved by its hash, with no `-replace` and no typed name. It then reads the
+new token and restarts each connector with it.
+
+Sources: developers.cloudflare.com cloudflare-one "Remote tunnel permissions" (rotate a token
+without service disruption); the API reference for zero_trust tunnels cloudflared `edit` and `token`
+`get`; terraform-provider-cloudflare `internal/services/zero_trust_tunnel_cloudflared/schema.go`.
+
 ## Unverified before the spike (all checked in R10)
 
 1. Open connections survive a password change (every service in R2–R4).

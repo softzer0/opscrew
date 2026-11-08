@@ -152,10 +152,13 @@ files), with deploys already held. After it, the record and the recovery copy (a
 - **Engine contract change (lead, T2502):** `IacEngine.plan` options gain `replace?: string[]`
   (`-replace=<address>`, both engines); the plan summary already counts replacements, so the
   approval needs `allowDestroy` and the typed confirmation as any replacement does.
-- `access-token`, `tunnel-token`: an infrastructure plan replacing the token resource (`-replace`),
-  approved by hash; the GitHub secrets and the server's tunnel token file (cloudflared restarted) or
-  Portainer's stack value follow; the old token stops with the replacement, so the new one is in
-  place first where the provider allows (the Tunnel token: cloudflared reconnects in seconds).
+- `access-token`: an infrastructure plan replacing the token resource (`-replace`), approved by hash;
+  the GitHub secrets or Portainer's webhook value follow, with the deploys paused.
+- `tunnel-token` (R11): the Tunnel's secret changed in place through the Cloudflare connector
+  (`PATCH …/cfd_tunnel/{id}` with a new `tunnel_secret`), under the rotation's own plan approved by
+  hash. Running connectors stay connected. Then the new token goes into the server's tunnel token
+  file (cloudflared restarted, one connector at a time) or Portainer's stack value. The gap is one
+  connector's restart (seconds), none with two connectors. There is no replacement and no typed name.
 - `state-passphrase`: `TF_ENCRYPTION` with a new key provider and method and the old as `fallback`
   (`iac-engine/src/encryption.ts`), a plan (no changes) approved by hash and applied, which rewrites
   the state under the new key (R10); then the new passphrase file replaces the old. OpenTofu keeps
