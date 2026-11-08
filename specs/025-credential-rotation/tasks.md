@@ -72,7 +72,7 @@ secret in any test: `fakeSecret(kind)` and `{{FAKE:<kind>}}` (`@opscrew/core/tes
 
 ## Phase 3: Wave 2
 
-- [ ] T2506 [US1] Rotating services on servers
+- [x] T2506 [US1] Rotating services on servers
   - Owns: `packages/agents/src/rotate/server*.ts`, `packages/agents/src/rotate/plan*.ts`, `packages/agents/src/rotate/values*.ts`, `packages/agents/src/provision/secrets.ts` (+ tests)
   - Depends: T2503, T2504, T2505
   - Accept:
