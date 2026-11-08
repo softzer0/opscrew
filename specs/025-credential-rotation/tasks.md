@@ -23,7 +23,7 @@ secret in any test: `fakeSecret(kind)` and `{{FAKE:<kind>}}` (`@opscrew/core/tes
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/plan-schema && pnpm lint`
   - Effort: medium
 
-- [ ] T2502 The engine's `replace` (lead contract, then iac-engine)
+- [x] T2502 The engine's `replace` (lead contract, then iac-engine)
   - Owns: `packages/contracts/src/iac.ts`, `packages/iac-engine/src/**` (+ tests)
   - Accept:
     - `IacEngine.plan` options gain `replace?: string[]`, passed as `-replace=<address>` to both engines; an address that is not in the configuration fails the plan with the engine's message.
