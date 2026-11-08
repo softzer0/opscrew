@@ -1,5 +1,5 @@
 /** Package ecosystems OpsCrew resolves from lockfiles, named as the OSV API names them. */
-export type Ecosystem = "npm" | "PyPI";
+export type Ecosystem = "npm" | "PyPI" | "Packagist";
 
 /** One exact package version pinned by a lockfile. */
 export interface LockedPackage {

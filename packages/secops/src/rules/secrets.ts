@@ -6,6 +6,7 @@ import {
   basename,
   isEnvFile,
   isPlaceholderValue,
+  isTestFile,
   lineLocator,
   MAX_LINE_LENGTH,
   mapConcurrent,
@@ -215,7 +216,33 @@ function isGenericSecret(value: string, quoted: boolean, envFile: boolean): bool
   if (JWT_SHAPE.test(value) || SUPABASE_SECRET_KEY.test(value)) return false;
   if (!quoted && !envFile && /^[A-Za-z_][A-Za-z_]*$/.test(value)) return false;
   if (!hasCharacterMix(value)) return false;
-  return shannonEntropy(value) >= GENERIC_MIN_ENTROPY;
+  return shannonEntropy(value) >= GENERIC_MIN_ENTROPY && looksRandom(value);
+}
+
+/** `Name/1.0`, `Name/v2.13.105`: a product token such as a user agent. */
+const PRODUCT_TOKEN = /^[A-Za-z][A-Za-z0-9._-]*\/v?\d+(?:\.\d+)*$/;
+/** A value's parts: an acronym, a capitalised or lowercase word, or a run of digits. */
+const VALUE_PART = /[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+/g;
+/**
+ * A part that reads as a word: four or more letters, at least a quarter of them vowels (random
+ * letters have fewer), so a random 16-character value passes as words well under 1% of the time.
+ */
+const isWordPart = (part: string) =>
+  /^[a-z]{4,}$/i.test(part) && (part.match(/[aeiouy]/gi) ?? []).length * 4 >= part.length;
+/** Share of a value's letters and digits in word parts at or above which it is not random. */
+const MAX_WORD_SHARE = 0.75;
+
+/**
+ * False for values made of words (`CorrectHorseBatteryStaple9`, `self::AUTH_METHODS`) and product
+ * tokens (`Name/1.0`), which a high entropy alone does not tell from a random secret.
+ */
+function looksRandom(value: string): boolean {
+  if (PRODUCT_TOKEN.test(value)) return false;
+  const parts = value.match(VALUE_PART) ?? [];
+  const total = parts.reduce((sum, part) => sum + part.length, 0);
+  const words = parts.filter(isWordPart);
+  const inWords = words.reduce((sum, part) => sum + part.length, 0);
+  return total > 0 && inWords / total < MAX_WORD_SHARE;
 }
 
 interface Span {
@@ -248,6 +275,7 @@ function scanLines(file: string, text: string): Finding[] {
   const findings: Finding[] = [];
   const envFile = isEnvFile(file);
   const docs = DOC_EXTENSION.test(file);
+  const testFile = isTestFile(file);
   const lines = splitLines(text);
   for (const [index, lineText] of lines.entries()) {
     if (lineText.length > MAX_LINE_LENGTH || lineText.length < 8) continue;
@@ -278,16 +306,19 @@ function scanLines(file: string, text: string): Finding[] {
       const span = { start, end: start + value.length };
       if (overlaps(spans, span)) continue;
       spans.push(span);
+      const description = `A random-looking value is assigned to "${name}", which looks like a password, token or key written directly in the file.`;
       findings.push(
         createFinding({
           ruleId: "secrets/generic-high-entropy",
           title: `Hard-coded secret in "${name}"`,
-          severity: "high",
+          severity: testFile ? "info" : "high",
           category: "secret",
           file,
           line,
           evidence: `${name}=${maskSecret(value)}`,
-          description: `A random-looking value is assigned to "${name}", which looks like a password, token or key written directly in the file.`,
+          description: testFile
+            ? `${description} It is in a test file, so it is most likely a made-up value for the tests; if it is a real secret, rotate it.`
+            : description,
           remediation: ROTATE,
           source: SOURCE,
           rawMatch: value,

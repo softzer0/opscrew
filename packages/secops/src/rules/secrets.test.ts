@@ -206,3 +206,67 @@ describe("createSecretsScanner", () => {
     expect(second.map((f) => f.id).sort()).toEqual(first.map((f) => f.id).sort());
   });
 });
+
+describe("secrets/generic-high-entropy", () => {
+  async function scanFiles(files: Record<string, string>): Promise<Finding[]> {
+    fixture = await materialize("secrets/app");
+    for (const [file, text] of Object.entries(files)) {
+      await mkdir(path.dirname(path.join(fixture.dir, file)), { recursive: true });
+      await writeFile(path.join(fixture.dir, file), text);
+    }
+    const findings = await scanWith(createSecretsScanner(), await contextFor(fixture.dir));
+    return findings.filter(
+      (f) => f.ruleId === "secrets/generic-high-entropy" && (f.file ?? "") in files,
+    );
+  }
+
+  it("reports a random value in a test file as info, saying it is in a test file", async () => {
+    const value = fakeSecret("generic-password", "tests");
+    const files = [
+      "tests/Http/LoginTest.php",
+      "test/login.js",
+      "src/__tests__/login.ts",
+      "spec/login_spec.rb",
+      "src/LoginTest.php",
+      "src/login.test.ts",
+      "pkg/login_test.go",
+      "src/login.spec.ts",
+    ];
+    const findings = await scanFiles(
+      Object.fromEntries(files.map((file) => [file, `$x = ["password" => "${value}"];\n`])),
+    );
+    expect(findings.map((f) => f.file).sort()).toEqual([...files].sort());
+    for (const finding of findings) {
+      expect(finding.severity).toBe("info");
+      expect(finding.description).toMatch(/in a test file/);
+    }
+    expectNoFakeValues(findings, [value]);
+  });
+
+  it("keeps a random value in app code high", async () => {
+    const value = fakeSecret("generic-password", "app");
+    const [finding] = await scanFiles({ "src/Mailer.php": `$c = ["api_key" => "${value}"];\n` });
+    expect(finding?.severity).toBe("high");
+    expect(finding?.description).not.toMatch(/test file/);
+  });
+
+  it("does not report words, word lists, constant names or Name/1.0 strings", async () => {
+    const findings = await scanFiles({
+      "src/Oauth/Discovery.php": [
+        "return [",
+        "    'token_endpoint_auth_methods_supported' => AuthMethods::SUPPORTED_LIST,",
+        "    'token_endpoint_auth_methods_supported' => self::TOKEN_AUTH_METHODS,",
+        "];",
+        "",
+      ].join("\n"),
+      "src/Http/Client.php": [
+        "const PRODUCT_TOKEN = 'ParcelPilotAgent/1.0';",
+        "const USER_AGENT_TOKEN = 'ParcelPilot/2.13.105';",
+        "$defaults = ['password' => 'CorrectHorseBatteryStaple9'];",
+        "$secret = 'Internationalization';",
+        "",
+      ].join("\n"),
+    });
+    expect(keys(findings)).toEqual([]);
+  });
+});

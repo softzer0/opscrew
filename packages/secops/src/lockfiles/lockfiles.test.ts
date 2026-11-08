@@ -109,6 +109,26 @@ describe("lockfile parsers", () => {
     expect(ids(parseFixture("uv.lock"))).toEqual(["anyio@4.2.0", "idna@3.6"]);
   });
 
+  it("reads composer.lock packages and dev packages as Packagist, skipping dev branches", () => {
+    const text = JSON.stringify({
+      packages: [
+        { name: "monolog/monolog", version: "3.5.0" },
+        { name: "symfony/http-foundation", version: "v6.4.1" },
+        { name: "acme/local-tools", version: "dev-main" },
+      ],
+      "packages-dev": [{ name: "phpunit/phpunit", version: "10.5.2" }],
+    });
+    const packages = parseLockfile("composer.lock", text);
+    expect(ids(packages)).toEqual([
+      "monolog/monolog@3.5.0",
+      "phpunit/phpunit@10.5.2",
+      "symfony/http-foundation@6.4.1",
+    ]);
+    expect(packages.every((p) => p.ecosystem === "Packagist" && p.file === "composer.lock")).toBe(
+      true,
+    );
+  });
+
   it("de-duplicates packages within one lockfile", () => {
     const text = "a==1.0\nA==1.0\na==2.0\n";
     expect(ids(parseLockfile("requirements.txt", text))).toEqual(["a@1.0", "a@2.0"]);
@@ -131,6 +151,7 @@ describe("isLockfile / normalizePythonName", () => {
       "api/requirements-dev.txt",
       "poetry.lock",
       "uv.lock",
+      "composer.lock",
     ]) {
       expect(isLockfile(file), file).toBe(true);
     }

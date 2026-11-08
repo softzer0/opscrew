@@ -30,6 +30,17 @@ export function extension(file: string): string {
   return at <= 0 ? "" : name.slice(at + 1).toLowerCase();
 }
 
+const TEST_FILE =
+  /(?:^|\/)(?:[Tt]ests?|__tests__|spec)\/|(?:^|\/)test_[^/]*\.py$|_test\.[^/]+$|Test\.php$|\.(?:test|spec)\.[^/]+$/;
+
+/**
+ * True for test code: files under `tests/`, `test/`, `__tests__/` or `spec/`, and `*Test.php`,
+ * `test_*.py`, `*_test.*`, `*.test.*` and `*.spec.*` files.
+ */
+export function isTestFile(file: string): boolean {
+  return TEST_FILE.test(file);
+}
+
 /** True for every dotenv file name: `.env` and `.env.<anything>` (examples and vaults too). */
 export function isDotenvFile(file: string): boolean {
   const name = basename(file);

@@ -1,6 +1,6 @@
 import { listText, plural } from "@opscrew/core";
-import { detectStack } from "@opscrew/iac-templates";
 import type { AppKind, PlatformExport, ProjectFacts, ServiceKind } from "@opscrew/plan-schema";
+import { chooseBuilder } from "../design/builder";
 
 /** Plain-English summary and deployment risks of a project. */
 export interface FactsSummary {
@@ -221,9 +221,15 @@ function risksFor(facts: ProjectFacts, options: SummarizeOptions): string[] {
         "Check the start command and port before deploying.",
     );
   }
-  // Only for a stack OpsCrew has a Dockerfile for: Railpack or Buildpacks builds the others (a
-  // plain PHP app, Laravel with Sail's development Dockerfile), with no Dockerfile at all.
-  if (facts.docker.dockerfile === undefined && detectStack(facts) !== undefined) {
+  // Only when design will build with OpsCrew's Dockerfile: Railpack or Buildpacks builds the
+  // others (a plain PHP app with a package.json for its assets, a Bun project), with none at all.
+  // Without a plan, `chooseBuilder` never refuses.
+  const choice = chooseBuilder(facts, undefined, "amd64");
+  if (
+    facts.docker.dockerfile === undefined &&
+    "automatic" in choice &&
+    choice.automatic === "generated-dockerfile"
+  ) {
     risks.push(
       "There is no Dockerfile. OpsCrew will add one when it prepares the code (`opscrew adapt`).",
     );

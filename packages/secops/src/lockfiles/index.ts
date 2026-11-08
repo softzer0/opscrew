@@ -1,5 +1,6 @@
 import type { ScanContext } from "@opscrew/contracts";
 import { parsePackageLock, parsePnpmLock, parseYarnLock } from "./npm";
+import { parseComposerLock } from "./php";
 import { parsePoetryLock, parseRequirements, parseUvLock } from "./python";
 import { type LockedPackage, PackageSet } from "./types";
 
@@ -18,6 +19,7 @@ export const SUPPORTED_LOCKFILES = [
   "requirements*.txt",
   "poetry.lock",
   "uv.lock",
+  "composer.lock",
 ] as const;
 
 function parserFor(file: string): LockfileParser | undefined {
@@ -34,6 +36,8 @@ function parserFor(file: string): LockfileParser | undefined {
       return parsePoetryLock;
     case "uv.lock":
       return parseUvLock;
+    case "composer.lock":
+      return parseComposerLock;
     default:
       return /^requirements[^/]*\.txt$/i.test(name) ? parseRequirements : undefined;
   }

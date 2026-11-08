@@ -1,3 +1,6 @@
+import { cp, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { detectProject } from "@opscrew/detect";
 import type { ProjectFacts } from "@opscrew/plan-schema";
@@ -94,6 +97,29 @@ describe("summarizeFacts for PHP apps (US8)", () => {
     expect(summary).toContain("It listens on port 8080. Its health check is at `/`.");
     // Railpack builds it: OpsCrew adds no Dockerfile.
     expect(risks).toEqual([]);
+  });
+
+  it("does not promise a Dockerfile for a plain PHP app with a package.json for its assets", async () => {
+    const root = await mkdtemp(join(tmpdir(), "opscrew-summary-php-assets-"));
+    try {
+      await cp(fixture("php-plain"), root, { recursive: true });
+      await writeFile(
+        join(root, "package.json"),
+        JSON.stringify({
+          name: "assets",
+          private: true,
+          scripts: { build: "vite build" },
+          devDependencies: { vite: "^5.0.0" },
+        }),
+      );
+      const facts = await detectProject(root);
+      expect(facts.languages).toContain("php");
+      expect(summarizeFacts(facts).risks).not.toContainEqual(
+        expect.stringMatching(/There is no Dockerfile/),
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("does not call Sail's development Dockerfile missing, nor promise one", async () => {

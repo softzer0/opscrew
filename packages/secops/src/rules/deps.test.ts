@@ -129,6 +129,26 @@ describe("createOsvScanner", () => {
     expect(unknown?.remediation).toContain("No fixed version");
   });
 
+  it("checks a PHP app's composer.lock against Packagist", async () => {
+    const { fetch, calls } = fakeOsv(() => [], {});
+    const ctx = context(
+      {
+        "composer.json": "{}",
+        "composer.lock": JSON.stringify({
+          packages: [{ name: "guzzlehttp/guzzle", version: "7.8.0" }],
+        }),
+      },
+      { fetch },
+    );
+    const scanner = createOsvScanner({ which: () => undefined });
+    expect(await scanner.isAvailable(ctx)).toBe(true);
+    expect(scanner.skipReason(ctx)).toBeUndefined();
+    expect(await scanner.scan(ctx)).toEqual([]);
+    expect((calls[0]?.body as { queries: unknown[] } | undefined)?.queries).toEqual([
+      { package: { name: "guzzlehttp/guzzle", ecosystem: "Packagist" }, version: "7.8.0" },
+    ]);
+  });
+
   it("chunks batch queries at 500 packages", async () => {
     const many = Object.fromEntries(Array.from({ length: 501 }, (_, i) => [`pkg-${i}`, "1.0.0"]));
     const { fetch, calls } = fakeOsv(() => [], {});
