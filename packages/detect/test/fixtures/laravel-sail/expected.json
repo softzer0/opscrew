@@ -1,0 +1,270 @@
+{
+  "name": "laravel-sail",
+  "languages": [
+    "php"
+  ],
+  "packageManager": "none",
+  "frameworks": [
+    {
+      "name": "laravel",
+      "version": "^12.0",
+      "path": "."
+    }
+  ],
+  "appKind": "fullstack",
+  "platformExport": {
+    "platform": "none",
+    "evidence": []
+  },
+  "build": {},
+  "port": 8000,
+  "runtimeVersions": {
+    "php": "^8.2"
+  },
+  "envVars": [
+    {
+      "name": "APP_DEBUG",
+      "files": [
+        ".env.example"
+      ],
+      "clientExposed": false,
+      "secretLikely": false,
+      "hasDefault": true
+    },
+    {
+      "name": "APP_ENV",
+      "files": [
+        ".env.example"
+      ],
+      "clientExposed": false,
+      "secretLikely": false,
+      "hasDefault": true
+    },
+    {
+      "name": "APP_KEY",
+      "files": [
+        ".env.example"
+      ],
+      "clientExposed": false,
+      "secretLikely": true
+    },
+    {
+      "name": "APP_NAME",
+      "files": [
+        ".env.example"
+      ],
+      "clientExposed": false,
+      "secretLikely": false,
+      "hasDefault": true
+    },
+    {
+      "name": "APP_URL",
+      "files": [
+        ".env.example"
+      ],
+      "clientExposed": false,
+      "secretLikely": false,
+      "hasDefault": true
+    },
+    {
+      "name": "CACHE_STORE",
+      "files": [
+        ".env.example"
+      ],
+      "clientExposed": false,
+      "secretLikely": false
+    },
+    {
+      "name": "DB_CONNECTION",
+      "files": [
+        ".env.example"
+      ],
+      "clientExposed": false,
+      "secretLikely": false,
+      "hasDefault": true
+    },
+    {
+      "name": "DB_DATABASE",
+      "files": [
+        ".env.example"
+      ],
+      "clientExposed": false,
+      "secretLikely": false,
+      "hasDefault": true
+    },
+    {
+      "name": "DB_HOST",
+      "files": [
+        ".env.example"
+      ],
+      "clientExposed": false,
+      "secretLikely": false,
+      "hasDefault": true
+    },
+    {
+      "name": "DB_PASSWORD",
+      "files": [
+        ".env.example"
+      ],
+      "clientExposed": false,
+      "secretLikely": true
+    },
+    {
+      "name": "DB_PORT",
+      "files": [
+        ".env.example"
+      ],
+      "clientExposed": false,
+      "secretLikely": false,
+      "hasDefault": true
+    },
+    {
+      "name": "DB_USERNAME",
+      "files": [
+        ".env.example"
+      ],
+      "clientExposed": false,
+      "secretLikely": false,
+      "hasDefault": true
+    },
+    {
+      "name": "FILESYSTEM_DISK",
+      "files": [
+        ".env.example"
+      ],
+      "clientExposed": false,
+      "secretLikely": false
+    },
+    {
+      "name": "LOG_CHANNEL",
+      "files": [
+        ".env.example"
+      ],
+      "clientExposed": false,
+      "secretLikely": false
+    },
+    {
+      "name": "LOG_LEVEL",
+      "files": [
+        ".env.example"
+      ],
+      "clientExposed": false,
+      "secretLikely": false
+    },
+    {
+      "name": "QUEUE_CONNECTION",
+      "files": [
+        ".env.example"
+      ],
+      "clientExposed": false,
+      "secretLikely": false
+    },
+    {
+      "name": "REDIS_CLIENT",
+      "files": [
+        ".env.example"
+      ],
+      "clientExposed": false,
+      "secretLikely": false,
+      "hasDefault": true
+    },
+    {
+      "name": "REDIS_HOST",
+      "files": [
+        ".env.example"
+      ],
+      "clientExposed": false,
+      "secretLikely": false,
+      "hasDefault": true
+    },
+    {
+      "name": "REDIS_PASSWORD",
+      "files": [
+        ".env.example"
+      ],
+      "clientExposed": false,
+      "secretLikely": true
+    },
+    {
+      "name": "REDIS_PORT",
+      "files": [
+        ".env.example"
+      ],
+      "clientExposed": false,
+      "secretLikely": false,
+      "hasDefault": true
+    },
+    {
+      "name": "SESSION_DRIVER",
+      "files": [
+        ".env.example"
+      ],
+      "clientExposed": false,
+      "secretLikely": false
+    },
+    {
+      "name": "WWWGROUP",
+      "files": [
+        ".env.example"
+      ],
+      "clientExposed": false,
+      "secretLikely": false,
+      "hasDefault": true
+    },
+    {
+      "name": "WWWUSER",
+      "files": [
+        ".env.example"
+      ],
+      "clientExposed": false,
+      "secretLikely": false,
+      "hasDefault": true
+    }
+  ],
+  "services": [
+    {
+      "kind": "postgres",
+      "evidence": [
+        "env:DB_CONNECTION=pgsql"
+      ]
+    },
+    {
+      "kind": "queue",
+      "evidence": [
+        "dependency:laravel/horizon",
+        "env:QUEUE_CONNECTION=redis"
+      ]
+    },
+    {
+      "kind": "redis",
+      "evidence": [
+        "compose-image:redis",
+        "dependency:laravel/horizon",
+        "env:CACHE_STORE=redis",
+        "env:QUEUE_CONNECTION=redis",
+        "env:SESSION_DRIVER=redis"
+      ]
+    }
+  ],
+  "workers": [
+    {
+      "name": "horizon",
+      "command": "php artisan horizon",
+      "source": "library",
+      "single": false,
+      "evidence": [
+        "dependency:laravel/horizon"
+      ]
+    }
+  ],
+  "files": {
+    "dir": "storage/app"
+  },
+  "docker": {
+    "compose": "compose.yaml"
+  },
+  "healthEndpoint": "/healthz",
+  "monorepo": false,
+  "appDir": ".",
+  "git": {}
+}

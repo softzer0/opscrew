@@ -199,6 +199,61 @@ describe("health endpoints the framework answers by itself", () => {
     ).toBeUndefined();
   });
 
+  it("Laravel: a Route::get health route in bootstrap/app.php or routes/*.php", () => {
+    const get = (path: string) => `<?php\nRoute::get(${path}, fn () => response()->noContent());\n`;
+    expect(builtInHealthEndpoint({ "routes/web.php": get("'/up'") })).toBe("/up");
+    expect(builtInHealthEndpoint({ "routes/web.php": get('"/healthz"') })).toBe("/healthz");
+    expect(builtInHealthEndpoint({ "routes/health.php": get("'ping'") })).toBe("/ping");
+    expect(builtInHealthEndpoint({ "bootstrap/app.php": get("'/health'") })).toBe("/health");
+    // routes/api.php counts when withRouting loads it, and answers under the API prefix.
+    const loadsApi =
+      "<?php\n->withRouting(\n  web: __DIR__.'/../routes/web.php',\n  api: __DIR__.'/../routes/api.php',\n)\n";
+    expect(
+      builtInHealthEndpoint({ "bootstrap/app.php": loadsApi, "routes/api.php": get("'/health'") }),
+    ).toBe("/api/health");
+    expect(
+      builtInHealthEndpoint({
+        "bootstrap/app.php": "<?php\n->withRouting(web: __DIR__.'/../routes/web.php')\n",
+        "routes/api.php": get("'/health'"),
+      }),
+    ).toBeUndefined();
+    expect(builtInHealthEndpoint({ "routes/api.php": get("'/health'") })).toBeUndefined();
+    expect(
+      builtInHealthEndpoint({
+        "bootstrap/app.php":
+          "<?php\n->withRouting(api: __DIR__.'/../routes/api.php', apiPrefix: 'v1')\n",
+        "routes/api.php": get("'/health'"),
+      }),
+    ).toBe("/v1/health");
+    // The health option of withRouting comes first.
+    expect(
+      builtInHealthEndpoint({
+        "bootstrap/app.php": "<?php\n->withRouting(health: '/up')\n",
+        "routes/web.php": get("'/health'"),
+      }),
+    ).toBe("/up");
+    // A route in a group with a prefix answers under a path not known here: none.
+    const grouped = (open: string) => `<?php\n${open}\n    ${get("'/health'").slice(6)}});\n`;
+    expect(
+      builtInHealthEndpoint({
+        "routes/web.php": grouped("Route::prefix('admin')->group(function () {"),
+      }),
+    ).toBeUndefined();
+    expect(
+      builtInHealthEndpoint({
+        "routes/web.php": grouped("Route::group(['prefix' => 'admin'], function () {"),
+      }),
+    ).toBeUndefined();
+    // Other routes, other methods and commented-out routes are none.
+    expect(builtInHealthEndpoint({ "routes/web.php": get("'/status-page'") })).toBeUndefined();
+    expect(
+      builtInHealthEndpoint({ "routes/web.php": "<?php\nRoute::post('/health', $f);\n" }),
+    ).toBeUndefined();
+    expect(
+      builtInHealthEndpoint({ "routes/web.php": `// ${get("'/up'").slice(6)}` }),
+    ).toBeUndefined();
+  });
+
   it("Spring Boot Actuator: /actuator/health, under the configured paths", () => {
     const pom = [
       "<dependency>",

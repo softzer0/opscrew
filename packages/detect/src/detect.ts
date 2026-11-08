@@ -95,6 +95,7 @@ import {
   isAppCodeFile,
   isRuntimeCodeFile,
   isSourceFile,
+  LARAVEL_ROUTE_FILE,
   nestRoutePath,
   nextBasePathLiteral,
   portsInCommand,
@@ -150,6 +151,10 @@ const ASTRO_CONFIG = /^astro\.config\.[cm]?[jt]s$/;
 /** Dockerfiles for development, tests or local runs: `Dockerfile.dev`, `test.Dockerfile`. */
 const DEV_DOCKERFILE =
   /^(?:dockerfile\.(?:dev|development|test|local)|(?:dev|development|test|local)\.dockerfile)$/i;
+/** Where `sail:publish` puts Laravel Sail's runtime Dockerfile, relative to the app. */
+const SAIL_DOCKERFILE = /^docker\/[^/]+\/Dockerfile$/;
+/** Laravel Sail's settings for its development container. */
+const SAIL_SETTINGS = new Set(["WWWUSER", "WWWGROUP"]);
 
 /** The package managers of a JavaScript project. */
 export type JsPackageManager = "npm" | "pnpm" | "yarn" | "bun";
@@ -454,15 +459,22 @@ export async function detectProjectDetails(
   }
   const envTexts = envFiles.map((file) => file.text);
   const envSignals = new Map([...signals].filter(([file]) => inEnvScope(file)));
-  // A plain PHP app's reads of its variables in its PHP code (`vendor/` is never walked).
+  // PHP code's reads of the app's variables (`vendor/` is never walked).
   const phpReads: EnvRead[] = [];
-  if (plainPhp) {
-    const phpFiles = scopedFiles.filter((file) => file.endsWith(".php") && inEnvScope(file));
-    await mapLimit(phpFiles, 16, async (file) => {
-      phpReads.push(...extractPhpEnvReads((await read(file)) ?? ""));
-    });
-  }
-  const { envVars, configUrlSchemes, envUrls } = collectEnvVars(envSignals, envFiles, phpReads);
+  const phpFiles = scopedFiles.filter((file) => file.endsWith(".php") && inEnvScope(file));
+  await mapLimit(phpFiles, 16, async (file) => {
+    phpReads.push(...extractPhpEnvReads((await read(file)) ?? ""));
+  });
+  const collected = collectEnvVars(envSignals, envFiles, phpReads);
+  const { configUrlSchemes, envUrls } = collected;
+  // Laravel Sail's development settings (the container user's ids) are never asked.
+  const sail =
+    primary !== undefined && findDependency(primary.unit, "composer", "laravel/sail") !== undefined;
+  const envVars = sail
+    ? collected.envVars.map((envVar) =>
+        SAIL_SETTINGS.has(envVar.name) ? { ...envVar, hasDefault: true } : envVar,
+      )
+    : collected.envVars;
   const envNames = envVars.map((envVar) => envVar.name);
   let composeRedis = false;
   const composeEngines = new Set<ComposeRedisEngine>();
@@ -588,13 +600,26 @@ export async function detectProjectDetails(
     if (!loose) return undefined;
     return scopedFiles.filter(loose).sort(byDepth)[0];
   };
-  // Only a production Dockerfile is the app's own: never a dev container's, or one for
+  // Laravel Sail's runtime Dockerfile (`docker/<version>/Dockerfile`, from `sail:publish`) is
+  // for development too.
+  const sailDockerfiles = new Set<string>();
+  if (sail) {
+    for (const file of scopedFiles) {
+      if (!isWithin(appDir, file) || !SAIL_DOCKERFILE.test(relativeTo(appDir, file))) continue;
+      const text = (await read(file)) ?? "";
+      if (/^\s*COPY\s+start-container\s/m.test(text) && /\bsupervisord\b/.test(text)) {
+        sailDockerfiles.add(file);
+      }
+    }
+  }
+  // Only a production Dockerfile is the app's own: never a dev container's, Sail's, or one for
   // development, tests or local runs.
   const dockerfile = pickFile(["Dockerfile"], (path) => {
     const name = basenameRel(path);
     return (
       (/^dockerfile(?:\.[\w-]+)?$/i.test(name) || /\.dockerfile$/i.test(name)) &&
       !DEV_DOCKERFILE.test(name) &&
+      !sailDockerfiles.has(path) &&
       !path.split("/").includes(".devcontainer")
     );
   });
@@ -735,9 +760,12 @@ export async function detectProjectDetails(
       });
     }
   }
-  // The folder a plain PHP app writes to and keeps.
-  const keptFiles =
-    plainPhp && scopedFiles.some((file) => isWithin(joinRel(appDir, "storage"), file));
+  // The folder the app writes to and keeps: a plain PHP app's `storage`, Laravel's local disk.
+  const keptFiles = appFrameworkNames.has("laravel")
+    ? "storage/app"
+    : plainPhp && scopedFiles.some((file) => isWithin(joinRel(appDir, "storage"), file))
+      ? "storage"
+      : undefined;
   const platformRouting = vercelRouting(vercelText);
   const sqlite = await detectSqlite({ ...sources, envTexts, dbConnection, serverDatabase });
   const objectStorage = detectObjectStorage(serviceList, runtimeDependencies, signals, envNames);
@@ -853,7 +881,11 @@ export async function detectProjectDetails(
   // Endpoints the framework answers by itself (Rails /up, Laravel /up, Spring Boot Actuator).
   if (healthEndpoint === undefined) {
     const texts: Record<string, string> = {};
-    for (const name of BUILT_IN_HEALTH_FILES) {
+    const routeFiles = scopedFiles
+      .filter((file) => isWithin(appDir, file))
+      .map((file) => relativeTo(appDir, file))
+      .filter((file) => LARAVEL_ROUTE_FILE.test(file));
+    for (const name of [...BUILT_IN_HEALTH_FILES, ...routeFiles]) {
       const text = await read(joinRel(appDir, name));
       if (text !== undefined) texts[name] = text;
     }
@@ -929,7 +961,7 @@ export async function detectProjectDetails(
     ...(platformRouting ? { platformRouting } : {}),
     ...(hostedServices.length > 0 ? { hostedServices } : {}),
     ...(sqlite ? { sqlite } : {}),
-    ...(keptFiles ? { files: { dir: "storage" } } : {}),
+    ...(keptFiles ? { files: { dir: keptFiles } } : {}),
     ...(objectStorage ? { objectStorage } : {}),
     docker: {
       ...(dockerfile ? { dockerfile } : {}),

@@ -535,15 +535,45 @@ function urlSegment(value: string | undefined): string {
   return trimmed === "" ? "" : `/${trimmed}`;
 }
 
+/** A Laravel route file: `routes/web.php`, `routes/api.php` and the like. */
+export const LARAVEL_ROUTE_FILE = /^routes\/[^/]+\.php$/;
+
+/** Laravel's `Route::get('/up' | '/health' | '/healthz' | '/ping', …)`. */
+const LARAVEL_HEALTH_ROUTE = /\bRoute::get\(\s*["']\/?(up|health|healthz|ping)\/?["']/;
+
+/**
+ * A Laravel health route registered in `bootstrap/app.php` or a route file ({@link
+ * LARAVEL_ROUTE_FILE}). A route file's route after a `prefix` (a route group's) is none, as its
+ * path is not known; `routes/api.php` counts only when `withRouting` loads it (`api:`), and its
+ * route answers under the API prefix (`apiPrefix`, `api` by default).
+ */
+function laravelHealthRoute(texts: Readonly<Record<string, string>>): string | undefined {
+  const bootstrap = uncommented(texts["bootstrap/app.php"] ?? "");
+  const loadsApi = /\bwithRouting\s*\([^;]*?\bapi\s*:/.test(bootstrap);
+  const apiPrefix = urlSegment(/\bapiPrefix\s*:\s*["']([^"']*)["']/.exec(bootstrap)?.[1] ?? "api");
+  const routeFiles = Object.keys(texts).filter(
+    (name) => LARAVEL_ROUTE_FILE.test(name) && (name !== "routes/api.php" || loadsApi),
+  );
+  for (const name of ["bootstrap/app.php", ...routeFiles.sort()]) {
+    const text = uncommented(texts[name] ?? "");
+    const route = LARAVEL_HEALTH_ROUTE.exec(text);
+    if (!route) continue;
+    if (name !== "bootstrap/app.php" && /\bprefix\b/.test(text.slice(0, route.index))) continue;
+    return `${name === "routes/api.php" ? apiPrefix : ""}/${route[1]}`;
+  }
+  return undefined;
+}
+
 /**
  * The health endpoint the app's framework answers by itself, so no route has to be added: Rails
  * 7.1+ (`get "up" => "rails/health#show"` in `config/routes.rb` → `/up`), Laravel 11+
- * (`health: '/up'` in `bootstrap/app.php`) and Spring Boot Actuator (`spring-boot-starter-actuator`
+ * (`health: '/up'` in `bootstrap/app.php`, else a `Route::get('/up' | '/health' | '/healthz' |
+ * '/ping', …)` there or in `routes/*.php`) and Spring Boot Actuator (`spring-boot-starter-actuator`
  * in `pom.xml` or `build.gradle` → `/actuator/health`, under `server.servlet.context-path` and
  * `management.endpoints.web.base-path` from `application.properties|yml`; none when the health
  * endpoint is turned off, left out of an explicit `exposure.include` list, or served on a separate
- * management port). `texts` maps the
- * {@link BUILT_IN_HEALTH_FILES} that exist to their content.
+ * management port). `texts` maps the {@link BUILT_IN_HEALTH_FILES} that exist, and Laravel's
+ * route files, to their content.
  */
 export function builtInHealthEndpoint(texts: Readonly<Record<string, string>>): string | undefined {
   const routes = texts["config/routes.rb"];
@@ -557,6 +587,8 @@ export function builtInHealthEndpoint(texts: Readonly<Record<string, string>>): 
     const path = /\bhealth\s*:\s*["'](\/[^"'\s]*)["']/.exec(uncommented(bootstrap))?.[1];
     if (path) return path;
   }
+  const laravelRoute = laravelHealthRoute(texts);
+  if (laravelRoute) return laravelRoute;
   const builds = ["pom.xml", "build.gradle", "build.gradle.kts"]
     .map((name) => texts[name])
     .filter((text): text is string => text !== undefined);

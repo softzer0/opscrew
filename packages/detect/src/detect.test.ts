@@ -14,6 +14,7 @@ const FIXTURE_NAMES = [
   "django-postgres",
   "express-api",
   "fastapi-redis",
+  "laravel-sail",
   "lovable-vite-supabase",
   "monorepo-turbo",
   "monorepo-two-apps",
@@ -766,25 +767,142 @@ describe("plain PHP apps", () => {
       { schedule: "* * * * *", command: "php bin/cron.php", source: "cron.php" },
     ]);
   });
+});
 
-  it("leaves Laravel's facts as they are", async () => {
+describe("Laravel apps", () => {
+  const SAIL_DOCKERFILE = [
+    "FROM ubuntu:24.04",
+    'LABEL maintainer="Taylor Otwell"',
+    "WORKDIR /var/www/html",
+    "RUN apt-get update && apt-get install -y supervisor php8.4-cli",
+    "COPY start-container /usr/local/bin/start-container",
+    "COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf",
+    "EXPOSE 80/tcp",
+    'ENTRYPOINT ["start-container"]',
+    "",
+  ].join("\n");
+  const laravel = (composer: Record<string, unknown>, files: Record<string, string> = {}) =>
+    tree({
+      "composer.json": JSON.stringify({
+        name: "acme/orders",
+        require: { "laravel/framework": "^12.0" },
+        ...composer,
+      }),
+      "public/index.php": "<?php\n",
+      ...files,
+    });
+  const sail = { "require-dev": { "laravel/sail": "^1.41" } };
+
+  it("does not take Sail's runtime Dockerfile or its port, and keeps its compose services", async () => {
     const facts = await detectProject(
-      await php(
-        { require: { "laravel/framework": "^11.0" } },
+      await laravel(sail, {
+        "docker/8.4/Dockerfile": SAIL_DOCKERFILE,
+        "compose.yaml": "services:\n  redis:\n    image: 'redis:alpine'\n",
+        ".env.example": "CACHE_STORE=redis\n",
+      }),
+    );
+    expect(facts.docker.dockerfile).toBeUndefined();
+    expect(facts.docker.compose).toBe("compose.yaml");
+    expect(facts.port).toBe(8000);
+    expect(facts.build.workdir).toBeUndefined();
+    expect(facts.services.find((service) => service.kind === "redis")?.evidence).toContain(
+      "compose-image:redis",
+    );
+  });
+
+  it("never asks for Sail's development settings WWWUSER and WWWGROUP", async () => {
+    const facts = await detectProject(join(FIXTURES, "laravel-sail"));
+    const sailSettings = facts.envVars.filter((v) => ["WWWUSER", "WWWGROUP"].includes(v.name));
+    expect(sailSettings.map((v) => [v.name, v.hasDefault])).toEqual([
+      ["WWWGROUP", true],
+      ["WWWUSER", true],
+    ]);
+    const noSail = await detectProject(
+      await laravel({}, { ".env.example": "WWWUSER=1000\nWWWGROUP=1000\n" }),
+    );
+    expect(noSail.envVars.every((v) => v.hasDefault === undefined)).toBe(true);
+  });
+
+  it("still takes a Dockerfile at the root, and Sail's without Sail or another one", async () => {
+    const root = await detectProject(
+      await laravel(sail, {
+        Dockerfile: "FROM php:8.4-fpm\nEXPOSE 9000\n",
+        "docker/8.4/Dockerfile": SAIL_DOCKERFILE,
+      }),
+    );
+    expect(root.docker.dockerfile).toBe("Dockerfile");
+    expect(root.port).toBe(9000);
+    const noSail = await detectProject(
+      await laravel({}, { "docker/8.4/Dockerfile": SAIL_DOCKERFILE }),
+    );
+    expect(noSail.docker.dockerfile).toBe("docker/8.4/Dockerfile");
+    const own = await detectProject(
+      await laravel(sail, { "docker/prod/Dockerfile": "FROM php:8.4\nEXPOSE 8080\n" }),
+    );
+    expect(own.docker.dockerfile).toBe("docker/prod/Dockerfile");
+    expect(own.port).toBe(8080);
+  });
+
+  it("makes a variable optional that config/*.php reads with a default", async () => {
+    const facts = await detectProject(
+      await laravel(
+        {},
         {
-          ".env.example": "DB_HOST=127.0.0.1\n",
-          "config/database.php": "<?php\nreturn ['host' => env('DB_HOST', '127.0.0.1')];\n",
-          "storage/app/.gitignore": "*\n!.gitignore\n",
-          "bin/cron.php": "<?php\n",
+          ".env.example":
+            "DB_HOST=127.0.0.1\nDB_PASSWORD=\nREDIS_PASSWORD=null\nAPP_KEY=\nLOG_LEVEL=debug\n",
+          "config/database.php": [
+            "<?php",
+            "return [",
+            "  'host' => env('DB_HOST', '127.0.0.1'),",
+            "  'password' => env('DB_PASSWORD', ''),",
+            "  'redis' => env('REDIS_PASSWORD', NULL),",
+            "];",
+          ].join("\n"),
+          "config/app.php":
+            "<?php\nreturn ['key' => env('APP_KEY'), 'level' => env(\"LOG_LEVEL\", 'debug')];\n",
         },
       ),
     );
-    expect(facts.appKind).toBe("fullstack");
+    expect(Object.fromEntries(facts.envVars.map((v) => [v.name, v.hasDefault ?? false]))).toEqual({
+      APP_KEY: false,
+      DB_HOST: true,
+      DB_PASSWORD: false,
+      LOG_LEVEL: true,
+      REDIS_PASSWORD: false,
+    });
+  });
+
+  it("keeps its uploads in storage/app, apart from SQLite's folder", async () => {
+    const facts = await detectProject(await laravel({}));
+    expect(facts.files).toEqual({ dir: "storage/app" });
+    const sqlite = await detectProject(
+      await laravel({}, { ".env.example": "DB_CONNECTION=sqlite\n" }),
+    );
+    expect(sqlite.files).toEqual({ dir: "storage/app" });
+    expect(sqlite.sqlite?.dir).toBe("database");
+  });
+
+  it("gets none of a plain PHP app's web root, front-page health path or cron.php job", async () => {
+    const facts = await detectProject(
+      await laravel({}, { "storage/.gitignore": "*\n", "bin/cron.php": "<?php\n" }),
+    );
     expect(facts.port).toBe(8000);
     expect(facts.webRoot).toBeUndefined();
-    expect(facts.files).toBeUndefined();
-    expect(facts.cronJobs).toBeUndefined();
     expect(facts.healthEndpoint).toBeUndefined();
-    expect(facts.envVars.find((v) => v.name === "DB_HOST")?.hasDefault).toBeUndefined();
+    expect(facts.cronJobs).toBeUndefined();
+    expect(facts.files).toEqual({ dir: "storage/app" });
+  });
+
+  it("answers a Route::get health route of routes/*.php", async () => {
+    const facts = await detectProject(
+      await laravel(
+        {},
+        {
+          "routes/web.php":
+            "<?php\nRoute::get('/', fn () => view('welcome'));\nRoute::get(\"/ping\", fn () => 'pong');\n",
+        },
+      ),
+    );
+    expect(facts.healthEndpoint).toBe("/ping");
   });
 });
