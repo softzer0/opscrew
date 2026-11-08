@@ -243,17 +243,21 @@ describe("the logins of Kafka, Redpanda and OpenSearch", () => {
       expect(all[name]?.env_file, name).toEqual([`${name}.env`]);
       expect(all[name]?.environment, name).toBeUndefined();
     }
+    // Each from the container's own copy of its password, written from its env at its first start.
     expect(all.kafka?.command).toEqual([
       "sh",
       "-c",
-      expect.stringContaining('"SCRAM-SHA-512=[password=$$SASL_PASSWORD]"'),
+      expect.stringContaining('"SCRAM-SHA-512=[password=$$(cat /tmp/opscrew-password)]"'),
     ]);
+    expect(all.kafka?.command?.[2]).toContain(
+      'printf %s "$$SASL_PASSWORD" > /tmp/opscrew-password',
+    );
     expect(all.redpanda?.entrypoint).toEqual(["sh", "-c"]);
     expect(all.redpanda?.command?.[0]).toContain('rpk security user create app -p "$$RPK_PASS"');
     expect(all.opensearch?.command?.[2]).toContain("hash.sh -env OPENSEARCH_PASSWORD");
     expect(all.opensearch?.healthcheck?.test).toEqual([
       "CMD-SHELL",
-      expect.stringContaining('curl -fsS -u "admin:$$OPENSEARCH_PASSWORD"'),
+      expect.stringContaining('"$$(cat /tmp/opscrew-password)" | curl -fsS -K - '),
     ]);
   });
 
@@ -656,15 +660,22 @@ describe("Postgres and Valkey", () => {
       logging: { driver: "json-file", options: { "max-size": "10m", "max-file": "3" } },
       networks: ["internal"],
     });
+    // Its ACL file from the password in its env (catalog/placement.test.ts has the wrapper).
     expect(all.queue?.command).toEqual([
       "sh",
       "-c",
-      "rm -f /tmp/opscrew-auth.conf && umask 077 && printf 'requirepass %s\\n' \"$$VALKEY_PASSWORD\" > /tmp/opscrew-auth.conf && chown valkey:valkey /tmp/opscrew-auth.conf && exec docker-entrypoint.sh valkey-server /tmp/opscrew-auth.conf --appendonly yes --maxmemory 96mb --maxmemory-policy noeviction",
+      expect.stringMatching(
+        / && exec docker-entrypoint\.sh valkey-server --aclfile \/tmp\/opscrew-users\.acl --appendonly yes --maxmemory 96mb --maxmemory-policy noeviction$/,
+      ),
     ]);
+    expect(all.queue?.command?.[2]).toContain('printf %s "$$VALKEY_PASSWORD" | sha256sum');
     expect(all.queue?.env_file).toEqual(["queue.env"]);
     expect(all.queue?.volumes).toEqual(["/srv/data/shop/queue:/data"]);
     expect(all.queue?.healthcheck).toMatchObject({
-      test: ["CMD-SHELL", 'REDISCLI_AUTH="$$VALKEY_PASSWORD" valkey-cli ping | grep -q PONG'],
+      test: [
+        "CMD-SHELL",
+        'REDISCLI_AUTH="$$(cat /tmp/opscrew-password)" valkey-cli ping | grep -q PONG',
+      ],
     });
   });
 });

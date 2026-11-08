@@ -230,6 +230,18 @@ const REDIS_RULES = {
   full: "~* &* +@all -@admin",
 };
 
+/**
+ * The wrapper's first commands: {@link aclFile} owned by `user` and the password's own file for
+ * the health check, each only when the container has none yet (a restart keeps a rotated one).
+ */
+function firstStart(variable: string, rules: { readOnly: string; full: string }, user: string) {
+  return [
+    "umask 077",
+    `{ [ -f /tmp/opscrew-users.acl ] || { ${aclFile(variable, rules)} && chown ${user}:${user} /tmp/opscrew-users.acl; }; }`,
+    `{ [ -f /tmp/opscrew-password ] || (umask 077 && printf %s "$${variable}" > /tmp/opscrew-password); }`,
+  ];
+}
+
 describe("device logins on Valkey, Redis and Dragonfly (the ACL wrapper)", () => {
   it("declare each grant's login in OPSCREW_ACL_USERS, with only its password's SHA-256", () => {
     expect(serviceSpec("valkey").environment(ctx(GRANTS, "cache"))).toEqual({
@@ -251,15 +263,12 @@ describe("device logins on Valkey, Redis and Dragonfly (the ACL wrapper)", () =>
     );
   });
 
-  it("Valkey: writes a fresh ACL file at every start and starts on it, without requirepass", () => {
+  it("Valkey: writes its ACL file at the container's first start only and starts on it, without requirepass", () => {
     const [sh, flag, script] = serviceSpec("valkey").command?.(ctx(GRANTS, "cache")) ?? [];
     expect([sh, flag]).toEqual(["sh", "-c"]);
     expect(script).toBe(
       [
-        "rm -f /tmp/opscrew-users.acl",
-        "umask 077",
-        aclFile("VALKEY_PASSWORD", REDIS_RULES),
-        "chown valkey:valkey /tmp/opscrew-users.acl",
+        ...firstStart("VALKEY_PASSWORD", REDIS_RULES, "valkey"),
         "exec docker-entrypoint.sh valkey-server --aclfile /tmp/opscrew-users.acl --save '' --appendonly no --maxmemory 96mb --maxmemory-policy allkeys-lru",
       ].join(" && "),
     );
@@ -270,10 +279,7 @@ describe("device logins on Valkey, Redis and Dragonfly (the ACL wrapper)", () =>
     const script = serviceSpec("redis").command?.(ctx(GRANTS, "queue"))?.[2];
     expect(script).toBe(
       [
-        "rm -f /tmp/opscrew-users.acl",
-        "umask 077",
-        aclFile("REDIS_PASSWORD", REDIS_RULES),
-        "chown redis:redis /tmp/opscrew-users.acl",
+        ...firstStart("REDIS_PASSWORD", REDIS_RULES, "redis"),
         "exec docker-entrypoint.sh redis-server --aclfile /tmp/opscrew-users.acl --appendonly yes --maxmemory 96mb --maxmemory-policy noeviction",
       ].join(" && "),
     );
@@ -284,13 +290,14 @@ describe("device logins on Valkey, Redis and Dragonfly (the ACL wrapper)", () =>
     expect(command?.slice(0, 2)).toEqual(["sh", "-c"]);
     expect(command?.[2]).toBe(
       [
-        "rm -f /tmp/opscrew-users.acl",
-        "umask 077",
-        aclFile("DFLY_requirepass", {
-          readOnly: "resetkeys %R~* +@read +ping +hello -@write",
-          full: "%RW~* +@all -@admin",
-        }),
-        "chown dfly:dfly /tmp/opscrew-users.acl",
+        ...firstStart(
+          "DFLY_requirepass",
+          {
+            readOnly: "resetkeys %R~* +@read +ping +hello -@write",
+            full: "%RW~* +@all -@admin",
+          },
+          "dfly",
+        ),
         "unset DFLY_requirepass",
         "exec entrypoint.sh dragonfly --aclfile /tmp/opscrew-users.acl --logtostderr --proactor_threads=1 --maxmemory=384mb --primary_port_http_enabled=false --cache_mode=true --dbfilename=",
       ].join(" && "),
@@ -324,26 +331,31 @@ describe("device logins on Valkey, Redis and Dragonfly (the ACL wrapper)", () =>
     );
   });
 
-  it("remove the file each start writes in /tmp first, so a restart of the same container starts", () => {
-    // The container keeps its /tmp when it stops; with fs.protected_regular (Ubuntu's default),
-    // root may not open the last start's file there, owned by the server's user, for writing.
+  it("write a file in /tmp only when the container has none, so a restart of the same container starts", () => {
+    // The container keeps its /tmp when it stops, with the files a rotation rewrote; and with
+    // fs.protected_regular (Ubuntu's default) root may not open a file there that the server's
+    // user owns for writing.
     const plain = withServices([
       { kind: "valkey", name: "cache" },
       { kind: "redis", name: "queue", options: { mode: "queue" } },
+      { kind: "dragonfly", name: "store" },
     ]);
     const scripts = [
-      ...["cache", "queue"].map((name) => [plain, name] as const),
+      ...["cache", "queue", "store"].map((name) => [plain, name] as const),
       ...["cache", "queue", "store"].map((name) => [GRANTS, name] as const),
     ].map(([plan, name]) => {
       const c = ctx(plan, name);
       return serviceSpec(c.service.kind).command?.(c)?.[2] ?? "";
     });
     for (const script of scripts) {
-      const written = [...script.matchAll(/> (\/tmp\/\S+)/g)].map((m) => m[1] ?? "");
-      expect(written).toHaveLength(1);
+      const written = [...script.matchAll(/> (\/tmp\/[^\s);]+)/g)].map((m) => m[1] ?? "");
+      expect(written).toEqual(["/tmp/opscrew-users.acl", "/tmp/opscrew-password"]);
       for (const file of written) {
-        expect(script.indexOf(`rm -f ${file} && `)).toBe(0);
+        const guard = script.indexOf(`{ [ -f ${file} ] || `);
+        expect(guard).toBeGreaterThan(-1);
+        expect(guard).toBeLessThan(script.indexOf(`> ${file}`));
       }
+      expect(script).not.toContain("rm -f");
     }
   });
 

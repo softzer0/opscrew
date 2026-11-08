@@ -1,11 +1,14 @@
 /**
  * A device's own login to a database (the `grant` step, ADR 0022): the fixed statements of
  * research R6a, run through `docker compose -p <app> exec -T <service> <client>` as the deploy
- * user. The engine's own administrator signs in from the container's environment (Postgres's
- * `app` over the container's trusted socket; MySQL's and MariaDB's root through an option file
- * on a pipe; MongoDB's root user from `process.env`), so no administrator password is on a
- * command line or passes through OpsCrew. The login's password arrives on the step's standard
- * input and reaches the client inside the container on its standard input, in the statements.
+ * user. The engine's own administrator signs in from inside the container (Postgres's `app` over
+ * the container's trusted socket; MySQL's and MariaDB's root through an option file on a pipe,
+ * MongoDB's root user too, each with the current password the container keeps in its own file:
+ * the catalog writes it from the env at the container's first start, and a credential rotation
+ * rewrites it; a container started before the catalog wrote that file was never rotated, so its
+ * env's password is the current one), so no administrator password is on a command line or passes
+ * through OpsCrew. The login's password arrives on the step's standard input and reaches the
+ * client inside the container on its standard input, in the statements.
  *
  * Every statement here is fixed text around the validated login name; the password goes between a
  * statement's two halves, so it is never part of a plan or a script.
@@ -15,6 +18,24 @@ import { ServiceNameSchema } from "./types";
 
 /** The databases whose device logins a host step makes (the Redis-protocol kinds declare theirs). */
 export const GRANT_KINDS = ["postgres", "mysql", "mariadb", "mongodb"] as const;
+
+/**
+ * Where the database's container keeps its administrator's current password (MongoDB's root user)
+ * and MySQL's and MariaDB's root's: the files of `@opscrew/iac-templates`' catalog.
+ */
+const PASSWORD_FILE = "/tmp/opscrew-password";
+const ROOT_PASSWORD_FILE = "/tmp/opscrew-root-password";
+
+/**
+ * MySQL's or MariaDB's root password as the container's shell reads it: its own file, else (a
+ * container its start never gave one) the env's `variable`.
+ */
+function rootPassword(variable: string): string {
+  return `"$(cat ${ROOT_PASSWORD_FILE} 2>/dev/null || printf %s "$${variable}")"`;
+}
+
+/** MongoDB's root password as mongosh reads it: the container's own file, else its env's. */
+const MONGO_ROOT_PASSWORD = `(require("fs").existsSync("${PASSWORD_FILE}") ? require("fs").readFileSync("${PASSWORD_FILE}", "utf8") : process.env.MONGO_INITDB_ROOT_PASSWORD)`;
 
 /** Logins the engines or OpsCrew already use, never a device's: removing one would break the app. */
 const RESERVED_LOGINS = new Set(["app", "root", "postgres", "admin", "healthcheck", "mysql"]);
@@ -157,15 +178,14 @@ function postgresMonitor(): GrantEngine {
 function mysql(kind: "mysql" | "mariadb", login: string, access: DeviceAccess): GrantEngine {
   const user = `'${login}'@'%'`;
   const binary = kind === "mysql" ? "mysql" : "mariadb";
-  const rootPassword = kind === "mysql" ? "MYSQL_ROOT_PASSWORD" : "MARIADB_ROOT_PASSWORD";
   const privileges = MYSQL_PRIVILEGES.map((name) => `d.${name}_priv`).join(", ");
   // A grant on app.* first, so the revoke always has one to take back.
   const reset = `GRANT SELECT ON app.* TO ${user}; REVOKE ALL PRIVILEGES ON app.* FROM ${user};`;
   return {
     title: kind === "mysql" ? "MySQL" : "MariaDB",
     client: 'bash -c "$ROOT_CLIENT"',
-    // The root password goes from the container's environment into an option file on a pipe.
-    rootClient: `${binary} --defaults-extra-file=<(printf '[client]\\nuser=root\\npassword=%s\\n' "$${rootPassword}") -N -B`,
+    // Root's current password goes from inside the container into an option file on a pipe.
+    rootClient: `${binary} --defaults-extra-file=<(printf '[client]\\nuser=root\\npassword=%s\\n' ${rootPassword(kind === "mysql" ? "MYSQL_ROOT_PASSWORD" : "MARIADB_ROOT_PASSWORD")}) -N -B`,
     prelude: "",
     state: `SELECT 'opscrew-read'; SELECT CONCAT('opscrew-login=', IFNULL(CONCAT(${privileges}), 'none')) FROM mysql.user u LEFT JOIN mysql.db d ON d.User = u.User AND d.Host = u.Host AND d.Db = 'app' WHERE u.User = '${login}' AND u.Host = '%';`,
     want: MYSQL_PRIVILEGES.map((name) =>
@@ -189,8 +209,7 @@ function mongodb(login: string, access: DeviceAccess): GrantEngine {
   return {
     title: "MongoDB",
     client: "mongosh --quiet --norc",
-    prelude:
-      'const a = db.getSiblingDB("admin"); a.auth(process.env.MONGO_INITDB_ROOT_USERNAME, process.env.MONGO_INITDB_ROOT_PASSWORD);',
+    prelude: `const a = db.getSiblingDB("admin"); a.auth(process.env.MONGO_INITDB_ROOT_USERNAME, ${MONGO_ROOT_PASSWORD});`,
     // The markers are built when the script runs, so a source line mongosh echoes never matches.
     state: `const u = a.getUser("${login}"); print("opscrew-" + "read"); if (u !== null) print("opscrew-" + "login=" + (u.roles.map((r) => r.db + "." + r.role).sort().join(",") || "none"));`,
     want: access === "read-only" ? "app.read" : "app.dbAdmin,app.readWrite",

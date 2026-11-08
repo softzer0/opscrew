@@ -8,18 +8,109 @@
  * Memory: each default and minimum leaves room above the idle memory the spike measured (the
  * comment at each entry). Design refuses a service on a server below its smallest one.
  */
-import { sha256Hex } from "@opscrew/core";
-import { APP_SERVER, type DeployPlan, type PlanService } from "@opscrew/plan-schema";
+import { OpsCrewError, sha256Hex } from "@opscrew/core";
+import {
+  APP_SERVER,
+  type DeployPlan,
+  DeviceNameSchema,
+  type PlanService,
+} from "@opscrew/plan-schema";
 import { appServerOf } from "../runtime/move";
 import { privateAddress } from "../runtime/network";
 import { shellQuote } from "../runtime/services";
 import { planFilePath } from "../workflow/shared";
 import type { ServiceInitStep } from "../workflow/switch";
-import type { DatabaseSettings, ServiceContext, ServiceHealthcheck, ServiceSpec } from "./types";
+import type {
+  DatabaseSettings,
+  RotationCommand,
+  SecretRotation,
+  ServiceContext,
+  ServiceHealthcheck,
+  ServiceRotation,
+  ServiceSpec,
+} from "./types";
 
 const BOTH_TARGETS: ServiceSpec["targets"] = ["server", "portainer"];
 const PASSWORD = { name: "password", format: "hex32" } as const;
 const ROOT_PASSWORD = { name: "root-password", format: "hex32" } as const;
+
+// Rotation (feature 025, research R2–R5 and the spike R10): each recipe's commands run in the
+// service's container, the values only in its env as OPSCREW_OLD and OPSCREW_NEW (types.ts).
+
+/** The two values of a rotation, as the commands' shells read them. */
+const OLD = '"$OPSCREW_OLD"';
+const NEW = '"$OPSCREW_NEW"';
+
+/** `script` through the image's `sh`. */
+function sh(script: string): RotationCommand {
+  return ["sh", "-c", script];
+}
+
+/** `script` through the image's bash, for a defaults or config file on a pipe (`<(…)`). */
+function bash(script: string): RotationCommand {
+  return ["bash", "-c", script];
+}
+
+/** A rotation of one secret that runs `begin` and nothing to finish. */
+function swap(secret: string, seconds: number, begin: SecretRotation["begin"]): SecretRotation {
+  return { secrets: [secret], mode: "swap", seconds, recreate: false, begin, finish: () => [] };
+}
+
+/** A secret that changes only with a restart: the service created again with the new env. */
+function restart(secret: string, seconds: number): SecretRotation {
+  return {
+    secrets: [secret],
+    mode: "restart",
+    seconds,
+    recreate: true,
+    begin: () => [],
+    finish: () => [],
+  };
+}
+
+/**
+ * Where a container keeps the current value of the app's password for the services whose start,
+ * health check or tools need it after their first start: written from the env at its first start
+ * only ({@link keepFile}), read there, and rewritten by a rotation ({@link newFile}). It is in the
+ * container's own filesystem, never the data volume nor a mount, so a restart keeps a rotated value
+ * and a container created again from a new env file starts from that.
+ */
+const PASSWORD_FILE = "/tmp/opscrew-password";
+
+/** MySQL's and MariaDB's root password, as {@link PASSWORD_FILE}. */
+const ROOT_PASSWORD_FILE = "/tmp/opscrew-root-password";
+
+/** A subshell that writes the value in `variable` to `file`, readable by the container's user only. */
+function writeFile(variable: string, file: string): string {
+  return `(umask 077 && printf %s "$${variable}" > ${file})`;
+}
+
+/** A start's command that writes `file` from the env's `variable` unless the container has one. */
+function keepFile(variable: string, file = PASSWORD_FILE): string {
+  return `{ [ -f ${file} ] || ${writeFile(variable, file)}; }`;
+}
+
+/**
+ * A rotation's command that makes the value in `variable` (`$OPSCREW_NEW`, or `$OPSCREW_OLD` for
+ * an undo) the value of `file`, replaced at once.
+ */
+function newFile(file = PASSWORD_FILE, variable = "OPSCREW_NEW"): string {
+  return `${writeFile(variable, `${file}.new`)} && mv -f ${file}.new ${file}`;
+}
+
+/** The value of `file`, as a shell word. */
+function current(file = PASSWORD_FILE): string {
+  return `"$(cat ${file})"`;
+}
+
+/**
+ * `change` unless `done` (a command that passes only once the change is made: the new value logs
+ * in, or the old one no longer does) passes, so a step run again after it passed changes nothing
+ * and a resumed rotation never gets stuck on a login the step itself made stale.
+ */
+function unlessDone(done: string, change: string): string {
+  return `{ ${done} > /dev/null 2>&1 || ${change}; }`;
+}
 
 /**
  * Whether the app logs in to `service`: always, except to a Kafka or Redpanda without
@@ -91,10 +182,10 @@ function passwordRedisUrl(ctx: ServiceContext): string {
   return `redis://:${ctx.secretRef(PASSWORD.name)}@${serviceHost(ctx)}:6379`;
 }
 
-/** A health check that logs in with the password in `variable` and reads the reply. */
-function redisCliCheck(variable: string, cli = "redis-cli"): ServiceHealthcheck {
+/** A health check that logs in with the container's current password and reads the reply. */
+function redisCliCheck(cli = "redis-cli"): ServiceHealthcheck {
   // redis-cli (and valkey-cli) answers NOAUTH with exit code 0, so the check reads the reply.
-  return { test: ["CMD-SHELL", `REDISCLI_AUTH="$${variable}" ${cli} ping | grep -q PONG`] };
+  return { test: ["CMD-SHELL", `REDISCLI_AUTH=${current()} ${cli} ping | grep -q PONG`] };
 }
 
 /** Three quarters of the limit, as Valkey's own memory limit is (research R7). */
@@ -126,6 +217,17 @@ const POSTGRES: ServiceSpec = {
   conventionalVariables: (_ctx, url) => ({ DATABASE_URL: url }),
   databaseSettings: (ctx) => sqlSettings(ctx, 5432),
   targets: BOTH_TARGETS,
+  // `app` is the image's superuser, which the container's socket lets in without a password; the
+  // image reads POSTGRES_PASSWORD on its first start only.
+  rotation: {
+    secrets: [
+      swap(PASSWORD.name, 1, () => [
+        sh(
+          `printf "ALTER ROLE app PASSWORD '%s';\\n" ${NEW} | psql -X -q -v ON_ERROR_STOP=1 -U app -d app`,
+        ),
+      ]),
+    ],
+  },
 };
 
 /**
@@ -140,14 +242,6 @@ function redisModeArgs(service: PlanService): string[] {
     : ["--save", "", "--appendonly", "no", ...maxmemory, "--maxmemory-policy", "allkeys-lru"];
 }
 
-/**
- * Where Valkey's and Redis 8's containers write the password, readable by the server only. Each
- * start removes the last start's file first, as with `ACL_FILE`: a container keeps its /tmp when it
- * stops (a move's window, a reboot), and with `fs.protected_regular` (Ubuntu's default) not even
- * root may open a file another user owns there for writing, so the start would fail at every try.
- */
-const REDIS_AUTH_FILE = "/tmp/opscrew-auth.conf";
-
 /** `arg` as one shell word: as it is, or quoted when the shell would split or expand it. */
 function shellWord(arg: string): string {
   return /^[\w.,:/=@%+-]+$/.test(arg) ? arg : shellQuote(arg);
@@ -159,7 +253,13 @@ function shellWord(arg: string): string {
  */
 const ACL_USERS = "OPSCREW_ACL_USERS";
 
-/** Where the start wrapper writes the users of a Valkey, Redis or Dragonfly with device logins. */
+/**
+ * Where a Valkey's, Redis's or Dragonfly's container keeps its users (the app's default user and
+ * the devices' logins), each password as its SHA-256: written from the env at the container's first
+ * start only, then by the server itself (`ACL SAVE`) after each rotation step, so a restart keeps
+ * every password the server holds, and a container created again (a changed env file: a new
+ * password or grant) starts from the env.
+ */
 const ACL_FILE = "/tmp/opscrew-users.acl";
 
 /**
@@ -208,11 +308,13 @@ const DRAGONFLY_ACL: AclRules = {
 };
 
 /**
- * The start wrapper's first commands for a service with device logins (research R6a): a fresh
- * {@link ACL_FILE} at every start, owned by the server's `user`, with the default user from the
- * app's password in `variable` (as its SHA-256, with {@link DEFAULT_ACL}), then one user per line
- * of {@link ACL_USERS} with its access's `rules` (a line with another access gets none). Nothing
- * is saved, so a restart can't lose a login or revive an old password.
+ * The start wrapper's first commands (research R6a), the files owned by what may read them: when
+ * the container has none yet, {@link ACL_FILE}, owned by the server's `user`, with the default user
+ * from the app's password in `variable` (as its SHA-256, with {@link DEFAULT_ACL}), then one user
+ * per line of {@link ACL_USERS} (none without grants) with its access's `rules` (a line with
+ * another access gets none); and {@link PASSWORD_FILE} for the health check and a rotation's
+ * commands. A start never opens an existing file for writing: with `fs.protected_regular`
+ * (Ubuntu's default) not even root may do that in /tmp to a file another user owns.
  */
 function aclFileCommands(variable: string, rules: AclRules, user: string): string[] {
   const users = [
@@ -221,20 +323,17 @@ function aclFileCommands(variable: string, rules: AclRules, user: string): strin
     `printf 'user %s on #%s %s\\n' "$name" "$hash" "$rules"; done;`,
   ].join(" ");
   return [
-    `rm -f ${ACL_FILE}`,
     "umask 077",
-    `{ h=$(printf %s "$${variable}" | sha256sum | cut -d ' ' -f 1); printf 'user %s on #%s %s\\n' default "$h" '${DEFAULT_ACL}'; ${users} } > ${ACL_FILE}`,
-    `chown ${user}:${user} ${ACL_FILE}`,
+    `{ [ -f ${ACL_FILE} ] || { { h=$(printf %s "$${variable}" | sha256sum | cut -d ' ' -f 1); printf 'user %s on #%s %s\\n' default "$h" '${DEFAULT_ACL}'; ${users} } > ${ACL_FILE} && chown ${user}:${user} ${ACL_FILE}; }; }`,
+    keepFile(variable),
   ];
 }
 
 /**
- * Valkey or Redis 8 (`server`) with its modes ({@link redisModeArgs}) and the password in
- * `variable`. The shell writes the password from the environment into a settings file inside the
- * container (never into a repository file, nor the server's command line) and owned by the user
- * of the same name, the one the image's entrypoint drops to; the entrypoint drops root (and Redis 8's loads its modules:
- * Search, JSON, Time Series, Bloom) only when the command is the server. With device logins, the
- * server starts on the wrapper's ACL file instead ({@link aclFileCommands}), without `requirepass`.
+ * Valkey or Redis 8 (`server`) with its modes ({@link redisModeArgs}), on its ACL file from the
+ * password in `variable` ({@link aclFileCommands}): the password never in a repository file nor the
+ * server's command line. The image's entrypoint drops root to the user of the same name (and Redis
+ * 8's loads its modules: Search, JSON, Time Series, Bloom) only when the command is the server.
  */
 function passwordServerCommand(
   ctx: ServiceContext,
@@ -242,20 +341,71 @@ function passwordServerCommand(
   variable: string,
 ): string[] {
   const args = redisModeArgs(ctx.service).map(shellWord);
-  const start = `exec docker-entrypoint.sh ${server}-server`;
-  const script =
-    grantsOn(ctx).length > 0
-      ? [
-          ...aclFileCommands(variable, REDIS_ACL, server),
-          [start, "--aclfile", ACL_FILE, ...args].join(" "),
-        ]
-      : [
-          `rm -f ${REDIS_AUTH_FILE}`,
-          `umask 077 && printf 'requirepass %s\\n' "$${variable}" > ${REDIS_AUTH_FILE}`,
-          `chown ${server}:${server} ${REDIS_AUTH_FILE}`,
-          [start, REDIS_AUTH_FILE, ...args].join(" "),
-        ];
-  return ["sh", "-c", script.join(" && ")];
+  const start = [`exec docker-entrypoint.sh ${server}-server`, "--aclfile", ACL_FILE, ...args];
+  return [
+    "sh",
+    "-c",
+    [...aclFileCommands(variable, REDIS_ACL, server), start.join(" ")].join(" && "),
+  ];
+}
+
+/**
+ * `command` (a printf format, its `%s` filled with `value`) and `ACL SAVE` sent on stdin through
+ * `cli`, logged in with the password `login` (a shell word), passing only when both replies are
+ * `OK` (the CLI answers an error with exit code 0): the server holds the change and its ACL file
+ * keeps it.
+ */
+function aclCommand(cli: string, login: string, command: string, value: string): string {
+  return `[ "$(printf '${command}\\nACL SAVE\\n' ${value} | REDISCLI_AUTH=${login} ${cli} | grep -cx OK)" = 2 ]`;
+}
+
+/** Whether the password `value` (a shell word) logs in as `user` through `cli` (an `AUTH` on stdin). */
+function redisLogsIn(cli: string, user: string, value: string): string {
+  return `[ "$(printf 'AUTH %s %s\\n' ${user} ${value} | ${cli})" = OK ]`;
+}
+
+/**
+ * Valkey's, Redis 8's and Dragonfly's rotations through `cli` (research R3, R10): a user holds any
+ * number of passwords, so `begin` adds the new one (unless it logs in already) and makes it the
+ * container's current one, and `finish` drops the old (unless it no longer logs in). A device's
+ * login (018's grants) the same, logged in as the app's user with the container's current password.
+ */
+function redisRotation(cli: string): ServiceRotation {
+  const device = (name: string) => DeviceNameSchema.parse(name);
+  return {
+    secrets: [
+      {
+        secrets: [PASSWORD.name],
+        mode: "dual",
+        recreate: false,
+        begin: () => [
+          sh(
+            `${unlessDone(redisLogsIn(cli, "default", NEW), aclCommand(cli, OLD, "ACL SETUSER default >%s", NEW))} && ${newFile()}`,
+          ),
+        ],
+        finish: () => [
+          sh(
+            unlessDone(
+              `! ${redisLogsIn(cli, "default", OLD)}`,
+              aclCommand(cli, NEW, "ACL SETUSER default <%s", OLD),
+            ),
+          ),
+        ],
+      },
+    ],
+    grant: {
+      // Adding a password it holds already changes nothing.
+      begin: (name) => [sh(aclCommand(cli, current(), `ACL SETUSER ${device(name)} >%s`, NEW))],
+      finish: (name) => [
+        sh(
+          unlessDone(
+            `! ${redisLogsIn(cli, device(name), OLD)}`,
+            aclCommand(cli, current(), `ACL SETUSER ${device(name)} <%s`, OLD),
+          ),
+        ),
+      ],
+    },
+  };
 }
 
 const VALKEY: ServiceSpec = {
@@ -272,11 +422,12 @@ const VALKEY: ServiceSpec = {
   dataDir: "/data",
   command: (ctx) => passwordServerCommand(ctx, "valkey", "VALKEY_PASSWORD"),
   environment: (ctx) => ({ VALKEY_PASSWORD: ctx.secretRef(PASSWORD.name), ...aclUsers(ctx) }),
-  healthcheck: () => redisCliCheck("VALKEY_PASSWORD", "valkey-cli"),
+  healthcheck: () => redisCliCheck("valkey-cli"),
   secrets: [PASSWORD],
   address: passwordRedisUrl,
   conventionalVariables: redisVariables,
   targets: BOTH_TARGETS,
+  rotation: redisRotation("valkey-cli"),
 };
 
 const REDIS: ServiceSpec = {
@@ -296,11 +447,12 @@ const REDIS: ServiceSpec = {
   dataDir: "/data",
   command: (ctx) => passwordServerCommand(ctx, "redis", "REDIS_PASSWORD"),
   environment: (ctx) => ({ REDIS_PASSWORD: ctx.secretRef(PASSWORD.name), ...aclUsers(ctx) }),
-  healthcheck: () => redisCliCheck("REDIS_PASSWORD"),
+  healthcheck: () => redisCliCheck(),
   secrets: [PASSWORD],
   address: passwordRedisUrl,
   conventionalVariables: redisVariables,
   targets: BOTH_TARGETS,
+  rotation: redisRotation("redis-cli"),
 };
 
 /** The memory Dragonfly refuses to start without, per thread. */
@@ -315,13 +467,12 @@ export const DRAGONFLY_MIN_VCPUS = 2;
  * server's vCPUs (`options.threads`; {@link DRAGONFLY_MIN_VCPUS} when design does not know them).
  * Its HTTP console on the same port is off. A queue never evicts and keeps a snapshot, saved
  * every minute and when it stops; a cache evicts and keeps nothing. BullMQ's scripts need locks
- * by hashtag (https://www.dragonflydb.io/docs/integrations/bullmq). With device logins, the
- * wrapper ({@link aclFileCommands}) starts it through the image's entrypoint on its ACL file, with
- * `DFLY_requirepass` unset.
+ * by hashtag (https://www.dragonflydb.io/docs/integrations/bullmq). The wrapper
+ * ({@link aclFileCommands}) starts it through the image's entrypoint on its ACL file, with
+ * `DFLY_requirepass` unset (Dragonfly would read it at every start).
  */
 function dragonflyCommand(ctx: ServiceContext): string[] {
   const flags = dragonflyFlags(ctx.service);
-  if (grantsOn(ctx).length === 0) return ["dragonfly", ...flags];
   const start = ["exec entrypoint.sh dragonfly --aclfile", ACL_FILE, ...flags.map(shellWord)];
   const script = [
     ...aclFileCommands("DFLY_requirepass", DRAGONFLY_ACL, "dfly"),
@@ -367,14 +518,17 @@ const DRAGONFLY: ServiceSpec = {
   port: 6379,
   dataDir: "/data",
   command: dragonflyCommand,
-  // Dragonfly reads each of its flags from `DFLY_<flag>` (an unknown one stops it).
+  // Dragonfly reads each of its flags from `DFLY_<flag>` (an unknown one stops it); the wrapper
+  // unsets this one once the ACL file has it.
   environment: (ctx) => ({ DFLY_requirepass: ctx.secretRef(PASSWORD.name), ...aclUsers(ctx) }),
   // Its own health check sends PING without the password and counts any reply.
-  healthcheck: () => redisCliCheck("DFLY_requirepass"),
+  healthcheck: () => redisCliCheck(),
   secrets: [PASSWORD],
   address: passwordRedisUrl,
   conventionalVariables: redisVariables,
   targets: BOTH_TARGETS,
+  // Two passwords at once too (R10: `>new` adds one).
+  rotation: redisRotation("redis-cli"),
 };
 
 /**
@@ -393,6 +547,48 @@ function myCnf(plan: DeployPlan, memoryMb: number): string {
     "max_connections = 50",
     "",
   ].join("\n");
+}
+
+/**
+ * The bash script that sends `statement` (a printf format, each `%s` filled with the next of
+ * `values`) on stdin to `client` (`mysql`, `mariadb`) as `root@localhost` over the container's
+ * socket, with root's password `login` (a shell word) in a defaults file on a pipe, as the images'
+ * own entrypoints log in: no value on any command line (research R10: only root may change the
+ * app's login).
+ */
+function asRoot(client: string, login: string, statement: string, ...values: string[]): string {
+  return [`printf "${statement}\\n"`, ...values, `| ${sqlClient(client, "root", login)}`].join(" ");
+}
+
+/** `client` as `user` over the container's socket, with the password `login` (a shell word). */
+function sqlClient(client: string, user: string, login: string): string {
+  return `${client} --defaults-extra-file=<(printf '[client]\\npassword=%s\\n' ${login}) -u${user}`;
+}
+
+/**
+ * `change` (logged in as root) unless the new password logs in as `user` already: run twice,
+ * MySQL's `RETAIN CURRENT PASSWORD` would keep the new password and drop the old.
+ */
+function unlessNewLogsIn(client: string, user: string, change: string): RotationCommand {
+  return bash(unlessDone(`${sqlClient(client, user, NEW)} -e 'SELECT 1'`, change));
+}
+
+/**
+ * MySQL's and MariaDB's start: root's password from the env's `variable` into
+ * {@link ROOT_PASSWORD_FILE} at the container's first start only (the app's commands log in as root
+ * with it, and root's rotation rewrites it), then the image's own start of `server`.
+ */
+function keepRootCommand(variable: string, server: string): string[] {
+  return [
+    "sh",
+    "-c",
+    `${keepFile(variable, ROOT_PASSWORD_FILE)} && exec docker-entrypoint.sh ${server}`,
+  ];
+}
+
+/** Root's two accounts, `root@localhost` (the socket's) and `root@'%'` (TCP's), each with `change`. */
+function rootAccounts(change: string): string {
+  return `ALTER USER 'root'@'localhost' ${change}; ALTER USER 'root'@'%%' ${change};`;
 }
 
 const MYSQL: ServiceSpec = {
@@ -417,6 +613,7 @@ const MYSQL: ServiceSpec = {
       content: myCnf(ctx.plan, ctx.service.memoryMb),
     },
   ],
+  command: () => keepRootCommand("MYSQL_ROOT_PASSWORD", "mysqld"),
   environment: (ctx) => ({
     MYSQL_DATABASE: "app",
     MYSQL_USER: "app",
@@ -431,6 +628,90 @@ const MYSQL: ServiceSpec = {
   conventionalVariables: (_ctx, url) => ({ DATABASE_URL: url }),
   databaseSettings: (ctx) => sqlSettings(ctx, 3306),
   targets: BOTH_TARGETS,
+  // An account keeps one old password beside the new (`RETAIN`) until `DISCARD`; the image reads
+  // both env passwords on its first start only. The app's commands log in as root with the
+  // container's current root password ({@link ROOT_PASSWORD_FILE}), which works wherever a
+  // rotation stopped: root's `begin` writes the file only once the new password works. Each undo
+  // is its own: `begin` with the values swapped would skip (the old password logs in, retained)
+  // and `finish` would then discard it.
+  rotation: {
+    secrets: [
+      {
+        secrets: [PASSWORD.name],
+        mode: "dual",
+        recreate: false,
+        begin: () => [
+          unlessNewLogsIn(
+            "mysql",
+            "app",
+            asRoot(
+              "mysql",
+              current(ROOT_PASSWORD_FILE),
+              "ALTER USER 'app'@'%%' IDENTIFIED BY '%s' RETAIN CURRENT PASSWORD;",
+              NEW,
+            ),
+          ),
+        ],
+        // A discard with no old password left changes nothing.
+        finish: () => [
+          bash(
+            asRoot(
+              "mysql",
+              current(ROOT_PASSWORD_FILE),
+              "ALTER USER 'app'@'%%' DISCARD OLD PASSWORD;",
+            ),
+          ),
+        ],
+        // The old password the only one again (a new primary keeps the retained one until the
+        // discard); run again, it changes nothing.
+        undo: () => [
+          bash(
+            asRoot(
+              "mysql",
+              current(ROOT_PASSWORD_FILE),
+              "ALTER USER 'app'@'%%' IDENTIFIED BY '%s'; ALTER USER 'app'@'%%' DISCARD OLD PASSWORD;",
+              OLD,
+            ),
+          ),
+        ],
+      },
+      {
+        secrets: [ROOT_PASSWORD.name],
+        mode: "dual",
+        recreate: false,
+        begin: () => [
+          unlessNewLogsIn(
+            "mysql",
+            "root",
+            asRoot(
+              "mysql",
+              OLD,
+              rootAccounts("IDENTIFIED BY '%s' RETAIN CURRENT PASSWORD"),
+              NEW,
+              NEW,
+            ),
+          ),
+          sh(newFile(ROOT_PASSWORD_FILE)),
+        ],
+        finish: () => [bash(asRoot("mysql", NEW, rootAccounts("DISCARD OLD PASSWORD")))],
+        // The file's first, then the old password the only one on both accounts again, logged in
+        // with it: before `finish` it always logs in (retained beside the new, or alone), also run
+        // again, and the file holds a password that logs in between the two.
+        undo: () => [
+          sh(newFile(ROOT_PASSWORD_FILE, "OPSCREW_OLD")),
+          bash(
+            asRoot(
+              "mysql",
+              OLD,
+              `${rootAccounts("IDENTIFIED BY '%s'")} ${rootAccounts("DISCARD OLD PASSWORD")}`,
+              OLD,
+              OLD,
+            ),
+          ),
+        ],
+      },
+    ],
+  },
 };
 
 const MARIADB: ServiceSpec = {
@@ -448,6 +729,7 @@ const MARIADB: ServiceSpec = {
   memory: { defaultMb: 384, minimumMb: 256, smallestServerMb: 1024 },
   port: 3306,
   dataDir: "/var/lib/mysql",
+  command: () => keepRootCommand("MARIADB_ROOT_PASSWORD", "mariadbd"),
   environment: (ctx) => ({
     MARIADB_DATABASE: "app",
     MARIADB_USER: "app",
@@ -464,6 +746,38 @@ const MARIADB: ServiceSpec = {
   conventionalVariables: (_ctx, url) => ({ DATABASE_URL: url }),
   databaseSettings: (ctx) => sqlSettings(ctx, 3306),
   targets: BOTH_TARGETS,
+  // One password per account (`RETAIN` is a syntax error); the image reads both env passwords on
+  // its first start only. The app never logs in as root, so root's change fails nothing; the app's
+  // commands log in as root with the container's current root password (ROOT_PASSWORD_FILE).
+  rotation: {
+    secrets: [
+      // Setting the password it has already changes nothing.
+      swap(PASSWORD.name, 1, () => [
+        bash(
+          asRoot(
+            "mariadb",
+            current(ROOT_PASSWORD_FILE),
+            "ALTER USER 'app'@'%%' IDENTIFIED BY '%s';",
+            NEW,
+          ),
+        ),
+      ]),
+      {
+        secrets: [ROOT_PASSWORD.name],
+        mode: "dual",
+        recreate: false,
+        begin: () => [
+          unlessNewLogsIn(
+            "mariadb",
+            "root",
+            asRoot("mariadb", OLD, rootAccounts("IDENTIFIED BY '%s'"), NEW, NEW),
+          ),
+          sh(newFile(ROOT_PASSWORD_FILE)),
+        ],
+        finish: () => [],
+      },
+    ],
+  },
 };
 
 /** MongoDB's replica set: one member, named after the service (clients connect to that name). */
@@ -480,33 +794,41 @@ function replicaSet(ctx: ServiceContext): boolean {
 }
 
 /**
- * `mongod`, or with a replica set: with a password, mongod needs a keyFile; it is written once into
- * the configdb volume as root, then the image's entrypoint starts mongod as its own user.
+ * The root password from the env into {@link PASSWORD_FILE} at the container's first start only
+ * (the setup steps log in with it, and a rotation rewrites it), then `mongod` through the image's
+ * entrypoint, which starts it as its own user. With a replica set, mongod needs a keyFile with a
+ * password: it is written once into the configdb volume as root first.
  */
 function mongoCommand(ctx: ServiceContext): string[] {
   const cache = ["--wiredTigerCacheSizeGB", String(mongoCacheGb(ctx.service.memoryMb))];
-  if (!replicaSet(ctx)) return ["mongod", ...cache, "--bind_ip_all"];
-  const mongod = ["mongod", "--replSet", REPLICA_SET, "--keyFile", KEY_FILE, ...cache];
+  const mongod = replicaSet(ctx)
+    ? ["mongod", "--replSet", REPLICA_SET, "--keyFile", KEY_FILE, ...cache]
+    : ["mongod", ...cache];
   return [
     "bash",
     "-c",
     [
       "set -e",
-      `[ -f ${KEY_FILE} ] || { head -c 756 /dev/urandom | base64 -w 0 > ${KEY_FILE} && chmod 400 ${KEY_FILE} && chown 999:999 ${KEY_FILE}; }`,
+      keepFile("MONGO_INITDB_ROOT_PASSWORD"),
+      ...(replicaSet(ctx)
+        ? [
+            `[ -f ${KEY_FILE} ] || { head -c 756 /dev/urandom | base64 -w 0 > ${KEY_FILE} && chmod 400 ${KEY_FILE} && chown 999:999 ${KEY_FILE}; }`,
+          ]
+        : []),
       `exec docker-entrypoint.sh ${mongod.join(" ")} --bind_ip_all`,
     ].join("; "),
   ];
 }
 
 /**
- * mongosh in the service's container, logged in as the root user from the container's own
- * environment (its bash fills in the variables, so the password is in no file and no log).
+ * mongosh in the service's container, logged in as the root user with the container's current
+ * password (its bash reads it, so the password is in no repository file and no log).
  */
 function mongosh(script: string): string[] {
   return [
     "bash",
     "-c",
-    `mongosh --quiet -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin --eval '${script}'`,
+    `mongosh --quiet -u "$MONGO_INITDB_ROOT_USERNAME" -p ${current()} --authenticationDatabase admin --eval '${script}'`,
   ];
 }
 
@@ -564,6 +886,22 @@ const MONGODB: ServiceSpec = {
   },
   conventionalVariables: (_ctx, url) => ({ DATABASE_URL: url, MONGODB_URI: url }),
   targets: BOTH_TARGETS,
+  // `app` is the root user; the image reads its env password on the first start only, and the
+  // replica set's setup step logs in with the container's current one, which `begin` rewrites.
+  // mongosh takes the login only as an argument (R10).
+  rotation: {
+    secrets: [
+      swap(PASSWORD.name, 2, () => {
+        const login = (value: string) =>
+          `mongosh --quiet -u app -p ${value} --authenticationDatabase admin admin`;
+        return [
+          bash(
+            `${unlessDone(`${login(NEW)} --eval 'db.runCommand({ ping: 1 }).ok'`, `${login(OLD)} --eval 'db.changeUserPassword("app", process.env.OPSCREW_NEW)'`)} && ${newFile()}`,
+          ),
+        ];
+      }),
+    ],
+  },
 };
 
 /**
@@ -616,20 +954,41 @@ const RABBITMQ: ServiceSpec = {
   address: (ctx) => loginUrl(ctx, "amqp", 5672, "/%2F"),
   conventionalVariables: (_ctx, url) => ({ AMQP_URL: url, RABBITMQ_URL: url }),
   targets: BOTH_TARGETS,
+  // RABBITMQ_DEFAULT_PASS is read on the first boot only; rabbitmqctl takes the value only as an
+  // argument (R10) and logs in with the node's cookie.
+  rotation: {
+    secrets: [swap(PASSWORD.name, 3, () => [sh(`rabbitmqctl change_password app ${NEW}`)])],
+  },
 };
+
+/** Where NATS's container keeps the token, in the folder of its settings (the include's root). */
+const NATS_TOKEN_FILE = "/etc/nats/opscrew-token.conf";
+
+/**
+ * A subshell that writes the token in the variable `variable` to `file` as the settings variable
+ * `NATS_TOKEN`, readable by the container's root only.
+ */
+function natsTokenFile(variable: string, file: string): string {
+  return `(umask 077 && printf 'NATS_TOKEN: "%s"\\n' "$${variable}" > ${file})`;
+}
 
 /**
  * NATS's settings, always mounted: the image's default carries a hard-coded cluster password
  * (research "Spike results" 9). Token login, JetStream on the data volume, and monitoring (for
- * the health check) on the container's loopback only.
+ * the health check) on the container's loopback only. The token is the settings variable of
+ * {@link NATS_TOKEN_FILE}, included first, which wins over the env var of the same name: the
+ * container writes it from its env at its first start, and a rotation rewrites it and reloads
+ * (research R10).
  */
 function natsConf(plan: DeployPlan, memoryMb: number): string {
   return [
     ...header(plan, "#", `NATS settings for its ${memoryMb} MB memory limit.`),
     "port: 4222",
     'http: "127.0.0.1:8222"',
+    "# NATS_TOKEN: the container writes it from its environment at its first start, and a",
+    "# credential rotation rewrites it.",
+    "include ./opscrew-token.conf",
     "authorization {",
-    "  # From the service's environment.",
     "  token: $NATS_TOKEN",
     "}",
     "jetstream {",
@@ -657,13 +1016,31 @@ const NATS: ServiceSpec = {
   configFiles: (ctx) => [
     { name: "nats.conf", target: NATS_CONF, content: natsConf(ctx.plan, ctx.service.memoryMb) },
   ],
-  command: () => ["nats-server", "--config", NATS_CONF],
+  // The token's file first, only when the container has none yet: a restart keeps a rotated token.
+  command: () => [
+    "sh",
+    "-c",
+    `[ -f ${NATS_TOKEN_FILE} ] || ${natsTokenFile("NATS_TOKEN", NATS_TOKEN_FILE)} && exec nats-server --config ${NATS_CONF}`,
+  ],
   environment: (ctx) => ({ NATS_TOKEN: ctx.secretRef("token") }),
   healthcheck: () => ({ test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:8222/healthz"] }),
   secrets: [{ name: "token", format: "hex32" }],
   address: (ctx) => `nats://${ctx.secretRef("token")}@${serviceHost(ctx)}:4222`,
   conventionalVariables: (_ctx, url) => ({ NATS_URL: url }),
   targets: BOTH_TARGETS,
+  // One token: the reload applies the new one at once and closes the clients of the old (R10).
+  rotation: {
+    secrets: [
+      {
+        ...swap("token", 1, () => [
+          sh(
+            `${natsTokenFile("OPSCREW_NEW", `${NATS_TOKEN_FILE}.new`)} && mv -f ${NATS_TOKEN_FILE}.new ${NATS_TOKEN_FILE} && nats-server --signal reload=1`,
+          ),
+        ]),
+        closesConnections: true,
+      },
+    ],
+  },
 };
 
 /** The user of Kafka's and Redpanda's login, and its mechanism (research R8). */
@@ -773,16 +1150,26 @@ export function kafkaTool(name: string): string {
 const KAFKA_USER_CONFIGS = `${kafkaTool("kafka-configs")} --bootstrap-server localhost:9094`;
 const KAFKA_USER_ENTITY = `--entity-type users --entity-name ${BROKER_USER}`;
 
+/** `kafka-configs.sh` setting the login's password `password` (a shell word inside quotes). */
+function kafkaSetPassword(password: string): string {
+  return `${KAFKA_USER_CONFIGS} --alter --add-config "${SCRAM}=[password=${password}]" ${KAFKA_USER_ENTITY}`;
+}
+
 /**
  * With the login, the container adds its own user before the broker serves anyone (research R8):
- * a background loop sets the user's password on the loopback listener until the broker answers
- * (harmless at every start, and on a broker that already holds data), then the image's own start
+ * the password from the env into {@link PASSWORD_FILE} at its first start only, then a background
+ * loop sets the user's password from that file on the loopback listener until the broker answers
+ * (harmless at every start, and on a broker that already holds data), and the image's own start
  * runs as PID 1. Without it, the image's own command.
  */
 function kafkaCommand(ctx: ServiceContext): string[] | undefined {
   if (!hasLogin(ctx.service)) return undefined;
-  const add = `${KAFKA_USER_CONFIGS} --alter --add-config "${SCRAM}=[password=$SASL_PASSWORD]" ${KAFKA_USER_ENTITY}`;
-  return ["sh", "-c", `(until ${add}; do sleep 2; done) & exec /etc/kafka/docker/run`];
+  const add = kafkaSetPassword(`$(cat ${PASSWORD_FILE})`);
+  return [
+    "sh",
+    "-c",
+    `${keepFile("SASL_PASSWORD")}; (until ${add}; do sleep 2; done) & exec /etc/kafka/docker/run`,
+  ];
 }
 
 const KAFKA: ServiceSpec = {
@@ -822,6 +1209,16 @@ const KAFKA: ServiceSpec = {
   secrets: [PASSWORD],
   ...BROKER_VARIABLES,
   targets: BOTH_TARGETS,
+  // One credential per mechanism, set on the loopback listener; kafka-configs takes it only as an
+  // argument (R10). The start loop sets the container's current one, which `begin` rewrites.
+  // Without the login, nothing runs.
+  rotation: {
+    secrets: [
+      swap(PASSWORD.name, 3, (ctx) =>
+        hasLogin(ctx.service) ? [sh(`${kafkaSetPassword("$OPSCREW_NEW")} && ${newFile()}`)] : [],
+      ),
+    ],
+  },
 };
 
 /** Redpanda's admin API answers this without a login, also once it asks for one (research R8). */
@@ -872,17 +1269,18 @@ function redpandaStart(ctx: ServiceContext): string[] {
 }
 
 /**
- * Redpanda's start. With the login, a shell ({@link REDPANDA.entrypoint}) repeats
- * {@link REDPANDA_LOGIN} in the background until it passes (harmless at every start, and on a
- * cluster that already holds data), then runs the image's own start, on loopback but for 9092 and
- * 9644, as PID 1.
+ * Redpanda's start. With the login, a shell ({@link REDPANDA.entrypoint}) takes the password from
+ * the env into {@link PASSWORD_FILE} at the container's first start only and gives `rpk` that
+ * file's (`RPK_PASS`), repeats {@link REDPANDA_LOGIN} in the background until it passes (harmless at
+ * every start, and on a cluster that already holds data), then runs the image's own start, on
+ * loopback but for 9092 and 9644, as PID 1.
  */
 function redpandaCommand(ctx: ServiceContext): string[] {
   const start = redpandaStart(ctx);
   if (!hasLogin(ctx.service)) return start;
   const run = [...start, ...REDPANDA_LOOPBACK].map(shellWord).join(" ");
   return [
-    `login() { ${REDPANDA_LOGIN}; }; (until login; do sleep 2; done) & exec /entrypoint.sh ${run}`,
+    `${keepFile("RPK_PASS")}; export RPK_PASS=${current()}; login() { ${REDPANDA_LOGIN}; }; (until login; do sleep 2; done) & exec /entrypoint.sh ${run}`,
   ];
 }
 
@@ -911,12 +1309,13 @@ const REDPANDA: ServiceSpec = {
     hasLogin(ctx.service)
       ? { RPK_USER: BROKER_USER, RPK_PASS: ctx.secretRef(PASSWORD.name), RPK_SASL_MECHANISM: SCRAM }
       : {},
-  // With the login, healthy only once the admin API asks for it, which comes last.
+  // With the login, healthy only once the admin API asks for it, which comes last; rpk logs in with
+  // the container's current password.
   healthcheck: (ctx) => ({
     test: hasLogin(ctx.service)
       ? [
           "CMD-SHELL",
-          `curl -fsS ${REDPANDA_READY} > /dev/null && rpk cluster config get admin_api_require_auth | grep -qx true`,
+          `curl -fsS ${REDPANDA_READY} > /dev/null && RPK_PASS=${current()} rpk cluster config get admin_api_require_auth | grep -qx true`,
         ]
       : ["CMD", "curl", "-fsS", REDPANDA_READY],
     startSeconds: 30,
@@ -925,6 +1324,22 @@ const REDPANDA: ServiceSpec = {
   secrets: [PASSWORD],
   ...BROKER_VARIABLES,
   targets: BOTH_TARGETS,
+  // `rpk` logs in with the old password and takes the new one only as an argument (R10); the start
+  // loop, rpk and the health check then read the container's current one, which `begin` rewrites.
+  // Without the login, nothing runs.
+  rotation: {
+    secrets: [
+      swap(PASSWORD.name, 2, (ctx) =>
+        hasLogin(ctx.service)
+          ? [
+              sh(
+                `${unlessDone(`RPK_PASS=${NEW} rpk security user list`, `RPK_PASS=${OLD} rpk security user update ${BROKER_USER} --new-password ${NEW} --mechanism ${SCRAM}`)} && ${newFile()}`,
+              ),
+            ]
+          : [],
+      ),
+    ],
+  },
 };
 
 /** Garage on one node, without replication; its RPC secret is `GARAGE_RPC_SECRET`. */
@@ -954,6 +1369,70 @@ function garageToml(ctx: ServiceContext): string {
 function garageBucket(ctx: ServiceContext): string | undefined {
   const storage = ctx.plan.storage?.objectStorage;
   return storage?.provider === "garage" ? storage.bucket : undefined;
+}
+
+/** The name Garage's start gives the key it makes from the env (`--default-access-key`). */
+const GARAGE_KEY_NAME = "default access key";
+
+/** The name a rotation gives the old key until it deletes it. */
+const GARAGE_OLD_KEY_NAME = "opscrew-previous";
+
+/**
+ * Garage's key (research R3, R10). Its image has no shell, and `garage key import` takes the key
+ * only as arguments, so no command gives it: `begin` renames the key in use, the service's start
+ * (created again from the new env) makes the new key and allows it on the plan's bucket beside the
+ * old one, and `finish` deletes the old key by its name. Where the plan keeps no bucket there, the
+ * app makes its own buckets with its key, which a new key could not reach: refused. Every step is
+ * guarded, so it works run again and wherever the rotation stopped: `begin` renames only while no
+ * key has the old key's new name; `finish` deletes the old key only while a key has the name the
+ * start gives the new one (a start from an env still naming the old key makes none); `undo` acts
+ * only once the old key is renamed, deleting the new key if the start made it and giving the old
+ * one its name back. None deletes the key in use.
+ */
+const GARAGE_KEY: SecretRotation = {
+  secrets: ["key-id", "secret-key"],
+  mode: "dual",
+  seconds: 2,
+  recreate: true,
+  begin: (ctx) => {
+    if (garageBucket(ctx) === undefined) {
+      const file = planFilePath(ctx.plan);
+      throw new OpsCrewError(
+        "INVALID_INPUT",
+        `OpsCrew can't rotate the key of the Garage service ${ctx.service.name}: the app makes its own buckets with that key (${file} keeps no bucket there), and a new key could not reach them.`,
+        {
+          hint: `Keep the app's files in a Garage bucket of ${file} (storage.objectStorage with the provider garage), then run the command again.`,
+        },
+      );
+    }
+    return [
+      {
+        unless: [garageKeyExists(GARAGE_OLD_KEY_NAME)],
+        run: ["/garage", "key", "rename", GARAGE_KEY_NAME, GARAGE_OLD_KEY_NAME],
+      },
+    ];
+  },
+  finish: () => [
+    {
+      when: [garageKeyExists(GARAGE_OLD_KEY_NAME), garageKeyExists(GARAGE_KEY_NAME)],
+      run: ["/garage", "key", "delete", "--yes", GARAGE_OLD_KEY_NAME],
+    },
+  ],
+  undo: () => [
+    {
+      when: [garageKeyExists(GARAGE_OLD_KEY_NAME), garageKeyExists(GARAGE_KEY_NAME)],
+      run: ["/garage", "key", "delete", "--yes", GARAGE_KEY_NAME],
+    },
+    {
+      when: [garageKeyExists(GARAGE_OLD_KEY_NAME)],
+      run: ["/garage", "key", "rename", GARAGE_OLD_KEY_NAME, GARAGE_KEY_NAME],
+    },
+  ],
+};
+
+/** Passes when Garage holds a key named `name`. */
+function garageKeyExists(name: string): RotationCommand {
+  return ["/garage", "key", "info", name];
 }
 
 const GARAGE: ServiceSpec = {
@@ -1007,6 +1486,8 @@ const GARAGE: ServiceSpec = {
     AWS_ENDPOINT_URL_S3: endpoint,
   }),
   targets: BOTH_TARGETS,
+  // The RPC secret is read at every start: only a restart changes it.
+  rotation: { secrets: [GARAGE_KEY, restart("rpc-secret", 2)] },
 };
 
 // Part 2: the search and analytics engines (research.md R5). Each runs as one node, with its
@@ -1038,6 +1519,45 @@ function bashHttpCheck(port: number, path: string): string[] {
 /** The cluster's health, yellow being the best one node gets for an index with replicas. */
 const CLUSTER_HEALTH = "localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s";
 
+/**
+ * A password change through OpenSearch's or Elasticsearch's REST API (research R10): the JSON
+ * `body` (a printf format filled with `values`) on stdin, sent with `method` to `path` as `user`,
+ * logged in with the old password from a curl config on a pipe, unless the new one logs in
+ * already; then the new one is the container's current one, which the health check reads
+ * ({@link searchHealthcheck}). The env password seeds the first start only. curl waits out the
+ * engine's passing 503 (Elasticsearch makes its security index at the first change), never a 401.
+ */
+function passwordApi(
+  user: string,
+  method: string,
+  path: string,
+  body: string,
+  ...values: string[]
+): RotationCommand {
+  const as = (value: string) =>
+    `curl -fsS --retry 5 --retry-delay 2 -o /dev/null --config <(printf 'user = "${user}:%s"\\n' ${value})`;
+  const change = [
+    `printf '${body}'`,
+    ...values,
+    `| ${as(OLD)} -X ${method} -H 'Content-Type: application/json' --data-binary @- http://localhost:9200${path}`,
+  ].join(" ");
+  return bash(`${unlessDone(`${as(NEW)} http://localhost:9200/`, change)} && ${newFile()}`);
+}
+
+/**
+ * The cluster's health as `user`, with the container's current password in a curl config on
+ * stdin (not on curl's command line).
+ */
+function searchHealthcheck(user: string): ServiceHealthcheck {
+  return {
+    test: [
+      "CMD-SHELL",
+      `printf 'user = "${user}:%s"\\n' ${current()} | curl -fsS -K - '${CLUSTER_HEALTH}' > /dev/null`,
+    ],
+    startSeconds: 90,
+  };
+}
+
 /** OpenSearch's transport keystore in its config folder, with the JDK's default password. */
 const OPENSEARCH_KEYSTORE = "node.p12";
 
@@ -1045,7 +1565,8 @@ const OPENSEARCH_KEYSTORE = "node.p12";
  * OpenSearch's security plugin as research R8 ran it, from the image's folder:
  * - the transport layer needs TLS even on one node. When the container has none yet, the JDK's
  *   keytool makes one self-signed key that trusts itself; it never leaves the container;
- * - `internal_users.yml` then holds only `admin`, with the bcrypt hash of `OPENSEARCH_PASSWORD` and
+ * - the password from the env into {@link PASSWORD_FILE} at the container's first start only;
+ * - `internal_users.yml` then holds only `admin`, with the bcrypt hash of that password and
  *   `reserved: false`. The image's own lets in `admin:admin`. It is read only when the security
  *   index is first made, so writing it at every start changes nothing after that;
  * - then the image's own start.
@@ -1066,7 +1587,8 @@ function opensearchCommand(): string[] {
   const script = [
     "set -e",
     `[ -f ${keystore} ] || { k="keytool -keystore ${keystore} -storepass changeit"; $k -genkeypair -alias node -keyalg RSA -keysize 2048 -dname CN=opensearch -validity 36500; $k -exportcert -alias node -rfc | $k -importcert -noprompt -alias trusted; }`,
-    "h=$(plugins/opensearch-security/tools/hash.sh -env OPENSEARCH_PASSWORD)",
+    keepFile("OPENSEARCH_PASSWORD"),
+    `h=$(OPENSEARCH_PASSWORD=${current()} plugins/opensearch-security/tools/hash.sh -env OPENSEARCH_PASSWORD)`,
     `printf '${users}' "$h" > config/opensearch-security/internal_users.yml`,
     "exec ./opensearch-docker-entrypoint.sh opensearch",
   ];
@@ -1099,13 +1621,7 @@ const OPENSEARCH: ServiceSpec = {
     OPENSEARCH_JAVA_OPTS: halfHeap(ctx),
     OPENSEARCH_PASSWORD: ctx.secretRef(PASSWORD.name),
   }),
-  healthcheck: () => ({
-    test: [
-      "CMD-SHELL",
-      `curl -fsS -u "admin:$OPENSEARCH_PASSWORD" '${CLUSTER_HEALTH}' > /dev/null`,
-    ],
-    startSeconds: 90,
-  }),
+  healthcheck: () => searchHealthcheck("admin"),
   secrets: [PASSWORD],
   // opensearch-js and opensearch-py take the login in the URL.
   address: (ctx) => `http://admin:${ctx.secretRef(PASSWORD.name)}@${serviceHost(ctx)}:9200`,
@@ -1113,6 +1629,21 @@ const OPENSEARCH: ServiceSpec = {
   ulimits: { nofile: 65536 },
   hostSettings: MAX_MAP_COUNT,
   targets: ["server"],
+  // The account API: the internal users API is forbidden to `admin` (R10).
+  rotation: {
+    secrets: [
+      swap(PASSWORD.name, 1, () => [
+        passwordApi(
+          "admin",
+          "PUT",
+          "/_plugins/_security/api/account",
+          '{"current_password":"%s","password":"%s"}',
+          OLD,
+          NEW,
+        ),
+      ]),
+    ],
+  },
 };
 
 /**
@@ -1136,6 +1667,13 @@ const ELASTICSEARCH: ServiceSpec = {
   dataDir: "/usr/share/elasticsearch/data",
   // It runs as uid 1000.
   namedVolume: true,
+  // The password from the env into PASSWORD_FILE at the container's first start only (its health
+  // check reads it there, and a rotation rewrites it), then the image's own start.
+  command: () => [
+    "sh",
+    "-c",
+    `${keepFile("ELASTIC_PASSWORD")} && exec /usr/local/bin/docker-entrypoint.sh eswrapper`,
+  ],
   environment: (ctx) => ({
     "discovery.type": "single-node",
     "xpack.security.enabled": "true",
@@ -1145,16 +1683,26 @@ const ELASTICSEARCH: ServiceSpec = {
     ELASTIC_PASSWORD: ctx.secretRef(PASSWORD.name),
     ES_JAVA_OPTS: halfHeap(ctx),
   }),
-  healthcheck: () => ({
-    test: ["CMD-SHELL", `curl -fsS -u "elastic:$ELASTIC_PASSWORD" '${CLUSTER_HEALTH}' > /dev/null`],
-    startSeconds: 90,
-  }),
+  healthcheck: () => searchHealthcheck("elastic"),
   secrets: [PASSWORD],
   address: (ctx) => `http://elastic:${ctx.secretRef(PASSWORD.name)}@${serviceHost(ctx)}:9200`,
   conventionalVariables: (_ctx, url) => ({ ELASTICSEARCH_URL: url }),
   ulimits: { nofile: 65536 },
   hostSettings: MAX_MAP_COUNT,
   targets: ["server"],
+  rotation: {
+    secrets: [
+      swap(PASSWORD.name, 1, () => [
+        passwordApi(
+          "elastic",
+          "POST",
+          "/_security/user/elastic/_password",
+          '{"password":"%s"}',
+          NEW,
+        ),
+      ]),
+    ],
+  },
 };
 
 /**
@@ -1188,6 +1736,8 @@ const MEILISEARCH: ServiceSpec = {
     MEILISEARCH_KEY: ctx.secretRef("master-key"),
   }),
   targets: BOTH_TARGETS,
+  // The master key is read at every start, and every API key made from it changes with it (R4).
+  rotation: { secrets: [restart("master-key", 5)] },
 };
 
 /** Typesense, with its API key; it keeps its index in memory (1M short documents: about 165 MB). */
@@ -1220,6 +1770,9 @@ const TYPESENSE: ServiceSpec = {
     TYPESENSE_API_KEY: ctx.secretRef("api-key"),
   }),
   targets: BOTH_TARGETS,
+  // The app reaches it with the start key, which changes only with a restart (R4, R10); the start
+  // loads the index into memory, so a large one takes longer.
+  rotation: { secrets: [restart("api-key", 10)] },
 };
 
 /**
@@ -1272,6 +1825,32 @@ function clickhouseUsersXml(plan: DeployPlan): string {
   ].join("\n");
 }
 
+/**
+ * The app's ClickHouse user, in a `users.d` file of the container's own beside OpsCrew's mounted
+ * one (whose content holds no value). The image's entrypoint would write the user from the env at
+ * every start, and a user from its file can't be changed by SQL (research R2, R10); a file edited
+ * in place applies in about 2 seconds.
+ */
+const CLICKHOUSE_APP_USER = "/etc/clickhouse-server/users.d/opscrew-app.xml";
+
+/**
+ * A subshell that writes the app's user `app` to `file`, readable by the server's user only, with
+ * the SHA-256 of the password in the variable `variable` (never the password itself), as the
+ * image's own file has it: every network, the default profile and quota, no user management, and
+ * no `default` user.
+ */
+function clickhouseUserFile(variable: string, file: string): string {
+  const xml = [
+    "<clickhouse><users>",
+    '<default remove="remove"></default>',
+    "<app><profile>default</profile><networks><ip>::/0</ip></networks>",
+    "<password_sha256_hex>%s</password_sha256_hex>",
+    "<quota>default</quota><access_management>0</access_management></app>",
+    "</users></clickhouse>",
+  ].join("");
+  return `(umask 077 && h=$(printf %s "$${variable}" | sha256sum | cut -d " " -f 1) && printf '${xml}\\n' "$h" > ${file} && chown clickhouse:clickhouse ${file})`;
+}
+
 const CLICKHOUSE: ServiceSpec = {
   kind: "clickhouse",
   title: "ClickHouse",
@@ -1295,7 +1874,14 @@ const CLICKHOUSE: ServiceSpec = {
       content: clickhouseUsersXml(ctx.plan),
     },
   ],
-  // With these set, the `default` user has no network access.
+  // The app's user from the env at the container's first start only, then the image's own start
+  // (which makes the database `app` on a new volume, logged in as that user) without its user
+  // setup: a restart keeps a rotated password.
+  command: () => [
+    "bash",
+    "-c",
+    `[ -f ${CLICKHOUSE_APP_USER} ] || ${clickhouseUserFile("CLICKHOUSE_PASSWORD", CLICKHOUSE_APP_USER)} && CLICKHOUSE_SKIP_USER_SETUP=1 exec /entrypoint.sh`,
+  ],
   environment: (ctx) => ({
     CLICKHOUSE_DB: "app",
     CLICKHOUSE_USER: "app",
@@ -1310,6 +1896,17 @@ const CLICKHOUSE: ServiceSpec = {
     CLICKHOUSE_PASSWORD: ctx.secretRef(PASSWORD.name),
   }),
   targets: BOTH_TARGETS,
+  // The user's file rewritten in place (a name ClickHouse doesn't read first, then moved), then
+  // waited for until the new password logs in: clickhouse-client reads it from its env.
+  rotation: {
+    secrets: [
+      swap(PASSWORD.name, 2, () => [
+        bash(
+          `${clickhouseUserFile("OPSCREW_NEW", `${CLICKHOUSE_APP_USER}.tmp`)} && mv -f ${CLICKHOUSE_APP_USER}.tmp ${CLICKHOUSE_APP_USER} && for i in $(seq 40); do CLICKHOUSE_PASSWORD=${NEW} clickhouse-client -u app -q 'SELECT 1' > /dev/null 2>&1 && exit 0; sleep 0.25; done; exit 1`,
+        ),
+      ]),
+    ],
+  },
 };
 
 /**
@@ -1353,6 +1950,23 @@ const NEO4J: ServiceSpec = {
     NEO4J_PASSWORD: ctx.secretRef(PASSWORD.name),
   }),
   targets: BOTH_TARGETS,
+  // NEO4J_AUTH is ignored once users exist; cypher-shell takes the login only as an argument (R10).
+  rotation: {
+    secrets: [
+      swap(PASSWORD.name, 3, () => {
+        const shell = (value: string) =>
+          `cypher-shell -u neo4j -p ${value} -d system --format plain`;
+        return [
+          bash(
+            unlessDone(
+              `printf 'RETURN 1;\\n' | ${shell(NEW)}`,
+              `printf "ALTER USER neo4j SET PASSWORD '%s' CHANGE NOT REQUIRED;\\n" ${NEW} | ${shell(OLD)}`,
+            ),
+          ),
+        ];
+      }),
+    ],
+  },
 };
 
 /** The service catalog's entries: one per kind OpsCrew runs. */

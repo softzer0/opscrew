@@ -392,7 +392,7 @@ services:
     command:
       - sh
       - -c
-      - rm -f /tmp/opscrew-auth.conf && umask 077 && printf 'requirepass %s\\n' "$$VALKEY_PASSWORD" > /tmp/opscrew-auth.conf && chown valkey:valkey /tmp/opscrew-auth.conf && exec docker-entrypoint.sh valkey-server /tmp/opscrew-auth.conf --save '' --appendonly no --maxmemory 96mb --maxmemory-policy allkeys-lru
+      - "umask 077 && { [ -f /tmp/opscrew-users.acl ] || { { h=$$(printf %s \\"$$VALKEY_PASSWORD\\" | sha256sum | cut -d ' ' -f 1); printf 'user %s on #%s %s\\\\n' default \\"$$h\\" '~* &* +@all'; printf '%s\\\\n' \\"$$OPSCREW_ACL_USERS\\" | while IFS=: read -r name access hash; do case \\"$$access\\" in read-only) rules='~* &* +@read +ping +hello +client|setname +client|setinfo -@write' ;; full) rules='~* &* +@all -@admin' ;; *) continue ;; esac; printf 'user %s on #%s %s\\\\n' \\"$$name\\" \\"$$hash\\" \\"$$rules\\"; done; } > /tmp/opscrew-users.acl && chown valkey:valkey /tmp/opscrew-users.acl; }; } && { [ -f /tmp/opscrew-password ] || (umask 077 && printf %s \\"$$VALKEY_PASSWORD\\" > /tmp/opscrew-password); } && exec docker-entrypoint.sh valkey-server --aclfile /tmp/opscrew-users.acl --save '' --appendonly no --maxmemory 96mb --maxmemory-policy allkeys-lru"
     environment:
       VALKEY_PASSWORD: \${OPSCREW_SVC_CACHE_PASSWORD}
     volumes:
@@ -400,7 +400,7 @@ services:
     healthcheck:
       test:
         - CMD-SHELL
-        - REDISCLI_AUTH="$$VALKEY_PASSWORD" valkey-cli ping | grep -q PONG
+        - REDISCLI_AUTH="$$(cat /tmp/opscrew-password)" valkey-cli ping | grep -q PONG
       interval: 10s
       timeout: 5s
       retries: 6
@@ -760,6 +760,10 @@ services:
   mysql:
     image: <pin:IMAGES.mysql>
     restart: unless-stopped
+    command:
+      - sh
+      - -c
+      - '{ [ -f /tmp/opscrew-root-password ] || (umask 077 && printf %s "$$MYSQL_ROOT_PASSWORD" > /tmp/opscrew-root-password); } && exec docker-entrypoint.sh mysqld'
     environment:
       MYSQL_DATABASE: app
       MYSQL_USER: app
@@ -1198,6 +1202,10 @@ services:
   mysql:
     image: <pin:IMAGES.mysql>
     restart: unless-stopped
+    command:
+      - sh
+      - -c
+      - '{ [ -f /tmp/opscrew-root-password ] || (umask 077 && printf %s "$$MYSQL_ROOT_PASSWORD" > /tmp/opscrew-root-password); } && exec docker-entrypoint.sh mysqld'
     environment:
       MYSQL_DATABASE: app
       MYSQL_USER: app

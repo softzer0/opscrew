@@ -139,6 +139,10 @@ services:
   mysql:
     image: <pin:IMAGES.mysql>
     restart: unless-stopped
+    command:
+      - sh
+      - -c
+      - '{ [ -f /tmp/opscrew-root-password ] || (umask 077 && printf %s "$$MYSQL_ROOT_PASSWORD" > /tmp/opscrew-root-password); } && exec docker-entrypoint.sh mysqld'
     env_file:
       - mysql.env
     volumes:
@@ -235,7 +239,7 @@ services:
     command:
       - sh
       - -c
-      - (until KAFKA_HEAP_OPTS=-Xmx64m /opt/kafka/bin/kafka-configs.sh --bootstrap-server localhost:9094 --alter --add-config "SCRAM-SHA-512=[password=$$SASL_PASSWORD]" --entity-type users --entity-name app; do sleep 2; done) & exec /etc/kafka/docker/run
+      - '{ [ -f /tmp/opscrew-password ] || (umask 077 && printf %s "$$SASL_PASSWORD" > /tmp/opscrew-password); }; (until KAFKA_HEAP_OPTS=-Xmx64m /opt/kafka/bin/kafka-configs.sh --bootstrap-server localhost:9094 --alter --add-config "SCRAM-SHA-512=[password=$$(cat /tmp/opscrew-password)]" --entity-type users --entity-name app; do sleep 2; done) & exec /etc/kafka/docker/run'
     env_file:
       - kafka.env
     volumes:
@@ -267,7 +271,7 @@ services:
       - sh
       - -c
     command:
-      - login() { { rpk security user create app -p "$$RPK_PASS" --mechanism SCRAM-SHA-512 || rpk security user update app --new-password "$$RPK_PASS" --mechanism SCRAM-SHA-512; } && rpk cluster config set superusers '["app"]' && rpk cluster config set enable_sasl true && rpk cluster config set admin_api_require_auth true; }; (until login; do sleep 2; done) & exec /entrypoint.sh redpanda start --smp 1 --memory 1024M --reserve-memory 0M --overprovisioned --kafka-addr 0.0.0.0:9092 --advertise-kafka-addr redpanda:9092 --rpc-addr 127.0.0.1:33145 --schema-registry-addr 127.0.0.1:8081 --pandaproxy-addr 127.0.0.1:8082
+      - "{ [ -f /tmp/opscrew-password ] || (umask 077 && printf %s \\"$$RPK_PASS\\" > /tmp/opscrew-password); }; export RPK_PASS=\\"$$(cat /tmp/opscrew-password)\\"; login() { { rpk security user create app -p \\"$$RPK_PASS\\" --mechanism SCRAM-SHA-512 || rpk security user update app --new-password \\"$$RPK_PASS\\" --mechanism SCRAM-SHA-512; } && rpk cluster config set superusers '[\\"app\\"]' && rpk cluster config set enable_sasl true && rpk cluster config set admin_api_require_auth true; }; (until login; do sleep 2; done) & exec /entrypoint.sh redpanda start --smp 1 --memory 1024M --reserve-memory 0M --overprovisioned --kafka-addr 0.0.0.0:9092 --advertise-kafka-addr redpanda:9092 --rpc-addr 127.0.0.1:33145 --schema-registry-addr 127.0.0.1:8081 --pandaproxy-addr 127.0.0.1:8082"
     env_file:
       - redpanda.env
     volumes:
@@ -275,7 +279,7 @@ services:
     healthcheck:
       test:
         - CMD-SHELL
-        - curl -fsS http://localhost:9644/v1/status/ready > /dev/null && rpk cluster config get admin_api_require_auth | grep -qx true
+        - curl -fsS http://localhost:9644/v1/status/ready > /dev/null && RPK_PASS="$$(cat /tmp/opscrew-password)" rpk cluster config get admin_api_require_auth | grep -qx true
       interval: 10s
       timeout: 5s
       retries: 6
@@ -296,7 +300,7 @@ services:
     command:
       - bash
       - -c
-      - "set -e; [ -f config/node.p12 ] || { k=\\"keytool -keystore config/node.p12 -storepass changeit\\"; $$k -genkeypair -alias node -keyalg RSA -keysize 2048 -dname CN=opensearch -validity 36500; $$k -exportcert -alias node -rfc | $$k -importcert -noprompt -alias trusted; }; h=$$(plugins/opensearch-security/tools/hash.sh -env OPENSEARCH_PASSWORD); printf '_meta:\\\\n  type: \\"internalusers\\"\\\\n  config_version: 2\\\\nadmin:\\\\n  hash: \\"%s\\"\\\\n  reserved: false\\\\n  backend_roles:\\\\n  - \\"admin\\"\\\\n' \\"$$h\\" > config/opensearch-security/internal_users.yml; exec ./opensearch-docker-entrypoint.sh opensearch"
+      - "set -e; [ -f config/node.p12 ] || { k=\\"keytool -keystore config/node.p12 -storepass changeit\\"; $$k -genkeypair -alias node -keyalg RSA -keysize 2048 -dname CN=opensearch -validity 36500; $$k -exportcert -alias node -rfc | $$k -importcert -noprompt -alias trusted; }; { [ -f /tmp/opscrew-password ] || (umask 077 && printf %s \\"$$OPENSEARCH_PASSWORD\\" > /tmp/opscrew-password); }; h=$$(OPENSEARCH_PASSWORD=\\"$$(cat /tmp/opscrew-password)\\" plugins/opensearch-security/tools/hash.sh -env OPENSEARCH_PASSWORD); printf '_meta:\\\\n  type: \\"internalusers\\"\\\\n  config_version: 2\\\\nadmin:\\\\n  hash: \\"%s\\"\\\\n  reserved: false\\\\n  backend_roles:\\\\n  - \\"admin\\"\\\\n' \\"$$h\\" > config/opensearch-security/internal_users.yml; exec ./opensearch-docker-entrypoint.sh opensearch"
     env_file:
       - opensearch.env
     volumes:
@@ -304,7 +308,7 @@ services:
     healthcheck:
       test:
         - CMD-SHELL
-        - curl -fsS -u "admin:$$OPENSEARCH_PASSWORD" 'localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s' > /dev/null
+        - printf 'user = "admin:%s"\\n' "$$(cat /tmp/opscrew-password)" | curl -fsS -K - 'localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s' > /dev/null
       interval: 10s
       timeout: 5s
       retries: 6
@@ -398,7 +402,7 @@ services:
     command:
       - bash
       - -c
-      - "set -e; [ -f config/node.p12 ] || { k=\\"keytool -keystore config/node.p12 -storepass changeit\\"; $$k -genkeypair -alias node -keyalg RSA -keysize 2048 -dname CN=opensearch -validity 36500; $$k -exportcert -alias node -rfc | $$k -importcert -noprompt -alias trusted; }; h=$$(plugins/opensearch-security/tools/hash.sh -env OPENSEARCH_PASSWORD); printf '_meta:\\\\n  type: \\"internalusers\\"\\\\n  config_version: 2\\\\nadmin:\\\\n  hash: \\"%s\\"\\\\n  reserved: false\\\\n  backend_roles:\\\\n  - \\"admin\\"\\\\n' \\"$$h\\" > config/opensearch-security/internal_users.yml; exec ./opensearch-docker-entrypoint.sh opensearch"
+      - "set -e; [ -f config/node.p12 ] || { k=\\"keytool -keystore config/node.p12 -storepass changeit\\"; $$k -genkeypair -alias node -keyalg RSA -keysize 2048 -dname CN=opensearch -validity 36500; $$k -exportcert -alias node -rfc | $$k -importcert -noprompt -alias trusted; }; { [ -f /tmp/opscrew-password ] || (umask 077 && printf %s \\"$$OPENSEARCH_PASSWORD\\" > /tmp/opscrew-password); }; h=$$(OPENSEARCH_PASSWORD=\\"$$(cat /tmp/opscrew-password)\\" plugins/opensearch-security/tools/hash.sh -env OPENSEARCH_PASSWORD); printf '_meta:\\\\n  type: \\"internalusers\\"\\\\n  config_version: 2\\\\nadmin:\\\\n  hash: \\"%s\\"\\\\n  reserved: false\\\\n  backend_roles:\\\\n  - \\"admin\\"\\\\n' \\"$$h\\" > config/opensearch-security/internal_users.yml; exec ./opensearch-docker-entrypoint.sh opensearch"
     env_file:
       - opensearch.env
     volumes:
@@ -406,7 +410,7 @@ services:
     healthcheck:
       test:
         - CMD-SHELL
-        - curl -fsS -u "admin:$$OPENSEARCH_PASSWORD" 'localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s' > /dev/null
+        - printf 'user = "admin:%s"\\n' "$$(cat /tmp/opscrew-password)" | curl -fsS -K - 'localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s' > /dev/null
       interval: 10s
       timeout: 5s
       retries: 6
@@ -431,6 +435,10 @@ services:
   elasticsearch:
     image: <pin:IMAGES.elasticsearch>
     restart: unless-stopped
+    command:
+      - sh
+      - -c
+      - '{ [ -f /tmp/opscrew-password ] || (umask 077 && printf %s "$$ELASTIC_PASSWORD" > /tmp/opscrew-password); } && exec /usr/local/bin/docker-entrypoint.sh eswrapper'
     env_file:
       - elasticsearch.env
     volumes:
@@ -438,7 +446,7 @@ services:
     healthcheck:
       test:
         - CMD-SHELL
-        - curl -fsS -u "elastic:$$ELASTIC_PASSWORD" 'localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s' > /dev/null
+        - printf 'user = "elastic:%s"\\n' "$$(cat /tmp/opscrew-password)" | curl -fsS -K - 'localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s' > /dev/null
       interval: 10s
       timeout: 5s
       retries: 6
@@ -645,6 +653,10 @@ services:
   mysql:
     image: <pin:IMAGES.mysql>
     restart: unless-stopped
+    command:
+      - sh
+      - -c
+      - '{ [ -f /tmp/opscrew-root-password ] || (umask 077 && printf %s "$$MYSQL_ROOT_PASSWORD" > /tmp/opscrew-root-password); } && exec docker-entrypoint.sh mysqld'
     env_file:
       - mysql.env
     volumes:

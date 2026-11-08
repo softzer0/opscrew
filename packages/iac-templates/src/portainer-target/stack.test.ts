@@ -823,7 +823,10 @@ describe("one-time setup and host settings in a stack", () => {
     const content = renderPortainerStack(plan, ctx).content;
     const { kafka, redpanda, app } = stack(content).services;
     expect(kafka?.environment?.SASL_PASSWORD).toBe("${OPSCREW_SVC_KAFKA_PASSWORD}");
-    expect(kafka?.command?.[2]).toContain('"SCRAM-SHA-512=[password=$$SASL_PASSWORD]"');
+    expect(kafka?.command?.[2]).toContain('printf %s "$$SASL_PASSWORD" > /tmp/opscrew-password');
+    expect(kafka?.command?.[2]).toContain(
+      '"SCRAM-SHA-512=[password=$$(cat /tmp/opscrew-password)]"',
+    );
     expect(redpanda?.environment?.RPK_PASS).toBe("${OPSCREW_SVC_REDPANDA_PASSWORD}");
     expect(redpanda?.entrypoint).toEqual(["sh", "-c"]);
     expect(redpanda?.command?.[0]).toContain('-p "$$RPK_PASS"');

@@ -15,11 +15,18 @@ export {
   splitDatabaseSettings,
 } from "./catalog";
 export type {
+  ConditionalCommand,
   DatabaseSettings,
   GeneratedSecret,
+  GrantRotation,
   ImagePinKey,
+  RotationCommand,
+  RotationMode,
+  RotationStep,
+  SecretRotation,
   ServiceConfigFile,
   ServiceContext,
+  ServiceRotation,
   ServiceSpec,
 } from "./catalog/types";
 export * from "./check";

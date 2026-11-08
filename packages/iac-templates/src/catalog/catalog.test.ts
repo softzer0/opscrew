@@ -408,7 +408,12 @@ describe("the services' settings", () => {
     const c = only("nats");
     const [conf] = nats.configFiles?.(c) ?? [];
     expect(conf?.target).toBe("/etc/nats/nats-server.conf");
-    expect(nats.command?.(c)).toEqual(["nats-server", "--config", "/etc/nats/nats-server.conf"]);
+    // After writing the token's file (rotation.test.ts), the server on OpsCrew's config.
+    expect(nats.command?.(c)).toEqual([
+      "sh",
+      "-c",
+      expect.stringMatching(/ && exec nats-server --config \/etc\/nats\/nats-server\.conf$/),
+    ]);
     expect(conf?.content).toContain("  token: $NATS_TOKEN\n");
     expect(conf?.content).toContain("  store_dir: /data\n");
     expect(conf?.content).toContain('http: "127.0.0.1:8222"\n');
@@ -425,22 +430,20 @@ describe("the services' settings", () => {
 
   it("MongoDB: its cache from its limit, and a keyFile and replica set when asked", () => {
     const mongodb = serviceSpec("mongodb");
-    expect(mongodb.command?.(only("mongodb"))).toEqual([
-      "mongod",
-      "--wiredTigerCacheSizeGB",
-      "0.25",
-      "--bind_ip_all",
-    ]);
-    expect(mongodb.command?.(only("mongodb", { memoryMb: 1024 }))?.[2]).toBe("0.5");
-    expect(mongodb.command?.(only("mongodb", { memoryMb: 384 }))?.[2]).toBe("0.25");
+    // After the root password's own file (rotation.test.ts), mongod through the image's entrypoint.
+    const start = (fields: Record<string, unknown>) =>
+      mongodb.command?.(only("mongodb", fields))?.[2]?.split("; exec docker-entrypoint.sh ")[1];
+    expect(start({})).toBe("mongod --wiredTigerCacheSizeGB 0.25 --bind_ip_all");
+    expect(start({ memoryMb: 1024 })).toBe("mongod --wiredTigerCacheSizeGB 0.5 --bind_ip_all");
+    expect(start({ memoryMb: 384 })).toBe("mongod --wiredTigerCacheSizeGB 0.25 --bind_ip_all");
     expect(mongodb.dataDir).toEqual({ db: "/data/db", configdb: "/data/configdb" });
 
     const replica = only("mongodb", { options: { replicaSet: true } });
     const [bash, flag, script] = mongodb.command?.(replica) ?? [];
     expect([bash, flag]).toEqual(["bash", "-c"]);
     // Written once, as root, into the configdb volume; then the image's own entrypoint.
-    expect(script).toBe(
-      "set -e; [ -f /data/configdb/keyfile ] || { head -c 756 /dev/urandom | base64 -w 0 > /data/configdb/keyfile && chmod 400 /data/configdb/keyfile && chown 999:999 /data/configdb/keyfile; }; exec docker-entrypoint.sh mongod --replSet rs0 --keyFile /data/configdb/keyfile --wiredTigerCacheSizeGB 0.25 --bind_ip_all",
+    expect(script).toMatch(
+      /; \[ -f \/data\/configdb\/keyfile \] \|\| \{ head -c 756 \/dev\/urandom \| base64 -w 0 > \/data\/configdb\/keyfile && chmod 400 \/data\/configdb\/keyfile && chown 999:999 \/data\/configdb\/keyfile; \}; exec docker-entrypoint\.sh mongod --replSet rs0 --keyFile \/data\/configdb\/keyfile --wiredTigerCacheSizeGB 0\.25 --bind_ip_all$/,
     );
     expect(mongodb.init?.(only("mongodb"))).toEqual([]);
   });
@@ -449,8 +452,9 @@ describe("the services' settings", () => {
     const plan = withServices([{ kind: "mongodb", name: "docs", options: { replicaSet: true } }]);
     const [step, ...rest] = serviceSpec("mongodb").init?.(ctx(plan, "docs")) ?? [];
     expect(rest).toEqual([]);
+    // With the root user's current password, which the container keeps in its own file.
     const login =
-      'mongosh --quiet -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin';
+      'mongosh --quiet -u "$MONGO_INITDB_ROOT_USERNAME" -p "$(cat /tmp/opscrew-password)" --authenticationDatabase admin';
     expect(step).toEqual({
       service: "docs",
       check: ["bash", "-c", `${login} --eval 'rs.status().ok'`],
@@ -462,27 +466,29 @@ describe("the services' settings", () => {
     });
   });
 
-  it("Valkey: its modes behind its password, read from a settings file it writes at start", () => {
+  it("Valkey: its modes behind its password, from the ACL file it writes at its first start", () => {
     const valkey = serviceSpec("valkey");
     const queue = only("valkey", { options: { mode: "queue" }, memoryMb: 128 });
-    // The password goes into a file valkey-server reads, never onto its command line; the
-    // entrypoint drops root only for a command that is valkey-server.
-    const auth =
-      "rm -f /tmp/opscrew-auth.conf && umask 077 && printf 'requirepass %s\\n' \"$VALKEY_PASSWORD\" > /tmp/opscrew-auth.conf && chown valkey:valkey /tmp/opscrew-auth.conf && exec docker-entrypoint.sh valkey-server /tmp/opscrew-auth.conf";
+    // The password goes into the ACL file valkey-server reads (rotation.test.ts and
+    // placement.test.ts have the wrapper), never onto its command line; the entrypoint drops root
+    // only for a command that is valkey-server.
+    const start = "&& exec docker-entrypoint.sh valkey-server --aclfile /tmp/opscrew-users.acl";
     // A queue never evicts and keeps an append-only file; a cache evicts and keeps nothing.
     expect(valkey.command?.(queue)).toEqual([
       "sh",
       "-c",
-      `${auth} --appendonly yes --maxmemory 96mb --maxmemory-policy noeviction`,
+      expect.stringMatching(
+        / && exec docker-entrypoint\.sh valkey-server --aclfile \/tmp\/opscrew-users\.acl --appendonly yes --maxmemory 96mb --maxmemory-policy noeviction$/,
+      ),
     ]);
-    expect(valkey.command?.(only("valkey", { memoryMb: 256 }))?.[2]).toBe(
-      `${auth} --save '' --appendonly no --maxmemory 192mb --maxmemory-policy allkeys-lru`,
+    expect(valkey.command?.(only("valkey", { memoryMb: 256 }))?.[2]).toContain(
+      `${start} --save '' --appendonly no --maxmemory 192mb --maxmemory-policy allkeys-lru`,
     );
     expect(valkey.environment(queue)).toEqual({ VALKEY_PASSWORD: "<password>" });
     expect(valkey.secrets).toEqual([{ name: "password", format: "hex32" }]);
     expect(valkey.healthcheck(queue).test).toEqual([
       "CMD-SHELL",
-      'REDISCLI_AUTH="$VALKEY_PASSWORD" valkey-cli ping | grep -q PONG',
+      'REDISCLI_AUTH="$(cat /tmp/opscrew-password)" valkey-cli ping | grep -q PONG',
     ]);
     expect(valkey.dataDir).toBe("/data");
   });
@@ -490,32 +496,39 @@ describe("the services' settings", () => {
   it("Redis 8: Valkey's modes behind its password, through the image's own entrypoint", () => {
     const redis = serviceSpec("redis");
     const queue = only("redis", { options: { mode: "queue" }, memoryMb: 128 });
-    // The password goes into a file redis-server reads, never onto its command line; the
+    // The password goes into the ACL file redis-server reads, never onto its command line; the
     // entrypoint loads the modules and drops root only for a command that is redis-server.
-    const auth =
-      "rm -f /tmp/opscrew-auth.conf && umask 077 && printf 'requirepass %s\\n' \"$REDIS_PASSWORD\" > /tmp/opscrew-auth.conf && chown redis:redis /tmp/opscrew-auth.conf && exec docker-entrypoint.sh redis-server /tmp/opscrew-auth.conf";
+    const start = "&& exec docker-entrypoint.sh redis-server --aclfile /tmp/opscrew-users.acl";
     expect(redis.command?.(queue)).toEqual([
       "sh",
       "-c",
-      `${auth} --appendonly yes --maxmemory 96mb --maxmemory-policy noeviction`,
+      expect.stringMatching(
+        / && exec docker-entrypoint\.sh redis-server --aclfile \/tmp\/opscrew-users\.acl --appendonly yes --maxmemory 96mb --maxmemory-policy noeviction$/,
+      ),
     ]);
-    expect(redis.command?.(only("redis", { memoryMb: 256 }))?.[2]).toBe(
-      `${auth} --save '' --appendonly no --maxmemory 192mb --maxmemory-policy allkeys-lru`,
+    expect(redis.command?.(only("redis", { memoryMb: 256 }))?.[2]).toContain(
+      `${start} --save '' --appendonly no --maxmemory 192mb --maxmemory-policy allkeys-lru`,
     );
     expect(redis.environment(queue)).toEqual({ REDIS_PASSWORD: "<password>" });
     expect(redis.secrets).toEqual([{ name: "password", format: "hex32" }]);
     // redis-cli answers NOAUTH with exit code 0, so the check reads the reply.
     expect(redis.healthcheck(queue).test).toEqual([
       "CMD-SHELL",
-      'REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli ping | grep -q PONG',
+      'REDISCLI_AUTH="$(cat /tmp/opscrew-password)" redis-cli ping | grep -q PONG',
     ]);
     expect(redis.dataDir).toBe("/data");
   });
 
   it("Dragonfly: its threads and memory from its limit, snapshots in queue mode, BullMQ's locks", () => {
     const dragonfly = serviceSpec("dragonfly");
-    const command = (memoryMb: number, options: object) =>
-      dragonfly.command?.(only("dragonfly", { memoryMb, options }));
+    // Its flags, after the wrapper's start on its ACL file (placement.test.ts has the wrapper).
+    const command = (memoryMb: number, options: object) => {
+      const script = dragonfly.command?.(only("dragonfly", { memoryMb, options }))?.[2] ?? "";
+      const start = "exec entrypoint.sh dragonfly --aclfile /tmp/opscrew-users.acl ";
+      expect(script).toContain(` && unset DFLY_requirepass && ${start}`);
+      const flags = script.slice(script.indexOf(start) + start.length).match(/'[^']*'|\S+/g) ?? [];
+      return ["dragonfly", ...flags.map((flag) => flag.replace(/^'(.*)'$/, "$1"))];
+    };
     // Three quarters of the limit, and a thread for each 256 MB of it (at least one); no HTTP
     // console on its port.
     expect(command(512, { mode: "queue" })).toEqual([
@@ -555,7 +568,7 @@ describe("the services' settings", () => {
     expect(dragonfly.environment(only("dragonfly"))).toEqual({ DFLY_requirepass: "<password>" });
     expect(dragonfly.healthcheck(only("dragonfly")).test).toEqual([
       "CMD-SHELL",
-      'REDISCLI_AUTH="$DFLY_requirepass" redis-cli ping | grep -q PONG',
+      'REDISCLI_AUTH="$(cat /tmp/opscrew-password)" redis-cli ping | grep -q PONG',
     ]);
     expect(dragonfly.dataDir).toBe("/data");
   });
@@ -632,14 +645,17 @@ describe("the services' settings", () => {
     } = kafka.environment(only("kafka"));
     expect(env).toMatchObject(plain);
 
-    // The container adds its own user, retried until the broker answers, then starts the broker
-    // as PID 1: the health check passes only once the login exists.
+    // The container adds its own user (the password from the env into its own file at its first
+    // start: rotation.test.ts), retried until the broker answers, then starts the broker as PID 1:
+    // the health check passes only once the login exists.
     const configs =
       "KAFKA_HEAP_OPTS=-Xmx64m /opt/kafka/bin/kafka-configs.sh --bootstrap-server localhost:9094";
     expect(kafka.command?.(c)).toEqual([
       "sh",
       "-c",
-      `(until ${configs} --alter --add-config "SCRAM-SHA-512=[password=$SASL_PASSWORD]" --entity-type users --entity-name app; do sleep 2; done) & exec /etc/kafka/docker/run`,
+      expect.stringContaining(
+        `; (until ${configs} --alter --add-config "SCRAM-SHA-512=[password=$(cat /tmp/opscrew-password)]" --entity-type users --entity-name app; do sleep 2; done) & exec /etc/kafka/docker/run`,
+      ),
     ]);
     expect(kafka.healthcheck(c)).toEqual({
       test: [
@@ -698,16 +714,19 @@ describe("the services' settings", () => {
     // Schema Registry, the HTTP Proxy and RPC on loopback: only 9092 and 9644 stay reachable.
     const loopback =
       "--rpc-addr 127.0.0.1:33145 --schema-registry-addr 127.0.0.1:8081 --pandaproxy-addr 127.0.0.1:8082";
-    // A shell of its own: the image's entrypoint runs only `rpk`.
+    // A shell of its own: the image's entrypoint runs only `rpk`. RPK_PASS is the container's own
+    // file's (from the env at its first start: rotation.test.ts).
     expect(redpanda.entrypoint?.(c)).toEqual(["sh", "-c"]);
     expect(redpanda.command?.(c)).toEqual([
-      `login() { ${login}; }; (until login; do sleep 2; done) & ${start} ${loopback}`,
+      expect.stringContaining(
+        `; export RPK_PASS="$(cat /tmp/opscrew-password)"; login() { ${login}; }; (until login; do sleep 2; done) & ${start} ${loopback}`,
+      ),
     ]);
     // Ready answers without a login; the check passes once the admin API asks for one.
     expect(redpanda.healthcheck(c)).toEqual({
       test: [
         "CMD-SHELL",
-        "curl -fsS http://localhost:9644/v1/status/ready > /dev/null && rpk cluster config get admin_api_require_auth | grep -qx true",
+        'curl -fsS http://localhost:9644/v1/status/ready > /dev/null && RPK_PASS="$(cat /tmp/opscrew-password)" rpk cluster config get admin_api_require_auth | grep -qx true',
       ],
       startSeconds: 30,
     });
@@ -764,7 +783,7 @@ describe("the search and analytics engines' settings", () => {
     ).toBe("-Xms1024m -Xmx1024m");
     // The transport's certificate is made in the container once, and never leaves it; the admin's
     // hash is written at every start (read only when the security index is first made), from the
-    // password in the container's environment.
+    // container's own copy of the password (from its env at its first start).
     const keytool = 'k="keytool -keystore config/node.p12 -storepass changeit"';
     expect(opensearch.command?.(c)).toEqual([
       "bash",
@@ -772,7 +791,8 @@ describe("the search and analytics engines' settings", () => {
       [
         "set -e",
         `[ -f config/node.p12 ] || { ${keytool}; $k -genkeypair -alias node -keyalg RSA -keysize 2048 -dname CN=opensearch -validity 36500; $k -exportcert -alias node -rfc | $k -importcert -noprompt -alias trusted; }`,
-        "h=$(plugins/opensearch-security/tools/hash.sh -env OPENSEARCH_PASSWORD)",
+        '{ [ -f /tmp/opscrew-password ] || (umask 077 && printf %s "$OPENSEARCH_PASSWORD" > /tmp/opscrew-password); }',
+        'h=$(OPENSEARCH_PASSWORD="$(cat /tmp/opscrew-password)" plugins/opensearch-security/tools/hash.sh -env OPENSEARCH_PASSWORD)',
         `printf '_meta:\\n  type: "internalusers"\\n  config_version: 2\\nadmin:\\n  hash: "%s"\\n  reserved: false\\n  backend_roles:\\n  - "admin"\\n' "$h" > config/opensearch-security/internal_users.yml`,
         "exec ./opensearch-docker-entrypoint.sh opensearch",
       ].join("; "),
@@ -780,7 +800,7 @@ describe("the search and analytics engines' settings", () => {
     expect(opensearch.healthcheck(c)).toEqual({
       test: [
         "CMD-SHELL",
-        `curl -fsS -u "admin:$OPENSEARCH_PASSWORD" 'localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s' > /dev/null`,
+        `printf 'user = "admin:%s"\\n' "$(cat /tmp/opscrew-password)" | curl -fsS -K - 'localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s' > /dev/null`,
       ],
       startSeconds: 90,
     });
@@ -799,9 +819,10 @@ describe("the search and analytics engines' settings", () => {
       ELASTIC_PASSWORD: "<password>",
       ES_JAVA_OPTS: "-Xms512m -Xmx512m",
     });
-    // The password comes from the container's own environment, never from a file.
+    // The health check's password is the container's own copy (from its env at its first start),
+    // never in a repository file nor on curl's command line.
     expect(elasticsearch.healthcheck(only("elasticsearch")).test[1]).toContain(
-      '-u "elastic:$ELASTIC_PASSWORD"',
+      `printf 'user = "elastic:%s"\\n' "$(cat /tmp/opscrew-password)" | curl -fsS -K - `,
     );
     expect(elasticsearch.namedVolume).toBe(true);
   });

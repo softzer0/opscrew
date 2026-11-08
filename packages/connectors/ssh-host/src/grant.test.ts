@@ -1,3 +1,8 @@
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { canonicalJson } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
@@ -100,20 +105,22 @@ describe("the grant step's statements (research R6a)", { timeout: 120_000 }, () 
       expect(engine.want).toBe("YNNNNNNNNNNNYNNNNN");
       expect(grantEngine(grant({ kind, access: "full" })).want).toBe("Y".repeat(18));
     }
-    // As root, signed in from the container's own environment through an option file on a pipe.
+    // As root, with the current password the container keeps in its own file (a rotation makes
+    // its env's stale) or, in a container started before there was one, its env's, through an
+    // option file on a pipe (rootPasswordLogins below runs both).
     expect(grantEngine(grant({ kind: "mysql" })).rootClient).toBe(
-      `mysql --defaults-extra-file=<(printf '[client]\\nuser=root\\npassword=%s\\n' "$MYSQL_ROOT_PASSWORD") -N -B`,
+      `mysql --defaults-extra-file=<(printf '[client]\\nuser=root\\npassword=%s\\n' "$(cat /tmp/opscrew-root-password 2>/dev/null || printf %s "$MYSQL_ROOT_PASSWORD")") -N -B`,
     );
-    expect(grantEngine(grant({ kind: "mariadb" })).rootClient).toContain(
-      '"$MARIADB_ROOT_PASSWORD"',
+    expect(grantEngine(grant({ kind: "mariadb" })).rootClient).toBe(
+      `mariadb --defaults-extra-file=<(printf '[client]\\nuser=root\\npassword=%s\\n' "$(cat /tmp/opscrew-root-password 2>/dev/null || printf %s "$MARIADB_ROOT_PASSWORD")") -N -B`,
     );
 
     const mongo = grantEngine(grant({ kind: "mongodb" }));
     // Its markers are built at runtime: an echoed source line never holds them.
     expect(mongo.state).not.toMatch(/opscrew-(read|login=)/);
     expect(mongo.state).toContain(`print("opscrew-" + "read")`);
-    expect(mongo.prelude).toContain(
-      "a.auth(process.env.MONGO_INITDB_ROOT_USERNAME, process.env.MONGO_INITDB_ROOT_PASSWORD)",
+    expect(mongo.prelude).toBe(
+      'const a = db.getSiblingDB("admin"); a.auth(process.env.MONGO_INITDB_ROOT_USERNAME, (require("fs").existsSync("/tmp/opscrew-password") ? require("fs").readFileSync("/tmp/opscrew-password", "utf8") : process.env.MONGO_INITDB_ROOT_PASSWORD));',
     );
     expect(mongo.create.join("<password>")).toBe(
       `a.createUser({ user: "laptop", pwd: "<password>", roles: [{ role: "read", db: "app" }] });`,
@@ -262,15 +269,15 @@ exit 0`;
     }
   });
 
-  it("updates an existing login's password and access, as root from the container's environment for MySQL", () => {
+  it("updates an existing login's password and access, as root from the container's own file for MySQL", () => {
     const h = harness("YNNNNNNNNNNNYNNNNN");
     try {
       const scripts = scriptsOf(grant({ kind: "mysql", access: "full" }));
       const pw = password("mysql");
       expect(h.run(scripts.apply, `${pw}\n`).status).toBe(0);
-      // The root password's variable reaches the container unexpanded: its bash fills it in.
+      // The root password's file is read in the container: its bash fills it in.
       expect(h.calls()[0]).toBe(
-        `docker compose -p shop exec -T db bash -c mysql --defaults-extra-file=<(printf '[client]\\nuser=root\\npassword=%s\\n' "$MYSQL_ROOT_PASSWORD") -N -B`,
+        `docker compose -p shop exec -T db bash -c mysql --defaults-extra-file=<(printf '[client]\\nuser=root\\npassword=%s\\n' "$(cat /tmp/opscrew-root-password 2>/dev/null || printf %s "$MYSQL_ROOT_PASSWORD")") -N -B`,
       );
       expect(sent(h).at(-1)).toContain(`ALTER USER 'laptop'@'%' IDENTIFIED BY '${pw}';`);
       expect(sent(h).at(-1)).toContain("GRANT ALL PRIVILEGES ON app.* TO 'laptop'@'%';");
@@ -445,5 +452,66 @@ describe("planning and applying a grant", () => {
     expect(apply?.asUser).toBe("deploy");
     expect(apply?.input).toBe(`${pw}\n`);
     expect(fake.databaseLogins.get("shop/db/laptop")).toBe("YNNNNNNNNNNNYNNNNN");
+  });
+});
+
+describe("the administrator's password in the container", () => {
+  /** A file holding `value` in a new folder, its path with forward slashes for the shell. */
+  function fileWith(value: string): { path: string; dispose: () => void } {
+    const dir = mkdtempSync(join(tmpdir(), "opscrew-grant-"));
+    const path = join(dir, "password").replaceAll("\\", "/");
+    writeFileSync(path, value);
+    return { path, dispose: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+
+  it.skipIf(!SH_AVAILABLE)(
+    "is MySQL's and MariaDB's root's own file, else the env's in a container started before it",
+    () => {
+      const file = fileWith("from-file");
+      try {
+        for (const [kind, variable] of [
+          ["mysql", "MYSQL_ROOT_PASSWORD"],
+          ["mariadb", "MARIADB_ROOT_PASSWORD"],
+        ] as const) {
+          const client = grantEngine(grant({ kind })).rootClient ?? "";
+          const word =
+            /password=%s\\n' ("\$\(cat \/tmp\/opscrew-root-password .*\)")\) -N -B$/.exec(
+              client,
+            )?.[1];
+          expect(word, kind).toBeDefined();
+          // The shell of a container with the file, then of one without it.
+          const read = (path: string) =>
+            spawnSync(
+              "sh",
+              ["-c", `printf %s ${word?.replace("/tmp/opscrew-root-password", path)}`],
+              { env: { ...process.env, [variable]: "from-env" }, encoding: "utf8" },
+            ).stdout;
+          expect(read(file.path), kind).toBe("from-file");
+          expect(read(`${file.path}.missing`), kind).toBe("from-env");
+        }
+      } finally {
+        file.dispose();
+      }
+    },
+  );
+
+  it("is MongoDB's root user's own file, else the env's in a container started before it", () => {
+    const file = fileWith("from-file");
+    try {
+      const { prelude } = grantEngine(grant({ kind: "mongodb" }));
+      const expression = /MONGO_INITDB_ROOT_USERNAME, (\(.*\))\);$/.exec(prelude)?.[1] ?? "";
+      expect(expression).not.toBe("");
+      // mongosh's script with the file, then without it.
+      const read = (path: string) =>
+        new Function(
+          "require",
+          "process",
+          `return ${expression.replaceAll("/tmp/opscrew-password", path)}`,
+        )(createRequire(import.meta.url), { env: { MONGO_INITDB_ROOT_PASSWORD: "from-env" } });
+      expect(read(file.path)).toBe("from-file");
+      expect(read(`${file.path}.missing`)).toBe("from-env");
+    } finally {
+      file.dispose();
+    }
   });
 });

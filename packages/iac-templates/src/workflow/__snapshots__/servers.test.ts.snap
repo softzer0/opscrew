@@ -493,8 +493,8 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
               exit 1
             fi
           fi
-          if ! docker compose exec -T docs 'bash' '-c' 'mongosh --quiet -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin --eval '\\''rs.status().ok'\\''' < /dev/null > /dev/null 2>&1; then
-            if ! (umask 077; docker compose exec -T docs 'bash' '-c' 'mongosh --quiet -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin --eval '\\''rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "10.200.4.2:27017" }] }); for (let i = 0; i < 60 && !db.hello().isWritablePrimary; i++) sleep(500)'\\''' < /dev/null > "$APPS_DIR"/shop/init.log 2>&1); then
+          if ! docker compose exec -T docs 'bash' '-c' 'mongosh --quiet -u "$MONGO_INITDB_ROOT_USERNAME" -p "$(cat /tmp/opscrew-password)" --authenticationDatabase admin --eval '\\''rs.status().ok'\\''' < /dev/null > /dev/null 2>&1; then
+            if ! (umask 077; docker compose exec -T docs 'bash' '-c' 'mongosh --quiet -u "$MONGO_INITDB_ROOT_USERNAME" -p "$(cat /tmp/opscrew-password)" --authenticationDatabase admin --eval '\\''rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "10.200.4.2:27017" }] }); for (let i = 0; i < 60 && !db.hello().isWritablePrimary; i++) sleep(500)'\\''' < /dev/null > "$APPS_DIR"/shop/init.log 2>&1); then
               echo '::error::The one-time setup of the docs service failed, so the new version was not started and the previous version keeps serving. The step'\\''s output stays on the server data in '"$APPS_DIR"'/shop/init.log (it can quote a key, so it is not printed here): fix the cause and push again. The steps already done are skipped.'
               exit 1
             fi
