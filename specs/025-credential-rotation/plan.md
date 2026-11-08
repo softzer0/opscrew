@@ -150,8 +150,11 @@ files), with deploys already held. After it, the record and the recovery copy (a
   place first where the provider allows (the Tunnel token: cloudflared reconnects in seconds).
 - `state-passphrase`: `TF_ENCRYPTION` with a new key provider and method and the old as `fallback`
   (`iac-engine/src/encryption.ts`), a plan (no changes) approved by hash and applied, which rewrites
-  the state under the new key (R10); then the new passphrase file replaces the old; a refresh-only
-  apply is the same.
+  the state under the new key (R10); then the new passphrase file replaces the old. OpenTofu keeps
+  the key provider's name in the state's plaintext `meta`, and a name can't be reused for another
+  key in one run (T2502), so the name alternates between `opscrew` and `opscrew_next` with each
+  rotation and every run reads the current one from the state (`stateKeyName`): one apply per
+  rotation, nothing else stored (lead, 2026-11-08).
 
 ### 9. The user's tokens (US6)
 
