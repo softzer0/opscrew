@@ -32,8 +32,8 @@ each gets a new password, the app keeps answering, and no old or new value appea
 
 1. **Given** an environment on a cloud server, the user's own server, Portainer or this
    computer, **When** the user runs `opscrew rotate <service>`, **Then** a plan lists each of
-   the service's generated secrets and how it rotates: seamless (MySQL, Valkey, Redis, Garage's
-   key), a short swap (the others of research R5: new connections the old app opens fail for the
+   the service's generated secrets and how it rotates: seamless (MySQL, Valkey, Redis, Dragonfly,
+   Garage's key), a short swap (the others of research R5: new connections the old app opens fail for the
    seconds the plan states), or a restart of that service (ClickHouse, NATS, Meilisearch,
    Typesense's start key, Garage's RPC secret); after its approval by hash the change is applied.
 2. **Then** the order is the research's: the runtime change, the env files and GitHub secrets
@@ -184,8 +184,10 @@ the old key no longer opens the server.
   valid at once, otherwise a short ordered swap or a restart, the plan stating which and for how
   long; the running app MUST keep its open connections.
 - **FR-2504**: No old or new value MUST appear in any output, log, audit entry, workflow log,
-  committed file or prompt; values reach servers only through env files, GitHub secrets and the
-  Portainer stack, never on a command line.
+  committed file or prompt. Values reach servers only through env files, GitHub secrets, the
+  Portainer stack and SSH's stdin, never on a command line on this computer or in a workflow; on
+  the server, only the tools that take no other way (research R10) see one on their command line,
+  inside the service's container, for the second they run.
 - **FR-2505**: The recovery copy MUST be updated after every rotation (the existing pull request),
   and the preview key MUST join it.
 - **FR-2506**: The SSH keys MUST be replaced add-first, proven, then removed (US3).

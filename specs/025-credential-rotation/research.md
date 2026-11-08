@@ -82,7 +82,7 @@ Notes:
 | Service (pin) | Change while it runs | Two secrets at once | The value on later starts | Order |
 |---|---|---|---|---|
 | Valkey 8, Redis 8.10 | `ACL SETUSER default >new`, later `<old` | **yes**: any number of passwords per user | the start script rebuilds the password or ACL file from the env every start (nothing is `ACL SAVE`d) | add new, env files, redeploy (recreates it with only the new) |
-| Dragonfly 2.0 | `ACL SETUSER default >new` | no ("each user can have only one password") | rebuilt from the env every start | change, env files, redeploy |
+| Dragonfly 2.0 | `ACL SETUSER default >new`, later `<old` | **yes** (the spike, R10: the docs' "only one password" is wrong for 2.0) | rebuilt from the env every start | add new, env files, redeploy |
 | RabbitMQ 4.3 | `rabbitmqctl change_password app …` (syntax unverified) | no | `RABBITMQ_DEFAULT_PASS` on the first boot only | change, env files, redeploy |
 | NATS 2.15 | the token is `$NATS_TOKEN` in the process's environment: only a restart changes it | no for a token | read every start | env files, the service recreated, redeploy |
 | Kafka 4.3 (KRaft) | `kafka-configs --alter --add-config "SCRAM-SHA-512=[password=…]"` on the loopback listener | no (one credential per mechanism) | the entry's start loop sets it from `SASL_PASSWORD` every start | change, env files, redeploy |
@@ -111,9 +111,9 @@ Typesense with the bootstrap key, so today both restart for a rotation.
 
 ## R5. The ways a swap goes
 
-1. **Two at once, seamless:** MySQL (`RETAIN CURRENT PASSWORD`), Valkey and Redis (two passwords),
-   Garage's S3 key (two keys). Add the new, deploy, remove the old.
-2. **One password, a short ordered swap:** PostgreSQL, MariaDB, MongoDB, Neo4j, Dragonfly,
+1. **Two at once, seamless:** MySQL (`RETAIN CURRENT PASSWORD`), Valkey, Redis and Dragonfly (two
+   passwords; Dragonfly from the spike, R10), Garage's S3 key (two keys). Add the new, deploy, remove the old.
+2. **One password, a short ordered swap:** PostgreSQL, MariaDB, MongoDB, Neo4j,
    RabbitMQ, Kafka, Redpanda, OpenSearch, Elasticsearch. The runtime change first, then the env
    files and the rolling redeploy. Connections already open keep working; between the change and
    the switch a connection the old app opens fails. The roadmap's choice (founder, 2026-11-06:
@@ -204,7 +204,54 @@ version that added `fallback` unverified, the docs have it from 1.7.)
    tokens stop working. Laravel's `APP_KEY` and Better Auth's secret rotate seamlessly, the old
    value kept as the previous one.
 
-## Unverified, for the spike
+## R10. The spike (2026-11-08)
+
+A Sonnet agent ran every service on local Docker with the pinned images and the catalog's settings,
+a client connected with the old password the whole time. Every item passed; four corrected the
+research above (marked).
+
+| Service | Change while it runs (value over stdin or a container env var) | Open connection | Old / new on a new connection | After a restart with the old env |
+|---|---|---|---|---|
+| PostgreSQL | `psql -U app -d app` over the socket: `ALTER ROLE app PASSWORD …` | kept | fails / works | password unchanged (env read once) |
+| MySQL | **as root only** (`app` gets error 1227): `ALTER USER 'app'@'%' IDENTIFIED BY … RETAIN CURRENT PASSWORD`, then `DISCARD OLD PASSWORD` | kept | both work until the discard | unchanged |
+| MariaDB | as root: `ALTER USER 'app'@'%' IDENTIFIED BY …`; `RETAIN` is a syntax error | kept | fails / works | unchanged |
+| MongoDB | `mongosh … changeUserPassword("app", process.env.NEWPW)` | kept | fails / works | unchanged |
+| RabbitMQ | `rabbitmqctl change_password app "$NEWPW"` | kept (AMQP channel) | fails / works | unchanged |
+| Kafka | `kafka-configs.sh --bootstrap-server localhost:9094 --alter --add-config "SCRAM-SHA-512=[password=$NEWPW]" --entity-type users --entity-name app` (`--add-config-file` refuses it) | kept (producer) | fails / works | the start loop sets the env's |
+| Redpanda | `rpk security user update app --new-password "$NEWPW" --mechanism SCRAM-SHA-512` | kept | fails / works | the start loop sets the env's; `rpk` and the health check fail until the container has the new env |
+| Valkey | `ACL SETUSER default >new`, later `<old` | kept | both work in between | the env's again |
+| **Dragonfly** | `ACL SETUSER default >new` **adds** a password (so does `CONFIG SET requirepass`); `<old` removes it | kept | both work in between | the env's again |
+| Neo4j | `cypher-shell -u neo4j -p <old> -d system`: `ALTER USER neo4j SET PASSWORD … CHANGE NOT REQUIRED` | kept | fails / works | unchanged (`NEO4J_AUTH` ignored once users exist) |
+| ClickHouse | none by SQL; the entrypoint rewrites `users.d/default-user.xml` from the env every start; a mounted `users.d/*.xml` edited in place applies in about 2 s, no restart | — | fails / works | the env's again |
+| Elasticsearch | `POST _security/user/elastic/_password` with the body on stdin | per request | 401 / 200 | unchanged; the health check (env) fails until the env changes |
+| **OpenSearch** | the account API `PUT _plugins/_security/api/account` (`current_password`, `password`); **the internal users API is forbidden as `admin`**; weak passwords refused (random hex passes) | per request | 401 / 200 | unchanged; the health check fails until the env changes |
+| Typesense | `POST /keys` with a chosen `value`; a new start key on a restart | per request | the old start key 401; keys made through `/keys` keep working | — |
+| **Garage** | `garage key import --yes -n <name> <id> <secret>`, `garage bucket allow --read --write --owner <bucket> --key <id>`, `garage key delete --yes <old id>` | per request | the old key fails at once after the delete | **won't start while the env names a deleted key** ("cannot add it back"): the env must name the new key before any restart |
+| NATS | a token in a mounted, included file, edited in place, then `nats-server --signal reload=1`: applied at once | **closed** (`Authorization Violation` within a second) | fails / works | — |
+
+Also confirmed:
+- MySQL and MariaDB: `root@localhost` and `root@'%'` are separate accounts; a TCP login to
+  127.0.0.1 is `root@'%'`. Both change.
+- Laravel's `config/app.php` (13.x, as `examples/laravel-app` pins) reads `APP_PREVIOUS_KEYS`
+  (a comma list); the docs have it from 11.
+- OpenTofu 1.13: with the new key and the old as `fallback`, `plan`, `plan -refresh-only` and
+  `state list` leave the state as it is; any apply (`apply`, a saved plan, `apply -refresh-only`)
+  rewrites it under the new key, after which the old key alone can't read it.
+- **Values on a command line:** MySQL and MariaDB read the statement from stdin. MongoDB's login
+  (`-p`), `rabbitmqctl change_password`, `kafka-configs --add-config`, `rpk … --new-password`,
+  `garage key import` and Neo4j's login (`cypher-shell -p`) take the value only as an argument, so
+  it is on that tool's command line inside the container for the second it runs. Root on the
+  server can read the env files anyway; other local users of an own server could see it in the
+  process list for that second.
+
+Not tested: Kafka's and Redpanda's sessions with re-authentication on (both off by default).
+
+Corrections to R3 and R5: Dragonfly holds two passwords, so it joins the seamless swaps; Garage's
+env must name the new key before any restart once the old one is deleted; a NATS token reload
+closes the old clients, so its swap is a restart in effect (the app's clients reconnect with the
+new token after the switch).
+
+## Unverified before the spike (all checked in R10)
 
 1. Open connections survive a password change (every service in R2–R4).
 2. Neo4j Community: `ALTER USER … SET PASSWORD`, and `NEO4J_AUTH` on a volume with users.
