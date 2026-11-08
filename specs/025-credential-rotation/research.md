@@ -192,6 +192,18 @@ when the new method fails and always writes with the new one. The docs' migratio
 Key providers and methods are never renamed in place. (opentofu.org state encryption; the
 version that added `fallback` unverified, the docs have it from 1.7.)
 
+## R9. The founder's decisions (2026-11-08)
+
+1. **A credential's age:** `opscrew advise` lists the age of every credential OpsCrew generated
+   and suggests rotating any older than a year. The scheduled check flags them too, only when
+   turned on in the plan, at the same age (changeable there). The token-expiry warnings (30 and 7
+   days before) stay as they are.
+2. **App secrets whose framework can't keep the old value** (Rails, Django, Flask, Auth.js and
+   NextAuth, `SESSION_SECRET`, `JWT_SECRET`, `COOKIE_SECRET`): rotated after a typed
+   confirmation, the plan first saying plainly that every user is logged out or that issued
+   tokens stop working. Laravel's `APP_KEY` and Better Auth's secret rotate seamlessly, the old
+   value kept as the previous one.
+
 ## Unverified, for the spike
 
 1. Open connections survive a password change (every service in R2–R4).
