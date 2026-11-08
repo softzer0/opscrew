@@ -27,6 +27,10 @@ export const USER_TOKEN_NAMES = [
 /** The name a user's token has in `opscrew rotate`. */
 export type UserTokenName = (typeof USER_TOKEN_NAMES)[number];
 
+function isUserToken(name: string): boolean {
+  return (USER_TOKEN_NAMES as readonly string[]).includes(name);
+}
+
 /**
  * The record's file: one per app, beside its prod plan (`opscrew/credentials.yaml` for the first
  * app, `opscrew/apps/<key>/credentials.yaml` for a further one), holding every environment.
@@ -53,8 +57,8 @@ export async function readCredentialsRecord(
 /**
  * Records that the credentials `names` of the environment of `deps.paths` were rotated now (its
  * clock): each gets `rotatedAt`, one generation more (2 for one made before the record had it) and
- * keeps its `madeAt`. This computer's values are marked with the same generations first, so a
- * failed write of the record leaves this computer ahead of it, never behind
+ * keeps its `madeAt`. This computer's values (not the user's tokens, which are never its) are
+ * marked with the same generations first, so a failed write of the record leaves this computer ahead of it, never behind
  * ({@link assertValuesCurrent}). Returns the record written.
  * @throws ArtifactError `ARTIFACT_INVALID` when the record is damaged; OpsCrewError
  * `ARTIFACT_INVALID` when the generated values are ({@link changeGenerated}).
@@ -75,13 +79,14 @@ export async function recordRotation(
       rotatedAt: now,
       generation: generation + 1,
     };
-    generations[name] = generation + 1;
+    // The user's tokens are never this computer's values: no generation of them is kept.
+    if (!isUserToken(name)) generations[name] = generation + 1;
   }
   const next: CredentialsRecord = {
     ...record,
     environments: { ...record.environments, [env]: entries },
   };
-  await keepValueGenerations(deps, generations);
+  if (Object.keys(generations).length > 0) await keepValueGenerations(deps, generations);
   await writeArtifact("credentials", credentialsRecordFile(deps.paths), next);
   return next;
 }
@@ -125,7 +130,7 @@ export async function assertValuesCurrent(deps: Pick<PhaseDeps, "paths">): Promi
   const kept =
     (await readValidJson(generatedValuesFile(deps), GeneratedGenerationsSchema))?.generations ?? {};
   const behind = Object.entries(entries)
-    .filter(([name]) => !(USER_TOKEN_NAMES as readonly string[]).includes(name))
+    .filter(([name]) => !isUserToken(name))
     .filter(([name, entry]) => entry.generation > (kept[name] ?? 1))
     .map(([name]) => name)
     .sort();

@@ -75,6 +75,17 @@ describe("the rotation record", () => {
     });
   });
 
+  it("records a user's token with no generation of a value on this computer", async () => {
+    const deps = await createTestPhaseDeps({ clock });
+    await recordRotation(deps, ["hetzner"]);
+    expect((await readCredentialsRecord(deps)).environments.prod?.hetzner).toEqual({
+      rotatedAt: NOW.toISOString(),
+      generation: 2,
+    });
+    // A site without generated values gets no file for them.
+    await expect(stat(generatedValuesFile(deps))).rejects.toThrow();
+  });
+
   it("starts the file for an environment it does not have yet", async () => {
     const deps = await createTestPhaseDeps({ clock, environment: "staging" });
     await recordRotation(deps, ["network"]);

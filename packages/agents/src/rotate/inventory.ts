@@ -171,8 +171,11 @@ function appSecretCredentials(names: readonly string[]): Omit<Credential, "date"
   return [app, ...parts];
 }
 
-/** The user's own tokens: the variables each is read from, and when an environment uses it. */
-const USER_TOKENS: readonly {
+/**
+ * The user's own tokens: the variables each is read from (in order, the first named in messages),
+ * and when an environment uses it.
+ */
+export const USER_TOKENS: readonly {
   name: UserTokenName;
   vars: readonly string[];
   uses: (plan: DeployPlan) => boolean;

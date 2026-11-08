@@ -32,6 +32,14 @@ export {
   credentialInventory,
 } from "./rotate/inventory";
 export {
+  type ReplacedToken,
+  type ReplaceTokenOptions,
+  replaceToken,
+  type TokenCopy,
+  type TokenExpiry,
+  tokenExpiries,
+} from "./rotate/tokens";
+export {
   type AddRunnerHostInput,
   addRunnerHost,
   applyRunnerHost,
