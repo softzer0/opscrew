@@ -711,7 +711,7 @@ Horizon, PostgreSQL and Redis.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/secops && pnpm lint`
   - Effort: medium
 
-- [ ] T1329 [US8] Provision's pull requests, as a real deploy showed them (founder, 2026-11-08)
+- [x] T1329 [US8] Provision's pull requests, as a real deploy showed them (founder, 2026-11-08)
   - Owns: `packages/agents/src/provision/publish.ts`, `packages/agents/src/verify/**`, the shared commit-and-propose helper it uses (find it), `packages/connectors/github/src/github.ts` (`updatePullRequest`, `PATCH /repos/{owner}/{repo}/pulls/{number}`), `packages/agents/src/provision/types.ts` (the `GitHubApi` Pick), `packages/agents/src/testing/deploy.ts` (`FakeGitHub` records updates) (+ tests)
   - Accept:
     - **One open pull request:** a provision run whose changes go to the default branch pushes to OpsCrew's own open deploy-setup pull request for that app when one is open (and updates its title and body from the branch's whole change), instead of opening `-2`, `-3`, …; a new branch only when none is open. A clone on the default branch while that pull request is open still stops and says to check out its branch.
