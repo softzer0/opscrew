@@ -1,8 +1,21 @@
-import { readFile } from "node:fs/promises";
+// Feature 025 (T2511): `opscrew rotate recovery-key`, which took over `opscrew secrets rotate`.
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { findExecutable } from "@opscrew/core";
+import { exists, findExecutable } from "@opscrew/core";
+import { readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { FakeSops } from "../secrets/__fixtures__/fake-sops";
+import {
+  provisionedFiles,
+  recoveryWorld,
+  writeLocal,
+  writeRepositoryFiles,
+} from "../secrets/__fixtures__/world";
+import { refreshRecoveryCopy } from "../secrets/copy";
+import { COPY_PATH } from "../secrets/files";
+import { SOPS_CONFIG_PATH } from "../secrets/store";
 import { gitClient } from "../shared";
+import { generatedValuesFile } from "../shared/app-secrets";
 import {
   createProject,
   FakeGitHub,
@@ -10,17 +23,8 @@ import {
   ScriptedApprovalHandler,
   testPlan,
 } from "../testing";
-import { FakeSops } from "./__fixtures__/fake-sops";
-import {
-  provisionedFiles,
-  recoveryWorld,
-  writeLocal,
-  writeRepositoryFiles,
-} from "./__fixtures__/world";
-import { refreshRecoveryCopy } from "./copy";
-import { COPY_PATH } from "./files";
-import { publishRotatedKey } from "./publish";
-import { SOPS_CONFIG_PATH } from "./store";
+import { publishRotatedKey } from "./addons";
+import { credentialsRecordFile } from "./record";
 
 /** A git project with its first recovery copy committed on main, and approvals `answer` gives. */
 async function rotatable(answer: (kind: string) => boolean = () => true) {
@@ -83,6 +87,39 @@ describe.skipIf(findExecutable("git") === undefined)("publishRotatedKey", () => 
     expect(JSON.stringify([result, r.github.api.pulls, r.approvalHandler.requests])).not.toContain(
       identity,
     );
+    // The rotation is recorded, committed with the copy, and the copy holds its generation, so
+    // another computer's provision asks for a restore with the new key first.
+    const record = await readArtifact("credentials", credentialsRecordFile(r.deps.paths));
+    expect(record.environments.prod?.["recovery-key"]).toMatchObject({ generation: 2 });
+    expect(pull?.body).toContain(
+      "- `opscrew/credentials.yaml`: when the key was rotated (no value).",
+    );
+    const recordCommitted = await r.project.git(
+      r.project.root,
+      "show",
+      "opscrew/deploy-setup:opscrew/credentials.yaml",
+    );
+    expect(recordCommitted).toContain("recovery-key:");
+    const generated = JSON.parse(await readFile(generatedValuesFile(r.deps), "utf8"));
+    expect(generated.generations).toEqual({ "recovery-key": 2 });
+  });
+
+  it("leaves the record and the generations as they were when no new key was made", async () => {
+    const r = await rotatable();
+    const generated = await readFile(generatedValuesFile(r.deps), "utf8");
+    // A key is never written over a file, so this run makes none.
+    const keyOut = join(r.keys, "taken.txt");
+    await writeFile(keyOut, "the user's own file\n");
+    const error = await publishRotatedKey(r.deps, {
+      git: r.git,
+      github: r.github,
+      plan: testPlan(),
+      keyOut,
+    }).catch((e: unknown) => e);
+    expect(error).toMatchObject({ code: "INVALID_INPUT" });
+    expect(await exists(credentialsRecordFile(r.deps.paths))).toBe(false);
+    expect(await readFile(generatedValuesFile(r.deps), "utf8")).toBe(generated);
+    expect(r.github.api.pulls).toEqual([]);
   });
 
   it("without an approved push keeps the commit local and says how to finish", async () => {

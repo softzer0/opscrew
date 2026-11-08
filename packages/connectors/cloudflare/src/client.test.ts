@@ -487,6 +487,55 @@ describe("CloudflareClient Zero Trust reads", () => {
   });
 });
 
+describe("CloudflareClient.rotateTunnelSecret", () => {
+  const TUNNEL = "/accounts/acc-1/cfd_tunnel/t-1";
+  const client = (routes: Record<string, FakeReply | FakeReply[]>) => {
+    const fake = fakeFetch(routes);
+    const redactor = new Redactor();
+    return {
+      ...fake,
+      redactor,
+      cf: new CloudflareClient({ token: TOKEN, fetch: fake.fetch, sleep: noSleep, redactor }),
+    };
+  };
+
+  it("changes the secret in place and returns the new token, both redacted", async () => {
+    const secret = fakeSecret("generic-password", "tunnel secret");
+    const token = fakeSecret("generic-password", "tunnel token");
+    const { cf, calls, redactor } = client({
+      [`PATCH ${TUNNEL}`]: ok({ id: "t-1", name: "opscrew-shop", token }),
+    });
+    expect(await cf.rotateTunnelSecret("acc-1", "t-1", secret)).toBe(token);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ method: "PATCH", body: { tunnel_secret: secret } });
+    expect(redactor.redact(`${secret} ${token}`)).not.toContain(secret);
+    expect(redactor.redact(`${secret} ${token}`)).not.toContain(token);
+  });
+
+  it("reads the token when the answer has none", async () => {
+    const token = fakeSecret("generic-password", "tunnel token");
+    const { cf, calls } = client({
+      [`PATCH ${TUNNEL}`]: ok({ id: "t-1", name: "opscrew-shop" }),
+      [`GET ${TUNNEL}/token`]: ok(token),
+    });
+    expect(await cf.rotateTunnelSecret("acc-1", "t-1", fakeSecret("generic-password"))).toBe(token);
+    expect(calls.map((c) => c.method)).toEqual(["PATCH", "GET"]);
+  });
+
+  it("names the permission when Cloudflare refuses, and never shows the secret", async () => {
+    const secret = fakeSecret("generic-password", "tunnel secret");
+    const { cf } = client({
+      [`PATCH ${TUNNEL}`]: fail(403, [{ code: 10000, message: `Authentication error ${secret}` }]),
+    });
+    const error = (await cf
+      .rotateTunnelSecret("acc-1", "t-1", secret)
+      .catch((e: unknown) => e)) as OpsCrewError;
+    expect(error).toMatchObject({ code: "CREDENTIALS_INVALID" });
+    expect(error.hint).toContain('"Cloudflare Tunnel → Edit"');
+    expect(`${error.message} ${error.hint}`).not.toContain(secret);
+  });
+});
+
 describe("cloudflareConnector", () => {
   it("exposes the credentials and a client when a token is set", async () => {
     const { fetch } = fakeFetch({ "/user/tokens/verify": ok({ status: "active" }) });

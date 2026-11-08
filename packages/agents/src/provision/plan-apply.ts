@@ -491,7 +491,8 @@ export function savedPlanOf(summary: PlanSummary, policy: PolicyResult[]): Saved
   };
 }
 
-function lastLines(text: string, count = 8): string {
+/** The last `count` lines of an engine log. */
+export function lastLines(text: string, count = 8): string {
   return text.trim().split(/\r?\n/).slice(-count).join("\n");
 }
 

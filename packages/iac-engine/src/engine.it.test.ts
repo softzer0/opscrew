@@ -317,9 +317,10 @@ describe.skipIf(!tofu)("tofu state encryption via TF_ENCRYPTION (real binary)", 
   );
 });
 
-// A new state passphrase with the old as fallback (research R10), twice so the key name
-// alternates (opscrew -> opscrew_next -> opscrew); only with OPSCREW_IT=1.
-describe.skipIf(!tofu || !runDriftIt)("tofu state passphrase fallback (real binary)", () => {
+// A new state passphrase with the old as fallback (research R10), twice in a row so the key name
+// alternates (opscrew -> opscrew_next -> opscrew) and `stateKeyName` must read it from the state
+// each time (025, T2511). It needs no provider download, so it runs wherever tofu is installed.
+describe.skipIf(!tofu)("tofu state passphrase fallback (real binary)", () => {
   it(
     "plans leave the state as it is; each apply rewrites it under the other name, which alone reads it",
     async () => {
@@ -396,7 +397,8 @@ describe.skipIf(!tofu || !runDriftIt)("tofu state passphrase fallback (real bina
         await rm(dir, { recursive: true, force: true });
       }
     },
-    TIMEOUT,
+    // About fourteen OpenTofu runs, each slower on a busy machine.
+    3 * TIMEOUT,
   );
 });
 

@@ -172,7 +172,7 @@ export async function readRecipients(
       "ARTIFACT_INVALID",
       `${SOPS_CONFIG_PATH} has no rule for secrets.sops.json with one or two age keys (age1…), so OpsCrew cannot tell whom to encrypt the recovery copy to.`,
       {
-        hint: `Put back the ${SOPS_CONFIG_PATH} OpsCrew wrote (git restore ${SOPS_CONFIG_PATH}), or make a new key with \`opscrew secrets rotate\`.`,
+        hint: `Put back the ${SOPS_CONFIG_PATH} OpsCrew wrote (git restore ${SOPS_CONFIG_PATH}), or make a new key with \`opscrew rotate recovery-key\`.`,
       },
     );
   }

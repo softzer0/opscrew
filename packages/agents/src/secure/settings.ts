@@ -203,7 +203,7 @@ async function copyCheck(deps: PhaseDeps): Promise<CheckResult[]> {
       `The repository became public with the encrypted secrets copy in it (${copy}): anyone can keep a copy of the encrypted file and try to open it later, and the names of the files it holds are readable.`,
       {
         remediation:
-          "Make the repository private again if it should not be public. If it stays public, keep your age key safe (only it opens the copy); to be sure, run `opscrew secrets rotate` and then change the secrets themselves, since older commits keep the old copy.",
+          "Make the repository private again if it should not be public. If it stays public, keep your age key safe (only it opens the copy); to be sure, run `opscrew rotate recovery-key` and then rotate the secrets themselves (`opscrew rotate` lists them), since older commits keep the old copy.",
       },
     ),
   ];

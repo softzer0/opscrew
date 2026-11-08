@@ -2921,6 +2921,51 @@ function tunnelConnectorStep(
 }
 
 /**
+ * A one-step host plan that gives the app's running Cloudflare Tunnel connector its tunnel's new
+ * token (feature 025, research R11: the tunnel's secret changed in place, so the tunnel and its id
+ * stay): the token is written at apply (`tunnelToken`, on standard input, never part of this plan)
+ * to a file only its owner reads, and the connector is recreated with it. The step is a change
+ * even when the connector runs as planned (`rewrite`). On a server the user owns it runs as root in
+ * the app's connector folder (`tunnelDir`); on a server OpsCrew created as the login in
+ * `connector.dir`. Apply it with `applyHostPlan` like any host plan.
+ */
+export function planTunnelToken(options: {
+  app: string;
+  runAs: RunAs;
+  connector: { dir?: string; compose: string; tunnelId: string };
+}): HostPlan {
+  const { app, runAs, connector } = options;
+  const plan: HostPlan = {
+    schemaVersion: HOST_PLAN_SCHEMA_VERSION,
+    purpose: "setup",
+    app,
+    steps: [
+      {
+        id: "tunnel-connector",
+        title: `Give the Cloudflare Tunnel connector of "${app}" its new token${imageIn(connector.compose)}`,
+        state: "change",
+        scope: "app",
+        reason:
+          "The tunnel's secret changed in Cloudflare, and with it its token: OpsCrew writes the new token to a file only its owner can read (supplied at apply time, never part of this plan) and recreates the connector, which reconnects in seconds. The tunnel itself stays as it is.",
+        params: {
+          app,
+          compose: connector.compose,
+          tunnelId: connector.tunnelId,
+          needsToken: true,
+          dir: connector.dir ?? tunnelDir(app),
+          runAs,
+          rewrite: true,
+        },
+      },
+    ],
+    findings: [],
+  };
+  // Validate now so a bad directory fails before anything is approved.
+  for (const item of plan.steps) stepScripts(plan, item);
+  return plan;
+}
+
+/**
  * A one-step host plan that turns Portainer on or off in `dir`. On servers OpsCrew created
  * (Hetzner, DigitalOcean) it runs as the SSH login (`runAs: "login"`, the default: the deploy user
  * in its home directory), needs no root and writes no host record. On a server the user owns use

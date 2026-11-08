@@ -23,7 +23,7 @@ import { applyHostPlan, HostApplyError } from "./apply";
 import { DOCKER_DAEMON_JSON } from "./constants";
 import { hostPlanHash } from "./hash";
 import { inspectHost } from "./inspect";
-import { planHost, planPortainer, planTeardown, planUndo } from "./plan";
+import { planHost, planPortainer, planTeardown, planTunnelToken, planUndo } from "./plan";
 import type { HostPlan } from "./types";
 
 const STEP_SCRIPTS = /\.(check|apply|verify)$|^deadman\./;
@@ -276,6 +276,64 @@ describe("tunnel replaced", () => {
 
     const settled = await planFor(fake, replaced);
     expect(settled.steps.every((item) => item.state === "in-place")).toBe(true);
+  });
+});
+
+describe("planTunnelToken", () => {
+  it("gives the running connector its tunnel's new token and recreates it, though all else is in place", async () => {
+    const fake = new FakeHost();
+    await provision(fake, tunnelDesired(fake), { secrets: { tunnelToken: tunnelToken() } });
+    const settled = await planFor(fake, tunnelDesired(fake));
+    expect(settled.steps.every((item) => item.state === "in-place")).toBe(true);
+
+    const plan = planTunnelToken({
+      app: "shop",
+      runAs: "root",
+      connector: { compose: TUNNEL_COMPOSE, tunnelId: TUNNEL_ID },
+    });
+    expect(plan.steps.map((item) => [item.id, item.state])).toEqual([
+      ["tunnel-connector", "change"],
+    ]);
+    // The new token is needed: refused without it, before anything changes.
+    fake.calls.length = 0;
+    await expect(applyApproved(fake, plan)).rejects.toThrow(/needs the tunnel token/);
+    expect(fake.calls).toEqual([]);
+
+    const next = `${tunnelToken()}NEXT`;
+    const recreates = fake.tunnelRecreates;
+    const result = await applyApproved(fake, plan, { secrets: { tunnelToken: next } });
+    expect(result.applied).toEqual(["tunnel-connector"]);
+    expect(fake.files.get("/srv/opscrew/cloudflared/shop/tunnel.env")).toBe(
+      `TUNNEL_TOKEN=${next}\n`,
+    );
+    expect(fake.tunnelRecreates).toBe(recreates + 1);
+    // The tunnel stays: same id.
+    expect(fake.files.get("/srv/opscrew/cloudflared/shop/tunnel.id")).toBe(`${TUNNEL_ID}\n`);
+    expect(fake.calls.filter((call) => call.input !== undefined).map((call) => call.name)).toEqual([
+      "tunnel-connector.apply",
+    ]);
+    for (const call of fake.calls) expect(call.command).not.toContain(next);
+    expect(JSON.stringify(plan)).not.toContain(next);
+  });
+
+  it("runs as the login in its own folder on a server OpsCrew created", async () => {
+    const fake = new FakeHost({ login: "deploy", sudo: "none" });
+    const plan = planTunnelToken({
+      app: "shop",
+      runAs: "login",
+      connector: {
+        dir: "/home/deploy/opscrew/cloudflared",
+        compose: TUNNEL_COMPOSE,
+        tunnelId: TUNNEL_ID,
+      },
+    });
+    const token = tunnelToken();
+    await applyApproved(fake, plan, { secrets: { tunnelToken: token } });
+    expect(fake.calls.every((call) => !call.sudo)).toBe(true);
+    expect(fake.files.get("/home/deploy/opscrew/cloudflared/tunnel.env")).toBe(
+      `TUNNEL_TOKEN=${token}\n`,
+    );
+    expect(fake.files.has("/etc/opscrew/host.json")).toBe(false);
   });
 });
 

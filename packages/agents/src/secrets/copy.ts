@@ -398,7 +398,7 @@ export async function rotateRecoveryKey(
         : (await readRecipients(deps.paths))?.[1];
   const folderCopy = await folderCopyFor(deps, () => planApp(deps));
   const decided = await mayCommit(deps, record, input, repositoryCopy !== undefined);
-  const command = "opscrew secrets rotate";
+  const command = "opscrew rotate recovery-key";
   if (!decided.commit && folderCopy === undefined) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",

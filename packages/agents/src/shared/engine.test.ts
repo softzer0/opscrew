@@ -70,6 +70,61 @@ describe("projectEngine", () => {
     ).rejects.toMatchObject({ code: "ARTIFACT_INVALID" });
   });
 
+  it("encrypts under the key name the environment's state has, which each rotation alternates (025)", async () => {
+    const deps = await createTestPhaseDeps();
+    const plan = testPlan();
+    const passphrase = await writePassphrase(deps);
+    const engine = { services: { engine: tofu } };
+    // No state yet, or a blank one: OpsCrew's first name.
+    expect((await projectEngine(deps, plan, engine)).env.TF_ENCRYPTION).toBe(
+      tofuEncryptionEnv(passphrase),
+    );
+    await mkdir(dirname(tfstateFile(deps.paths)), { recursive: true });
+    await writeFile(tfstateFile(deps.paths), "\n");
+    expect((await projectEngine(deps, plan, engine)).env.TF_ENCRYPTION).toBe(
+      tofuEncryptionEnv(passphrase),
+    );
+    // A state a rotation rewrote names the other key in its plaintext meta.
+    await writeFile(tfstateFile(deps.paths), encryptedUnder("opscrew_next"));
+    const { env } = await projectEngine(deps, plan, { ...engine, passphrase: "if-present" });
+    expect(env.TF_ENCRYPTION).toBe(tofuEncryptionEnv(passphrase, { name: "opscrew_next" }));
+  });
+
+  it("reads the key name from the first state that is there: a bucket's, without the environment's own", async () => {
+    const deps = await createTestPhaseDeps();
+    const passphrase = await writePassphrase(deps);
+    await mkdir(deps.paths.files.tfstateDir, { recursive: true });
+    await writeFile(tfstateFile(deps.paths), "");
+    await writeFile(
+      join(deps.paths.files.tfstateDir, "storage.tfstate"),
+      encryptedUnder("opscrew_next"),
+    );
+    const { env } = await projectEngine(deps, testPlan(), { services: { engine: tofu } });
+    expect(env.TF_ENCRYPTION).toBe(tofuEncryptionEnv(passphrase, { name: "opscrew_next" }));
+  });
+
+  it("stops while a rotation of the state passphrase is unfinished, naming the command that ends it", async () => {
+    const deps = await createTestPhaseDeps();
+    await writePassphrase(deps);
+    await writeFile(
+      `${deps.paths.files.statePassphrase}.next`,
+      `${randomBytes(24).toString("base64url")}\n`,
+    );
+    for (const passphrase of ["create", "if-present", { requiredBy: "opscrew drift" }] as const) {
+      await expect(
+        projectEngine(deps, testPlan(), { services: { engine: tofu }, passphrase }),
+      ).rejects.toMatchObject({
+        code: "PHASE_PRECONDITION",
+        message: expect.stringContaining("A rotation of the state passphrase is unfinished"),
+        hint: "Run `opscrew rotate state-passphrase` to finish it, then run the command again.",
+      });
+    }
+    // Terraform never reads the passphrase.
+    await expect(
+      projectEngine(deps, testPlan(), { services: { engine: terraform } }),
+    ).resolves.toBeDefined();
+  });
+
   it("gives Terraform no encryption", async () => {
     const deps = await createTestPhaseDeps();
     const { env } = await projectEngine(deps, testPlan(), { services: { engine: terraform } });
@@ -184,6 +239,15 @@ async function writePassphrase(deps: Awaited<ReturnType<typeof createTestPhaseDe
   return passphrase;
 }
 
+/** The outside of an encrypted state whose plaintext meta names OpsCrew's key `name`. */
+function encryptedUnder(name: string): string {
+  const state = JSON.parse(encryptedState()) as Record<string, unknown>;
+  return JSON.stringify({
+    ...state,
+    meta: { [`key_provider.pbkdf2.${name}`]: randomBytes(16).toString("base64") },
+  });
+}
+
 describe("stateContents", () => {
   it("asks the engine for managed resources: none in an emptied state, outputs and data sources do not count", async () => {
     for (const [content, expected] of [
@@ -225,6 +289,16 @@ describe("stateContents", () => {
     const terraform = listing([], "terraform");
     expect(await stateContents(deps, file, async () => terraform)).toBe("unknown");
     expect(terraform.stateCalls).toEqual([]);
+  });
+
+  it("opens a state a rotation rewrote under the key name its meta has (025)", async () => {
+    const { deps, file } = await setup(encryptedUnder("opscrew_next"));
+    const passphrase = await writePassphrase(deps);
+    const engine = listing([]);
+    expect(await stateContents(deps, file, async () => engine)).toBe("nothing");
+    expect(engine.stateCalls).toEqual([
+      { file, encryption: tofuEncryptionEnv(passphrase, { name: "opscrew_next" }) },
+    ]);
   });
 
   it("is unknown when the engine cannot read the state, or there is no passphrase or engine", async () => {

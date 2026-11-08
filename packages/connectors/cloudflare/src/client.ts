@@ -469,6 +469,12 @@ const TunnelSchema = z.looseObject({
   deleted_at: z.string().nullish(),
 });
 
+/** A tunnel after its secret changed: the new token, when the answer holds it. */
+const RotatedTunnelSchema = z.looseObject({ token: z.string().min(1).optional() });
+
+/** A tunnel's token (`GET …/cfd_tunnel/{id}/token`). */
+const TunnelTokenSchema = z.string().min(1);
+
 /**
  * An expiry time as an ISO time in UTC. Origin CA writes `2041-10-16 23:53:00 +0000 UTC`, and
  * Authenticated Origin Pulls `2041-10-16T23:58:23Z` (spike T1402); any other form is refused.
@@ -710,6 +716,11 @@ function mayHaveReached(what: string, detail: string, cause?: unknown): OpsCrewE
 /** Hints for the account's Cloudflare Tunnels. */
 const TUNNEL_HINTS: FailHints = {
   auth: `Reading a Cloudflare Tunnel needs the account permission "Cloudflare Tunnel" on the token. Edit the token at ${CLOUDFLARE_TOKEN_PAGE}; then set CLOUDFLARE_API_TOKEN.`,
+};
+
+/** Hints for changing a Cloudflare Tunnel. */
+const TUNNEL_EDIT_HINTS: FailHints = {
+  auth: `Changing a Cloudflare Tunnel needs the account permission "Cloudflare Tunnel → Edit" on the token. Edit the token at ${CLOUDFLARE_TOKEN_PAGE}; then set CLOUDFLARE_API_TOKEN.`,
 };
 
 /** Hints for origin certificates and per-hostname Authenticated Origin Pulls. */
@@ -1668,6 +1679,31 @@ export class CloudflareClient {
     );
     if (answer.status === 404) return "gone";
     return tunnelState(this.#result(answer, TunnelSchema, "read the tunnel", TUNNEL_HINTS));
+  }
+
+  /**
+   * Changes a Cloudflare Tunnel's secret in place (`PATCH /accounts/{id}/cfd_tunnel/{id}` with
+   * `tunnel_secret`, feature 025 research R11) and returns the tunnel's new token: from the answer,
+   * else from `GET …/cfd_tunnel/{id}/token`. Connectors already running stay connected; a connector
+   * started from now on needs the new token. `secret` (at least 32 random bytes, base64) and the
+   * token are registered with the redactor before they can appear anywhere. Sent once.
+   */
+  async rotateTunnelSecret(accountId: string, tunnelId: string, secret: string): Promise<string> {
+    this.#redactor.addLiteral(secret, "TUNNEL_SECRET");
+    const what = "change the Cloudflare Tunnel's secret";
+    const path = `/accounts/${encodeURIComponent(accountId)}/cfd_tunnel/${encodeURIComponent(tunnelId)}`;
+    const answer = await this.#send(path, what, {
+      method: "PATCH",
+      body: { tunnel_secret: secret },
+      hints: TUNNEL_EDIT_HINTS,
+    });
+    const token =
+      this.#parseWrite(RotatedTunnelSchema, answer.body.result, what).token ??
+      (await this.#call(`${path}/token`, TunnelTokenSchema, "read the tunnel's new token", {
+        hints: TUNNEL_HINTS,
+      }));
+    this.#redactor.addLiteral(token, "TUNNEL_TOKEN");
+    return token;
   }
 
   /**

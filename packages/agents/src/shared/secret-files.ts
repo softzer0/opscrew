@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { dirname } from "node:path";
 import { OpsCrewError, type ProjectPaths, readTextIfExists, writeFileAtomic } from "@opscrew/core";
 
@@ -55,7 +55,54 @@ export function statePassphraseFile(paths: Pick<ProjectPaths, "files">): SecretF
   };
 }
 
+/** A new state passphrase: 32 random bytes, base64url (43 characters). */
+export function newStatePassphrase(): string {
+  return randomBytes(32).toString("base64url");
+}
+
 /** The OpenTofu state passphrase for this project, created once (32 random bytes, base64url). */
 export function ensureStatePassphrase(paths: Pick<ProjectPaths, "files">): Promise<string> {
-  return ensureSecretFile(statePassphraseFile(paths), () => randomBytes(32).toString("base64url"));
+  return ensureSecretFile(statePassphraseFile(paths), newStatePassphrase);
+}
+
+/**
+ * The new state passphrase of an unfinished rotation (`state_passphrase.next`, beside the current
+ * one, feature 025): kept right before the apply that rewrites the state under it, so the state is
+ * never encrypted with a passphrase this computer does not keep, until it replaces the current one.
+ */
+export function nextStatePassphraseFile(paths: Pick<ProjectPaths, "files">): SecretFile {
+  const file = `${paths.files.statePassphrase}.next`;
+  return {
+    file,
+    valid: (value) => value.length >= 16,
+    damaged: {
+      message: `The new state passphrase of an unfinished rotation (${file}) is damaged, so OpsCrew stopped: the infrastructure state may already be encrypted with it. Nothing was changed.`,
+      hint: "Put the file back from a backup, then run `opscrew rotate state-passphrase` again.",
+    },
+  };
+}
+
+/**
+ * Keeps `passphrase` as the new one of the unfinished rotation of the state passphrase (0600, in
+ * a folder only the user can open), before anything is encrypted with it.
+ */
+export async function keepNextStatePassphrase(
+  paths: Pick<ProjectPaths, "files">,
+  passphrase: string,
+): Promise<void> {
+  const { file } = nextStatePassphraseFile(paths);
+  await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+  await writeFileAtomic(file, `${passphrase}\n`, { mode: 0o600 });
+}
+
+/**
+ * Ends the rotation of the state passphrase: its new passphrase replaces the current one (0600),
+ * then its own file goes.
+ */
+export async function adoptNextStatePassphrase(
+  paths: Pick<ProjectPaths, "files">,
+  passphrase: string,
+): Promise<void> {
+  await writeFileAtomic(paths.files.statePassphrase, `${passphrase}\n`, { mode: 0o600 });
+  await rm(nextStatePassphraseFile(paths).file, { force: true });
 }

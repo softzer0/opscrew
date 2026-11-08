@@ -612,7 +612,7 @@ describe("rotateRecoveryKey", () => {
     );
     expect(nowhere.code).toBe("PHASE_PRECONDITION");
     expect(nowhere.message).toContain(
-      "No folder is set for the copy either, so OpsCrew made none. Set one with `opscrew secrets folder <path>`, or run `opscrew secrets rotate` in a terminal to be asked.",
+      "No folder is set for the copy either, so OpsCrew made none. Set one with `opscrew secrets folder <path>`, or run `opscrew rotate recovery-key` in a terminal to be asked.",
     );
     await expect(stat(join(keys, "rotated.txt"))).rejects.toThrow();
     expect(sops.calls).toEqual([]);

@@ -21,9 +21,9 @@ import {
   storageEngineEnv,
   storageStateFile,
 } from "@opscrew/agents";
-import { NodeCommandRunner, resolveProjectPaths } from "@opscrew/core";
+import { NodeCommandRunner, readTextIfExists, resolveProjectPaths } from "@opscrew/core";
 import { materializeFixture } from "@opscrew/core/testing";
-import { selectEngine, tofuEncryptionEnv } from "@opscrew/iac-engine";
+import { selectEngine, stateKeyName, tofuEncryptionEnv } from "@opscrew/iac-engine";
 import { appDir, storageRootDir } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
@@ -1236,7 +1236,11 @@ async function engineDestroy(
   const engineEnv = { ...options.env };
   if (engine.info.name === "tofu" && existsSync(paths.files.statePassphrase)) {
     const passphrase = (await readFile(paths.files.statePassphrase, "utf8")).trim();
-    engineEnv.TF_ENCRYPTION = tofuEncryptionEnv(passphrase);
+    // Under the key name the state has: it alternates with each rotation of the passphrase.
+    const state = await readTextIfExists(options.state);
+    engineEnv.TF_ENCRYPTION = tofuEncryptionEnv(passphrase, {
+      name: stateKeyName(state?.trim() ? state : undefined),
+    });
   }
   await engine.init(dir, { env: engineEnv, backendConfig: { path: options.state } });
   await mkdir(paths.files.plansDir, { recursive: true });

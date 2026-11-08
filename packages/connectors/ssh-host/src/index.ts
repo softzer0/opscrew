@@ -107,6 +107,7 @@ export {
   planRunner,
   planRunnerHost,
   planTeardown,
+  planTunnelToken,
   planUndo,
 } from "./plan";
 export type { HostPrivilege } from "./privilege";

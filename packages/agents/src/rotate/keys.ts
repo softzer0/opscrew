@@ -24,7 +24,9 @@ import { secretsEnvironment } from "../provision/secrets";
 import { type RefreshRecoveryResult, refreshRecoveryCopy } from "../secrets/copy";
 import { PlanRefusedError } from "../shared/approvals";
 import { dispatchAndFollow } from "../shared/deploy-run";
+import type { EngineFactory } from "../shared/engine";
 import { codeOf } from "../shared/errors";
+import { replaceDeployKeyObject } from "./infra";
 import {
   bareKey,
   forgetPrevious,
@@ -78,6 +80,8 @@ export interface SshKeyServices {
   ownHostPlan(input: OwnHostPlanInput): Promise<void>;
   /** Tests: the deploy user's shell at a host with a private key file (default ssh). */
   remote?: KeyRemote;
+  /** Tests: the IaC engine that replaces the deploy key's copy at the provider. */
+  engine?: EngineFactory;
 }
 
 /** A finished rotation. */
@@ -412,7 +416,9 @@ async function prove(
  * approved by its hash; the new public half added on every server it opens (over SSH as deploy
  * with the current deploy key, or on the user's own server the deploy key through its host plan
  * with both keys); GitHub's secret replaced, when it holds one; the new key proven; the new pair
- * moved into place; the old half removed (over SSH, or the host plan with the new key only); the rotation recorded
+ * moved into place; the old half removed (over SSH, or the host plan with the new key only); for
+ * the deploy key, its copy at the provider replaced in its own approved plan
+ * (`replaceDeployKeyObject`); the rotation recorded
  * (`recordRotation`) and the recovery copy refreshed. Run again after a failure, it goes on with
  * the same new pair: before the removal both keys work, and nothing removes the old key unless
  * the new one proved itself. No key material reaches any output: private halves are registered
@@ -501,6 +507,26 @@ export async function rotateSshKey(
         cause: error,
       },
     );
+  }
+  if (which === "deploy-key") {
+    // The new key proved itself: the provider's copy, which only new servers get, follows it.
+    try {
+      await replaceDeployKeyObject(deps, plan, {
+        publicKey: stage.current.publicKeyOpenSsh,
+        again,
+        ...(services.engine !== undefined ? { services: { engine: services.engine } } : {}),
+      });
+    } catch (error) {
+      if (!isUserFacingError(error)) throw error;
+      throw new OpsCrewError(
+        codeOf(error),
+        `${error.message.replace(/\s+$/, "")} The new ${name} is in place on every server and the old one is gone; only the provider's copy for new servers still holds the old one.`,
+        {
+          hint: `${error.hint ? `${error.hint} ` : ""}Then run \`${again}\` again to replace it.`,
+          cause: error,
+        },
+      );
+    }
   }
   await recordRotation(deps, [which]);
   await forgetPrevious(deps.paths, which);

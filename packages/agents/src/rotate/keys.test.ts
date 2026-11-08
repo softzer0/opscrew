@@ -3,8 +3,8 @@ import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { checkKeyLine, previewKeyLine } from "@opscrew/connector-ssh-host";
-import type { CommandResult, RemoteExec } from "@opscrew/contracts";
-import { exists, OpsCrewError, resolveProjectPaths } from "@opscrew/core";
+import type { CommandResult, IacEngine, RemoteExec } from "@opscrew/contracts";
+import { exists, OpsCrewError, resolveProjectPaths, tfstateFile } from "@opscrew/core";
 import { CHECK_SECRETS, DEPLOY_SECRETS, deploySecretName } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
@@ -16,11 +16,14 @@ import { describe, expect, it } from "vitest";
 import { ensureCheckKey } from "../check/key";
 import { networked, splitPlan } from "../network/__fixtures__/plans";
 import { ensurePreviewKey } from "../previews/keys";
+import { ensureStatePassphrase } from "../shared/secret-files";
 import { updateServerAddresses } from "../shared/server-record";
 import { ensureDeployKey } from "../shared/ssh-keys";
 import {
   createTestPhaseDeps,
+  FakeEngine,
   ownPlan,
+  plainState,
   previewTestPlan,
   ScriptedApprovalHandler,
   type TestPhaseDeps,
@@ -186,7 +189,7 @@ interface World {
 
 async function world(
   plan: DeployPlan,
-  options: { environment?: string; answer?: ScriptedApprovalHandler } = {},
+  options: { environment?: string; answer?: ScriptedApprovalHandler; engine?: IacEngine } = {},
 ): Promise<World> {
   const deps = await createTestPhaseDeps({
     clock: { now: () => NOW },
@@ -219,12 +222,19 @@ async function world(
             ...(input.previousDeployKey === undefined ? [] : [input.previousDeployKey]),
           ]);
         },
+        ...(options.engine === undefined
+          ? {}
+          : { engine: async () => options.engine as IacEngine }),
       }),
   };
 }
 
 /** The app on its Hetzner server and Postgres on server `data` (Hetzner, or the user's own). */
-async function split(data: "cloud" | "own" = "cloud", answer?: ScriptedApprovalHandler) {
+async function split(
+  data: "cloud" | "own" = "cloud",
+  answer?: ScriptedApprovalHandler,
+  engine?: IacEngine,
+) {
   const { plan: networkedPlan } = networked(splitPlan({ data }), {
     app: { udpPortsInUse: [], wireguardInterfaces: [] },
     data: { udpPortsInUse: [], wireguardInterfaces: [] },
@@ -233,7 +243,10 @@ async function split(data: "cloud" | "own" = "cloud", answer?: ScriptedApprovalH
     ...networkedPlan,
     deployment: { lastApplyAt: "2026-10-12T08:00:00.000Z" },
   });
-  const w = await world(plan, answer === undefined ? {} : { answer });
+  const w = await world(plan, {
+    ...(answer === undefined ? {} : { answer }),
+    ...(engine === undefined ? {} : { engine }),
+  });
   await updateServerAddresses(w.deps.paths, () => ({
     schemaVersion: 1,
     deployment: { ipv4: APP },
@@ -324,6 +337,37 @@ describe("rotateSshKey: the deploy key", () => {
       expect(said).not.toContain(line);
     }
     expect(w.deps.redactor.redact(privateKey)).not.toContain(keyLines(privateKey)[0]);
+  });
+
+  it("then replaces the provider's copy of the deploy key in its own approved plan", async () => {
+    const engine = new FakeEngine({
+      changes: [
+        {
+          address: "module.server.hcloud_ssh_key.deploy[0]",
+          type: "hcloud_ssh_key",
+          name: "deploy",
+          provider: "registry.opentofu.org/hetznercloud/hcloud",
+          action: "replace",
+        },
+      ],
+    });
+    const w = await split("cloud", undefined, engine);
+    await ensureStatePassphrase(w.deps.paths);
+    await mkdir(w.deps.paths.files.tfstateDir, { recursive: true });
+    await writeFile(tfstateFile(w.deps.paths), plainState([]));
+    let keysAtApply: string[] = [];
+    const apply = engine.apply.bind(engine);
+    engine.apply = async (...args) => {
+      keysAtApply = await w.servers.keys(APP);
+      return apply(...args);
+    };
+    await w.run("deploy-key");
+    const handler = w.deps.approvalHandler as ScriptedApprovalHandler;
+    expect(handler.requests.map((r) => r.kind)).toEqual(["remote-exec", "iac-apply"]);
+    expect(handler.requests[1]).toMatchObject({ allowDestroy: true, confirmPhrase: "shop" });
+    // Only once the new key proved itself and the old one left the servers.
+    expect(keysAtApply).toEqual([await deployKeyNow(w)]);
+    expect(engine.applied).toHaveLength(1);
   });
 
   it("goes through the host plan on the user's own server: both keys, then the new one only", async () => {

@@ -1906,7 +1906,10 @@ export class FakeHost implements RemoteExec {
 
       // tunnel connector
       case "tunnel-connector.check":
-        return this.check(this.tunnelOk(p), { installed: this.files.has(`${p.DIR}/compose.yaml`) });
+        // A new token (REWRITE): the check never skips the apply, as on a server.
+        return this.check(this.tunnelOk(p) && p.REWRITE !== "true", {
+          installed: this.files.has(`${p.DIR}/compose.yaml`),
+        });
       case "tunnel-connector.apply": {
         const token = input.split("\n")[0] ?? "";
         if (token !== "") {

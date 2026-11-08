@@ -2,6 +2,7 @@ import { mkdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { IacEngine, ResourceAction, ResourceChange } from "@opscrew/contracts";
 import {
+  exists,
   OpsCrewError,
   type ProjectPaths,
   readTextIfExists,
@@ -12,13 +13,21 @@ import {
 import {
   type EnginePreference,
   engineLabel,
+  type StateKeyName,
   selectEngine,
+  stateKeyName,
   tofuEncryptionEnv,
 } from "@opscrew/iac-engine";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
-import { ensureStatePassphrase, readSecretFile, statePassphraseFile } from "./secret-files";
+import { commandFlags } from "../environments/choice";
+import {
+  ensureStatePassphrase,
+  nextStatePassphraseFile,
+  readSecretFile,
+  statePassphraseFile,
+} from "./secret-files";
 
 /**
  * The stop (`PHASE_PRECONDITION`, nothing changed) when the infrastructure state of `plan` is not
@@ -131,7 +140,7 @@ export async function stateContents(
     if (!passphrase) return "unknown";
     deps.redactor.addLiteral(passphrase, "state-passphrase");
     try {
-      env.TF_ENCRYPTION = tofuEncryptionEnv(passphrase);
+      env.TF_ENCRYPTION = tofuEncryptionEnv(passphrase, { name: stateKeyName(text) });
     } catch {
       return "unknown"; // a passphrase too short for OpenTofu cannot have encrypted it
     }
@@ -194,11 +203,40 @@ export interface ProjectEngineOptions {
 }
 
 /**
+ * The states the project's passphrase encrypts, in the order their key name is read: the
+ * environment's own, the app's bucket's and the off-server copies' bucket's (`storageStateFile`
+ * and `backupsStateFile` in provision, which imports this module), GitHub's verification record's.
+ */
+function encryptedStateFiles(paths: ProjectPaths): string[] {
+  return [
+    tfstateFile(paths),
+    join(paths.files.tfstateDir, "storage.tfstate"),
+    join(paths.files.tfstateDir, "backups.tfstate"),
+    pagesVerificationStateFile(paths),
+  ];
+}
+
+/**
+ * The name OpsCrew's key provider has in the environment's states (`stateKeyName`: it alternates
+ * with each rotation of the passphrase, which rewrites them all), from the first that is not
+ * blank ({@link encryptedStateFiles}); `opscrew` while there is none.
+ */
+async function environmentStateKeyName(paths: ProjectPaths): Promise<StateKeyName> {
+  for (const file of encryptedStateFiles(paths)) {
+    const text = await readTextIfExists(file);
+    if (text !== undefined && text.trim() !== "") return stateKeyName(text);
+  }
+  return "opscrew";
+}
+
+/**
  * The project's IaC engine and its environment: the phase's, plus `TF_ENCRYPTION` from the
  * project's state passphrase when the plan encrypts its state and the engine is OpenTofu
- * (Terraform cannot; callers say so where it matters). The passphrase is handled as
- * {@link ProjectEngineOptions.passphrase} says; it is registered with the redactor, and a
- * damaged one stops. Says nothing.
+ * (Terraform cannot; callers say so where it matters), under the key name the environment's state
+ * has ({@link environmentStateKeyName}). The passphrase is handled as
+ * {@link ProjectEngineOptions.passphrase} says; it is registered with the redactor, and a damaged
+ * one stops, as does an unfinished rotation of it (`opscrew rotate state-passphrase` finishes it).
+ * Says nothing.
  */
 export async function projectEngine(
   deps: EngineDeps,
@@ -212,6 +250,16 @@ export async function projectEngine(
   );
   const env: Record<string, string | undefined> = { ...deps.env };
   if (!plan.infra.stateEncryption || engine.info.name !== "tofu") return { engine, env };
+  if (await exists(nextStatePassphraseFile(deps.paths).file)) {
+    const { root, environment, app } = deps.paths;
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      "A rotation of the state passphrase is unfinished on this computer: the infrastructure state may already be encrypted with the new one. Nothing was changed.",
+      {
+        hint: `Run \`opscrew rotate state-passphrase${await commandFlags(root, environment, app)}\` to finish it, then run the command again.`,
+      },
+    );
+  }
   const mode = options.passphrase ?? "create";
   let passphrase: string | undefined;
   if (mode === "create") {
@@ -230,7 +278,9 @@ export async function projectEngine(
     }
   }
   deps.redactor.addLiteral(passphrase, "state-passphrase");
-  env.TF_ENCRYPTION = tofuEncryptionEnv(passphrase);
+  env.TF_ENCRYPTION = tofuEncryptionEnv(passphrase, {
+    name: await environmentStateKeyName(deps.paths),
+  });
   return { engine, env };
 }
 

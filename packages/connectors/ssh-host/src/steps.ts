@@ -2417,6 +2417,8 @@ function tunnelScripts(plan: HostPlan, step: HostStep): StepScripts {
       needsToken: z.boolean(),
       dir: DirSchema.optional(),
       runAs: RunAsSchema.optional(),
+      // The tunnel's token changed (`planTunnelToken`): written even when the rest is in place.
+      rewrite: z.literal(true).optional(),
     }),
   );
   const dir = p.dir ?? tunnelDir(app);
@@ -2471,6 +2473,7 @@ until compose logs --no-color --tail 300 2>/dev/null | grep -q 'Registered tunne
 done`,
     failed: "The tunnel connector is not running.",
     secrets: { names: ["tunnelToken"], required: p.needsToken },
+    rewrite: p.rewrite === true,
     doing: "starting the Cloudflare Tunnel connector",
     timeoutMs: 10 * MINUTE,
   });

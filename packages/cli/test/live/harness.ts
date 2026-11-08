@@ -10,9 +10,14 @@ import {
   parseDotenv,
   providerProfile,
 } from "@opscrew/agents";
-import { NodeCommandRunner, resolveProjectPaths } from "@opscrew/core";
+import {
+  NodeCommandRunner,
+  readTextIfExists,
+  resolveProjectPaths,
+  tfstateFile,
+} from "@opscrew/core";
 import { materializeFixture } from "@opscrew/core/testing";
-import { selectEngine, tofuEncryptionEnv } from "@opscrew/iac-engine";
+import { selectEngine, stateKeyName, tofuEncryptionEnv } from "@opscrew/iac-engine";
 import { type DeployPlan, type Region, readArtifact } from "@opscrew/plan-schema";
 import { afterAll, expect, it } from "vitest";
 import {
@@ -681,7 +686,11 @@ export class LiveRun {
     const engineEnv = { ...this.env };
     const passphrase = this.paths().files.statePassphrase;
     if (engine.info.name === "tofu" && existsSync(passphrase)) {
-      engineEnv.TF_ENCRYPTION = tofuEncryptionEnv((await readFile(passphrase, "utf8")).trim());
+      // Under the key name the state has: it alternates with each rotation of the passphrase.
+      const state = await readTextIfExists(tfstateFile(this.paths()));
+      engineEnv.TF_ENCRYPTION = tofuEncryptionEnv((await readFile(passphrase, "utf8")).trim(), {
+        name: stateKeyName(state?.trim() ? state : undefined),
+      });
     }
     return engine.output(join(this.repo, plan.infra.dir), { env: engineEnv });
   }
