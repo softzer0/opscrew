@@ -155,7 +155,7 @@ secret in any test: `fakeSecret(kind)` and `{{FAKE:<kind>}}` (`@opscrew/core/tes
 
 - [ ] T2516 Live (lead): plan 14's passes; results on `docs/e2e-coverage.md`.
 - [ ] T2517 Simplify (lead): a review of the feature's diff for reuse and simplicity, then its tasks.
-- [ ] T2518 The release 0.2.6 (lead): `docs/releasing.md`, with 013's US8 (founder, 2026-11-08).
+- [ ] T2518 The release 0.2.6 (lead): `docs/releasing.md`, with 013's US8 (founder, 2026-11-08). The changelog says that existing deployments recreate MySQL, MariaDB, Valkey, Redis, Dragonfly, Kafka, Redpanda, OpenSearch and Elasticsearch once at their next deploy (their start commands changed, T2503).
 
 ## Dependencies
 
