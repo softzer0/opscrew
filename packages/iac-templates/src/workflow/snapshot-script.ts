@@ -33,6 +33,7 @@ import {
   readApproval,
   recordRunning,
   resumeApp,
+  rotationHeldStop,
   SCRIPT_ROOTS,
   serverWords,
   startApp,
@@ -377,7 +378,8 @@ function takeCommand(plan: DeployPlan, server: string): string[] {
 /**
  * `snapshot_cmd_restore <id> [--only <service>]` (024 plan.md 3. and 6.): refuses before any change
  * without the one-time approval for exactly this restore ({@link RESTORE_APPROVAL_FILE}, read and
- * removed at once, as the rollback's), or when the snapshot is not complete. On the app's server
+ * removed at once, as the rollback's), while a credential rotation holds the app
+ * ({@link rotationStop}), or when the snapshot is not complete. On the app's server
  * the app's requests wait and its web, workers and cron stop ({@link holdRequests},
  * {@link stopApp}); after `hold` ({@link RESTORE_HELD}) they stay held, and the app is not started again
  * by the restore either way. Then the parts it restores are copied as they are now (a `manual`
@@ -417,6 +419,7 @@ function restoreCommand(plan: DeployPlan, server: string): string[] {
       `echo ${shellQuote("The one-time approval of this restore expired before it started, so nothing was changed. Run opscrew restore again.")} >&2`,
       "return 1",
     ]).map((line) => `  ${line}`),
+    `  ${rotationStop(plan)}`,
     '  if ! snapshot_complete "$_id"; then',
     `    ${said("The snapshot %s is not complete on this server, so nothing was changed.")} "$_id" >&2`,
     "    return 1",
@@ -472,21 +475,33 @@ function restoreCommand(plan: DeployPlan, server: string): string[] {
 }
 
 /**
+ * The line that stops `snapshot.sh hold`, `resume` and `restore` before any change while a
+ * credential rotation holds the app, naming it and the way out ({@link rotationHeldStop}): its
+ * hold is not theirs to replace or remove.
+ */
+function rotationStop(plan: DeployPlan): string {
+  return rotationHeldStop(plan, "OpsCrew changed nothing: ", "return 1", "_holder");
+}
+
+/**
  * The app's server's `snapshot_cmd_hold` and `snapshot_cmd_resume` (D8), the pieces of the
  * workflow's hold script (`appHoldCommands`): which workers and cron run is recorded while the web
  * runs ({@link recordRunning}), then the app is held ({@link holdApp}); `resume` ends the hold
- * ({@link resumeApp}). `hold` leaves {@link RESTORE_HELD}, which `resume` removes.
- * `opscrew restore` runs them around its restores. They change no data, so they need no approval;
- * kamal-proxy lets requests through itself after its longest hold, to the stopped app.
+ * ({@link resumeApp}). `hold` leaves {@link RESTORE_HELD}, which `resume` removes; while a rotation
+ * holds the app, both refuse ({@link rotationStop}). `opscrew restore` runs them around its
+ * restores. They change no data, so they need no approval; kamal-proxy lets requests through itself
+ * after its longest hold, to the stopped app.
  */
 function holdCommands(plan: DeployPlan): string[] {
   return [
     "snapshot_cmd_hold() {",
+    `  ${rotationStop(plan)}`,
     `  (umask 077 && mkdir -p ${SNAPSHOTS_DIR} && : > ${RESTORE_HELD})`,
     ...recordRunning(plan).map((line) => `  ${line}`),
     ...holdApp(plan).map((line) => `  ${line}`),
     "}",
     "snapshot_cmd_resume() {",
+    `  ${rotationStop(plan)}`,
     ...resumeApp(plan).map((line) => `  ${line}`),
     `  rm -f ${RESTORE_HELD}`,
     "}",

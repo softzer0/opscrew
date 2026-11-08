@@ -23,7 +23,7 @@ trap 'docker logout ghcr.io > /dev/null 2>&1' EXIT
 cd "$APPS_DIR"/shop
 exec 7> .start.lock
 flock 7
-if [ -f .snapshots/.held ]; then echo '::error::OpsCrew changed nothing on the server: a restore holds the app (.snapshots/.held in its folder), so its data may be partly restored: finish the restore with opscrew restore <copy>, or run sh snapshot.sh resume in the app'\\''s folder as the deploy user, then try again.' >&2; exit 1; fi
+if [ -f .snapshots/.held ]; then held="held $(cat .snapshots/.held)"; case "$held" in "held rotation "*) printf '::error::OpsCrew changed nothing on the server: a credential rotation holds the app (the rotation of the plan %s), so its services may have new values the app does not use yet: finish the rotation with opscrew rotate, or put the old values back with opscrew rotate --undo, then try again.\\n' "\${held#held rotation }" ;; *) printf '::error::OpsCrew changed nothing on the server: a restore holds the app (.snapshots/.held in its folder), so its data may be partly restored: finish the restore with opscrew restore <copy>, or run sh snapshot.sh resume in the app'\\''s folder as the deploy user, then try again.\\n' ;; esac >&2; exit 1; fi
 echo started > .start.outcome
 export APP_IMAGE="$1"
 RUN_IMAGE="$1"
@@ -221,9 +221,9 @@ REMOTE
     "name": "Upload runtime files and environment",
     "run": "set -euo pipefail
 ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
-hold="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'if [ -f /srv/apps/shop/.snapshots/.held ]; then echo held; fi')"
-if [[ "$hold" == held ]]; then
-  echo "::error::OpsCrew changed nothing on the server: a restore holds the app (.snapshots/.held in its folder), so its data may be partly restored: finish the restore with opscrew restore <copy>, or run sh snapshot.sh resume in the app's folder as the deploy user, then try again."
+hold="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'if [ -f /srv/apps/shop/.snapshots/.held ]; then echo held $(cat /srv/apps/shop/.snapshots/.held); fi')"
+if [[ "$hold" == held* ]]; then
+  case "$hold" in "held rotation "*) printf '::error::OpsCrew changed nothing on the server: a credential rotation holds the app (the rotation of the plan %s), so its services may have new values the app does not use yet: finish the rotation with opscrew rotate, or put the old values back with opscrew rotate --undo, then try again.\\n' "\${hold#held rotation }" ;; *) printf '::error::OpsCrew changed nothing on the server: a restore holds the app (.snapshots/.held in its folder), so its data may be partly restored: finish the restore with opscrew restore <copy>, or run sh snapshot.sh resume in the app'\\''s folder as the deploy user, then try again.\\n' ;; esac
   exit 1
 fi
 ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'mkdir -p /srv/apps/shop'
@@ -545,6 +545,7 @@ snapshot_cmd_restore() {
     echo 'The one-time approval of this restore expired before it started, so nothing was changed. Run opscrew restore again.' >&2
     return 1
   fi
+  _holder="held $(cat .snapshots/.held 2> /dev/null || true)"; case "$_holder" in "held rotation "*) printf 'OpsCrew changed nothing: a credential rotation holds the app (the rotation of the plan %s), so its services may have new values the app does not use yet: finish the rotation with opscrew rotate, or put the old values back with opscrew rotate --undo, then try again.\\n' "\${_holder#held rotation }" >&2; return 1 ;; esac
   if ! snapshot_complete "$_id"; then
     printf 'The snapshot %s is not complete on this server, so nothing was changed.\\n' "$_id" >&2
     return 1
@@ -593,11 +594,13 @@ snapshot_cmd_restore() {
   return 5
 }
 snapshot_cmd_hold() {
+  _holder="held $(cat .snapshots/.held 2> /dev/null || true)"; case "$_holder" in "held rotation "*) printf 'OpsCrew changed nothing: a credential rotation holds the app (the rotation of the plan %s), so its services may have new values the app does not use yet: finish the rotation with opscrew rotate, or put the old values back with opscrew rotate --undo, then try again.\\n' "\${_holder#held rotation }" >&2; return 1 ;; esac
   (umask 077 && mkdir -p .snapshots && : > .snapshots/.held)
   edge exec -T kamal-proxy kamal-proxy pause shop --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
   docker compose stop app
 }
 snapshot_cmd_resume() {
+  _holder="held $(cat .snapshots/.held 2> /dev/null || true)"; case "$_holder" in "held rotation "*) printf 'OpsCrew changed nothing: a credential rotation holds the app (the rotation of the plan %s), so its services may have new values the app does not use yet: finish the rotation with opscrew rotate, or put the old values back with opscrew rotate --undo, then try again.\\n' "\${_holder#held rotation }" >&2; return 1 ;; esac
   docker compose start app
   edge exec -T kamal-proxy kamal-proxy resume shop < /dev/null > /dev/null 2>&1 || true
   rm -f .snapshots/.held

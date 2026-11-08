@@ -1932,8 +1932,14 @@ describe("the start script's database lines", () => {
     const plain = testPlan({ postgres: false });
     for (const plan of [plain, inEnvironment(plain, { name: "staging" })]) {
       for (const text of [script(plan), rollbackCommands(plan).join("\n")]) {
-        // Only an earlier schedule's crontab line goes.
-        const lines = text.split("\n").filter((line) => !line.startsWith("if crontab -l "));
+        // Only an earlier schedule's crontab line goes, and the hold's check stays: a rotation can
+        // hold any app (its marker lives in .snapshots).
+        const lines = text
+          .split("\n")
+          .filter(
+            (line) =>
+              !line.startsWith("if crontab -l ") && !line.startsWith("if [ -f .snapshots/.held ]"),
+          );
         expect(lines.join("\n")).not.toMatch(
           /snapshot|rollback-database|database\.changed|database=/,
         );

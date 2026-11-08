@@ -55,6 +55,15 @@ export * from "./workflow";
 export { schemaRecordPath } from "./workflow/migrations";
 export { previewWorkflowPath, renderPreviewWorkflow } from "./workflow/preview";
 export {
+  ROTATE_APPROVAL_FILE,
+  ROTATE_DIR,
+  type RotateStep,
+  renderRotateScript,
+  rotateApprovalLine,
+  rotateEnvFiles,
+  rotateInput,
+} from "./workflow/rotate";
+export {
   OFFSITE_ENV_FILE,
   OFFSITE_ENV_SECRET,
   OFFSITE_LOG,

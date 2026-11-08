@@ -44,6 +44,7 @@ import { SNAPSHOT_FUNCTIONS, snapshotParts, snapshotScheduleLines } from "./snap
 import {
   appHoldCommands,
   HELD_ROLLBACK,
+  HELD_STOP,
   rollbackCommands,
   serverCommands,
   switchCommands,
@@ -1483,18 +1484,22 @@ describe("the deploy's upload of snapshot.sh", () => {
     expect(upload).toContain("          snapshot_cmd_hold() {");
   });
 
-  it("stops the job at its first contact with the app's server while a restore holds the app", () => {
+  it("stops the job at its first contact with the app's server while a restore or a rotation holds the app", () => {
     // One server: the upload checks first, before it makes the app's folder.
     const one = renderWorkflow(serverPlanWithRunner(), testContext()).content;
     const upload = step(one, UPLOAD);
     const check = upload.indexOf(
-      `hold="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'if [ -f /srv/apps/shop/.snapshots/.held ]; then echo held; fi')"`,
+      `hold="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'if [ -f /srv/apps/shop/.snapshots/.held ]; then echo held $(cat /srv/apps/shop/.snapshots/.held); fi')"`,
     );
     expect(check).toBeGreaterThan(-1);
-    expect(check).toBeLessThan(upload.indexOf('if [[ "$hold" == held ]]; then'));
-    expect(upload.indexOf('if [[ "$hold" == held ]]; then')).toBeLessThan(
+    expect(check).toBeLessThan(upload.indexOf('if [[ "$hold" == held* ]]; then'));
+    expect(upload.indexOf('if [[ "$hold" == held* ]]; then')).toBeLessThan(
       upload.indexOf("mkdir -p /srv/apps/shop"),
     );
+    expect(upload).toContain(
+      `case "$hold" in "held rotation "*) printf '${HELD_STOP}a credential rotation holds the app (the rotation of the plan %s)`,
+    );
+    expect(upload).toContain(`*) printf '${HELD_STOP}a restore holds the app (.snapshots/.held`);
     expect(one.split("hold=")).toHaveLength(2);
     expect(one).not.toContain("- name: Check that no restore holds the app");
     // With extra servers, before theirs: the step that reads the app's version does it.
@@ -1513,21 +1518,28 @@ describe("the deploy's upload of snapshot.sh", () => {
       staging.indexOf("- name: Update the services on the server data"),
     );
     expect(staging).not.toContain("- name: Check that no restore holds the app");
-    // No data: no check.
+    // No data: the check too, as a rotation of the app's secrets holds the app.
     const plain = renderWorkflow(
       inEnvironment(withServices([]), { name: "staging" }),
       testContext(),
-    );
-    expect(plain.content).not.toContain(".snapshots/.held");
+    ).content;
+    expect(step(plain, UPLOAD)).toContain('if [[ "$hold" == held* ]]; then');
+    expect(plain).toContain("if [ -f .snapshots/.held ]; then echo held $(cat .snapshots/.held)");
   });
 
-  it("checks for a restore's hold first in the start step, and the rollback step says so plainly", () => {
+  it("checks for a hold first in the start step, and the rollback step says plainly which", () => {
     const content = renderWorkflow(splitPlan(), testContext()).content;
     expect(content).toContain(
-      "if [ -f .snapshots/.held ]; then echo '::error::OpsCrew changed nothing on the server: a restore holds the app",
+      `if [ -f .snapshots/.held ]; then held="held $(cat .snapshots/.held)"; case "$held" in "held rotation "*) printf '${HELD_STOP}a credential rotation holds the app`,
     );
-    expect(content).toContain("if [ -f .snapshots/.held ]; then echo held; exit 0; fi");
-    expect(content).toContain(`*:held) echo "${HELD_ROLLBACK}" ;;`);
+    expect(content).toContain(`*) printf '${HELD_STOP}a restore holds the app`);
+    expect(content).toContain(
+      "if [ -f .snapshots/.held ]; then echo held $(cat .snapshots/.held); exit 0; fi",
+    );
+    expect(content).toContain(
+      `*:held*) case "$outcome" in "held rotation "*) printf '${HELD_ROLLBACK}a credential rotation holds the app`,
+    );
+    expect(content).toContain(`*) printf '${HELD_ROLLBACK}a restore holds the app`);
   });
 
   it("writes none for an app without data", () => {

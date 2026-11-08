@@ -333,10 +333,10 @@ function restoreProcesses(services: readonly string[]): string[] {
 /**
  * Starts `services` (the workers and cron) on `$APP_IMAGE`; Compose recreates only those whose
  * image or settings changed. Then each container must stay running, with the restart count it
- * started with, for {@link PROCESS_CHECK_SECONDS}; otherwise the script names the first that did
- * not, keeps its container's lines (`keep_failed`) and exits 1.
+ * started with, for {@link PROCESS_CHECK_SECONDS}; otherwise the `failed` lines run for the first
+ * that did not (`$service`, its container `$id`: they say why) and the script exits 1.
  */
-function startProcesses(plan: DeployPlan, services: readonly string[]): string[] {
+export function startProcesses(services: readonly string[], failed: readonly string[]): string[] {
   if (services.length === 0) return [];
   const each = [
     `for service in ${services.join(" ")}; do`,
@@ -353,8 +353,7 @@ function startProcesses(plan: DeployPlan, services: readonly string[]): string[]
     ...each,
     `    now="$id=$(docker inspect --format '{{.State.Status}}:{{.RestartCount}}' "$id")"`,
     '    case " $started " in *" $now "*) continue ;; esac',
-    `    printf ${shellMessage(processFailed(plan))} "$service" "$service"`,
-    '    keep_failed "$service" "$id" "process $service"',
+    ...failed.map((line) => `    ${line}`),
     "    exit 1",
     "  done",
     "done",
@@ -387,7 +386,7 @@ export const EDGE_FUNCTION = `edge() { docker compose -p ${EDGE_PROJECT} -f ${ED
  * `http://` behind a proxy that terminates TLS); none before the plan has a domain (the service
  * then gets every request). On this computer, the app's hostname there (`localhost`).
  */
-function proxyHosts(plan: DeployPlan, localhost: LocalhostSite | undefined): string {
+export function proxyHosts(plan: DeployPlan, localhost: LocalhostSite | undefined): string {
   const [domain] =
     plan.target.provider === "localhost" ? [localhostSite(localhost).hostname] : siteHosts(plan);
   return domain === undefined ? "" : ` --host ${domain}`;
@@ -411,7 +410,7 @@ function kamalProxy(words: string): string {
  * the server after the workflow moved on to its rollback step. Neither the edge's lock nor this
  * computer's deploy lock (`OPSCREW_LOCAL_LOCK`, outside the app's folder) is this file.
  */
-const START_LOCK = ".start.lock";
+export const START_LOCK = ".start.lock";
 
 /** How long the rollback script waits for the start script's lock. */
 const START_LOCK_WAIT_SECONDS = 900;
@@ -435,44 +434,84 @@ export function startLock(plan: DeployPlan, timedOut?: string): string[] {
 }
 
 /**
- * The marker in the app's folder that `snapshot.sh hold` leaves and `resume` removes: while it is
- * there, `opscrew restore` holds the app, and its data may be partly restored, so nothing starts
- * the app or changes its data ({@link heldRefusal}).
+ * The marker in the app's folder while the app is held, so nothing deploys, starts the app or
+ * changes its data ({@link heldRefusal}). It says who holds it: empty while `opscrew restore` holds
+ * the app (`snapshot.sh hold` leaves it and `resume` removes it), as its data may be partly
+ * restored; `rotation <hash>` while a credential rotation does ({@link ROTATION_HOLDER},
+ * `rotate.sh`), as its services may have new values the app does not use yet.
  */
 export const RESTORE_HELD = `${SNAPSHOTS_DIR}/.held`;
 
-/** The sh line that prints `held` while {@link RESTORE_HELD} is in the app's folder `dir`. */
-export function heldProbe(dir: string): string {
-  return `if [ -f ${dir}/${RESTORE_HELD} ]; then echo held; fi`;
-}
-
-/** Why the scripts refuse to run while a restore holds the app, and the way out. */
-const HELD_MESSAGE = `a restore holds the app (${RESTORE_HELD} in its folder), so its data may be partly restored: finish the restore with opscrew restore <copy>, or run sh snapshot.sh resume in the app's folder as the deploy user, then try again.`;
+/** The first word of {@link RESTORE_HELD} while a rotation holds the app, before its plan's hash. */
+export const ROTATION_HOLDER = "rotation";
 
 /**
- * The one line that stops a script, before it changes anything, while {@link RESTORE_HELD} is in
- * the app's folder: with `outcome`, it prints that word and exits 0 (the rollback script, whose
- * step then says so: {@link HELD_ROLLBACK}), else it fails with {@link HELD_MESSAGE}. None where no
- * restore can hold the app: in a preview's scripts, and without data on any of the app's servers,
- * when the app's server has no `snapshot.sh`.
+ * The sh line that prints, while {@link RESTORE_HELD} is in the app's folder `dir`, `held` and what
+ * it says: `held` for a restore, `held rotation <hash>` for a rotation ({@link heldSaid} reads it).
+ */
+export function heldProbe(dir: string): string {
+  return `if [ -f ${dir}/${RESTORE_HELD} ]; then echo held $(cat ${dir}/${RESTORE_HELD}); fi`;
+}
+
+/**
+ * The sh line that prints why a script or a step stops while the app is held, after `prefix`: the
+ * shell variable `variable` holds {@link heldProbe}'s line. A rotation's hold names its plan and the
+ * way out (`opscrew rotate` again, or `--undo`); any other is a restore's, which only an app with
+ * data on one of its servers can have ({@link holdsData}).
+ */
+export function heldSaid(plan: DeployPlan, variable: string, prefix: string): string {
+  const restore = `${prefix}a restore holds the app (${RESTORE_HELD} in its folder), so its data may be partly restored: finish the restore with opscrew restore <copy>, or run sh snapshot.sh resume in the app's folder as the deploy user, then try again.`;
+  const byRotation = rotationSaid(plan, variable, prefix);
+  if (!holdsData(plan)) return byRotation;
+  return `case "$${variable}" in "${ROTATION_HELD}"*) ${byRotation} ;; *) ${said(restore)} ;; esac`;
+}
+
+/** The start of {@link heldProbe}'s line while a rotation holds the app, before its plan's hash. */
+const ROTATION_HELD = `held ${ROTATION_HOLDER} `;
+
+/** The printf of a rotation's hold, after `prefix`; `variable` holds {@link heldProbe}'s line. */
+function rotationSaid(plan: DeployPlan, variable: string, prefix: string): string {
+  const rotation = `${prefix}a credential rotation holds the app (the rotation of the plan %s), so its services may have new values the app does not use yet: finish the rotation with ${opscrew(plan, "rotate")}, or put the old values back with ${opscrew(plan, "rotate --undo")}, then try again.`;
+  return `${said(rotation)} "\${${variable}#${ROTATION_HELD}}"`;
+}
+
+/**
+ * The sh line that ends with `end` (`return 1` or `exit 1`), saying why after `prefix`, while a
+ * rotation holds the app ({@link RESTORE_HELD} reads `rotation <hash>`); `variable` is the shell
+ * variable it uses. A restore's hold, or none, lets it go on.
+ */
+export function rotationHeldStop(
+  plan: DeployPlan,
+  prefix: string,
+  end: string,
+  variable: string,
+): string {
+  return `${variable}="held $(cat ${RESTORE_HELD} 2> /dev/null || true)"; case "$${variable}" in "${ROTATION_HELD}"*) ${rotationSaid(plan, variable, prefix)} >&2; ${end} ;; esac`;
+}
+
+/**
+ * The one line that stops a script, before it changes anything, while the app is held
+ * ({@link RESTORE_HELD}): with `outcome`, it prints that word and what the marker says and exits 0
+ * (the rollback script, whose step then says why: {@link HELD_ROLLBACK}), else it fails, saying why
+ * ({@link heldSaid}, after {@link HELD_STOP}). None in a preview's scripts: nothing holds a preview.
  */
 function heldRefusal(plan: DeployPlan, o: ScriptOptions, outcome?: string): string[] {
-  if (o.preview === true || !holdsData(plan)) return [];
+  if (o.preview === true) return [];
   return [
     outcome === undefined
-      ? `if [ -f ${RESTORE_HELD} ]; then echo ${shellQuote(HELD_STOP)} >&2; exit 1; fi`
-      : `if [ -f ${RESTORE_HELD} ]; then echo ${outcome}; exit 0; fi`,
+      ? `if [ -f ${RESTORE_HELD} ]; then held="held $(cat ${RESTORE_HELD})"; ${heldSaid(plan, "held", HELD_STOP)} >&2; exit 1; fi`
+      : `if [ -f ${RESTORE_HELD} ]; then echo ${outcome} $(cat ${RESTORE_HELD}); exit 0; fi`,
   ];
 }
 
 /**
- * What a script or the job's first step on the app's server says when it stops, before any change,
- * while a restore holds the app.
+ * How a script or the job's first step on the app's server begins to say why it stops, before any
+ * change, while the app is held ({@link heldSaid}).
  */
-export const HELD_STOP = `::error::OpsCrew changed nothing on the server: ${HELD_MESSAGE}`;
+export const HELD_STOP = "::error::OpsCrew changed nothing on the server: ";
 
-/** What the rollback step says when the rollback script found a restore holding the app. */
-export const HELD_ROLLBACK = `::error::This run stopped before changing anything: ${HELD_MESSAGE}`;
+/** How the rollback step begins to say that the rollback script found the app held. */
+export const HELD_ROLLBACK = "::error::This run stopped before changing anything: ";
 
 /** What the start script's EXIT trap runs: the registry logout of the app's own Docker settings. */
 const LOGOUT = "docker logout ghcr.io > /dev/null 2>&1";
@@ -529,7 +568,7 @@ export function resumeRequests(plan: DeployPlan): string {
  * becomes healthy, the `failed` lines run (they print why), the copy is removed and the script
  * exits 1. `hosts` are kamal-proxy's for the service ({@link proxyHosts}).
  */
-function switchApp(
+export function switchApp(
   plan: DeployPlan,
   hosts: string,
   failed: readonly string[],
@@ -1187,8 +1226,8 @@ function databaseStep(plan: DeployPlan, others: boolean): string[] {
  * reaches `sh` on its stdin, so the commands that read stdin (`docker compose exec` and `run`) get
  * `/dev/null`; otherwise they would swallow the rest of the script. It starts with
  * {@link SCRIPT_ROOTS}, so the local executor runs it on this computer under its own folders, and
- * holds {@link START_LOCK} from its first lines in the app's folder to its end. While a restore holds
- * the app ({@link RESTORE_HELD}) it changes nothing and fails.
+ * holds {@link START_LOCK} from its first lines in the app's folder to its end. While a restore or a
+ * rotation holds the app ({@link RESTORE_HELD}) it changes nothing and fails, saying which.
  */
 export function switchCommands(
   plan: DeployPlan,
@@ -1275,7 +1314,10 @@ export function switchCommands(
       : record),
     ...(data ? databaseStep(plan, others) : []),
     ...switching,
-    ...startProcesses(plan, processServices(plan)),
+    ...startProcesses(processServices(plan), [
+      `printf ${shellMessage(processFailed(plan))} "$service" "$service"`,
+      'keep_failed "$service" "$id" "process $service"',
+    ]),
     `echo finished > ${START_OUTCOME}`,
   ];
 }
@@ -1572,8 +1614,9 @@ export const OTHERS_HELD = ".others.held";
  * - `requests`: lets the requests through, the app left stopped;
  * - `held <run>` prints `held` when the record names the run, `none` otherwise;
  * - `forget` removes the record.
- * kamal-proxy lets the requests through itself after its longest hold. While a restore holds the app
- * ({@link RESTORE_HELD}), `hold`, `stop`, `resume` and `requests` fail before any change.
+ * kamal-proxy lets the requests through itself after its longest hold. While a restore or a rotation
+ * holds the app ({@link RESTORE_HELD}), `hold`, `stop`, `resume` and `requests` fail before any
+ * change.
  */
 export function appHoldCommands(plan: DeployPlan): string[] {
   const lock = startLock(
@@ -1649,7 +1692,8 @@ export function runningCommands(plan: DeployPlan): string[] {
  * ({@link databaseBack}). First of all it takes {@link START_LOCK}, waiting for a start script
  * that still runs for up to 15 minutes, after which it stops with nothing changed. On this
  * computer `localhost` is the app's hostname there, as the start script had it. Once it holds the
- * lock, while a restore holds the app ({@link RESTORE_HELD}), it prints `held` and changes nothing.
+ * lock, while the app is held ({@link RESTORE_HELD}), it prints `held` and what holds it, and
+ * changes nothing.
  */
 export function rollbackCommands(
   plan: DeployPlan,

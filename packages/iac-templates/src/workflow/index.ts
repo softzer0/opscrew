@@ -65,7 +65,6 @@ import {
 } from "./shared";
 import { OFFSITE_ENV_FILE, OFFSITE_ENV_SECRET, snapshotScript } from "./snapshot-script";
 import {
-  holdsData,
   migratedParts,
   releaseSnapshotServers,
   rollbackServers,
@@ -81,6 +80,7 @@ import {
   HELD_ROLLBACK,
   HELD_STOP,
   heldProbe,
+  heldSaid,
   OTHERS_HELD,
   RESTORE_HELD,
   rollbackCommands,
@@ -497,17 +497,24 @@ function maskFileWrite(
 }
 
 /**
- * The deploy's masking script ({@link maskFileWrite}) as a bash script that runs on the app's
- * server, in its folder, from the `app.env` there: for a change of the app's settings outside the
- * deploy (a service's move between the app's servers). Empty without Grafana Cloud or monitoring.
+ * The deploy's masking script ({@link maskFileWrite}) as a bash script that runs on `server` (the
+ * app's by default), from the env files in the app's folder `dir` there (by default its path on
+ * the server): `app.env` on the app's server, the env files of the services that run there on an
+ * extra one. For a change of the app's settings outside the deploy (a service's move between the
+ * app's servers, a credential rotation). Empty where Alloy masks no log line.
  */
-export function maskFileScript(plan: DeployPlan): string {
-  const dir = appDir(plan);
-  const lines = maskFileWrite(plan, APP_SERVER, [APP_ENV_FILE], dir, HERE);
+export function maskFileScript(
+  plan: DeployPlan,
+  server: string = APP_SERVER,
+  dir: string = appDir(plan),
+): string {
+  const envFiles =
+    server === APP_SERVER ? [APP_ENV_FILE] : serviceEnvFiles(servicesRunningOn(plan, server));
+  const lines = maskFileWrite(plan, server, envFiles, dir, HERE);
   if (lines.length === 0) return "";
   const script = [
     "set -euo pipefail",
-    `${DEPLOY_SECRETS.appEnv}="$(cat ${dir}/app.env)"`,
+    ...envFiles.map((env) => `${env.secret}="$(cat ${dir}/${env.file})"`),
     ...lines,
   ];
   return `${script.join("\n")}\n`;
@@ -554,7 +561,7 @@ interface Reach {
   savePrevious: string;
   /** The command that prints the image the app's machine runs ({@link readRunning}). */
   readRunning: string;
-  /** The command that prints `held` while a restore holds the app ({@link RESTORE_HELD}). */
+  /** The command that prints `held` and its holder while the app is held ({@link heldProbe}). */
   held: string;
   /** Logs in to GHCR with `$REGISTRY_TOKEN` in the app's own Docker settings (script lines). */
   login: readonly string[];
@@ -742,9 +749,9 @@ function rollbackStep(
     "    fi",
     ...resume,
     '    case "$MODE:$outcome" in',
-    // A restore holds the app: the rollback script changed nothing, nor did the start script. Only
-    // where a restore can hold it: the app's server has a snapshot.sh.
-    ...(holdsData(plan) ? [`      *:held) echo "${HELD_ROLLBACK}" ;;`] : []),
+    // A restore or a rotation holds the app: the rollback script changed nothing, nor did the start
+    // script.
+    `      *:held*) ${heldSaid(plan, "outcome", HELD_ROLLBACK)} ;;`,
     "      rollback:restored)",
     '        echo "::error::The rollback failed: the earlier version did not pass its checks, so OpsCrew put back the version that ran before the rollback." ;;',
     "      rollback:unchanged)",
@@ -864,7 +871,7 @@ function sshDeploy(plan: DeployPlan, ctx: RuntimeContext, upload: Upload): Deplo
     "  run: |",
     "    set -euo pipefail",
     sshOpts,
-    ...(upload.held ? heldCheck(held) : []),
+    ...(upload.held ? heldCheck(plan, held) : []),
     `    ${OVER_SSH(`mkdir -p ${dir}`)}`,
     `    scp -r "\${ssh_opts[@]}" ${upload.files.join(" ")} "deploy@\${HOST}:${dir}/"`,
     ...envFileWrites(upload.envFiles, dir, OVER_SSH),
@@ -1027,28 +1034,29 @@ function stuckLines(plan: DeployPlan, reach: Reach, others: readonly string[]): 
 }
 
 /**
- * The lines that stop the job on its first contact with the app's server while a restore holds
- * the app ({@link RESTORE_HELD}), before any step changes anything there or on an extra server;
- * `held` is {@link Reach.held}. A failed read stops the job too.
+ * The lines that stop the job on its first contact with the app's server while a restore or a
+ * rotation holds the app ({@link RESTORE_HELD}), before any step changes anything there or on an
+ * extra server, saying which ({@link heldSaid}); `held` is {@link Reach.held}. A failed read stops
+ * the job too.
  */
-function heldCheck(held: string): string[] {
+function heldCheck(plan: DeployPlan, held: string): string[] {
   return [
     `    hold="$(${held})"`,
-    '    if [[ "$hold" == held ]]; then',
-    `      echo "${HELD_STOP}"`,
+    '    if [[ "$hold" == held* ]]; then',
+    `      ${heldSaid(plan, "hold", HELD_STOP)}`,
     "      exit 1",
     "    fi",
   ];
 }
 
 /**
- * Before the extra servers' steps when a restore can hold the app: the job's first step on the
- * app's server, which stops it while a restore holds the app ({@link heldCheck}), then reads the
- * image the app's server runs (`.env`, through `reach`), as the step's output `image`, empty when
- * it names none by digest. When a rollback can change their data (`others`), their steps snapshot
- * their data under it, and a rollback saves their data under it before changing it (plan.md D7).
+ * Before the extra servers' steps: the job's first step on the app's server, which stops it while
+ * the app is held ({@link heldCheck}), then reads the image the app's server runs (`.env`, through
+ * `reach`), as the step's output `image`, empty when it names none by digest. When a rollback can
+ * change their data (`others`), their steps snapshot their data under it, and a rollback saves
+ * their data under it before changing it (plan.md D7).
  */
-function outgoingStep(reach: Reach): string[] {
+function outgoingStep(plan: DeployPlan, reach: Reach): string[] {
   return [
     "- id: outgoing",
     "  name: Read the version that runs on the app's server",
@@ -1056,7 +1064,7 @@ function outgoingStep(reach: Reach): string[] {
     "  run: |",
     "    set -euo pipefail",
     ...reach.prelude,
-    ...heldCheck(reach.held),
+    ...heldCheck(plan, reach.held),
     `    running="$(${reach.readRunning})"`,
     `    if [[ ! "$running" =~ ${DIGEST_REF_PATTERN} ]]; then running=; fi`,
     '    echo "image=$running" >> "$GITHUB_OUTPUT"',
@@ -1378,7 +1386,7 @@ function localDeploy(plan: DeployPlan, upload: Upload): Deploy {
         ]
       : []),
     dir,
-    ...(upload.held ? heldCheck(held) : []),
+    ...(upload.held ? heldCheck(plan, held) : []),
     '    mkdir -p "$dir"',
     `    cp -r ${upload.files.join(" ")} "$dir"/`,
     ...envFileWrites(upload.envFiles, '"$dir"', HERE),
@@ -1533,11 +1541,9 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
     ...serviceEnvFiles(servicesOn(plan, APP_SERVER)),
     ...offsiteEnvFiles(plan, APP_SERVER),
   ];
-  // A restore can hold the app where its server has a snapshot.sh: any of its servers holds data.
-  // The job's first contact with the app's server stops it then: before the extra servers' steps
-  // when it has any, else the upload.
-  const holdable = holdsData(plan);
-  const early = holdable && (plan.servers ?? []).length > 0;
+  // A restore or a rotation can hold the app. The job's first contact with the app's server stops
+  // it then: before the extra servers' steps when it has any, else the upload.
+  const early = (plan.servers ?? []).length > 0;
   const upload: Upload = {
     env: [
       ...envFileEnv(plan, envFiles),
@@ -1552,7 +1558,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
       ...(edgeFiles.additions ? [additionsPath(plan)] : []),
     ],
     edgeFiles,
-    held: holdable && !early,
+    held: !early,
   };
   const own = deploysInPlace(plan);
   const { connect, setup, reach } = own ? localDeploy(plan, upload) : sshDeploy(plan, ctx, upload);
@@ -1576,7 +1582,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
     // A self-hosted runner keeps its workspace: the job's token stays out of its git settings.
     ...(selfHosted(plan) ? ["  with:", "    persist-credentials: false"] : []),
     ...edgeCheckStep(plan, edgeFiles),
-    ...(early ? [...connect, ...outgoingStep(reach)] : []),
+    ...(early ? [...connect, ...outgoingStep(plan, reach)] : []),
     ...extraServerSteps(plan, ctx, releaseSnapshotServers(plan)),
     ...(early ? [] : connect),
     ...setup,
