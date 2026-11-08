@@ -699,7 +699,7 @@ Horizon, PostgreSQL and Redis.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/detect && pnpm lint`
   - Effort: high
 
-- [ ] T1325 [US8] Live: `examples/php-plain-mysql` on Hetzner (lead; SC-1309)
+- [x] T1325 [US8] Live: `examples/php-plain-mysql` on Hetzner (lead; SC-1309)
   - Through init, analyze, interview, design, adapt, provision and verify with no edit to an OpsCrew file; only `public/` served; it reaches MySQL; a second deploy keeps `storage/`; its cron runs.
 
 - [ ] T1326 [US8] The release 0.2.6 (lead): `docs/releasing.md`, together with 025 credential rotation (founder, 2026-11-08).
