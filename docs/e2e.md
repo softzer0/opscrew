@@ -259,6 +259,7 @@ SC-1301. With the variable but another app, the pass logs that the checks cover 
 | `kafka-app` | Kafka (a named volume) and a worker |
 | `meili-search` | part 2's search engine, Meilisearch, and OpenSearch added in `plan.yaml` (as a user adds a service there), for the kernel setting `vm.max_map_count` it needs |
 | `clickhouse-events` | part 2's analytics engine, ClickHouse, and its `server.xml` honoured |
+| `php-plain-mysql` | a plain PHP app (013 US8): only `public/` served, MySQL through the split `DB_*` settings, the kept `storage/` through a deploy and a reboot, `bin/cron.php` every minute |
 
 The pass makes the plan edits a user would before the first provision: for `s3-uploads` the
 bucket's provider and a name of the run's own (`opscrew-e2e-<run id>`: bucket names at Hetzner are
@@ -335,7 +336,7 @@ cd packages/cli
 export OPSCREW_E2E_COMPONENTS=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e \
   OPSCREW_E2E_GITHUB_TOKEN=… OPSCREW_E2E_CLOUDFLARE_TOKEN=… OPSCREW_E2E_DOMAIN=e2e.example.com
 for app in node-bullmq express-mysql node-mongo rabbitmq-worker kafka-app meili-search \
-  clickhouse-events; do
+  clickhouse-events php-plain-mysql; do
   echo "=== $app"
   OPSCREW_E2E_APP="$app" npx vitest run test/live/live.test.ts || echo "FAILED: $app"
 done

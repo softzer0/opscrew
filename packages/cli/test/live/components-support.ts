@@ -25,6 +25,7 @@ export const COMPONENT_EXAMPLES = [
   "kafka-app",
   "meili-search",
   "clickhouse-events",
+  "php-plain-mysql",
 ] as const;
 
 /** The interview regions whose Hetzner locations have Object Storage (fsn1, nbg1, hel1). */

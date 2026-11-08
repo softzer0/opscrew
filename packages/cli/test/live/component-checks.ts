@@ -528,6 +528,14 @@ export async function componentChecks(
   // The deploy starts cron only after the web is up, so its first run is due from its own start
   // (0: no later readiness to wait for). After the reboot, Docker starts everything at once.
   await onServer("after the first deploy", 0);
+  if (plan.app.build?.webRoot !== undefined) {
+    // A plain PHP app (013 US8): only its web root is served, never the rest of the app.
+    for (const path of ["/composer.json", `/${plan.storage?.files?.dir ?? "storage"}/.htaccess`]) {
+      const answer = await ask(base, "GET", path);
+      expect(answer.status, `GET ${path} of a plain PHP app`).not.toBe(200);
+    }
+    log("only the web root is served: the app's other files are not");
+  }
 
   const value = `value-${randomBytes(6).toString("hex")}`;
   await writeValue(base, value);
