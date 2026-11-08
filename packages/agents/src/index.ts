@@ -25,6 +25,13 @@ export * from "./provision";
 export * from "./retarget";
 export * from "./rollback";
 export {
+  type Credential,
+  type CredentialDate,
+  type CredentialKind,
+  type CredentialRotation,
+  credentialInventory,
+} from "./rotate/inventory";
+export {
   type AddRunnerHostInput,
   addRunnerHost,
   applyRunnerHost,
