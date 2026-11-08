@@ -623,7 +623,7 @@ US8, FR-1335–FR-1342, SC-1309). Waves: T1319 → {T1320, T1321} → {T1322, T1
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/plan-schema && pnpm lint`
   - Effort: medium
 
-- [ ] T1320 [US8] [P] Detect a plain PHP app
+- [x] T1320 [US8] [P] Detect a plain PHP app
   - Owns: `packages/detect/src/**` (+ tests, fixtures)
   - Reads: research R10; spec US8 scenarios 1, 2, 5, 7, 9
   - Depends: T1319
