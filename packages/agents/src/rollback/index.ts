@@ -19,7 +19,7 @@ import { rollbackServer } from "./server";
 import { rollbackSite } from "./site";
 import type { LeftOutVersion, VersionsGitHubApi, VersionView } from "./types";
 
-export { pinnedText } from "../shared/deploy-pause";
+export { pinnedText, rotationWindowText } from "../shared/deploy-pause";
 export type { DatabaseOffer } from "./database";
 export { DATABASE_CHOICES } from "./record";
 export type {

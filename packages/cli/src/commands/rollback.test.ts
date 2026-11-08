@@ -239,6 +239,20 @@ describe("opscrew rollback --list", () => {
       "Deploys of prod are paused since 2026-10-20 11:00 UTC for a move's maintenance window: `opscrew provision` ends it.",
     );
   });
+
+  it("names a credential rotation's pause and what ends it", async () => {
+    const ctx = await setup();
+    fake.answer = async () => ({
+      kind: "list",
+      versions: [version("1", 10, { marks: ["running"] })],
+      paused: { reason: "rotation", since: "2026-10-20T11:00:00.000Z", hash: "a".repeat(64) },
+      leftOut: [],
+    });
+    expect(await run(ctx, "rollback", "--list")).toBe(0);
+    expect(ctx.output).toContain(
+      "Deploys of prod are paused since 2026-10-20 11:00 UTC for a credential rotation's window, begun on another computer: `opscrew rotate` with its services, or with `--undo`, ends it there.",
+    );
+  });
 });
 
 describe("opscrew rollback", () => {

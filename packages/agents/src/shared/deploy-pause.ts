@@ -1,8 +1,9 @@
 /**
  * The deploy pause (features 018, 019): the repository variable `OPSCREW_DEPLOY_PAUSED` holds
  * `{ "<app>/<env>": entry }`, and an environment's deploy workflow skips its deploy job while its
- * key is there. A move's maintenance window pauses the app's deploys (`move`); a rollback pins the
- * environment to the version it went back to (`rollback`). One entry per environment.
+ * key is there. A move's maintenance window pauses the app's deploys (`move`); a credential
+ * rotation pauses them until it or its undo is run to its end (`rotation`, feature 025); a rollback
+ * pins the environment to the version it went back to (`rollback`). One entry per environment.
  */
 import { posix } from "node:path";
 import type { GitHubClient } from "@opscrew/connector-github";
@@ -12,12 +13,19 @@ import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import type { ProvisionServices } from "../provision/types";
+import { readPendingRotation } from "../rotate/values-pending";
 import { codeOf } from "./errors";
 import { pollUntil } from "./wait";
 
 /** An environment's entry in `OPSCREW_DEPLOY_PAUSED`. It holds no secret. */
 export type DeployPause =
   | { reason: "move"; since: string }
+  | {
+      reason: "rotation";
+      since: string;
+      /** The hash of the rotation's plan, which this computer's unfinished rotation names too. */
+      hash: string;
+    }
   | {
       reason: "rollback";
       since: string;
@@ -32,6 +40,11 @@ export type DeployPause =
 /** An environment's entry in `OPSCREW_DEPLOY_PAUSED`, as OpsCrew reads it. */
 export const DeployPauseSchema: z.ZodType<DeployPause> = z.discriminatedUnion("reason", [
   z.object({ reason: z.literal("move"), since: z.string() }),
+  z.object({
+    reason: z.literal("rotation"),
+    since: z.string(),
+    hash: z.string().regex(/^[0-9a-f]{64}$/),
+  }),
   z.object({
     reason: z.literal("rollback"),
     since: z.string(),
@@ -96,6 +109,9 @@ async function readPauses(
 /** The entry as OpsCrew writes it, its keys always in this order. */
 function stored(entry: DeployPause): DeployPause {
   if (entry.reason === "move") return { reason: "move", since: entry.since };
+  if (entry.reason === "rotation") {
+    return { reason: "rotation", since: entry.since, hash: entry.hash };
+  }
   const { since, image, commit, from } = entry;
   return { reason: "rollback", since, image, commit, ...(from !== undefined ? { from } : {}) };
 }
@@ -131,8 +147,31 @@ async function writePause(
     decision: "approved",
     ...(entry?.reason === "rollback"
       ? { detail: `pinned to ${entry.commit} (${entry.image})` }
-      : {}),
+      : entry?.reason === "rotation"
+        ? { detail: `rotation ${entry.hash}` }
+        : {}),
   });
+}
+
+/**
+ * A credential rotation's pause in words, as status and every refusal say it ("a credential
+ * rotation's window: `opscrew rotate db cache` or `opscrew rotate db cache --undo` ends it"), by the
+ * services of the environment's unfinished rotation on this computer (`deps.paths`; `flags` its
+ * commands' flags) when it is the one that paused (`hash`, the pause's) and has begun; otherwise
+ * as a rotation begun on another computer.
+ * @throws OpsCrewError `ARTIFACT_INVALID` when that rotation's file is damaged.
+ */
+export async function rotationWindowText(
+  deps: Pick<PhaseDeps, "paths" | "redactor">,
+  flags: string,
+  hash: string,
+): Promise<string> {
+  const pending = await readPendingRotation(deps);
+  if (pending === undefined || pending.hash !== hash || pending.step === "planned") {
+    return "a credential rotation's window, begun on another computer: `opscrew rotate` with its services, or with `--undo`, ends it there";
+  }
+  const rotate = `opscrew rotate ${pending.names.join(" ")}${flags}`;
+  return `a credential rotation's window: \`${rotate}\` or \`${rotate} --undo\` ends it`;
 }
 
 /**

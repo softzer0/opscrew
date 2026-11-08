@@ -42,6 +42,10 @@ import { otherPlans } from "../check/files";
 import type { PhaseDeps } from "../context";
 import { workflowBranch } from "../environments/branches";
 import { commandFlags } from "../environments/choice";
+import { USER_TOKENS } from "../rotate/inventory";
+import { assertValuesCurrent } from "../rotate/record";
+import { tokenFirstSeen } from "../rotate/record-tokens";
+import { readPendingRotation } from "../rotate/values-pending";
 import {
   type AppEnvironment,
   assembleAppEnv,
@@ -66,9 +70,18 @@ import type { ProvisionServices } from "./types";
 /**
  * What the generated values hold besides the app's environment, which provision's rewrite keeps as
  * it is: the origin TLS values (`./origin-tls`), the private network's keys, the device logins'
- * passwords and the self-hosted monitoring's values.
+ * passwords, the self-hosted monitoring's values, and a rotation's (feature 025): the generation of
+ * each value (the two-computer guard's) and the values of earlier generations (an unfinished
+ * rotation's values are in a file of their own).
  */
-const KEPT_VALUES = ["originTls", "network", "grants", "monitoring"] as const;
+const KEPT_VALUES = [
+  "originTls",
+  "network",
+  "grants",
+  "monitoring",
+  "generations",
+  "history",
+] as const;
 
 /** The self-hosted monitoring's values this computer keeps for an environment. */
 export type MonitoringValues = z.infer<typeof MonitoringValuesSchema>;
@@ -152,7 +165,12 @@ export async function monitoringPassword(
  * (`options.portainer`) the notes about unset variables say what a stack does with them: they are
  * sent empty, because a stack's variable cannot be left unset. `options.storage` is the key of the
  * plan's provider bucket (`requireStorageKey`, `storageLogin`), which the app receives. Every
- * generated and stored secret is registered with the redactor.
+ * generated and stored secret is registered with the redactor. Before anything is written, it
+ * stops when another computer rotated a value this computer keeps an older one of
+ * (`assertValuesCurrent`) and while a rotation of the environment is unfinished (naming how to
+ * finish or undo it), then records when this computer first saw each of the user's tokens the
+ * environment uses (`tokenFirstSeen`, by fingerprint).
+ * @throws OpsCrewError `PHASE_PRECONDITION` for either stop.
  */
 export async function buildAppEnvironment(
   deps: PhaseDeps,
@@ -161,6 +179,28 @@ export async function buildAppEnvironment(
   serverHost?: string,
   options: { portainer?: boolean; storage?: StorageLogin } = {},
 ): Promise<AppEnvironment> {
+  // Provision may have changed the infrastructure already, but not the values.
+  const stopped =
+    "Provision stopped before the app's settings and deploy secrets, and neither was changed.";
+  await assertValuesCurrent(deps, stopped);
+  const rotation = await readPendingRotation(deps);
+  if (rotation !== undefined) {
+    const { root, environment, app } = deps.paths;
+    const flags = await commandFlags(root, environment, app);
+    const rotate = `opscrew rotate ${rotation.names.join(" ")}${flags}`;
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `The rotation of ${listText(rotation.names)} in ${environment} is unfinished, and provision would give GitHub and the servers values the rotation is replacing. ${stopped}`,
+      {
+        hint: `Finish it with \`${rotate}\`, or put the old values back with \`${rotate} --undo\`, then run \`opscrew provision${flags}\` again.`,
+      },
+    );
+  }
+  for (const token of USER_TOKENS) {
+    if (!token.uses(plan)) continue;
+    const value = token.vars.map((name) => deps.env[name]?.trim()).find((v) => v);
+    if (value !== undefined) await tokenFirstSeen(deps, token.name, value);
+  }
   let dotenvText: string | undefined;
   const ask = deps.interactive ? services.askEnv : undefined;
   // Each environment's own values: prod's `.env` never reaches another environment.
@@ -202,17 +242,11 @@ export async function buildAppEnvironment(
   const kept = Object.fromEntries(
     KEPT_VALUES.flatMap((name) => (previous?.[name] === undefined ? [] : [[name, previous[name]]])),
   );
-  // A device's login declares only its password's SHA-256 (lower-case hex) in the service's
-  // OPSCREW_ACL_USERS, by the secret `grantHashSecret(device)`, never the password.
-  const passwords = GeneratedValuesSchema.shape.grants.safeParse(previous?.grants).data ?? {};
-  for (const grant of plan.network?.grants ?? []) {
-    const password = passwords[`${grant.device}/${grant.service}`];
-    if (password === undefined) continue;
-    environment.values.services[grant.service] = {
-      ...environment.values.services[grant.service],
-      [grantHashSecret(grant.device)]: createHash("sha256").update(password).digest("hex"),
-    };
-  }
+  environment.values.services = withGrantHashes(
+    plan,
+    environment.values.services,
+    GeneratedValuesSchema.shape.grants.safeParse(previous?.grants).data ?? {},
+  );
   await writeFileAtomic(
     generatedValuesFile(deps),
     `${JSON.stringify({ ...environment.generated, ...kept })}\n`,
@@ -221,6 +255,29 @@ export async function buildAppEnvironment(
   if (options.portainer === true) reportUnsetStackVariables(deps, environment);
   else reportUnsetVariables(deps, environment);
   return environment;
+}
+
+/**
+ * `services`' secrets (by service, then secret name) with each device login of `plan` whose
+ * password `passwords` holds (by `<device>/<service>`) declared in its service's: only the
+ * password's SHA-256 (lower-case hex), by the secret `grantHashSecret(device)`, which the service's
+ * `OPSCREW_ACL_USERS` reads, never the password.
+ */
+export function withGrantHashes(
+  plan: DeployPlan,
+  services: Record<string, Record<string, string>>,
+  passwords: Readonly<Record<string, string>>,
+): Record<string, Record<string, string>> {
+  const result = { ...services };
+  for (const grant of plan.network?.grants ?? []) {
+    const password = passwords[`${grant.device}/${grant.service}`];
+    if (password === undefined) continue;
+    result[grant.service] = {
+      ...result[grant.service],
+      [grantHashSecret(grant.device)]: createHash("sha256").update(password).digest("hex"),
+    };
+  }
+  return result;
 }
 
 /**

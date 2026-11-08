@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { FakeZone } from "@opscrew/connector-cloudflare/testing";
-import { findExecutable } from "@opscrew/core";
+import { findExecutable, sha256Hex } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import {
   CLOUDFLARE_DEPLOY_SECRETS,
@@ -19,6 +19,9 @@ import {
 import { describe, expect, it } from "vitest";
 import { environmentPaths } from "../environments";
 import { allocateNetwork } from "../network";
+import { credentialsRecordFile } from "../rotate/record";
+import { tokenDatesFile } from "../rotate/record-tokens";
+import { keepPendingRotation } from "../rotate/values-pending";
 import { generatedValuesFile, recordGeneratedEntries } from "../shared/app-secrets";
 import {
   createProject,
@@ -919,6 +922,99 @@ describe("the self-hosted monitoring's values", () => {
       code: "ARTIFACT_INVALID",
     });
     await expect(readFile(generatedValuesFile(deps), "utf8")).resolves.toBe("{ not json");
+  });
+});
+
+describe("a rotation's values through provision (feature 025)", () => {
+  /** The generated values of a computer that rotated `db` once. */
+  function rotatedValues() {
+    const value = (seed: string) => fakeSecret("generic-password", seed);
+    return {
+      dbPassword: value("db-2"),
+      env: { SESSION_SECRET: value("session") },
+      generations: { db: 2 },
+      history: { db: { "1": { password: value("db-1") } } },
+    };
+  }
+
+  async function writeGenerated(deps: TestPhaseDeps, values: object): Promise<string> {
+    const text = `${JSON.stringify(values)}\n`;
+    await mkdir(dirname(generatedValuesFile(deps)), { recursive: true });
+    await writeFile(generatedValuesFile(deps), text);
+    return text;
+  }
+
+  it("keeps each value's generation and the earlier generations' values", async () => {
+    const deps = await createTestPhaseDeps();
+    const values = rotatedValues();
+    await writeGenerated(deps, values);
+    await buildAppEnvironment(deps, testPlan({ userSecret: false }), {});
+    const generated = JSON.parse(await readFile(generatedValuesFile(deps), "utf8"));
+    expect(generated.dbPassword).toBe(values.dbPassword);
+    expect(generated.generations).toEqual(values.generations);
+    expect(generated.history).toEqual(values.history);
+  });
+
+  it("stops before writing anything when another computer rotated a value since (the two-computer guard)", async () => {
+    const deps = await createTestPhaseDeps();
+    deps.env.HCLOUD_TOKEN = fakeSecret("hcloud-token");
+    const { generations: _older, ...values } = rotatedValues();
+    const text = await writeGenerated(deps, values);
+    await writeArtifact("credentials", credentialsRecordFile(deps.paths), {
+      schemaVersion: 1,
+      environments: { prod: { db: { rotatedAt: "2026-11-08T10:00:00.000Z", generation: 2 } } },
+    });
+    await expect(
+      buildAppEnvironment(deps, testPlan({ userSecret: false }), {}),
+    ).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: expect.stringContaining(
+        "Provision stopped before the app's settings and deploy secrets, and neither was changed.",
+      ),
+      hint: expect.stringContaining("opscrew secrets restore"),
+    });
+    await expect(readFile(generatedValuesFile(deps), "utf8")).resolves.toBe(text);
+    await expect(readFile(tokenDatesFile(deps.paths), "utf8")).rejects.toThrow();
+  });
+
+  it("stops before writing anything while a rotation is unfinished, naming how to finish or undo it", async () => {
+    const deps = await createTestPhaseDeps();
+    const text = await writeGenerated(deps, rotatedValues());
+    const value = (seed: string) => fakeSecret("generic-password", seed);
+    await keepPendingRotation(deps, {
+      names: ["db"],
+      services: { db: { password: { old: value("db-2"), new: value("db-3") } } },
+      hash: "a".repeat(64),
+      step: "started",
+    });
+    const error = await buildAppEnvironment(deps, testPlan({ userSecret: false }), {}).catch(
+      (e: unknown) => e,
+    );
+    expect(error).toMatchObject({ code: "PHASE_PRECONDITION" });
+    expect((error as Error).message).toContain("The rotation of db in prod is unfinished");
+    expect((error as Error).message).toContain(
+      "Provision stopped before the app's settings and deploy secrets, and neither was changed.",
+    );
+    expect((error as Error).message).not.toContain("Nothing was changed");
+    expect((error as { hint?: string }).hint).toContain(
+      "Finish it with `opscrew rotate db`, or put the old values back with `opscrew rotate db --undo`",
+    );
+    await expect(readFile(generatedValuesFile(deps), "utf8")).resolves.toBe(text);
+    expect((error as Error).message).not.toContain(value("db-3"));
+  });
+
+  it("records when this computer first saw each of the user's tokens the environment uses, by its fingerprint only", async () => {
+    const deps = await createTestPhaseDeps();
+    const hetzner = fakeSecret("hcloud-token");
+    deps.env.HCLOUD_TOKEN = hetzner;
+    // DigitalOcean's token is set, but a Hetzner environment does not use it.
+    deps.env.DIGITALOCEAN_TOKEN = fakeSecret("hcloud-token", "digitalocean");
+    await buildAppEnvironment(deps, testPlan({ userSecret: false }), {});
+    const text = await readFile(tokenDatesFile(deps.paths), "utf8");
+    expect(JSON.parse(text)).toEqual({
+      hetzner: { [sha256Hex(hetzner)]: deps.clock.now().toISOString() },
+    });
+    expect(text).not.toContain(hetzner);
   });
 });
 

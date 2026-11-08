@@ -123,9 +123,13 @@ export async function keepValueGenerations(
  * The two-computer guard: stops when the record has a credential of the environment of
  * `deps.paths` (other than the user's own tokens) at a later generation than the value this
  * computer keeps, since writing the old one back would break the app. Passes without a record.
+ * `unchanged` says what the caller left as it was (provision has changed things before it).
  * @throws OpsCrewError `PHASE_PRECONDITION` naming the credentials and `opscrew secrets restore`.
  */
-export async function assertValuesCurrent(deps: Pick<PhaseDeps, "paths">): Promise<void> {
+export async function assertValuesCurrent(
+  deps: Pick<PhaseDeps, "paths">,
+  unchanged = "Nothing was changed.",
+): Promise<void> {
   const entries = (await readCredentialsRecord(deps)).environments[deps.paths.environment] ?? {};
   const kept =
     (await readValidJson(generatedValuesFile(deps), GeneratedGenerationsSchema))?.generations ?? {};
@@ -140,7 +144,7 @@ export async function assertValuesCurrent(deps: Pick<PhaseDeps, "paths">): Promi
   const flags = await commandFlags(root, environment, app);
   throw new OpsCrewError(
     "PHASE_PRECONDITION",
-    `This computer has older values of ${behind.join(", ")} for the ${environment} environment than ${record} records: another computer rotated ${behind.length === 1 ? "it" : "them"}, and going on from here would put the old ${behind.length === 1 ? "value" : "values"} back. Nothing was changed.`,
+    `This computer has older values of ${behind.join(", ")} for the ${environment} environment than ${record} records: another computer rotated ${behind.length === 1 ? "it" : "them"}, and going on from here would put the old ${behind.length === 1 ? "value" : "values"} back. ${unchanged}`,
     {
       hint: `Run \`opscrew secrets restore${flags}\` to bring the current values from the recovery copy, then run the command again.`,
     },

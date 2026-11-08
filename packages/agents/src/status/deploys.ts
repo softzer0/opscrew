@@ -21,7 +21,12 @@ import { readRollback } from "../rollback/record";
 import type { VersionView } from "../rollback/types";
 import { commitWords, describeImage, shortDigest, shortImage } from "../rollback/versions";
 import { gitClient, githubClientFromToken, githubCoordinates } from "../shared";
-import { type DeployPause, deployPauseOf, pinnedText } from "../shared/deploy-pause";
+import {
+  type DeployPause,
+  deployPauseOf,
+  pinnedText,
+  rotationWindowText,
+} from "../shared/deploy-pause";
 import { codeOf } from "../shared/errors";
 import { ghcrPackage } from "../shared/github";
 import { appServerCommand, sections } from "./resources";
@@ -228,14 +233,16 @@ export function pushesDeploy(plan: DeployPlan): boolean {
 }
 
 /**
- * The pause's lines: on, a move's window, or a rollback's pin with how to resume, and when the
- * environment runs another image than the pinned one, that the rollback's run hasn't finished.
+ * The pause's lines: on, a move's window, a credential rotation's (`rotation`, its words from
+ * `rotationWindowText`), or a rollback's pin with how to resume, and when the environment runs
+ * another image than the pinned one, that the rollback's run hasn't finished.
  */
 function pauseLines(
   plan: DeployPlan,
   pause: DeployPause | undefined,
   flag: string,
   running: string | undefined,
+  rotation: string | undefined,
 ): string[] {
   const branch = plan.cicd.branch;
   if (pause === undefined) {
@@ -245,6 +252,7 @@ function pauseLines(
   if (pause.reason === "move") {
     return [`  Paused since ${since} for a move's window: \`opscrew provision${flag}\` ends it.`];
   }
+  if (pause.reason === "rotation") return [`  Paused since ${since} for ${rotation}.`];
   const resume = `\`opscrew rollback${flag} --resume\``;
   const lines = [
     pushesDeploy(plan)
@@ -386,8 +394,10 @@ async function pauseSection(
   const flag = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
   try {
     const paused = await deployPauseOf(github, plan);
+    const rotation =
+      paused?.reason === "rotation" ? await rotationWindowText(deps, flag, paused.hash) : undefined;
     return {
-      lines: pauseLines(plan, paused, flag, running),
+      lines: pauseLines(plan, paused, flag, running, rotation),
       ...(paused !== undefined ? { paused } : {}),
     };
   } catch (error) {

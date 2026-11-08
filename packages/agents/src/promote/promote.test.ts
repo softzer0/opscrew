@@ -1406,6 +1406,17 @@ describe("promote while the target's deploys are paused", () => {
     expect(result.status).toBe("deployed");
   });
 
+  it("refuses during a credential rotation's window, naming the rotation", async () => {
+    const world = await promoteWorld();
+    pause(world, { "shop/prod": { reason: "rotation", since: SINCE, hash: "a".repeat(64) } });
+    const error = await failure(promote(world.deps, { target: "prod", services: world.services }));
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toBe(
+      `The deploys of prod are paused since ${SINCE} for a credential rotation's window, begun on another computer: \`opscrew rotate\` with its services, or with \`--undo\`, ends it there, so a promotion's deploy run would skip its deploy job. Nothing was deployed.`,
+    );
+    expect(world.handler.requests).toEqual([]);
+  });
+
   it("goes ahead while only another environment is paused", async () => {
     const world = await promoteWorld();
     pause(world, { "shop/staging": { reason: "move", since: SINCE } });

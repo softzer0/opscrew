@@ -8,7 +8,12 @@ import { OpsCrewError } from "@opscrew/core";
 import { checkEnvironmentKey, DEPLOY_PAUSED_VARIABLE } from "@opscrew/iac-templates";
 import { NOTHING_CHANGED } from "../promote/shared";
 import { PlanRefusedError } from "../shared";
-import { clearDeployPause, deployPauseOf, pinnedText } from "../shared/deploy-pause";
+import {
+  clearDeployPause,
+  deployPauseOf,
+  pinnedText,
+  rotationWindowText,
+} from "../shared/deploy-pause";
 import { dispatchAndFollow } from "../shared/deploy-run";
 import { deploysOnTheirOwn } from "../status/deploys";
 import type { RollbackResult } from "./index";
@@ -62,6 +67,13 @@ export async function resumeDeploys(run: RollbackRun): Promise<RollbackResult> {
       "PHASE_PRECONDITION",
       `${environment}'s deploys are paused since ${pause.since} for a move's maintenance window, which \`opscrew provision\` ends, not \`${command} --resume\`. ${NOTHING_CHANGED}`,
       { hint: `Run \`opscrew provision${flags}\` to go on with the move.` },
+    );
+  }
+  if (pause?.reason === "rotation") {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `${environment}'s deploys are paused since ${pause.since} for ${await rotationWindowText(deps, flags, pause.hash)}, not \`${command} --resume\`. ${NOTHING_CHANGED}`,
+      { hint: "Finish or undo the rotation; its end resumes the deploys." },
     );
   }
   const deploySource = plan.environment?.deploySource;

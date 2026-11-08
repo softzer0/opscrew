@@ -30,6 +30,7 @@ import {
   type DeployPause,
   deployPauseOf,
   restoreDeployPause,
+  rotationWindowText,
   runningDeploy,
   setDeployPause,
   waitForDeploys,
@@ -107,6 +108,21 @@ function moveRefusal(run: RollbackRun, since: string): OpsCrewError {
     command: run.command,
     what: "rollback",
   });
+}
+
+/**
+ * The stop while a credential rotation pauses the deploys: a rollback would deploy another version
+ * while the services may hold new values, and its pin would replace the rotation's pause.
+ */
+async function rotationRefusal(
+  run: RollbackRun,
+  pause: Extract<DeployPause, { reason: "rotation" }>,
+): Promise<OpsCrewError> {
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `The deploys of ${run.environment} are paused since ${pause.since} for ${await rotationWindowText(run.deps, run.flags, pause.hash)}, and a rollback must not deploy during the rotation. ${NOTHING_CHANGED}`,
+    { hint: `Finish or undo the rotation first, then run \`${run.command}\` again.` },
+  );
 }
 
 /**
@@ -579,6 +595,7 @@ export async function rollbackServer(run: RollbackRun): Promise<RollbackResult> 
   if (followed !== undefined) return followed;
   const pause = await deployPauseOf(github, plan);
   if (pause?.reason === "move") throw moveRefusal(run, pause.since);
+  if (pause?.reason === "rotation") throw await rotationRefusal(run, pause);
   const branch = workflowBranch(plan, github.defaultBranch);
   const workflowFile = await requireApplied(deps, {
     target: environment,
@@ -716,10 +733,13 @@ export async function rollbackServer(run: RollbackRun): Promise<RollbackResult> 
     commit: target.commit,
     ...(current !== undefined ? { from: current.commit } : {}),
   });
-  // A move's window that started since the check above: its entry goes back, and nothing deploys.
-  if (pauseBefore?.reason === "move") {
+  // A move's window or a rotation that started since the check above: its entry goes back, and
+  // nothing deploys.
+  if (pauseBefore?.reason === "move" || pauseBefore?.reason === "rotation") {
     await restoreDeployPause(deps, github, plan, pauseBefore);
-    throw moveRefusal(run, pauseBefore.since);
+    throw pauseBefore.reason === "move"
+      ? moveRefusal(run, pauseBefore.since)
+      : await rotationRefusal(run, pauseBefore);
   }
   const outcome = await dispatchRollback(run, github, {
     workflowFile,

@@ -6,6 +6,7 @@ import {
   pinnedText,
   type RollbackResult,
   rollback,
+  rotationWindowText,
 } from "@opscrew/agents";
 import { isPlanHash, OpsCrewError } from "@opscrew/core";
 import { formatUtc } from "@opscrew/secops";
@@ -150,12 +151,22 @@ async function askDatabase(
   return answer;
 }
 
-/** The pause in one line, with what ends it. */
-function pauseLine(name: string, pause: DeployPause, flag: string): string {
+/**
+ * The pause in one line, with what ends it; a credential rotation's in `rotation`'s words
+ * (`rotationWindowText`).
+ */
+function pauseLine(
+  name: string,
+  pause: DeployPause,
+  flag: string,
+  rotation: string | undefined,
+): string {
   const since = formatUtc(pause.since);
   if (pause.reason === "move") {
     return `Deploys of ${name} are paused since ${since} for a move's maintenance window: \`opscrew provision${flag}\` ends it.`;
   }
+  if (pause.reason === "rotation")
+    return `Deploys of ${name} are paused since ${since} for ${rotation}.`;
   return `Deploys of ${name} are paused since ${since}: ${pinnedText(pause)}. Run \`opscrew rollback${flag} --resume\` to turn them back on.`;
 }
 
@@ -165,6 +176,7 @@ function printList(
   name: string,
   flag: string,
   result: Extract<RollbackResult, { kind: "list" }>,
+  rotation: string | undefined,
 ): void {
   const { versions, paused, leftOut } = result;
   if (versions.length === 0) {
@@ -190,7 +202,7 @@ function printList(
     const lines = leftOut.map((image) => `  ${image.commit.slice(0, 7)}: ${image.reason}`);
     ctx.stdout(`\nNot offered (${name}):\n${lines.join("\n")}\n`);
   }
-  if (paused !== undefined) ctx.stdout(`\n${pauseLine(name, paused, flag)}\n`);
+  if (paused !== undefined) ctx.stdout(`\n${pauseLine(name, paused, flag, rotation)}\n`);
   if (versions.length > 1) {
     const to = versions.some((version) => version.version !== undefined)
       ? "<version>"
@@ -315,7 +327,11 @@ export function register(program: Command, ctx: CliContext): void {
         ...(services === undefined ? {} : { services }),
       });
       if (result.kind === "list") {
-        printList(ctx, name, flag, result);
+        const rotation =
+          result.paused?.reason === "rotation"
+            ? await rotationWindowText(deps, flag, result.paused.hash)
+            : undefined;
+        printList(ctx, name, flag, result, rotation);
         return;
       }
       // The agent's reporter has said what runs now, what waits for a reviewer, and how to resume.

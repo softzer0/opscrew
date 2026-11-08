@@ -334,7 +334,7 @@ export async function promote(deps: PhaseDeps, options: PromoteOptions): Promise
     services: serviceNames(plan),
   });
   if (followed !== undefined) return followed;
-  await requireNotPaused(github, plan, target, command);
+  await requireNotPaused({ ...deps, paths: targetPaths }, github, plan, target, command);
   deps.reporter.step(`Finding the image to deploy to ${target}`);
   const chosen = await chooseImage(image, {
     source,

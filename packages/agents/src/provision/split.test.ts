@@ -647,6 +647,24 @@ describe.skipIf(!findExecutable("git"))("runProvision with extra servers", () =>
     expect(s.github.variables.get(DEPLOY_PAUSED_VARIABLE)).toBe(pinned);
   });
 
+  it("refuses to go on with a move while a credential rotation pauses the app's deploys, before any change", async () => {
+    const s = await movingSetup("deployed", "app");
+    const rotating = JSON.stringify({
+      "shop/prod": { reason: "rotation", since: "2026-10-12T10:00:00.000Z", hash: "a".repeat(64) },
+    });
+    s.github.variables.set(DEPLOY_PAUSED_VARIABLE, rotating);
+
+    await expect(runProvision(s.deps, { services: s.services })).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message:
+        "The deploys of shop/prod are paused since 2026-10-12T10:00:00.000Z for a credential rotation's window, begun on another computer: `opscrew rotate` with its services, or with `--undo`, ends it there, and db's move needs the app's deploys. Nothing was changed.",
+      hint: "Finish or undo the rotation first, then run `opscrew provision` again.",
+    });
+    expect(s.handler.requests).toEqual([]);
+    expect(s.engine.calls).toEqual([]);
+    expect(s.github.variables.get(DEPLOY_PAUSED_VARIABLE)).toBe(rotating);
+  });
+
   it("stops a move, before any change, when the token may not read the deploy pause", async () => {
     const s = await movingSetup("deployed", "app");
     s.github.getRepoVariable = async () => {

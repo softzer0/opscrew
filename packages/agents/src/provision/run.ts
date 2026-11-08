@@ -97,7 +97,12 @@ import {
   trackedFiles,
   writePlanIfChanged,
 } from "../shared";
-import { deployPauseOf, pinnedText, readableDeployPause } from "../shared/deploy-pause";
+import {
+  deployPauseOf,
+  pinnedText,
+  readableDeployPause,
+  rotationWindowText,
+} from "../shared/deploy-pause";
 import { boundHostAdapter, hostPlanFile } from "../shared/host-plan";
 import { connectAndInspectOwnServer } from "../shared/own-server";
 import { runPhase } from "../shared/phase-status";
@@ -562,6 +567,15 @@ async function provisionFlow(
       "PHASE_PRECONDITION",
       `The deploys of ${checkEnvironmentKey(plan)} are paused since ${pinned.since}: ${pinnedText(pinned)}, and ${plan.move.service}'s move needs the app's deploys. Nothing was changed.`,
       { hint: `Run \`${resume}\` first, then \`${command}\` again.` },
+    );
+  }
+  // A credential rotation's pause holds the deploys until it ends; a move's window would end it.
+  if (paused?.reason === "rotation" && plan.move !== undefined) {
+    const flags = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `The deploys of ${checkEnvironmentKey(plan)} are paused since ${paused.since} for ${await rotationWindowText(deps, flags, paused.hash)}, and ${plan.move.service}'s move needs the app's deploys. Nothing was changed.`,
+      { hint: `Finish or undo the rotation first, then run \`${command}\` again.` },
     );
   }
   // The app's bucket at a provider: R2 needs the plan's Cloudflare account, and a Hetzner or

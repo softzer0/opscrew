@@ -1,5 +1,6 @@
 import { readFile, rm } from "node:fs/promises";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
+import { checkEnvironmentKey, DEPLOY_PAUSED_VARIABLE } from "@opscrew/iac-templates";
 import { describe, expect, it } from "vitest";
 import { type MoveSideKind, OLD_IPV4, PORTAINER_TOKEN, PORTAINER_URL } from "../testing";
 import {
@@ -76,6 +77,31 @@ describe.skipIf(!findExecutable("git"))("the maintenance window, for every pair 
       expect(shown(h)).not.toContain(NEW_IPV4);
     },
   );
+
+  it("refuses while a credential rotation pauses the deploys, before anything is asked or changed", async () => {
+    const h = await pairHarness("hetzner", "own", { cache: true });
+    const rotating = JSON.stringify({
+      [checkEnvironmentKey(h.session.plan)]: {
+        reason: "rotation",
+        since: "2026-11-08T09:00:00.000Z",
+        hash: "a".repeat(64),
+      },
+    });
+    h.github.variables.set(DEPLOY_PAUSED_VARIABLE, rotating);
+    const error = await maintenanceWindow(h.session, { allowDowntime: true }).catch(
+      (e: unknown) => e,
+    );
+    expect(error).toBeInstanceOf(OpsCrewError);
+    expect((error as OpsCrewError).message).toContain(
+      "for a credential rotation's window, begun on another computer",
+    );
+    expect((error as OpsCrewError).message).toContain("Nothing was changed");
+    expect(
+      h.handler.requests.find((r) => r.title.startsWith("Maintenance window")),
+    ).toBeUndefined();
+    expect(h.session.plan.retarget?.oldAppStoppedAt).toBeUndefined();
+    expect(h.github.variables.get(DEPLOY_PAUSED_VARIABLE)).toBe(rotating);
+  });
 
   it("SC-2302: a copy that fails leaves the old side serving with its data unchanged, and empties what it wrote", async () => {
     const h = await pairHarness("own", "portainer", { cache: true });

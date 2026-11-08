@@ -725,6 +725,24 @@ describe("the paused job", { timeout: 30_000 }, () => {
     );
   });
 
+  it.skipIf(!bash)("says why a credential rotation's window skips the deploy", () => {
+    const rotation = JSON.stringify({
+      "shop/prod": { reason: "rotation", since: SINCE, hash: "a".repeat(64) },
+    });
+    const result = say(prod, rotation, jqFake);
+    expect(result.status, result.out).toBe(0);
+    expect(result.summary).toBe(
+      `Deploys of shop/prod are paused since ${SINCE} for a credential rotation's window: \`opscrew rotate\` with its services, or with \`--undo\`, ends it.`,
+    );
+    const staging = ofApp(inEnvironment(serverPlan(), { name: "staging" }), "api");
+    const entry = JSON.stringify({
+      "api/staging": { reason: "rotation", since: SINCE, hash: "a".repeat(64) },
+    });
+    expect(say(content(staging), entry, jqFake).summary).toContain(
+      "`opscrew rotate --app api --env staging` with its services",
+    );
+  });
+
   it.skipIf(!bash || !jq)("reads the entry with the real jq too", () => {
     const result = say(prod, pausedFor("shop/prod"), "");
     expect(result.status, result.out).toBe(0);

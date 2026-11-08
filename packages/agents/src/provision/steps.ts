@@ -14,7 +14,12 @@ import {
   projectEngine,
   writePlanIfChanged,
 } from "../shared";
-import { type DeployPause, pinnedText, readableDeployPause } from "../shared/deploy-pause";
+import {
+  type DeployPause,
+  pinnedText,
+  readableDeployPause,
+  rotationWindowText,
+} from "../shared/deploy-pause";
 import type { CloudflareSetup, GitHubSetup } from "./credentials";
 import type { DependabotStep } from "./dependabot";
 import type { PlanAndApplyResult } from "./plan-apply";
@@ -293,13 +298,18 @@ export function previewsMergeNote(plan: DeployPlan, published: PublishResult): s
 /**
  * Said beside {@link mergeDeploysNote} while a rollback pins the environment (`pause`, ADR 0023):
  * what this run merges deploys only once its deploys resume, with `--deploy`, or for a promoted
- * environment with `opscrew promote` after resuming; `undefined` otherwise.
+ * environment with `opscrew promote` after resuming; while a credential rotation pauses them, only
+ * once it ends; `undefined` otherwise.
  */
 export async function pausedMergeNote(
-  deps: Pick<PhaseDeps, "paths">,
+  deps: Pick<PhaseDeps, "paths" | "redactor">,
   plan: DeployPlan,
   pause: DeployPause | undefined,
 ): Promise<string | undefined> {
+  if (pause?.reason === "rotation") {
+    const flags = await commandFlags(deps.paths.root, deps.paths.environment, plan.app.key);
+    return `The deploys of ${checkEnvironmentKey(plan)} are paused since ${pause.since} for ${await rotationWindowText(deps, flags, pause.hash)}. The merged files deploy only once it ends.`;
+  }
   if (pause?.reason !== "rollback") return undefined;
   const environment = deps.paths.environment;
   const resume = `opscrew rollback${await commandFlags(deps.paths.root, environment, plan.app.key)} --resume`;
@@ -312,10 +322,11 @@ export async function pausedMergeNote(
 
 /**
  * Reports {@link pausedMergeNote} for the environment's pause in GitHub, read without asking the
- * token for a new permission ({@link readableDeployPause}); nothing when no rollback pins it.
+ * token for a new permission ({@link readableDeployPause}); nothing when no rollback or rotation
+ * holds it.
  */
 export async function reportPausedMerge(
-  deps: Pick<PhaseDeps, "paths" | "reporter">,
+  deps: Pick<PhaseDeps, "paths" | "reporter" | "redactor">,
   plan: DeployPlan,
   github: Parameters<typeof readableDeployPause>[0],
 ): Promise<void> {

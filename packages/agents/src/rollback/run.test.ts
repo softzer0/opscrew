@@ -25,6 +25,7 @@ import {
   WORKFLOWS,
 } from "../promote/__fixtures__/world";
 import { promotionFile, readPromotion, writePromotion } from "../promote/record";
+import { keepPendingRotation } from "../rotate/values-pending";
 import { recordServerAddress, updateServerAddresses } from "../shared";
 import { SH_AVAILABLE } from "../snapshot/__fixtures__/server";
 import {
@@ -473,6 +474,45 @@ describe("opscrew rollback on a server", () => {
       expect(error.hint).toContain("opscrew provision");
       await nothingChanged(world, error);
       expect(paused(world)).toEqual({ "shop/prod": entry });
+    });
+
+    it("while a credential rotation pauses the deploys, naming this computer's rotation", async () => {
+      const { world } = await prodWorld();
+      const entry = { reason: "rotation", since: "2026-10-11T11:30:00.000Z", hash: "a".repeat(64) };
+      world.github.variables.set(DEPLOY_PAUSED_VARIABLE, JSON.stringify({ "shop/prod": entry }));
+      await keepPendingRotation(world.deps, {
+        names: ["db"],
+        services: { db: { password: { old: "a".repeat(64), new: "b".repeat(64) } } },
+        hash: entry.hash,
+        step: "started",
+      });
+      const error = await failure(world.run());
+      expect(error.code).toBe("PHASE_PRECONDITION");
+      expect(error.message).toContain(
+        "for a credential rotation's window: `opscrew rotate db --env prod` or `opscrew rotate db --env prod --undo` ends it, and a rollback must not deploy during the rotation.",
+      );
+      await nothingChanged(world, error);
+      expect(paused(world)).toEqual({ "shop/prod": entry });
+    });
+
+    it("when a rotation started after the check: its entry goes back, and nothing deploys", async () => {
+      const entry = { reason: "rotation", since: "2026-10-11T11:59:00.000Z", hash: "a".repeat(64) };
+      let world: World | undefined;
+      const started = await prodWorld({
+        approve: () => {
+          world?.github.variables.set(
+            DEPLOY_PAUSED_VARIABLE,
+            JSON.stringify({ "shop/prod": entry }),
+          );
+          return true;
+        },
+      });
+      world = started.world;
+      const error = await failure(world.run());
+      expect(error.message).toContain("a rollback must not deploy during the rotation");
+      expect(world.events).toEqual(["pause", "pause"]);
+      expect(paused(world)).toEqual({ "shop/prod": entry });
+      expect(world.github.dispatches).toEqual([]);
     });
 
     it("when a move's window started after the check: its entry goes back, and nothing deploys", async () => {
@@ -1081,6 +1121,19 @@ describe("opscrew rollback --resume", () => {
     const error = await failure(world.run({ resume: true }));
     expect(error.code).toBe("PHASE_PRECONDITION");
     expect(error.hint).toContain("opscrew provision");
+    expect(world.handler.requests).toEqual([]);
+    expect(paused(world)).toEqual({ "shop/prod": entry });
+  });
+
+  it("refuses to end a credential rotation's window, naming the rotation", async () => {
+    const { world } = await prodWorld();
+    const entry = { reason: "rotation", since: "2026-10-10T09:00:00.000Z", hash: "a".repeat(64) };
+    world.github.variables.set(DEPLOY_PAUSED_VARIABLE, JSON.stringify({ "shop/prod": entry }));
+    const error = await failure(world.run({ resume: true }));
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toContain(
+      "for a credential rotation's window, begun on another computer: `opscrew rotate` with its services, or with `--undo`, ends it there, not `opscrew rollback --env prod --resume`.",
+    );
     expect(world.handler.requests).toEqual([]);
     expect(paused(world)).toEqual({ "shop/prod": entry });
   });

@@ -11,6 +11,7 @@ import { localPlan } from "../localhost/__fixtures__/computer";
 import { appFolder } from "../localhost/services";
 import { commitOf, digestOf, FakePromoteGitHub } from "../promote/__fixtures__/world";
 import { ghcrDenied } from "../rollback/__fixtures__/versions";
+import { keepPendingRotation, type PendingRotation } from "../rotate/values-pending";
 import { recordOwnServer, recordServerAddress } from "../shared";
 import {
   createTestPhaseDeps,
@@ -229,6 +230,33 @@ describe("the deploys on a server OpsCrew created", () => {
       reason: "move",
       since: "2026-10-31T09:00:00.000Z",
     });
+  });
+
+  it("paused for a credential rotation's window, by this computer's rotation or one begun elsewhere", async () => {
+    const { deps, plan, github } = await serverWorld();
+    const entry = { reason: "rotation", since: "2026-10-31T09:00:00.000Z", hash: "a".repeat(64) };
+    github.variables.set(DEPLOY_PAUSED_VARIABLE, JSON.stringify({ "shop/prod": entry }));
+    const services = { remote: shell(serverOutput(BOTH)).remote, deploys: github };
+    expect((await deployStateReport(deps, plan, { services })).lines.at(-1)).toBe(
+      "  Paused since 2026-10-31 09:00 UTC for a credential rotation's window, begun on another computer: `opscrew rotate` with its services, or with `--undo`, ends it there.",
+    );
+    const rotation: PendingRotation = {
+      names: ["db", "cache"],
+      services: { db: { password: { old: "a".repeat(64), new: "b".repeat(64) } } },
+      hash: entry.hash,
+      step: "started",
+    };
+    // This computer's rotation of another plan is not the one that paused.
+    await keepPendingRotation(deps, { ...rotation, hash: "c".repeat(64) });
+    expect((await deployStateReport(deps, plan, { services })).lines.at(-1)).toContain(
+      "begun on another computer",
+    );
+    await keepPendingRotation(deps, rotation);
+    const report = await deployStateReport(deps, plan, { services });
+    expect(report.lines.at(-1)).toBe(
+      "  Paused since 2026-10-31 09:00 UTC for a credential rotation's window: `opscrew rotate db cache` or `opscrew rotate db cache --undo` ends it.",
+    );
+    expect(report.deploys?.paused).toEqual(entry);
   });
 
   it("without GitHub: the short digests, why, and the last rollback on this computer, never as the pause", async () => {

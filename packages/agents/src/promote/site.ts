@@ -332,7 +332,7 @@ async function promoteBuild(run: SiteRun): Promise<PromoteResult> {
   // 2. The build's artifact, which the target's workflow downloads: GitHub keeps it for the
   // repository's artifact retention only (90 days by default).
   const github = await githubRepository(deps, run.services);
-  await requireNotPaused(github, plan, target, command);
+  await requireNotPaused({ ...deps, paths: run.paths }, github, plan, target, command);
   const artifacts = await github.api.runArtifacts(
     github.owner,
     github.repo,

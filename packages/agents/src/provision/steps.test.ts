@@ -28,6 +28,14 @@ describe("pausedMergeNote", () => {
     );
   });
 
+  it("says the merged files deploy only once a credential rotation's window ends", async () => {
+    const deps = await createTestPhaseDeps();
+    const rotation = { reason: "rotation", since: PINNED.since, hash: "a".repeat(64) } as const;
+    expect(await pausedMergeNote(deps, testPlan(), rotation)).toBe(
+      "The deploys of shop/prod are paused since 2026-10-11T11:00:00.000Z for a credential rotation's window, begun on another computer: `opscrew rotate` with its services, or with `--undo`, ends it there. The merged files deploy only once it ends.",
+    );
+  });
+
   it("names opscrew promote after resuming, for a promoted environment", async () => {
     const deps = await createTestPhaseDeps();
     const plan = DeployPlanSchema.parse({

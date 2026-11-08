@@ -1064,6 +1064,37 @@ describe.skipIf(!shWorks())("rotate.sh", { timeout: 180_000 }, () => {
     expect(valid("cache")).toEqual([value("cache").old, value("cache").new]);
   });
 
+  it("runs a command with an `unless` check only while that check fails", () => {
+    const conditional: RotateStep[] = [
+      {
+        service: "cache",
+        envFile: "cache.env",
+        mode: "dual",
+        begin: [{ unless: [play("look")], run: play("add") }],
+        finish: [{ when: [play("check")], unless: [play("look")], run: play("drop") }],
+        recreate: false,
+      },
+    ];
+    // `look` succeeds: neither command runs, and that is no failure.
+    approve();
+    expect(run([HASH], {}, { steps: conditional }).status).toBe(0);
+    expect(lines(`${work}/exec.log`)).toEqual(["cache look", "cache check", "cache look"]);
+    expect(valid("cache")).toEqual([value("cache").old]);
+    // `look` fails: both run, the `when` check first.
+    rmSync(`${work}/exec.log`);
+    rmSync(at(".rotate/finished"));
+    approve();
+    expect(run([HASH], { EXEC_FAIL: "cache look" }, { steps: conditional }).status).toBe(0);
+    expect(lines(`${work}/exec.log`)).toEqual([
+      "cache look",
+      "cache add",
+      "cache check",
+      "cache look",
+      "cache drop",
+    ]);
+    expect(valid("cache")).toEqual([value("cache").new]);
+  });
+
   it("passes values with blanks, quotes, $(…), backslashes and base64-looking text exactly", () => {
     const tricky = [
       { old: "two words", new: `it's "quoted"` },

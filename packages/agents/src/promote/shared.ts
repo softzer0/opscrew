@@ -8,7 +8,7 @@ import type { PhaseDeps } from "../context";
 import { type DriftReport, runDrift } from "../drift";
 import { missing } from "../provision/credentials";
 import { gitClient, githubClientFromToken, githubCoordinates } from "../shared";
-import { pinnedText, readableDeployPause } from "../shared/deploy-pause";
+import { pinnedText, readableDeployPause, rotationWindowText } from "../shared/deploy-pause";
 import type { PromoteGitHubApi, PromoteServices } from "./types";
 
 /** What every refusal of a promotion ends with. */
@@ -209,6 +209,7 @@ export async function requireWorkflowApplied(
  * counts as not paused ({@link readableDeployPause}), so promote needs no new permission.
  */
 export async function requireNotPaused(
+  deps: Pick<PhaseDeps, "paths" | "redactor">,
   github: PromoteRepository,
   plan: DeployPlan,
   target: string,
@@ -222,6 +223,13 @@ export async function requireNotPaused(
       "PHASE_PRECONDITION",
       `The deploys of ${target} are paused since ${pause.since}: ${pinnedText(pause)}, ${skipped}. ${NOTHING}`,
       { hint: `Run \`opscrew rollback --env ${target} --resume\`, then \`${command}\` again.` },
+    );
+  }
+  if (pause.reason === "rotation") {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `The deploys of ${target} are paused since ${pause.since} for ${await rotationWindowText(deps, ` --env ${target}`, pause.hash)}, ${skipped}. ${NOTHING}`,
+      { hint: `Finish or undo the rotation first, then run \`${command}\` again.` },
     );
   }
   throw movePaused({

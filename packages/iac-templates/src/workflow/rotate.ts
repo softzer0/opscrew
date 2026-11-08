@@ -71,11 +71,12 @@ const APP_ENV = "app.env";
 export type RotateCommand = readonly string[];
 
 /**
- * A command run only when each of its checks succeeds there (the catalog's `ConditionalCommand`):
- * `run` after every `when`, all in the same container with the same values.
+ * A command run only on its checks there (the catalog's `ConditionalCommand`): `run` when every
+ * `when` succeeds and every `unless` fails, all in the same container with the same values.
  */
 export interface RotateConditional {
-  when: readonly RotateCommand[];
+  when?: readonly RotateCommand[];
+  unless?: readonly RotateCommand[];
   run: RotateCommand;
 }
 
@@ -168,14 +169,20 @@ interface UndoUnit {
 
 /**
  * `command` in the service's container `$rot_c`, with step `n`'s values (`swapped` for an undo): a
- * conditional one runs only when each of its checks succeeds, and a failed check is no failure.
+ * conditional one runs only when each `when` check succeeds and each `unless` check fails, and a
+ * check's outcome is no failure.
  */
 function inContainer(command: RotateStepCommand, n: number, swapped: boolean): string {
   const [old, now] = swapped ? ["new", "old"] : ["old", "new"];
   const exec = (words: RotateCommand) =>
     `OPSCREW_OLD="$rot_${old}_${n}" OPSCREW_NEW="$rot_${now}_${n}" docker exec -e OPSCREW_OLD -e OPSCREW_NEW "$rot_c" ${words.map(shellQuote).join(" ")} < /dev/null >> ${ROTATE_LOG} 2>&1`;
   if (!("run" in command)) return exec(command);
-  return `if ${command.when.map(exec).join(" && ")}; then ${exec(command.run)}; fi`;
+  const checks = [
+    ...(command.when ?? []).map(exec),
+    ...(command.unless ?? []).map((words) => `! ${exec(words)}`),
+  ];
+  if (checks.length === 0) return exec(command.run);
+  return `if ${checks.join(" && ")}; then ${exec(command.run)}; fi`;
 }
 
 /** `services` created again from their env files (`force`: even when those are unchanged). */
