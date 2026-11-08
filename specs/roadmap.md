@@ -7,7 +7,8 @@ there. The lead keeps this file current. Research for a feature goes in that fea
 
 Done: 000–024. [024 snapshots and restores as commands](024-snapshots-and-restores/) passed
 every live pass on its final code by 2026-11-08 and shipped as 0.2.5 that day.
-Next: 025 credential rotation, once the founder gives the go-ahead.
+Being built: 025 credential rotation (the founder's go-ahead, 2026-11-08, the night 0.2.5
+shipped).
 
 ## 019 Rollback
 
