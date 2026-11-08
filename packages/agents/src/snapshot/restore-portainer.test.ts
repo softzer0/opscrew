@@ -141,6 +141,43 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore in the user's Portainer", () => 
     expect(shown).not.toContain(PORTAINER_HOST);
   });
 
+  it("puts the app's kept folder back into its volume, alone with --only files", async () => {
+    const world = await portainerWorld(
+      stagingPlan([{ kind: "postgres", name: "db" }], {
+        files: true,
+        base: portainerPlan({ deployed: true }),
+      }),
+    );
+    world.probe.version = RUNNING;
+    const [db] = record().services;
+    world.store(ID, {
+      ...record(),
+      services: [db, { name: "files", kind: "files", file: "files.tar", size: 4 }],
+    });
+    const restored = await restoreSnapshot(world.deps, ID, {
+      services: world.services,
+      only: "files",
+    });
+
+    expect(restored.services).toEqual([{ name: "files" }]);
+    expect(world.handler.requests[0]?.details).toContain(
+      "It puts back exactly as they were then: files (the app's kept folder).",
+    );
+    const [files] = ranWith(world, `/snapshots/${ID}/files.tar`);
+    expect(files?.image).toBe(IMAGES.busybox.ref);
+    expect(files?.cmd[2]).toBe(
+      `find /data -mindepth 1 -delete && tar -C /data -xpf /snapshots/${ID}/files.tar`,
+    );
+    expect(files?.mounts).toContainEqual({
+      type: "volume",
+      source: `${STACK}_files`,
+      target: "/data",
+      readOnly: false,
+    });
+    expect(ranWith(world, "pg_restore")).toEqual([]);
+    expect(container(world, "app")?.state).toBe("running");
+  });
+
   it("puts the copy taken just before back when a part fails, and starts the app again", async () => {
     const world = await portainerWorld(plan());
     world.probe.version = RUNNING;

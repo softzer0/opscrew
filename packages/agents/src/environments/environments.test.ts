@@ -200,6 +200,20 @@ describe("the shared parts", () => {
     expect(withSharedParts(staging, prod)).not.toHaveProperty("storage");
   });
 
+  it("takes the source's kept folder, and drops one the source has not", () => {
+    const files = DeployPlanSchema.parse({
+      ...prod,
+      services: [],
+      storage: { files: { dir: "storage" } },
+    });
+    const staging = inEnvironment(testPlan(), "staging");
+    expect(sharedPartsDiffer(files, staging)).toContain("storage.files");
+    expect(withSharedParts(staging, files).storage).toEqual({ files: { dir: "storage" } });
+    const own = DeployPlanSchema.parse({ ...staging, storage: { files: { dir: "uploads" } } });
+    expect(sharedPartsDiffer(prod, own)).toContain("storage.files");
+    expect(withSharedParts(own, prod)).not.toHaveProperty("storage");
+  });
+
   it("stops a promoted environment's provision preflight naming its source and the parts", async () => {
     const deps = await project({ prod });
     const staging = inEnvironment(prodPlan(), "staging", {

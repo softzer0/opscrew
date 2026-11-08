@@ -58,6 +58,34 @@ async function failure(promise: Promise<unknown>): Promise<OpsCrewError> {
 }
 
 describe.skipIf(!SH_AVAILABLE)("a snapshot by hand in the user's Portainer", () => {
+  it("copies the app's kept folder by a busybox one-off, its volume read-only, with no network", async () => {
+    const world = await portainerWorld(
+      stagingPlan([{ kind: "postgres", name: "db" }], {
+        files: true,
+        base: portainerPlan({ deployed: true }),
+      }),
+    );
+    const taken = await take(world);
+
+    expect(taken.services).toEqual([
+      { name: "db", kind: "postgres", state: "copied", size: 15 },
+      { name: "files", kind: "files", state: "copied", size: 17 },
+    ]);
+    expect(world.deps.reporter.text()).toContain(
+      "- files (the app's kept folder) in your Portainer, while it runs",
+    );
+    expect(world.handler.requests).toEqual([]);
+    const files = ranWith(world, "tar -C /files -cf - .");
+    expect(files?.image).toBe(IMAGES.busybox.ref);
+    expect(files?.network).toBe("none");
+    expect(files?.mounts[0]).toEqual({
+      type: "volume",
+      source: `${STACK}_files`,
+      target: "/files",
+      readOnly: true,
+    });
+  });
+
   it("copies the online parts by one-offs and the stop-only one stopped alone, then writes about.json", async () => {
     const world = await portainerWorld(plan());
     world.copies.set("sqlite.tar", 3);

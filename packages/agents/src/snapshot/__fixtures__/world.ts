@@ -56,24 +56,29 @@ function planServices(entries: readonly ServiceEntry[]) {
 }
 
 /**
- * `shop` in staging on a Hetzner server with `services`, and the app's SQLite volume with
- * `sqlite`; `base` replaces the Hetzner plan (an own server's, a Portainer's, this computer's).
+ * `shop` in staging on a Hetzner server with `services`, the app's SQLite volume with `sqlite`
+ * and its kept folder `uploads` with `files`; `base` replaces the Hetzner plan (an own server's, a
+ * Portainer's, this computer's).
  */
 export function stagingPlan(
   services: readonly ServiceEntry[],
-  o: { sqlite?: boolean; base?: DeployPlan; fields?: Record<string, unknown> } = {},
+  o: { sqlite?: boolean; files?: boolean; base?: DeployPlan; fields?: Record<string, unknown> } = {},
 ): DeployPlan {
   const base = o.base ?? testPlan({ deployed: true });
   return inEnvironment(
     DeployPlanSchema.parse({
       ...base,
       services: planServices(services),
-      ...(o.sqlite === true
+      ...(o.sqlite === true || o.files === true
         ? {
-            storage: { ...base.storage, sqlite: { dir: "storage" } },
-            deploy: { ...base.deploy, strategy: "recreate" },
+            storage: {
+              ...base.storage,
+              ...(o.sqlite === true ? { sqlite: { dir: "storage" } } : {}),
+              ...(o.files === true ? { files: { dir: "uploads" } } : {}),
+            },
           }
         : {}),
+      ...(o.sqlite === true ? { deploy: { ...base.deploy, strategy: "recreate" } } : {}),
       ...o.fields,
     }),
     "staging",

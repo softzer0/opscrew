@@ -356,6 +356,39 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
     expect(s.github.secrets.has("OPSCREW_SERVICE_MYSQL_ENV")).toBe(false);
   });
 
+  it("with deleteData names the app's kept folder among the data it deletes", async () => {
+    const base = ownPlan();
+    const plan = DeployPlanSchema.parse({
+      ...base,
+      app: {
+        ...base.app,
+        build: {
+          builder: "own-dockerfile",
+          chosen: "user",
+          reason: "The repository has its own Dockerfile.",
+          runtime: { language: "node", version: "24" },
+          probe: "node",
+          workdir: "/app",
+        },
+      },
+      storage: { files: { dir: "storage" } },
+    });
+    const s = await deployed({ plan });
+    const previews: DestroyPreview[] = [];
+    await runDestroy(s.deps, {
+      services: services(s),
+      deleteData: true,
+      confirm: async (preview) => {
+        previews.push(preview);
+        return true;
+      },
+    });
+    expect(previews[0]?.dataWarning).toContain(
+      "the PostgreSQL database, the app's kept folder storage/ and everything the app stored in /srv/data/shop and in its Docker volumes",
+    );
+    expect(s.host.applies.at(-1)?.plan.deleteData).toBe(true);
+  });
+
   it("--undo-host --delete-data after an earlier destroy refuses before any change and names the data", async () => {
     const s = await deployed();
     await runDestroy(s.deps, { services: services(s) });

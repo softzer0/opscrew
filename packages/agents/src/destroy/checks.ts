@@ -332,7 +332,8 @@ export function removeHostKeys(
 /**
  * The data the plan's components keep on the server, in words, from the catalog: each running
  * service's (`the MySQL database`, `the RabbitMQ data`; a service in cache mode, such as a Valkey
- * cache, keeps nothing on disk) and the SQLite database. Empty when none keeps any.
+ * cache, keeps nothing on disk), the SQLite database and the app's kept folder (`the app's kept
+ * folder storage/`). Empty when none keeps any.
  */
 export function serverData(plan: Pick<DeployPlan, "services" | "storage">): string[] {
   const items = plan.services
@@ -345,6 +346,8 @@ export function serverData(plan: Pick<DeployPlan, "services" | "storage">): stri
         : `the ${title} data`;
     });
   if (plan.storage?.sqlite !== undefined) items.push("the SQLite database");
+  const files = plan.storage?.files;
+  if (files !== undefined) items.push(`the app's kept folder ${files.dir}/`);
   return [...new Set(items)];
 }
 

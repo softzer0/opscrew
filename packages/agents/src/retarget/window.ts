@@ -89,15 +89,16 @@ function statefulServices(plan: DeployPlan): string[] {
 
 /**
  * True when the move copies data in its window: a service on the app's server, the app's own
- * SQLite file or monitoring on the app's server, any of them not started empty, or the bucket the
- * move takes along.
+ * SQLite file or kept folder, or monitoring on the app's server, any of them not started empty, or
+ * the bucket the move takes along.
  */
 export function copiesData(plan: DeployPlan): boolean {
   const empty = new Set(plan.retarget?.empty ?? []);
   return (
     movingBucket(plan) !== undefined ||
     statefulServices(plan).some((name) => !empty.has(name)) ||
-    (plan.storage?.sqlite !== undefined && !empty.has("app")) ||
+    ((plan.storage?.sqlite !== undefined || plan.storage?.files !== undefined) &&
+      !empty.has("app")) ||
     (monitoringServerName(plan) === APP_SERVER && !empty.has("monitoring"))
   );
 }

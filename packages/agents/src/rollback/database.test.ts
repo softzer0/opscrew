@@ -272,7 +272,7 @@ describe.skipIf(!SH_AVAILABLE)("the database step on a server", () => {
       serverPlan({ environment: "staging", extra: { services: [kafka] } }),
     );
     expect((await failure(step({ database: "snapshot" }))).message).toBe(
-      "staging has nothing a snapshot before each release copies: no PostgreSQL, MySQL, MariaDB, MongoDB, Valkey, Redis or Dragonfly, no SQLite files, and no other service named in deploy.snapshotStop, so OpsCrew takes no snapshots there. Nothing was changed.",
+      "staging has nothing a snapshot before each release copies: no PostgreSQL, MySQL, MariaDB, MongoDB, Valkey, Redis or Dragonfly, no SQLite files, no kept folder, and no other service named in deploy.snapshotStop, so OpsCrew takes no snapshots there. Nothing was changed.",
     );
   });
 
@@ -293,7 +293,7 @@ describe.skipIf(!SH_AVAILABLE)("the database step on a server", () => {
           service("mq", "rabbitmq"),
           service("cache", "valkey", { mode: "cache" }),
         ],
-        storage: { sqlite: { dir: "data" } },
+        storage: { sqlite: { dir: "data" }, files: { dir: "storage" } },
         deploy: { strategy: "recreate", snapshotStop: ["mq"] },
       },
     });
@@ -304,10 +304,11 @@ describe.skipIf(!SH_AVAILABLE)("the database step on a server", () => {
       { name: "mq", kind: "rabbitmq", skipped: true },
       { name: "cache", kind: "valkey", skipped: true },
       { name: "sqlite", kind: "sqlite", skipped: true },
+      { name: "files", kind: "files", skipped: true },
     ]);
     const chosen = await step();
     expect(chosen.lines[1]).toBe(
-      "Kept as they are, since the snapshot holds no copy of them: kafka (it must stop for its copy, and deploy.snapshotStop doesn't name it), mq (it had no container yet), cache (it had no container yet) and the app's SQLite files (the volume was empty).",
+      "Kept as they are, since the snapshot holds no copy of them: kafka (it must stop for its copy, and deploy.snapshotStop doesn't name it), mq (it had no container yet), cache (it had no container yet), the app's SQLite files (the volume was empty) and the app's kept folder (its volume did not exist yet).",
     );
   });
 

@@ -168,6 +168,25 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore on servers", () => {
     expect(wrong.code).toBe("INVALID_INPUT");
   });
 
+  it("restores the app's kept folder, alone with --only files", async () => {
+    const world = await snapshotWorld(
+      stagingPlan([{ kind: "postgres", name: "db" }], { files: true }),
+    );
+    const FILES = { name: "files", kind: "files", file: "files.tar", size: 300 };
+    await store(world, "app", about([DB, FILES]));
+    await restoreSnapshot(world.deps, ID, { services: world.services });
+    await restoreSnapshot(world.deps, ID, { services: world.services, only: "files" });
+
+    expect(await restores(world)).toEqual([`restore ${ID}`, `restore ${ID} --only files`]);
+    const [all, one] = world.handler.requests;
+    expect(all?.details).toContain(
+      "It puts back exactly as they were then: db (PostgreSQL) and files (the app's kept folder).",
+    );
+    expect(one?.details).toContain(
+      "It puts back exactly as they were then: files (the app's kept folder).",
+    );
+  });
+
   it("refuses a snapshot of another version, naming the rollback, and restores its data alone when allowed", async () => {
     const world = await snapshotWorld(plan());
     await store(world, "app", about([DB], { version: `sha256:${OTHER}` }));

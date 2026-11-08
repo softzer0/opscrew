@@ -357,8 +357,9 @@ function hasAppData(facts: HostFacts, app: string): boolean {
 
 /** What is deleted with `deleteData`, for the warning shown before the typed confirmation. */
 function dataLoss(plan: DeployPlan, facts: HostFacts): string {
-  // Every component's data: the named volumes (Kafka's, Redpanda's, SQLite's) and the data folders
-  // alike, since the teardown removes the app's whole Compose project and folder.
+  // Every component's data: the named volumes (Kafka's, Redpanda's, SQLite's, the kept folder's)
+  // and the data folders alike, since the teardown removes the app's whole Compose project and
+  // folder.
   const lost = serverData(plan);
   lost.push(
     `everything the app stored in ${appDirs(plan.app.name).data} and in its Docker volumes`,

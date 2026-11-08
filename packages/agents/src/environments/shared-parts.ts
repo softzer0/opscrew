@@ -23,6 +23,7 @@ const SHARED_PARTS = {
   "app.releaseCommand": (plan) => plan.app.releaseCommand,
   processes: (plan) => plan.processes,
   "storage.sqlite": (plan) => plan.storage?.sqlite,
+  "storage.files": (plan) => plan.storage?.files,
   externalServices: (plan) => plan.externalServices,
   // The source environment's workflow signs, and the promoted one's verify job checks it.
   "supplyChain.sign": (plan) => plan.supplyChain.sign,
@@ -60,9 +61,13 @@ export function withSharedParts(
 ): DeployPlan {
   const { build: _build, releaseCommand: _release, ...app } = plan.app;
   const { storage: _storage, ...rest } = plan;
-  const { sqlite: _sqlite, ...ownStorage } = plan.storage ?? {};
-  const sqlite = source.storage?.sqlite;
-  const storage = { ...ownStorage, ...(sqlite === undefined ? {} : { sqlite }) };
+  const { sqlite: _sqlite, files: _files, ...ownStorage } = plan.storage ?? {};
+  const { sqlite, files } = source.storage ?? {};
+  const storage = {
+    ...ownStorage,
+    ...(sqlite === undefined ? {} : { sqlite }),
+    ...(files === undefined ? {} : { files }),
+  };
   return {
     ...rest,
     app: {

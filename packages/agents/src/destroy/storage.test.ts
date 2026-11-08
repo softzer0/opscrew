@@ -376,4 +376,10 @@ describe("serverData", () => {
     ]);
     expect(serverData(testPlan({ postgres: false }))).toEqual([]);
   });
+
+  it("names the app's kept folder", () => {
+    const base = testPlan({ postgres: false });
+    const plan = DeployPlanSchema.parse({ ...base, storage: { files: { dir: "storage" } } });
+    expect(serverData(plan)).toEqual(["the app's kept folder storage/"]);
+  });
 });

@@ -349,6 +349,8 @@ function leftOutLines(plan: DeployPlan, abouts: ReadonlyMap<string, About>): str
       .map((service) => {
         const on = server === APP_SERVER ? "" : ` on server ${server}`;
         if (service.kind === "sqlite") return `the app's SQLite files${on} (the volume was empty)`;
+        if (service.kind === "files")
+          return `the app's kept folder${on} (its volume did not exist yet)`;
         const why =
           "failed" in service
             ? "its copy failed"
@@ -810,7 +812,7 @@ function unreadReason(run: RollbackRun, choice: "snapshot" | "migrations"): stri
   }
   // On, as snapshotsOn reads deploy.snapshots, but with nothing to copy.
   if (plan.deploy.snapshots ?? plan.environment?.name !== undefined) {
-    return `${environment} has nothing a snapshot before each release copies: no PostgreSQL, MySQL, MariaDB, MongoDB, Valkey, Redis or Dragonfly, no SQLite files, and no other service named in deploy.snapshotStop, so OpsCrew takes no snapshots there.`;
+    return `${environment} has nothing a snapshot before each release copies: no PostgreSQL, MySQL, MariaDB, MongoDB, Valkey, Redis or Dragonfly, no SQLite files, no kept folder, and no other service named in deploy.snapshotStop, so OpsCrew takes no snapshots there.`;
   }
   return `${environment} takes no snapshots before its releases: deploy.snapshots is off in its plan (prod takes them only with deploy.snapshots: true).`;
 }

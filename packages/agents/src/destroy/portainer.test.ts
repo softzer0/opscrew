@@ -378,6 +378,44 @@ describe.skipIf(!findExecutable("git"))("opscrew destroy for the user's Portaine
     );
   });
 
+  it("keeps the app's kept folder's volume without --delete-data, and with it deletes it, naming the folder", async () => {
+    const base = portainerPlan({ web: { mode: "proxy", port: 8080 } });
+    const plan = DeployPlanSchema.parse({
+      ...base,
+      // The kept folder's volume is mounted in the app's folder in the image: its Dockerfile's.
+      app: {
+        ...base.app,
+        build: {
+          builder: "own-dockerfile",
+          chosen: "user",
+          reason: "The repository has its own Dockerfile.",
+          runtime: { language: "node", version: "24" },
+          probe: "node",
+          workdir: "/app",
+        },
+      },
+      storage: { files: { dir: "storage" } },
+    });
+    const s = await deployed({ plan });
+    s.fake.volumes.push({
+      Name: "opscrew-shop_files",
+      Labels: { "com.docker.compose.project": "opscrew-shop" },
+    });
+    expect((await readPortainerConnection(s.deps.paths))?.created.volumes).toContain(
+      "opscrew-shop_files",
+    );
+    await destroy(s);
+    expect(s.fake.volumes.map((volume) => volume.Name)).toContain("opscrew-shop_files");
+    expect(s.deps.reporter.text()).toMatch(/the volumes [^)]*opscrew-shop_files[^)]*\) is kept/);
+
+    s.deps.reporter.lines.length = 0;
+    await destroy(s, { deleteData: true });
+    expect(s.fake.volumes.map((volume) => volume.Name)).not.toContain("opscrew-shop_files");
+    expect(s.deps.reporter.text()).toContain(
+      "(with the PostgreSQL database and the app's kept folder storage/)",
+    );
+  });
+
   it("keeps the snapshots' volume without --delete-data and deletes it with it, saying it holds the snapshots", async () => {
     const plan = DeployPlanSchema.parse({
       ...portainerPlan({ web: { mode: "proxy", port: 8080 } }),

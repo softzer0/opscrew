@@ -13,6 +13,7 @@ import type { GitHubClient } from "@opscrew/connector-github";
 import { COMPOSE_SERVICE_LABEL } from "@opscrew/connector-portainer";
 import { errorMessage, listText, OpsCrewError } from "@opscrew/core";
 import {
+  FILES_VOLUME,
   PORTAINER_COMPOSE_FILE,
   partRestore,
   portainerDeployBranch,
@@ -164,6 +165,12 @@ export async function probeFree(
   return { saved, probed };
 }
 
+/** The app stack's volume of each part of the app's own: SQLite's and the kept folder's. */
+const APP_VOLUMES: Partial<Record<SnapshotPart["kind"], string>> = {
+  sqlite: SQLITE_VOLUME,
+  files: FILES_VOLUME,
+};
+
 /** The image the first container of each service in `containers` runs, by service. */
 export function imagesOf(containers: readonly DockerContainer[]): Map<string, string> {
   const images = new Map<string, string>();
@@ -193,9 +200,10 @@ export async function putBack(
     const restore = partRestore(part);
     const file = `${DIR}/${from}/${part.file}`;
     const containers = ofService(await stackContainers(place), part.name);
+    const appVolume = APP_VOLUMES[part.kind];
     const mounts: MountSpec[] =
-      part.kind === "sqlite"
-        ? [{ type: "volume", source: `${place.stack}_${SQLITE_VOLUME}`, target: "/data" }]
+      appVolume !== undefined
+        ? [{ type: "volume", source: `${place.stack}_${appVolume}`, target: "/data" }]
         : volumesOf(containers).map((mount) => ({ ...mount, readOnly: false }));
     const started = containers.filter((container) => ran.has(container.id));
     if (restore.stop) {

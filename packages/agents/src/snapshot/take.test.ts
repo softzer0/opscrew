@@ -90,6 +90,26 @@ describe.skipIf(!SH_AVAILABLE)("opscrew snapshot on servers", () => {
     ]);
   });
 
+  it("copies the app's kept folder while the app runs, with nothing to approve", async () => {
+    const world = await snapshotWorld(
+      stagingPlan([{ kind: "postgres", name: "db" }], { files: true }),
+    );
+    const taken = await takeSnapshot(world.deps, { services: world.services });
+
+    expect(await world.servers.app?.calls()).toEqual([
+      `take manual --version sha256:${RUNNING}`,
+      "list",
+    ]);
+    expect(world.deps.reporter.text()).toContain(
+      "- files (the app's kept folder) on the app's server, while it runs",
+    );
+    expect(world.handler.requests).toEqual([]);
+    expect(taken.services).toEqual([
+      { name: "db", kind: "postgres", server: "app", state: "copied", size: 10 },
+      { name: "files", kind: "files", server: "app", state: "copied", size: 10 },
+    ]);
+  });
+
   it("leaves a service out with --skip, and asks nothing when nothing stops", async () => {
     const world = await snapshotWorld(stagingPlan(MIXED));
     const taken = await takeSnapshot(world.deps, { skip: ["kafka"], services: world.services });
