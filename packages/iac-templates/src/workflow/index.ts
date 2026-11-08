@@ -428,12 +428,13 @@ function envFileWrites(envFiles: readonly EnvFile[], dir: string, on: On): strin
 }
 
 /**
- * The host lists' names as a shell `case` pattern, as plan-schema's `hostListKind` reads them
- * (`ALLOWED_HOSTS`, `CSRF_TRUSTED_ORIGINS`, each with or without a prefix): they hold the app's
- * own hostnames, which the masking file leaves alone.
+ * The names of the values that hold the app's own address, as a shell `case` pattern: the host
+ * lists as plan-schema's `hostListKind` reads them (`ALLOWED_HOSTS`, `CSRF_TRUSTED_ORIGINS`, each
+ * with or without a prefix) and `APP_URL` (013 US8). The masking file leaves them alone, as the
+ * redactor does.
  */
 const HOST_LIST_NAMES =
-  "ALLOWED_HOSTS|?*_ALLOWED_HOSTS|CSRF_TRUSTED_ORIGINS|?*_CSRF_TRUSTED_ORIGINS";
+  "ALLOWED_HOSTS|?*_ALLOWED_HOSTS|CSRF_TRUSTED_ORIGINS|?*_CSRF_TRUSTED_ORIGINS|APP_URL";
 
 /** The app's env file on the app's server, from its deploy secret. */
 const APP_ENV_FILE: EnvFile = { file: "app.env", secret: DEPLOY_SECRETS.appEnv };

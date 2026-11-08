@@ -132,6 +132,13 @@ describe("the masking file in the deploy job (Grafana Cloud)", () => {
     expect(names.filter((name) => hostListKind(name) !== undefined)).toHaveLength(4);
   });
 
+  it("leaves APP_URL (the app's own address, 013 US8) out too, but not a prefixed one", async () => {
+    const mask = await maskFor(
+      "APP_URL=https://shop.example.com\nOTHER_APP_URL=https://other.example.com\n",
+    );
+    expect(mask).toBe("(https://other\\.example\\.com)");
+  });
+
   it("holds a pattern that never matches when app.env has no long value", async () => {
     for (const appEnv of ["", "PORT=3000\n", "# only a comment\n"]) {
       const mask = await maskFor(appEnv);
