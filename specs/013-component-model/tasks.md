@@ -721,7 +721,7 @@ Horizon, PostgreSQL and Redis.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm lint`
   - Effort: high
 
-- [ ] T1330 [US8] intl and zip in every PHP image Railpack builds (found 2026-11-09 on a real plain PHP app's health page; research R10, FR-1343)
+- [x] T1330 [US8] intl and zip in every PHP image Railpack builds (found 2026-11-09 on a real plain PHP app's health page; research R10, FR-1343)
   - Owns: `packages/iac-templates/src/**` (+ tests and snapshots), not `src/generated/**`; `packages/cli/test/e2e/docker.test.ts`; `docs/guide/builders.md`
   - Reads: research R10's last paragraph; `workflow/build.ts` (`phpExtensionsSetting`, `PHP_DRIVERS`); `workflow/build.test.ts` ("a PHP app's drivers for its services")
   - Accept:
