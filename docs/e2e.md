@@ -2970,7 +2970,10 @@ approved next, in at most five runs. A rotation that loses something also gets `
 - **Nothing leaked:** at the end, as for environments, over every CLI output, commit, pull request,
   audit entry, saved plan and state file, and, in the passes at Hetzner, the deploy job's log of
   each deploy run they waited for. Every value OpsCrew made is searched for, the old and the new,
-  an unfinished rotation's too. On each server,
+  an unfinished rotation's too, and each entry of `APP_PREVIOUS_KEYS` and `BETTER_AUTH_SECRETS`
+  on its own. Two values are left out, as they are not secret: Garage's access key ids, which a
+  restore's re-login names on the server, and Beszel's public hub key, which its host plan
+  holds. On each server,
   before its destroy, the search also reads the rotation's own log (`.rotate/rotate.log` in the
   app's folder) and the last 5,000 lines of every container's log of the app's and the add-ons'
   Compose projects.
@@ -3036,12 +3039,15 @@ written over it:
    - the value is "unreadable";
    - the old key's cookies start a new session (1), and the current session goes on (4);
    - after the next deploy, the session still goes on (5).
-4. **Better Auth with both of its variables** (T2509), in Docker on this computer: the latest
-   `better-auth` from npm, in OpsCrew's pinned Node image, with its memory adapter.
-   - A user signs up under `BETTER_AUTH_SECRET` alone.
-   - A second process starts as a rotation leaves the app: `BETTER_AUTH_SECRET` the new value, and
-     `BETTER_AUTH_SECRETS=2:<new>,1:<old>`. It must say "started with both: yes", "old session:
-     kept" and "new session: ok".
+4. **Better Auth as a rotation leaves it** (T2509, T2533), in Docker on this computer: the latest
+   `better-auth` from npm, in OpsCrew's pinned Node image, with its memory adapter, in three
+   processes.
+   - Under `BETTER_AUTH_SECRET` alone, a user signs up and a value is encrypted, as bare hex.
+   - As a rotation leaves the app: `BETTER_AUTH_SECRET` the old value and
+     `BETTER_AUTH_SECRETS=2:<new>,1:<old>`. It must start, and the old session must be gone, as
+     the plan says (Better Auth checks sessions with the current secret only). A new sign-in
+     works, the old value still decrypts, and a new one encrypts with version 2.
+   - As `--drop-previous` leaves it: the version-2 value decrypts, and the old one no longer does.
 
    The secrets and the user's password are made by the test, live only in Docker's environment,
    and are searched for.
@@ -3114,10 +3120,11 @@ tunnel. The test writes `.env.example`, listing `DATABASE_URL` and `BETTER_AUTH_
 makes Better Auth's secret and names `BETTER_AUTH_SECRETS` bare in the stack's compose file.
 Valkey (`cache`) is added to the plan.
 1. Portainer, then the design, provision until done, and the first deploy.
-2. `rotate db cache app` under load, through Portainer's Docker exec and the stack plan (T2507).
-   Then:
+2. `rotate db cache app` under load, through Portainer's Docker exec and the stack plan (T2507),
+   with `--confirm <app>`, since Better Auth's users are logged out (T2533). Failed requests count
+   only beyond the plan's window, as every service of the stack is created again. Then:
    - the new values log in, and the old are refused, as root on the host;
-   - in the app's container, `BETTER_AUTH_SECRET` is the new value, and `BETTER_AUTH_SECRETS` is
+   - in the app's container, `BETTER_AUTH_SECRET` keeps its value, and `BETTER_AUTH_SECRETS` is
      `2:<new>,1:<old>`: the stack's Env reaches a key the compose file names bare (T2509);
    - the deploys are not paused, and the record is merged;
    - after the next deploy, the new values still log in.
@@ -3153,17 +3160,17 @@ Valkey (`cache`) is added to the plan.
 **`sites`**: two parts, each with its own variables.
 - **A Worker** (`-t "rotation, sites: examples/astro-ssr"`): `examples/astro-ssr` on Cloudflare's
   hosting, as in [Cloudflare's hosting](#cloudflares-hosting), with `BETTER_AUTH_SECRET` listed
-  in its `.env.example`. The secrets of the version the Worker serves are read through
-  Cloudflare's API, by name only.
-  1. After the first deploy, its version holds `BETTER_AUTH_SECRET` and not
-     `BETTER_AUTH_SECRETS`.
-  2. `rotate app` is approved, then stopped once it says "Waiting for the deploy run". That
-     deploy must pass, and its version holds both secrets. The rotation stays unfinished.
-  3. `rotate app --undo`: its deploy uploads a version with `--secrets-file`, which must keep
-     `BETTER_AUTH_SECRET` and **not** `BETTER_AUTH_SECRETS`, the secret dropped from the file
-     (T2509).
-  4. `rotate app` to its end: its version holds both, and the record is merged. Then destroy and
-     the leak search.
+  in its `.env.example`. The test's copy of the example adds a page, `/e2e-secret-lengths`, that
+  answers the length of each Better Auth variable in the Worker's `process.env`, never a value.
+  1. After the first deploy, `BETTER_AUTH_SECRET` is set and `BETTER_AUTH_SECRETS` is empty.
+  2. `rotate app` with `--confirm <app>` (Better Auth's users are logged out) is approved, then
+     stopped once it says "Waiting for the deploy run". That deploy must pass, and
+     `BETTER_AUTH_SECRETS` is set. The rotation stays unfinished.
+  3. `rotate app --undo`: its deploy uploads a version with `--secrets-file`, and
+     `BETTER_AUTH_SECRETS` must be empty again. A version keeps the secrets its file leaves out,
+     so the file holds it empty (T2534).
+  4. `rotate app` to its end: `BETTER_AUTH_SECRETS` is set, and the record is merged. Then destroy
+     and the leak search.
 - **GitHub Pages** (`-t "rotation, sites: examples/hugo-site"`): `examples/hugo-site` in the public
   repository `OPSCREW_E2E_GITHUB_REPO_C`, as in [GitHub Pages](#github-pages), with
   `SESSION_SECRET` listed.
