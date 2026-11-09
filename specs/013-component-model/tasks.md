@@ -731,4 +731,4 @@ Horizon, PostgreSQL and Redis.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates && pnpm lint`, then `OPSCREW_DOCKER_TESTS=1 OPSCREW_DOCKER_EXAMPLES=php-plain-mysql pnpm --filter opscrew exec vitest run test/e2e/docker.test.ts`
   - Effort: medium
 
-- [ ] T1326 [US8] The release 0.2.6 (lead): `docs/releasing.md`, together with 025 credential rotation (founder, 2026-11-08).
+- [x] T1326 [US8] The release 0.2.6 (lead): `docs/releasing.md`, together with 025 credential rotation (founder, 2026-11-08).
