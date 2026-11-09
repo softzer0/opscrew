@@ -193,12 +193,27 @@ files), with deploys already held. After it, the record and the recovery copy (a
 
 ### 12. Restores after a rotation (FR-2512)
 
-- Each snapshot's `about.json` records the record's `generation` per service; the generated values
-  keep each service's earlier generations (this computer, 0600, and the recovery copy) while a
-  snapshot needs them.
-- After a data restore (024) or a rollback's database restore, for each restored service whose
-  generation is older: `begin` with the old generation's value as the login, the current as the new,
-  then `finish`, so the app reaches the restored data.
+- **Which copies hold logins.** Database dumps cover only the `app` database. Cache copies are RDB
+  and AOF files, and Portainer copies only those two kinds. None of them holds a login, so restoring
+  them needs nothing. Logins live in two places:
+  - volume copies of the kinds snapshotted by stopping them: RabbitMQ, Neo4j, Kafka, Redpanda,
+    OpenSearch, Elasticsearch, Garage's key;
+  - whole-server snapshots, which hold every service's data (T2514's review).
+- **What a snapshot records.** A volume copy's `about.json` records the service's `generation`
+  from the server's or this computer's `.snapshots/generations`. `rotate.sh` and this computer's
+  rotation write that file when the data takes the new value, and write the old value again on undo.
+  The generated values keep each earlier generation (this computer, 0600, and the recovery copy)
+  while a volume copy or a whole-server snapshot needs it. `snapshot list` in the CLI forgets the
+  rest; the read-only MCP tool never does.
+- **A volume copy's restore.** For each restored service whose generation is older: start the
+  service without waiting for its health check (the check logs in), then `begin` with the old
+  generation's value as the login and the current one as the new, then `finish`, then wait.
+- **A whole-server restore (T2520).** The restored server's own `.snapshots/generations` gives each
+  service's generation at the snapshot. For each one behind the record, `rotate.sh` runs from that
+  generation's values to the current ones (begin, switch, finish), root first for MySQL and MariaDB,
+  before deploys resume.
+- **Snapshots during a rotation.** A snapshot taken by hand is refused while a rotation holds the
+  app; a scheduled one is skipped with a warning.
 
 ### 13. CLI, MCP, plugin, guide
 

@@ -152,8 +152,18 @@ secret in any test: `fakeSecret(kind)` and `{{FAKE:<kind>}}` (`@opscrew/core/tes
 - [ ] T2514 [P] [US1] Restores after a rotation
   - Owns: `packages/agents/src/snapshot/**`, `packages/agents/src/rollback/database*.ts`, `packages/iac-templates/src/workflow/snapshots.ts` (the `about.json` generation only) (+ tests)
   - Depends: T2503, T2506
-  - Accept: plan 12: each snapshot records the generations; a restore of an older one sets the current values with the old as the login (MySQL and MariaDB: root first, since their app-password commands log in as root); the earlier generations kept while a snapshot needs them.
+  - Accept: plan 12, after T2514's review:
+    - Only volume copies of the kinds snapshotted by stopping them record a generation. A restore of an older one starts the service without waiting for its health check, then sets the current value with the old one as the login, then waits.
+    - The earlier generations are kept while a volume copy or a whole-server snapshot needs them, and forgotten only by the CLI's `snapshot list`.
+    - A snapshot is refused while a rotation holds the app (by hand), or skipped with a warning (scheduled).
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/iac-templates && pnpm lint`
+  - Effort: high
+
+- [ ] T2520 [US1] Whole-server restores after a rotation (T2514's review)
+  - Owns: `packages/agents/src/snapshot/server*.ts`, the smallest export from `packages/agents/src/rotate/server.ts` (+ tests)
+  - Depends: T2514
+  - Accept: plan 12. After a whole-server snapshot is restored, OpsCrew reads the restored server's `.snapshots/generations`. For each service behind the record, it runs `rotate.sh` from that generation's values to the current ones (root first for MySQL and MariaDB), approved by the restore's own hash or its own, before deploys resume. A test restores a server image taken before a PostgreSQL rotation and checks that the app logs in with the current password.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/iac-templates && pnpm typecheck && pnpm lint`
   - Effort: high
 
 ## Phase 6: Surfaces
