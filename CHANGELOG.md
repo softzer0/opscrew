@@ -4,6 +4,90 @@ What changed in each release of OpsCrew: the `opscrew` CLI on npm and the Claude
 installs the same version. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Until 1.0, a release can change the files OpsCrew writes and the commands' flags.
 
+## [0.2.6] - 2026-11-09
+
+Every deploy workflow changes, a site's too. Run `npx opscrew provision` for each environment
+and merge its pull request. Your plans keep working as they are.
+
+- At its next deploy, each MySQL, MariaDB, Valkey, Redis, Dragonfly, Kafka, Redpanda, OpenSearch
+  and Elasticsearch service starts once again with a new start command, for a few seconds, its
+  data kept.
+- An app on your Portainer, on Cloudflare's hosting or on GitHub Pages whose `APP_KEY` or
+  `BETTER_AUTH_SECRET` OpsCrew generates gets `APP_PREVIOUS_KEYS` or `BETTER_AUTH_SECRETS` named
+  in its stack template or deploy workflow at its next provision. It stays empty until a rotation
+  keeps an old key there.
+
+### Added
+
+- **Rotate your app's credentials: `opscrew rotate`.** It replaces a password, key or token
+  everywhere OpsCrew put it, in the right order and without breaking the running app, and never
+  shows the old or the new value.
+  - `npx opscrew rotate` lists every credential OpsCrew made for the environment, how it rotates
+    and when it was made or last rotated, then your own tokens with their expiry.
+  - Each rotation is a plan you approve by its hash. Services and the app's own secrets rotate
+    together (`npx opscrew rotate db cache app`); everything else rotates alone. After a leak,
+    `--all` rotates every service and app secret in one plan.
+  - Services rotate seamlessly where they take two passwords (MySQL, Valkey, Redis, Dragonfly,
+    Garage's access key), with a short swap or a short restart otherwise, on a cloud server, your
+    own server and this computer. In your Portainer, every service of the stack restarts once with
+    its new value. The app's deploys pause until it ends.
+  - Laravel's `APP_KEY` rotates without logging anyone out, and Better Auth's secret keeps what it
+    encrypted readable: the old value stays as the previous one until `--drop-previous`. App
+    secrets that log users out, Better Auth's included, ask you to type the app's name first.
+  - The deploy, check and preview keys, the private network's keys, a device's key and its
+    logins, Cloudflare's Access and Tunnel tokens, the state passphrase, the monitoring's,
+    Portainer's and Beszel's passwords and the recovery key each have their own name.
+  - Your own tokens (Hetzner, DigitalOcean, Cloudflare, GitHub and the others you gave OpsCrew):
+    make the new one at the provider, then `npx opscrew rotate <name>` checks it and replaces
+    every copy OpsCrew made.
+  - A rotation that stops goes on when you run it again, or `--undo` puts the old values back.
+    Each one is recorded, names and dates only, in `opscrew/credentials.yaml`.
+  - A restore of a snapshot taken before a rotation, including a whole-server one, sets the
+    current passwords again.
+
+  See [Rotating your app's credentials](docs/guide/credential-rotation.md).
+- **Old credentials:** `opscrew advise` lists every credential older than a year
+  (`credentials.maxAgeDays` in the plan changes the age), and with `check.credentials: true` the
+  [scheduled check](docs/guide/alerts.md) opens an issue for one.
+- **Two computers:** provision stops before changing anything when this computer's generated
+  values are older than the last rotation, and says to run `npx opscrew secrets restore` first.
+- **Plain PHP apps.** A PHP app without a framework, as made for shared hosting (a `composer.json`
+  and a `public/index.php`), is built and deployed like any other app: only `public/` is served,
+  its PHP extensions come from `composer.json` and the services it uses, and a `cron.php` runs
+  every minute. See [A plain PHP app](docs/guide/builders.md#a-plain-php-app).
+- **The app's kept folder:** the folder an app writes its files to (a plain PHP app's `storage/`,
+  Laravel's `storage/app`) is a volume that every deploy keeps, in every snapshot and moved by
+  `opscrew retarget`. See [The app's kept folder](docs/guide/components.md#the-apps-kept-folder).
+- **A PHP app's database settings one by one:** an app that reads `DB_HOST` gets the host, port,
+  database, user and password of its PostgreSQL, MySQL or MariaDB by the names it reads. See
+  [The split settings](docs/guide/databases.md#the-split-settings).
+- **The Claude Code plugin** has a rotation skill and the read-only tool `opscrew_credentials`.
+
+### Changed
+
+- Laravel apps are read as they are built: Laravel Sail's development settings are never asked
+  for, its `storage/app` is kept, and a health route declared with `Route::get` is found.
+- Each pull request provision opens after the first names what it changes, in its title and its
+  body. A run that only updates the plan's records opens none, and a run while OpsCrew's deploy
+  pull request is open updates that one.
+
+### Removed
+
+- `opscrew secrets rotate`: run `npx opscrew rotate recovery-key` instead.
+
+### Fixed
+
+- Analyze no longer warns about a missing Dockerfile for a PHP app with a `package.json` for its
+  assets.
+- `opscrew scan` no longer reports words, constant names or product tokens as high-entropy
+  secrets, and reports values in test files as information only. Its vulnerability check reads
+  `composer.lock`.
+- Self-hosted monitoring's log masking leaves `APP_URL` readable.
+- Provision and the other infrastructure commands try again when the OpenTofu or Terraform
+  registry doesn't answer.
+- OpsCrew keeps following a GitHub Actions run for up to five minutes while GitHub answers with a
+  server error, instead of failing.
+
 ## [0.2.5] - 2026-11-07
 
 Every server deploy workflow changes. Run `npx opscrew provision` for each environment and merge
@@ -482,6 +566,7 @@ deployment on your own account:
 - `destroy`, `retarget`, `status` and `drift` after the first deploy.
 - The MCP server (`opscrew mcp`) and the Claude Code plugin.
 
+[0.2.6]: https://github.com/softzer0/opscrew/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/softzer0/opscrew/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/softzer0/opscrew/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/softzer0/opscrew/compare/v0.2.2...v0.2.3
