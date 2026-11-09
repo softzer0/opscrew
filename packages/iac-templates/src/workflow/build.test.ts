@@ -422,11 +422,12 @@ describe("Railpack", () => {
   });
 
   it("has no version setting to hand Railpack for PHP, which reads composer.json itself", () => {
-    for (const language of ["php", "other"] as const) {
-      const job = buildJob(withBuild(noServices(), "railpack", { language }));
-      expect(step(job, "prepare")?.run).toContain("values=()");
-      expect(String(step(job, "railpack")?.with?.secrets)).not.toContain("RAILPACK_");
-    }
+    const php = buildJob(withBuild(noServices(), "railpack", { language: "php" }));
+    expect(step(php, "prepare")?.run).toContain("values=(--env RAILPACK_PHP_EXTENSIONS=intl,zip)");
+    expect(String(step(php, "railpack")?.with?.secrets)).not.toContain("VERSION");
+    const other = buildJob(withBuild(noServices(), "railpack", { language: "other" }));
+    expect(step(other, "prepare")?.run).toContain("values=()");
+    expect(String(step(other, "railpack")?.with?.secrets)).not.toContain("RAILPACK_");
   });
 
   it("installs the arm64 CLI on the arm64 runner", () => {
@@ -442,7 +443,7 @@ describe("Railpack", () => {
     it("is handed to Railpack's plan, and the build reads it as a BuildKit secret", () => {
       const job = buildJob(plainPhp(noServices()));
       expect(step(job, "prepare")?.run).toContain(
-        "values=(--env RAILPACK_PHP_ROOT_DIR=/app/public)",
+        "values=(--env RAILPACK_PHP_ROOT_DIR=/app/public --env RAILPACK_PHP_EXTENSIONS=intl,zip)",
       );
       // Railpack's frontend reads every value of its plan as a secret: without it the build fails.
       expect(String(step(job, "railpack")?.with?.secrets).split("\n")[0]).toBe(
@@ -458,7 +459,7 @@ describe("Railpack", () => {
       });
       const job = buildJob(withBuild(subfolder, "railpack", { language: "php", webRoot: "web/" }));
       expect(step(job, "prepare")?.run).toContain(
-        "values=(--env RAILPACK_PHP_ROOT_DIR=/app/apps/web/web)",
+        "values=(--env RAILPACK_PHP_ROOT_DIR=/app/apps/web/web --env RAILPACK_PHP_EXTENSIONS=intl,zip)",
       );
     });
 
@@ -477,7 +478,7 @@ describe("Railpack", () => {
     });
   });
 
-  describe("a PHP app's drivers for its services (RAILPACK_PHP_EXTENSIONS)", () => {
+  describe("a PHP app's extensions: intl, zip and its services' drivers (RAILPACK_PHP_EXTENSIONS)", () => {
     const settings = (plan: DeployPlan) => {
       const job = buildJob(plan);
       return {
@@ -500,7 +501,7 @@ describe("Railpack", () => {
         ]),
         externalServices: ["redis", "stripe"],
       });
-      const setting = "RAILPACK_PHP_EXTENSIONS=mongodb,pdo_mysql,pdo_pgsql,redis";
+      const setting = "RAILPACK_PHP_EXTENSIONS=intl,mongodb,pdo_mysql,pdo_pgsql,redis,zip";
       const { prepare, secrets } = settings(php(every));
       expect(prepare).toContain(`values=(--env ${setting})`);
       expect(secrets[0]).toBe(setting);
@@ -509,21 +510,24 @@ describe("Railpack", () => {
     it("come from the services the app keeps where they are hosted too", () => {
       const external = DeployPlanSchema.parse({ ...noServices(), externalServices: ["mysql"] });
       expect(settings(php(external)).prepare).toContain(
-        "values=(--env RAILPACK_PHP_EXTENSIONS=pdo_mysql)",
+        "values=(--env RAILPACK_PHP_EXTENSIONS=intl,pdo_mysql,zip)",
       );
     });
 
     it("follow the web root of a plain PHP app, and come for a Laravel app too", () => {
       expect(settings(plainPhp(serverPlan())).prepare).toContain(
-        "values=(--env RAILPACK_PHP_ROOT_DIR=/app/public --env RAILPACK_PHP_EXTENSIONS=pdo_pgsql)",
+        "values=(--env RAILPACK_PHP_ROOT_DIR=/app/public --env RAILPACK_PHP_EXTENSIONS=intl,pdo_pgsql,zip)",
       );
-      expect(settings(php(serverPlan())).secrets[0]).toBe("RAILPACK_PHP_EXTENSIONS=pdo_pgsql");
+      expect(settings(php(serverPlan())).secrets[0]).toBe(
+        "RAILPACK_PHP_EXTENSIONS=intl,pdo_pgsql,zip",
+      );
     });
 
-    it("are left out without such a service, and for every other language", () => {
+    it("are intl and zip alone without such a service, and left out for every other language", () => {
       const queueOnly = withServices([{ kind: "rabbitmq", name: "mq" }]);
-      expect(settings(php(queueOnly)).prepare).toContain("values=()");
-      expect(settings(php(noServices())).prepare).toContain("values=()");
+      const alone = "values=(--env RAILPACK_PHP_EXTENSIONS=intl,zip)";
+      expect(settings(php(queueOnly)).prepare).toContain(alone);
+      expect(settings(php(noServices())).prepare).toContain(alone);
       const node = buildJob(
         withBuild(serverPlan(), "railpack", { language: "node", version: "24" }),
       );
@@ -989,7 +993,7 @@ describe.skipIf(!bashWorks())("the build scripts in bash", { timeout: 60_000 }, 
     const result = bash(`${fake}\n${script}`, { BUILD_ENV: "A=1\n", BUILD_SECRETS: "" });
     expect(result.status, result.output).toBe(0);
     expect(readFileSync(join(work, "tmp", "calls"), "utf8")).toMatch(
-      / --env RAILPACK_PHP_ROOT_DIR=\/app\/public --env RAILPACK_PHP_EXTENSIONS=pdo_pgsql --env A=1\n$/,
+      / --env RAILPACK_PHP_ROOT_DIR=\/app\/public --env RAILPACK_PHP_EXTENSIONS=intl,pdo_pgsql,zip --env A=1\n$/,
     );
   });
 });

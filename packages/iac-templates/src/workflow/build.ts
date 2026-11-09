@@ -105,18 +105,25 @@ const PHP_DRIVERS: Partial<Record<SelfHostedServiceKind | ServiceKind, string>> 
 };
 
 /**
- * Railpack's setting for the extensions a PHP app's services need ({@link PHP_DRIVERS}), each
- * once and sorted: the services OpsCrew runs, on or off (the app's code needs the driver wherever
- * the service runs), and those the app keeps where they are hosted. Railpack 0.42 installs the
- * extensions `composer.json` asks for, `pdo_pgsql` only with `DB_CONNECTION=pgsql` in its own
- * environment and `redis` never (a spike, 2026-11-08), so an app on them would be built without
- * its driver. Undefined for another language or without such a service.
+ * PHP extensions every PHP image gets: many apps use them when present without requiring them in
+ * `composer.json` (international domain names, ZIP files), and Railpack installs only what
+ * `composer.json` requires and this setting names.
+ */
+const PHP_ALWAYS = ["intl", "zip"];
+
+/**
+ * Railpack's setting for a PHP app's extensions, each once and sorted: {@link PHP_ALWAYS} and the
+ * drivers its services need ({@link PHP_DRIVERS}), for the services OpsCrew runs, on or off (the
+ * app's code needs the driver wherever the service runs), and those the app keeps where they are
+ * hosted. Railpack 0.42 installs the extensions `composer.json` asks for, `pdo_pgsql` only with
+ * `DB_CONNECTION=pgsql` in its own environment and `redis` never (a spike, 2026-11-08), so an app
+ * on them would be built without its driver. Undefined for another language.
  */
 function phpExtensionsSetting(plan: DeployPlan): string | undefined {
   if (plan.app.build?.runtime.language !== "php") return undefined;
   const kinds = [...plan.services.map((service) => service.kind), ...plan.externalServices];
-  const drivers = [...new Set(kinds.flatMap((kind) => PHP_DRIVERS[kind] ?? []))].sort();
-  return drivers.length === 0 ? undefined : `RAILPACK_PHP_EXTENSIONS=${drivers.join(",")}`;
+  const drivers = kinds.flatMap((kind) => PHP_DRIVERS[kind] ?? []);
+  return `RAILPACK_PHP_EXTENSIONS=${[...new Set([...PHP_ALWAYS, ...drivers])].sort().join(",")}`;
 }
 
 /**
@@ -553,7 +560,7 @@ function buildpacksSteps(plan: DeployPlan): string[] {
 
 /**
  * Railpack: installs the pinned CLI (checksum from pins.ts), plans the build with the runtime
- * version, a plain PHP app's web root ({@link webRootSetting}), a PHP app's drivers
+ * version, a plain PHP app's web root ({@link webRootSetting}), a PHP app's extensions
  * ({@link phpExtensionsSetting}), the non-secret build values and the names of the secret ones,
  * and builds `build-<commit>` with its frontend, all values as BuildKit secrets; then the seal,
  * which gives uid 10001 the framework's writable folders and the folders a volume keeps

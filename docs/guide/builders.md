@@ -229,7 +229,9 @@ A PHP app without a framework, as made for shared hosting, has a `composer.json`
 - **The PHP extensions** come from `composer.json`'s `require` (for example `ext-pdo_mysql`), and
   from the services the app uses: `pdo_pgsql` for PostgreSQL, `pdo_mysql` for MySQL and MariaDB,
   `redis` for Valkey, Redis and Dragonfly, `mongodb` for MongoDB. Laravel apps get these drivers
-  too. An extension in `require-dev` starts no service.
+  too. Every PHP image also gets `intl` and `zip`, which many PHP apps use when present without
+  requiring them (international domain names, ZIP files). An extension in `require-dev` starts no
+  service.
 - **The settings come from the environment.** When the app reads them, it gets
   `APP_ENV=production`, `APP_DEBUG=false`, `APP_URL` (its domain over HTTPS, else the server's
   address) and its database's settings (see [Databases](databases.md#the-split-settings)). A

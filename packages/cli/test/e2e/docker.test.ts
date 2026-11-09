@@ -33,7 +33,8 @@
  * - the app does not run as root;
  * - a plain PHP app (`app.build.webRoot`, built by Railpack with `RAILPACK_PHP_ROOT_DIR` and
  *   `RAILPACK_PHP_EXTENSIONS`) serves only its web root: `/composer.json`, `/composer.lock` and
- *   every file of the kept folder answer neither HTTP 200 nor their content;
+ *   every file of the kept folder answer neither HTTP 200 nor their content, and its `php -m`
+ *   lists `intl` and `zip`;
  * - the Compose health check OpsCrew renders for the image passes (`docker exec`), so every probe
  *   (Node, Python, Ruby, PHP, wget, bash through the Buildpacks launcher) runs in a real image;
  * - a Node.js image holds no development dependency, except the release command's tools and what
@@ -1262,6 +1263,16 @@ describe.skipIf(SKIP !== undefined)(
           served,
           `${example}: files outside ${plan.app.build.webRoot}/ that are served`,
         ).toEqual([]);
+      });
+
+      it("a plain PHP app's PHP has intl and zip", async (ctx) => {
+        if (prepared?.plan.app.build?.webRoot === undefined) return ctx.skip();
+        const { container: name } = app();
+        const modules = await docker(["exec", name, "php", "-m"]);
+        const listed = modules.stdout.split(/\r?\n/).map((line) => line.trim());
+        expect(listed, `${example}: the modules php -m lists`).toEqual(
+          expect.arrayContaining(["intl", "zip"]),
+        );
       });
 
       it(
