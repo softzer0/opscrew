@@ -257,7 +257,7 @@ describe.skipIf(!findExecutable("git"))("a site's move between site hosts", () =
     for (const secret of [CF_TOKEN, DEPLOY_TOKEN, GITHUB_TOKEN, API_KEY]) {
       expect(text).not.toContain(secret);
     }
-  });
+  }, 180_000); // Two moves, there and back: alone about 10 s, past 90 s beside the rest of the suite.
 
   it("aborts a move to GitHub Pages before the switch: the Pages site goes, the Worker keeps the domain", async () => {
     const s = await setup("cloudflare-workers");
