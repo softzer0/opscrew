@@ -168,9 +168,10 @@ function ownDeployLogin(run: LiveRun, keyFile?: string): ServerLogin {
 }
 
 /** `destroy --confirm <app> --undo-host`, each host plan approved by its hash, as a user ends. */
-async function destroyOwn(run: LiveRun): Promise<void> {
+async function destroyOwn(run: LiveRun, envs: AppEnvironments): Promise<void> {
   await opscrewUntilApproved(run, ["destroy", "--confirm", run.app(), "--undo-host"]);
   run.destroyed = true;
+  envs.destroyed.add("prod");
   await run.expectCloudflareClean();
 }
 
@@ -227,6 +228,7 @@ describe.skipIf(SKIP.own !== undefined)(
         await run.snapshotCloudflare(() => [run.appHost, `www.${run.appHost}`]);
         await keepRecoveryKey(run);
         await run.adaptAndMerge();
+        envs.provisioned.add("prod");
         await run.provisionUntilDone("your own server");
         await run.rememberSecretFile(run.paths().files.deployKey, "deploy-private-key");
         await run.rememberSecretFile(run.paths().files.statePassphrase, "state-passphrase");
@@ -320,7 +322,7 @@ describe.skipIf(SKIP.own !== undefined)(
             projects: [project],
           })),
         );
-        await destroyOwn(run);
+        await destroyOwn(run, envs);
       },
     );
 
@@ -383,6 +385,7 @@ describe.skipIf(SKIP.tunnel !== undefined)(
         ]);
         await keepRecoveryKey(run);
         await run.adaptAndMerge();
+        envs.provisioned.add("prod");
         await run.provisionUntilDone("tunnel mode");
         await run.rememberSecretFile(run.paths().files.deployKey, "deploy-private-key");
         await run.rememberSecretFile(run.paths().files.statePassphrase, "state-passphrase");
@@ -495,7 +498,7 @@ describe.skipIf(SKIP.tunnel !== undefined)(
             projects: [composeProjectOf(await run.readPlan())],
           })),
         );
-        await destroyOwn(run);
+        await destroyOwn(run, envs);
       },
     );
 
@@ -626,6 +629,7 @@ describe.skipIf(SKIP.portainer !== undefined)(
         await run.snapshotCloudflare(() => [run.appHost, `www.${run.appHost}`]);
         await keepRecoveryKey(run);
         await run.adaptAndMerge();
+        envs.provisioned.add("prod");
         await run.provisionUntilDone("the app in your Portainer");
         await run.rememberGeneratedValues();
         await run.deploy("the first deploy in your Portainer");
@@ -722,6 +726,7 @@ describe.skipIf(SKIP.portainer !== undefined)(
         );
         await opscrewUntilApproved(run, ["destroy", "--confirm", run.app(), "--delete-data"]);
         run.destroyed = true;
+        envs.destroyed.add("prod");
         await expectProjectGone(execOn(run.shell()), project);
         await run.expectCloudflareClean();
       },
