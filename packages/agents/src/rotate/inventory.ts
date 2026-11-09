@@ -5,13 +5,18 @@
  */
 import { join } from "node:path";
 import { exists } from "@opscrew/core";
-import { hasLogin, serviceSpec, tunnelMode, usesTunnel } from "@opscrew/iac-templates";
+import {
+  hasLogin,
+  type RotationMode,
+  serviceSpec,
+  tunnelMode,
+  usesTunnel,
+} from "@opscrew/iac-templates";
 import {
   type CredentialEntry,
   type DeployPlan,
   monitoringOf,
   type PlanService,
-  type SelfHostedServiceKind,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { providerProfile } from "../providers/profiles";
@@ -19,8 +24,9 @@ import { copyPath } from "../secrets/files";
 import { GeneratedValuesSchema, generatedValuesFile } from "../shared/app-secrets";
 import { readValidJson } from "../shared/files";
 import { declared } from "../vpn/grants";
+import { SWITCH_SECONDS } from "./plan";
 import { readCredentialsRecord, type UserTokenName } from "./record";
-import { tokenFirstSeen, tokenSeenAt } from "./record-tokens";
+import { tokenSeenAt } from "./record-tokens";
 import type { TokenExpiry } from "./tokens";
 
 /** What a credential is (spec, Key Entities). */
@@ -73,40 +79,11 @@ export interface Credential {
   date?: CredentialDate;
 }
 
-/** The window of a swap or a restart until the app runs on the new value (plan, Decisions 2). */
-const WINDOW_SECONDS = 30;
-
-/**
- * How each kind of service rotates, as research R5 and R10 found (Dragonfly holds two passwords).
- * TODO(T2503): replace with the catalog's `serviceSpec(kind).rotation` (`mode`, `seconds`) once it
- * lands, and remove this map.
- */
-const SERVICE_ROTATION: Readonly<Record<SelfHostedServiceKind, "dual" | "swap" | "restart">> = {
-  postgres: "swap",
-  mysql: "dual",
-  mariadb: "swap",
-  mongodb: "swap",
-  valkey: "dual",
-  redis: "dual",
-  dragonfly: "dual",
-  rabbitmq: "swap",
-  nats: "restart",
-  kafka: "swap",
-  redpanda: "swap",
-  // Its S3 key could be held twice, but its RPC secret only changes with a restart.
-  garage: "restart",
-  opensearch: "swap",
-  elasticsearch: "swap",
-  meilisearch: "restart",
-  typesense: "restart",
-  clickhouse: "restart",
-  neo4j: "swap",
-};
+const MODE_COST: Readonly<Record<RotationMode, number>> = { dual: 0, swap: 1, restart: 2 };
 
 /** A service's credential: all its generated secrets under its plan name. */
 function serviceCredential(service: PlanService): Omit<Credential, "date"> {
-  const { title } = serviceSpec(service.kind);
-  const seconds = WINDOW_SECONDS;
+  const { title, rotation } = serviceSpec(service.kind);
   const base = { name: service.name, kind: "service" as const };
   if (!hasLogin(service)) {
     return {
@@ -115,7 +92,14 @@ function serviceCredential(service: PlanService): Omit<Credential, "date"> {
       changes: `Nothing to rotate: the broker has no login (019).`,
     };
   }
-  switch (SERVICE_ROTATION[service.kind]) {
+  // The costliest of its secrets' rotations, which a rotation of the whole service runs.
+  const mode = rotation.secrets
+    .map((secret) => secret.mode)
+    .reduce((a, b) => (MODE_COST[b] > MODE_COST[a] ? b : a));
+  const costliest = rotation.secrets.filter((secret) => secret.mode === mode);
+  const seconds = Math.max(...costliest.map((secret) => secret.seconds ?? 0));
+  const window = seconds + SWITCH_SECONDS;
+  switch (mode) {
     case "dual":
       return {
         ...base,
@@ -125,14 +109,14 @@ function serviceCredential(service: PlanService): Omit<Credential, "date"> {
     case "swap":
       return {
         ...base,
-        rotation: { mode: "swap", seconds },
-        changes: `New connections the running app opens to ${title} fail for about ${seconds} seconds, until its rolling deploy; open connections stay.`,
+        rotation: { mode: "swap", seconds: window },
+        changes: `New connections the running app opens to ${title} fail for about ${window} seconds, until its rolling deploy; ${costliest.some((secret) => secret.closesConnections === true) ? "its open connections are closed too, and the app's clients reconnect with the new value after it" : "open connections stay"}.`,
       };
     case "restart":
       return {
         ...base,
         rotation: { mode: "restart", seconds },
-        changes: `${title} restarts with the new value (about ${seconds} seconds), and the app reconnects with it in its rolling deploy.`,
+        changes: `${title} restarts with the new value (about ${seconds} seconds, answering no one meanwhile), and new connections the running app opens to it fail until its rolling deploy, about ${window} seconds in all.`,
       };
   }
 }
@@ -253,15 +237,13 @@ function portainerWebhook(plan: DeployPlan): boolean {
  * and Tunnel tokens, `state-passphrase` with state encryption, `monitoring`, `portainer` and
  * `beszel` (hub mode) when on, `recovery-key` with a recovery copy; then the user's tokens the
  * environment uses (an optional one only when set). A date comes from the record, else the first
- * deploy; a token's from when this computer first saw it, by its fingerprint. Writes nothing unless
- * `options.recordTokens`, which records a token seen for the first time (then dated now); without
- * it such a token has no date.
+ * deploy; a token's from when this computer first saw it, by its fingerprint (none when it never
+ * did). Writes nothing.
  * @throws ArtifactError `ARTIFACT_INVALID` when the record is damaged.
  */
 export async function credentialInventory(
   deps: Pick<PhaseDeps, "paths" | "env" | "clock">,
   plan: DeployPlan,
-  options: { recordTokens?: boolean } = {},
 ): Promise<Credential[]> {
   const { paths } = deps;
   const made: Omit<Credential, "date">[] = [];
@@ -416,7 +398,8 @@ export async function credentialInventory(
     made.push({
       name: "beszel",
       kind: "add-on",
-      rotation: { mode: "restart", seconds: WINDOW_SECONDS },
+      // Not in the catalog: about as long as the app's switch.
+      rotation: { mode: "restart", seconds: SWITCH_SECONDS },
       changes:
         "Beszel's dashboard password and its agent's token and key change; the hub and the agent restart with them.",
     });
@@ -454,12 +437,7 @@ export async function credentialInventory(
     if (!token.uses(plan)) continue;
     const value = token.vars.map((name) => deps.env[name]?.trim()).find((v) => v);
     if (value === undefined && token.optional) continue;
-    const seen =
-      value === undefined
-        ? undefined
-        : options.recordTokens === true
-          ? await tokenFirstSeen(deps, token.name, value)
-          : await tokenSeenAt(deps, token.name, value);
+    const seen = value === undefined ? undefined : await tokenSeenAt(deps, token.name, value);
     tokens.push({
       name: token.name,
       kind: "user-token",

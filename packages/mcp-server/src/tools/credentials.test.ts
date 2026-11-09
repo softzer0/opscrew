@@ -91,7 +91,7 @@ describe("opscrew_credentials", () => {
     // The listing `opscrew rotate` prints, with Claude Code's commands.
     expect(text).toContain("(`npx opscrew rotate <name>` rotates one):");
     expect(text).toContain(
-      "- db: a short swap: new connections fail for up to 30 seconds; rotated 2026-11-01, 8 days ago.",
+      "- db: a short swap: new connections fail for up to 31 seconds; rotated 2026-11-01, 8 days ago.",
     );
     expect(text).toContain("- app:SESSION_SECRET: the app's users are logged out");
     expect(text).toContain("- deploy-key: seamless:");

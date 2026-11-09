@@ -190,7 +190,7 @@ describe("opscrew rotate", () => {
       "The credentials OpsCrew made for shop in prod (`opscrew rotate <name>` rotates one):",
     );
     expect(ctx.output).toContain(
-      "- db: a short swap: new connections fail for up to 30 seconds; rotated 2026-11-01, 8 days ago.",
+      "- db: a short swap: new connections fail for up to 31 seconds; rotated 2026-11-01, 8 days ago.",
     );
     expect(ctx.output).toContain(
       "- app:SESSION_SECRET: the app's users are logged out, or its issued tokens stop working; since the first deploy, 2026-10-11, 29 days ago.",

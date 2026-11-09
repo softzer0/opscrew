@@ -32,7 +32,7 @@ import {
   listedCredentials,
 } from "./inventory";
 import { credentialsRecordFile } from "./record";
-import { tokenDatesFile } from "./record-tokens";
+import { tokenDatesFile, tokenFirstSeen } from "./record-tokens";
 
 const FIRST_DEPLOY = "2026-10-11T11:30:00.000Z";
 
@@ -80,14 +80,15 @@ describe("credentialInventory", () => {
     await put(deps.paths.files.deployKey);
     await keepAppSecrets(deps, ["SESSION_SECRET"]);
     const plan = withFirstDeploy(testPlan({ deployed: true }));
-    const list = await credentialInventory(deps, plan, { recordTokens: true });
+    await tokenFirstSeen(deps, "hetzner", hetzner);
+    const list = await credentialInventory(deps, plan);
     expect(list).toEqual([
       {
         name: "db",
         kind: "service",
-        rotation: { mode: "swap", seconds: 30 },
+        rotation: { mode: "swap", seconds: 31 },
         changes:
-          "New connections the running app opens to PostgreSQL fail for about 30 seconds, until its rolling deploy; open connections stay.",
+          "New connections the running app opens to PostgreSQL fail for about 31 seconds, until its rolling deploy; open connections stay.",
         date: { at: FIRST_DEPLOY, source: "first-deploy" },
       },
       {
@@ -136,14 +137,15 @@ describe("credentialInventory", () => {
     expect(JSON.stringify(list)).not.toContain(hetzner);
   });
 
-  it("writes nothing by default: a token never seen has no date, one seen keeps its own", async () => {
+  it("writes nothing: a token never seen has no date, one seen keeps its own", async () => {
     const deps = await createTestPhaseDeps();
     const plan = testPlan();
-    deps.env.HCLOUD_TOKEN = fakeSecret("hcloud-token");
+    const hetzner = fakeSecret("hcloud-token");
+    deps.env.HCLOUD_TOKEN = hetzner;
     expect(byName(await credentialInventory(deps, plan), "hetzner")?.date).toBeUndefined();
     await expect(readFile(tokenDatesFile(deps.paths), "utf8")).rejects.toThrow();
 
-    await credentialInventory(deps, plan, { recordTokens: true });
+    await tokenFirstSeen(deps, "hetzner", hetzner);
     const later = await createTestPhaseDeps({
       root: deps.paths.root,
       env: deps.env,
@@ -176,7 +178,7 @@ describe("credentialInventory", () => {
     expect(names(await credentialInventory(deps, plan))).not.toContain("app");
   });
 
-  it("gives each kind of service its mode, says a broker without login has nothing, skips one off without values", async () => {
+  it("gives each kind of service its catalog mode, says a broker without login has nothing, skips one off without values", async () => {
     const deps = await createTestPhaseDeps();
     const base = testPlan();
     const plan = DeployPlanSchema.parse({
@@ -187,7 +189,9 @@ describe("credentialInventory", () => {
         service("cache", "valkey", { options: { mode: "cache" } }),
         service("queue", "dragonfly", { options: { mode: "queue" } }),
         service("events", "clickhouse"),
+        service("nats", "nats"),
         service("garage", "garage"),
+        service("search", "typesense"),
         service("stream", "kafka"),
         service("bus", "redpanda", { options: { login: true } }),
         service("old", "mariadb", { enabled: false }),
@@ -201,21 +205,31 @@ describe("credentialInventory", () => {
     const list = await credentialInventory(deps, plan);
     const services = list.filter((c) => c.kind === "service");
     expect(services.map((c) => [c.name, c.rotation])).toEqual([
-      ["db", { mode: "swap", seconds: 30 }],
+      ["db", { mode: "swap", seconds: 31 }],
       ["orders", { mode: "seamless" }],
       ["cache", { mode: "seamless" }],
       ["queue", { mode: "seamless" }],
-      ["events", { mode: "restart", seconds: 30 }],
-      ["garage", { mode: "restart", seconds: 30 }],
+      ["events", { mode: "swap", seconds: 32 }],
+      ["nats", { mode: "swap", seconds: 31 }],
+      // Its access key is held twice, but its RPC secret only changes with a restart.
+      ["garage", { mode: "restart", seconds: 2 }],
+      ["search", { mode: "restart", seconds: 10 }],
       ["stream", { mode: "none" }],
-      ["bus", { mode: "swap", seconds: 30 }],
-      ["old", { mode: "swap", seconds: 30 }],
+      ["bus", { mode: "swap", seconds: 32 }],
+      // The costliest of its password (a swap) and its root password (held twice).
+      ["old", { mode: "swap", seconds: 31 }],
     ]);
     expect(byName(list, "orders")?.changes).toBe(
       "MySQL accepts the old and the new value until the app's rolling deploy, then only the new one.",
     );
     expect(byName(list, "events")?.changes).toBe(
-      "ClickHouse restarts with the new value (about 30 seconds), and the app reconnects with it in its rolling deploy.",
+      "New connections the running app opens to ClickHouse fail for about 32 seconds, until its rolling deploy; open connections stay.",
+    );
+    expect(byName(list, "nats")?.changes).toBe(
+      "New connections the running app opens to NATS fail for about 31 seconds, until its rolling deploy; its open connections are closed too, and the app's clients reconnect with the new value after it.",
+    );
+    expect(byName(list, "search")?.changes).toBe(
+      "Typesense restarts with the new value (about 10 seconds, answering no one meanwhile), and new connections the running app opens to it fail until its rolling deploy, about 40 seconds in all.",
     );
     expect(byName(list, "stream")?.changes).toBe(
       "Nothing to rotate: the broker has no login (019).",

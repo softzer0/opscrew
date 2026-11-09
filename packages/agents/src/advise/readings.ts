@@ -447,7 +447,7 @@ export async function readAdvice(
     readServerHistory(deps, plan, services, flags),
     readGitHub(deps, plan, options.github, since),
     readCloudflare(deps, options.cloudflare),
-    // Read only: a token seen for the first time is not recorded (no `recordTokens`).
+    // Read only: the listing never records a token seen for the first time.
     attempt(deps, "the credentials' dates", () => credentialInventory(deps, plan)),
   ]);
   const read: Lines[] = [
