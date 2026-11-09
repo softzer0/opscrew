@@ -317,7 +317,7 @@ Behaviour, hashes and approval texts stay as they are unless a task says otherwi
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates && pnpm typecheck && pnpm lint`
   - Effort: medium
 
-- [ ] T2531 [US3] [US8] Rotations' infrastructure plans in a script (T2516's live pass)
+- [x] T2531 [US3] [US8] Rotations' infrastructure plans in a script (T2516's live pass)
   - Owns: `packages/agents/src/rotate/infra.ts` (`planRotation` and its callers) (+ test), the `--approve` hashes passed into the rotations in `packages/cli/src/commands/rotate.ts` (+ test)
   - Accept:
     - **The problem:** a plan's hash is the hash of its plan file's bytes, and these change with every plan. So a rotation's infrastructure plan, made fresh each run, could never be approved by a script's `--approve <hash>`. This affects the deploy key's copy at the provider, the Access token's `-replace` and the state passphrase's fallback applies.
