@@ -262,7 +262,7 @@ export async function listSnapshots(
     copies !== undefined &&
     (bucket !== undefined || snapshotOffsiteOf(run.plan) === undefined) &&
     (!servers || cloudProviders(run).every((provider) => serverApi(run, provider) !== undefined));
-  if (options.forgetUnneeded === true && everyOne && copies !== undefined) {
+  if (options.forgetUnneeded === true && everyOne) {
     await forgetUnneededGenerations(deps, [...data, ...copies, ...whole]);
   }
   return [...data, ...(copies ?? []), ...whole].sort(newestFirst);

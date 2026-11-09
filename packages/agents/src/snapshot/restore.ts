@@ -282,11 +282,40 @@ interface Outcome {
   error?: OpsCrewError;
 }
 
+/** A machine that threw, as one that did not answer. */
+function unanswered(error: unknown): CommandResult {
+  return { exitCode: 255, stdout: "", stderr: String(error) };
+}
+
+/** Audits `action` run on `host` (`detail`); an audit log that can't be written only warns. */
+async function auditOn(
+  run: SnapshotRun,
+  host: ScriptHost,
+  action: string,
+  detail: string,
+): Promise<void> {
+  const { deps } = run;
+  await deps.audit
+    .append({
+      kind: "remote-exec",
+      actor: "opscrew",
+      action,
+      target: host.audit,
+      decision: "approved",
+      detail,
+    })
+    .catch((error: unknown) => {
+      deps.reporter.warn(
+        `OpsCrew could not write "${action}" ${host.where} in its audit log: ${deps.redactor.redact(errorMessage(error))}`,
+      );
+    });
+}
+
 /**
- * `snapshot.sh restore <id> [--only s]` on `host` after its one-time approval, audited (`action`;
- * an audit log that can't be written only warns). A restore that did not end well, or did not end
- * at all, has its approval file removed, should it not have been read. A machine that did not
- * answer may have changed anything: `stuck`, as a failed put-back ({@link RESTORE_STUCK}).
+ * `snapshot.sh restore <id> [--only s]` on `host` after its one-time approval, audited
+ * ({@link auditOn}). A restore that did not end well, or did not end at all, has its approval file
+ * removed, should it not have been read. A machine that did not answer may have changed anything:
+ * `stuck`, as a failed put-back ({@link RESTORE_STUCK}).
  */
 async function restoreOn(
   run: SnapshotRun,
@@ -323,27 +352,14 @@ async function restoreOn(
       await host.run(`rm -f ${RESTORE_APPROVAL_FILE}`, READ_TIMEOUT_MS).catch(() => undefined);
     }
   }
-  const unanswered = result.exitCode === 255 || result.timedOut === true;
+  const silent = result.exitCode === 255 || result.timedOut === true;
   const state =
     result.exitCode === 0
       ? "restored"
-      : result.exitCode === RESTORE_STUCK || (unanswered && written.exitCode === 0)
+      : result.exitCode === RESTORE_STUCK || (silent && written.exitCode === 0)
         ? "stuck"
         : "back";
-  await deps.audit
-    .append({
-      kind: "remote-exec",
-      actor: "opscrew",
-      action: input.action,
-      target: host.audit,
-      decision: "approved",
-      detail: `${id}: ${input.parts.join(", ")}: ${state}`,
-    })
-    .catch((error: unknown) => {
-      deps.reporter.warn(
-        `OpsCrew could not write "${input.action}" ${host.where} in its audit log: ${deps.redactor.redact(errorMessage(error))}`,
-      );
-    });
+  await auditOn(run, host, input.action, `${id}: ${input.parts.join(", ")}: ${state}`);
   const saved = /^saved ([0-9A-Za-z]+)$/m.exec(result.stdout)?.[1];
   return {
     state,
@@ -386,23 +402,13 @@ async function reloginOn(
       (relogins.reduce((sum, relogin) => sum + relogin.seconds, 0) + RELOGIN_MARGIN_SECONDS) * 1000,
       input,
     )
-    .catch(
-      (error: unknown): CommandResult => ({ exitCode: 255, stdout: "", stderr: String(error) }),
-    );
-  await deps.audit
-    .append({
-      kind: "remote-exec",
-      actor: "opscrew",
-      action: "set the current passwords of restored services",
-      target: host.audit,
-      decision: "approved",
-      detail: `${id}: ${relogins.map((relogin) => `${relogin.service} from generation ${relogin.from} to ${relogin.to}`).join(", ")}: ${result.exitCode === 0 ? "done" : "failed"}`,
-    })
-    .catch((error: unknown) => {
-      deps.reporter.warn(
-        `OpsCrew could not write "set the current passwords of restored services" ${host.where} in its audit log: ${deps.redactor.redact(errorMessage(error))}`,
-      );
-    });
+    .catch(unanswered);
+  await auditOn(
+    run,
+    host,
+    "set the current passwords of restored services",
+    `${id}: ${relogins.map((relogin) => `${relogin.service} from generation ${relogin.from} to ${relogin.to}`).join(", ")}: ${result.exitCode === 0 ? "done" : "failed"}`,
+  );
   if (result.exitCode === 0) return undefined;
   return hostFailure(run, host, result, `give ${names} ${their} current passwords again`);
 }
@@ -549,13 +555,8 @@ async function restoreEach(
     ...holders.filter((holder) => holder.server !== APP_SERVER),
     ...holders.filter((holder) => holder.server === APP_SERVER),
   ];
-  // A machine that throws counts as one that did not answer.
   const appScript = (command: "hold" | "resume") =>
-    app
-      .run(scriptCommand([command]), READ_TIMEOUT_MS)
-      .catch(
-        (error: unknown): CommandResult => ({ exitCode: 255, stdout: "", stderr: String(error) }),
-      );
+    app.run(scriptCommand([command]), READ_TIMEOUT_MS).catch(unanswered);
   const resumeApp = () => appScript("resume");
   deps.reporter.step(`Holding the app's requests and stopping it ${app.where}`);
   const held = await appScript("hold");

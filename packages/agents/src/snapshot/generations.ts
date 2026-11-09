@@ -50,7 +50,7 @@ type AboutEntry = About["services"][number];
  * snapshotted by stopping it, not a database's dump, a cache's copy, the app's SQLite files nor its
  * kept folder.
  */
-export function holdsLogins(kind: string): boolean {
+function holdsLogins(kind: string): boolean {
   return (
     kind !== "sqlite" &&
     kind !== "files" &&
@@ -68,10 +68,30 @@ function copiedGeneration(entry: AboutEntry): number | undefined {
   return entry.generation ?? 1;
 }
 
-/** The generation the rotation record gives each credential of the environment, by its name. */
-async function currentGenerations(deps: Pick<PhaseDeps, "paths">) {
-  const entries = (await readCredentialsRecord(deps)).environments[deps.paths.environment] ?? {};
-  return (name: string) => entries[name]?.generation ?? 1;
+/** The rotation record's entries of the environment, by credential name. */
+async function recordEntries(deps: Pick<PhaseDeps, "paths">) {
+  return (await readCredentialsRecord(deps)).environments[deps.paths.environment] ?? {};
+}
+
+/**
+ * Of `copies`, those whose logins were taken under an earlier generation (`from`) than the
+ * record's (`to`); or, at the first one of a later generation, why ({@link aheadReason}).
+ */
+async function staleCopies<C extends { id: string; entry: AboutEntry }>(
+  deps: Pick<PhaseDeps, "paths">,
+  copies: readonly C[],
+): Promise<{ stale: (C & Pick<Relogin, "from" | "to">)[] } | { ahead: string }> {
+  const entries = await recordEntries(deps);
+  const stale: (C & Pick<Relogin, "from" | "to">)[] = [];
+  for (const copy of copies) {
+    const from = copiedGeneration(copy.entry);
+    if (from === undefined) continue;
+    const to = entries[copy.entry.name]?.generation ?? 1;
+    const ahead = aheadReason(copy.entry.name, copy.id, from, to);
+    if (ahead !== undefined) return { ahead };
+    if (from < to) stale.push({ ...copy, from, to });
+  }
+  return { stale };
 }
 
 /**
@@ -193,25 +213,30 @@ export async function restoreRelogins(
   holders: readonly Holder[],
 ): Promise<Relogin[]> {
   const { deps, plan, flags } = run;
-  const generation = await currentGenerations(deps);
-  const stale: Omit<Relogin, "steps" | "seconds">[] = [];
-  for (const holder of holders) {
-    for (const part of holder.parts) {
-      const entry = holder.about.services.find((each) => each.name === part.name);
-      const from = entry === undefined ? undefined : copiedGeneration(entry);
-      if (from === undefined) continue;
-      const to = generation(part.name);
-      requireNotAhead(part.name, id, from, to, flags);
-      if (from < to) stale.push({ server: holder.server, service: part.name, from, to });
-    }
+  const found = await staleCopies(
+    deps,
+    holders.flatMap(({ server, about, parts }) =>
+      parts.flatMap((part) =>
+        about.services
+          .filter((entry) => entry.name === part.name)
+          .map((entry) => ({ id, entry, server })),
+      ),
+    ),
+  );
+  if ("ahead" in found) {
+    throw new OpsCrewError("PHASE_PRECONDITION", `${found.ahead} ${NOTHING_CHANGED}`, {
+      hint: aheadHint(flags),
+    });
   }
+  const { stale } = found;
   if (stale.length === 0) return [];
   await assertValuesCurrent(deps);
   await registerAppSecrets(deps, plan);
   const history = (await keptHistory(deps, true)) as History;
   const current = await serviceValues(deps, plan, { names: [], services: {} }, "new");
   const relogins: Relogin[] = [];
-  for (const { server, service: name, from, to } of stale) {
+  for (const { server, entry, from, to } of stale) {
+    const { name } = entry;
     const service = plan.services.find((each) => each.name === name);
     if (service === undefined) throw new Error(`The plan has no service ${name}.`);
     const then = history[name]?.[String(from)];
@@ -343,18 +368,12 @@ export async function rotatedLogins(
   abouts: Iterable<About>,
   flags: string,
 ): Promise<{ rotated: string[]; ahead?: string }> {
-  const generation = await currentGenerations(deps);
-  const names = new Set<string>();
-  for (const about of abouts) {
-    for (const entry of about.services) {
-      const from = copiedGeneration(entry);
-      if (from === undefined) continue;
-      const ahead = aheadReason(entry.name, about.id, from, generation(entry.name));
-      if (ahead !== undefined) return { rotated: [], ahead: `${ahead} ${aheadHint(flags)}` };
-      if (from < generation(entry.name)) names.add(entry.name);
-    }
-  }
-  return { rotated: [...names] };
+  const found = await staleCopies(
+    deps,
+    [...abouts].flatMap((about) => about.services.map((entry) => ({ id: about.id, entry }))),
+  );
+  if ("ahead" in found) return { rotated: [], ahead: `${found.ahead} ${aheadHint(flags)}` };
+  return { rotated: [...new Set(found.stale.map(({ entry }) => entry.name))] };
 }
 
 /**
@@ -372,7 +391,7 @@ export async function forgetUnneededGenerations(
 ): Promise<void> {
   const history = await keptHistory(deps, false);
   if (history === undefined) return;
-  const record = (await readCredentialsRecord(deps)).environments[deps.paths.environment] ?? {};
+  const record = await recordEntries(deps);
   const needed = new Set(
     entries.flatMap((entry) =>
       entry.services
