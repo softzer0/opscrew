@@ -886,7 +886,7 @@ describe.skipIf(SKIP.restore !== undefined)(
       minutes(40),
       async () => {
         brokerOld = await secret(BROKER);
-        const keyOld = await secret("garage", "key-secret");
+        const keyOld = await secret("garage", "secret-key");
         const since = new Date();
         const { done } = await scriptedRotation(run, ["garage", BROKER]);
         expect(
@@ -896,7 +896,7 @@ describe.skipIf(SKIP.restore !== undefined)(
         await envs.remember("prod");
         brokerNew = await secret(BROKER);
         expect(brokerNew !== brokerOld, "RabbitMQ's password changed on this computer").toBe(true);
-        expect((await secret("garage", "key-secret")) !== keyOld, "Garage's key changed").toBe(
+        expect((await secret("garage", "secret-key")) !== keyOld, "Garage's key changed").toBe(
           true,
         );
         await readValue(site(), before);

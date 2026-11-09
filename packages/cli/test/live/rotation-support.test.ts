@@ -216,6 +216,8 @@ describe("logging in with a value on standard input", () => {
       "-U opscrew_monitor -d postgres",
     );
     expect(loginScript("mysql")).toContain('MYSQL_PWD="$v" mysql -h 127.0.0.1 -uapp');
+    // Not 127.0.0.1, which the PostgreSQL image trusts without a password.
+    expect(loginScript("postgres")).toContain(`psql -h "$(hostname -i | cut -d ' ' -f1)" -U app`);
     expect(() => loginScript("postgres", { user: "app; rm" })).toThrow(/plain name/);
   });
 

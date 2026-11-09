@@ -344,7 +344,9 @@ export function loginScript(kind: LoginKind, as: LoginAs = {}): string {
     if (!/^[a-z_][a-z0-9_]*$/.test(name)) throw new Error(`"${name}" is not a plain name.`);
   }
   const login = {
-    postgres: `PGPASSWORD="$v" psql -h 127.0.0.1 -U ${user} -d ${database} -tAc 'select 1' > /dev/null 2>&1`,
+    // The image trusts 127.0.0.1 without a password (its pg_hba.conf); the container's own
+    // address takes the password check every other client gets.
+    postgres: `PGPASSWORD="$v" psql -h "$(hostname -i | cut -d ' ' -f1)" -U ${user} -d ${database} -tAc 'select 1' > /dev/null 2>&1`,
     mysql: `MYSQL_PWD="$v" mysql -h 127.0.0.1 -u${user} -N -B ${database} -e 'select 1' > /dev/null 2>&1`,
     valkey: `[ "$(REDISCLI_AUTH="$v" valkey-cli --no-auth-warning ping 2> /dev/null)" = PONG ]`,
     rabbitmq: `rabbitmqctl authenticate_user ${user} "$v" > /dev/null 2>&1`,
