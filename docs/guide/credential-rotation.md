@@ -66,10 +66,12 @@ secrets. How depends on the service:
 
 The order is always the same:
 
-1. the service's own change while it runs;
-2. the new env files (and GitHub's secrets, or the Portainer stack);
-3. the app's switch to them, with the image that runs (nothing is built or pulled);
-4. the old value dropped, where both were valid.
+1. where the app deploys from GitHub, its deploys pause and GitHub's secrets take the new values
+   first, so no deploy can bring the old ones back;
+2. the service's own change while it runs;
+3. the new env files (or the Portainer stack);
+4. the app's switch to them, with the image that runs (nothing is built or pulled);
+5. the old value dropped, where both were valid.
 
 The app's own address variables, such as `DATABASE_URL`, follow. A service on another server gets
 its change there, and the app's server the new address. A service that is off changes only in
@@ -77,6 +79,11 @@ OpsCrew's files and starts with the new value.
 
 This works on a cloud server, on a server you own, in your Portainer (through its Docker API and
 the stack plan) and on this computer (through Docker).
+
+In your Portainer, the stack holds every service's values, so the stack plan's apply creates each
+service of the stack again, seamless ones included: each restarts with its new value and closes
+its open connections, and the app with them. The site can fail requests meanwhile, for about as
+long as the plan says, usually half a minute.
 
 Kafka and Redpanda without their login have nothing to rotate; the list says so.
 
@@ -102,7 +109,6 @@ Kafka and Redpanda without their login have nothing to rotate; the list says so.
   a services' rotation does. **A site on [Cloudflare's hosting](cloudflare-hosting.md) or
   [GitHub Pages](github-pages.md)** gets them through its GitHub secrets and a deploy, which
   OpsCrew starts and follows to its end.
-- `--undo` puts the old values back while the rotation is unfinished.
 
 ### SSH keys
 
@@ -168,10 +174,8 @@ Sign in with the new passwords afterwards; OpsCrew keeps them where it kept the 
 npx opscrew rotate recovery-key --key-out ~/opscrew-shop-age-key-2.txt
 ```
 
-A new age key for the [recovery copy](secrets-recovery.md#a-new-key). OpsCrew writes it only to
-that file (a terminal asks for the path when you leave out `--key-out`), encrypts the copy to it
-and proposes the copy in a pull request. `--backup <age1…>` replaces the backup key, and
-`--no-backup` drops it.
+A new age key for the recovery copy, written only to that file. [A new key](secrets-recovery.md#a-new-key)
+has the rest, including the backup key's options.
 
 ### Your own tokens
 
@@ -200,7 +204,8 @@ this computer:
   works until the old values begin to be dropped; from then on the rotation only goes forward.
 
 The app's deploys stay paused (or held, on this computer) until the rotation or its undo is run
-to its end.
+to its end. While a rotation holds the app, a snapshot you take is refused and a scheduled one is
+skipped, with a line in its log.
 
 ## Where the old values live until it's done
 
@@ -228,8 +233,8 @@ the Portainer stack, never on a command line on this computer or in a workflow.
 
 On the server, a few tools take the value only as an argument: MongoDB's login, RabbitMQ's
 `rabbitmqctl change_password`, Kafka's `kafka-configs --add-config`, Redpanda's
-`rpk … --new-password`, Garage's `garage key import` and Neo4j's `cypher-shell -p`. MySQL and
-MariaDB read theirs from standard input. For the second those tools run, the value is on their
+`rpk … --new-password` and Neo4j's `cypher-shell -p`. MySQL and MariaDB read theirs from
+standard input. For the second those tools run, the value is on their
 command line inside the service's container. Root on the server can read the env files anyway;
 other local users of a server you own could see it in the process list for that second.
 
@@ -241,9 +246,18 @@ and says to run `npx opscrew secrets restore` first.
 
 ## Restoring a snapshot taken before a rotation
 
-The data of a snapshot taken before a rotation still has the old passwords inside it. When
-[`npx opscrew restore`](snapshots.md) or a rollback's database restore puts it back, OpsCrew sets
-the current passwords on each restored service again, so the app reaches it.
+Database dumps and cache copies hold no passwords, so they restore as they are.
+
+Two kinds of snapshot do hold the old passwords:
+- a copy of a service taken by stopping it (RabbitMQ, Neo4j, Kafka, Redpanda, OpenSearch,
+  Elasticsearch, Garage);
+- a [whole-server snapshot](snapshots.md).
+
+When [`npx opscrew restore`](snapshots.md) puts one of these back, OpsCrew sets the current
+passwords on each such service again, after waiting until it accepts logins. Then the app reaches
+it.
+
+A rollback doesn't offer such a copy. It says to roll back with `--database keep`, then restore.
 
 ## Old credentials
 
