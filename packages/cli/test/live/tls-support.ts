@@ -376,13 +376,6 @@ export function longestInterruption(
 }
 
 /**
- * The secret values in OpsCrew's generated values (`generated_values.json`): every string of 8
- * characters or more, except in its origin TLS entry, where only the private keys are secret (the
- * certificates, the certificate request and its hostnames are public: `pull.pem` is committed and
- * the request is in the Cloudflare plan); plus the Portainer stack variable built from them
- * (base64 of the origin certificate, its key and `pull.pem`) when they are all there.
- */
-/**
  * The lines of the PEM private key `pem` that hold private bytes: each base64 line of 16
  * characters or more that none of `publics` (certificates and requests, armor and line breaks
  * left out) contains.
@@ -416,6 +409,15 @@ export function previousValueEntries(json: unknown): [string, string][] {
   );
 }
 
+/**
+ * The secret values in OpsCrew's generated values (`generated_values.json`): every string of 8
+ * characters or more, except in its origin TLS entry, where only the private keys are secret (the
+ * certificates, the certificate request and its hostnames are public: `pull.pem` is committed and
+ * the request is in the Cloudflare plan); plus the Portainer stack variable built from them
+ * (base64 of the origin certificate, its key and `pull.pem`) when they are all there. Garage's
+ * access key ids (`key-id`) are left out: identifiers, not secrets, which its re-login names on the
+ * server (T2532).
+ */
 export function generatedSecrets(json: unknown): string[] {
   if (json === null || typeof json !== "object" || Array.isArray(json)) return jsonStrings(json);
   // Monitoring keeps its owner (plan path, server, interface) beside its two passwords: only
@@ -442,10 +444,23 @@ export function generatedSecrets(json: unknown): string[] {
     cert !== undefined && key !== undefined && pull !== undefined
       ? [Buffer.from(`${cert}${key}${pull}`).toString("base64")]
       : [];
+  const ids = new Set(keyIds(rest));
   return [
-    ...jsonStrings(rest),
+    ...jsonStrings(rest).filter((value) => !ids.has(value)),
     ...keys,
     ...bundle,
     ...passwords.map(text).filter((value): value is string => value !== undefined),
   ];
+}
+
+/** The name Garage's access key id has in the generated values and a rotation's pairs. */
+export const GARAGE_KEY_ID = "key-id";
+
+/** Every string under a {@link GARAGE_KEY_ID} key, at any depth. */
+function keyIds(json: unknown): string[] {
+  if (Array.isArray(json)) return json.flatMap(keyIds);
+  if (json === null || typeof json !== "object") return [];
+  return Object.entries(json).flatMap(([key, value]) =>
+    key === GARAGE_KEY_ID && typeof value === "string" ? [value] : keyIds(value),
+  );
 }

@@ -465,6 +465,16 @@ describe("the secret parts of the generated values", () => {
     expect(generatedSecrets(values)).toEqual([grafana, postgres]);
   });
 
+  it("leaves out Garage's access key ids, current and earlier, and keeps its secret keys", () => {
+    const secret = fakeSecret("generic-password", "garage");
+    const earlier = fakeSecret("generic-password", "garage-old");
+    const values = {
+      services: { garage: { "key-id": "GK0123456789abcdef01234567", "secret-key": secret } },
+      history: { garage: { 1: { "key-id": "GK76543210fedcba9876543210", "secret-key": earlier } } },
+    };
+    expect(generatedSecrets(values)).toEqual([secret, earlier]);
+  });
+
   it("does not take a PEM armor line for a secret of its own", () => {
     const scrubber = new Scrubber();
     const key = fakeSecret("private-key-pem", "origin");

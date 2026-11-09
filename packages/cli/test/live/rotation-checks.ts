@@ -57,6 +57,7 @@ import {
 import { workerRunning } from "./site-checks";
 import { deployRunProblem, leakedLabels } from "./support";
 import { requireDocker } from "./tls-checks";
+import { GARAGE_KEY_ID } from "./tls-support";
 
 // ---------------------------------------------------------------------------------------------
 // Logins to the servers, with a value on standard input.
@@ -320,12 +321,17 @@ export async function rememberPending(
   return true;
 }
 
-/** Every string under an `old` or a `new` key, at any depth. */
-function pairValues(json: unknown): string[] {
-  if (Array.isArray(json)) return json.flatMap(pairValues);
-  if (json === null || typeof json !== "object") return [];
+/**
+ * Every string under an `old` or a `new` key, at any depth, but Garage's access key id's: an
+ * identifier, not a secret, which its re-login names on the server (T2532).
+ */
+function pairValues(json: unknown, parent = ""): string[] {
+  if (Array.isArray(json)) return json.flatMap((item) => pairValues(item, parent));
+  if (json === null || typeof json !== "object" || parent === GARAGE_KEY_ID) return [];
   return Object.entries(json).flatMap(([key, value]) =>
-    (key === "old" || key === "new") && typeof value === "string" ? [value] : pairValues(value),
+    (key === "old" || key === "new") && typeof value === "string"
+      ? [value]
+      : pairValues(value, key),
   );
 }
 
