@@ -298,7 +298,7 @@ Behaviour, hashes and approval texts stay as they are unless a task says otherwi
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/agents && pnpm typecheck && pnpm lint`
   - Effort: high
 
-- [ ] T2529 The CLI's rotate and approvals without repeats
+- [x] T2529 The CLI's rotate and approvals without repeats
   - Owns: `packages/cli/src/approval*.ts`, `packages/cli/src/commands/{rotate,restore}*.ts`
   - Accept:
     - **One helper:** `rotationApprovals` and `restoreApprovals` share a `showInScript` option, or one helper, in `approval.ts`. `ScriptedRotationApproval`'s narrow `--yes` stays as it is.
