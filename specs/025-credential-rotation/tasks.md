@@ -269,7 +269,7 @@ Behaviour, hashes and approval texts stay as they are unless a task says otherwi
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm typecheck && pnpm lint`
   - Effort: medium
 
-- [ ] T2527 Small repeats and the analyze cycle
+- [x] T2527 Small repeats and the analyze cycle
   - Owns:
     - `packages/agents/src/shared/engine.ts`, `packages/agents/src/provision/{storage,monitoring,publish}.ts`, `packages/agents/src/destroy/deletion.ts`, `packages/agents/src/environments/shared-parts.ts`, `packages/agents/src/design/{run,builder}.ts`, `packages/agents/src/addons/run.ts`
     - `packages/agents/src/analyze/{summary,names}.ts` (`names.ts` is new)
