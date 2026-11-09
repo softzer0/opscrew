@@ -13,7 +13,8 @@
  * app's again on root's new password), Valkey, Redis and Dragonfly (dual, and a device's login on
  * Valkey), Kafka and Redpanda with their login, OpenSearch and Elasticsearch (swaps), ClickHouse
  * (its users file rewritten, no restart, a fresh first start), NATS (the included token file and
- * its reload) and Garage (the second key, the old one deleted, then the RPC secret by a restart).
+ * its reload) and Garage (the second key, the old one deleted, then the RPC secret by a restart; and
+ * a restore's re-login of a copy from before its key's rotation, the old key deleted by its ID).
  *
  * It pulls the pinned images, so it runs only with OPSCREW_DOCKER_TESTS=1. Each case removes its
  * project with its volumes and network, and the run removes the images it pulled.
@@ -950,6 +951,103 @@ describe.skipIf(reason !== undefined)(
         asBefore();
         expect(s3(next)).toBe("403");
       });
+    });
+
+    it("Garage: a restored copy from before its key's rotation loses that key by its ID, the env's key kept", async () => {
+      const old = {
+        "rpc-secret": newValue("garage", "rpc-secret"),
+        "key-id": newValue("garage", "key-id"),
+        "secret-key": newValue("garage", "secret-key"),
+      };
+      const project = new Project(
+        "garage-restore",
+        planOf({ kind: "garage" }, { storage: GARAGE_STORAGE }),
+        old,
+      );
+      const bucket = GARAGE_STORAGE.objectStorage.bucket;
+      const copy = `${project.name}-copy`;
+      remember(IMAGES.busybox.ref);
+      try {
+        await withProject(project, async () => {
+          const s3 = (key: { "key-id": string; "secret-key": string }) =>
+            project.curl([
+              "--aws-sigv4",
+              "aws:amz:garage:s3",
+              "--user",
+              `${key["key-id"]}:${key["secret-key"]}`,
+              `http://${project.service.name}:3900/${bucket}`,
+            ]);
+          const garageKey = (args: string[]) => project.exec(["/garage", "key", ...args]);
+          /** Garage stopped, then `script` with its data folder and the copy's volume at /copy. */
+          const stopped = (script: string) => {
+            const container = project.container();
+            project.compose(["stop", project.service.name]);
+            docker(
+              [
+                "run",
+                "--rm",
+                "--volumes-from",
+                container,
+                "-v",
+                `${copy}:/copy`,
+                IMAGES.busybox.ref,
+                "sh",
+                "-c",
+                script,
+              ],
+              { env: project.env },
+            );
+          };
+          const data = serviceSpec("garage").dataDir;
+          await eventually(() => expect(s3(old)).toBe("200"));
+          // The snapshot by stopping Garage: its data with the old key.
+          stopped(`cp -a ${data}/. /copy/`);
+          project.up();
+          await eventually(() => expect(s3(old)).toBe("200"));
+          // The key's rotation: begin, the start from the new env file, finish.
+          const next = {
+            ...old,
+            "key-id": newValue("garage", "key-id"),
+            "secret-key": newValue("garage", "secret-key"),
+          };
+          const key = rotationOf(project, "key-id");
+          project.run(key.begin(project.ctx), "", "");
+          project.secrets = next;
+          project.up();
+          await eventually(() => expect(s3(next)).toBe("200"));
+          project.run(key.finish(project.ctx), "", "");
+          expect(s3(old)).toBe("403");
+          // The restore: the copy back, and Garage started from the current env file, which makes
+          // the env's key beside the restored one, under the same name, and allows it on the bucket.
+          stopped(
+            `find ${data} -mindepth 1 -maxdepth 1 -exec rm -rf {} + && cp -a /copy/. ${data}/`,
+          );
+          project.up();
+          await eventually(() => expect(s3(next)).toBe("200"));
+          expect(s3(old)).toBe("200");
+          expect(garageKey(["info", "default access key"])).not.toBe(0);
+          // The re-login, as the restore runs it (twice, as a try again would): once Garage holds
+          // the env's key, the old key deleted by its ID while Garage holds it, never the env's.
+          for (const _ of [1, 2]) {
+            expect(garageKey(["info", next["key-id"]])).toBe(0);
+            if (old["key-id"] !== next["key-id"] && garageKey(["info", old["key-id"]]) === 0) {
+              expect(garageKey(["delete", "--yes", old["key-id"]])).toBe(0);
+            }
+          }
+          const keys = docker(["exec", project.container(), "/garage", "key", "list"], {
+            env: project.env,
+          });
+          expect(keys.match(/GK[0-9a-f]+/g)).toEqual([next["key-id"]]);
+          expect(garageKey(["info", "default access key"])).toBe(0);
+          expect(s3(next)).toBe("200");
+          expect(s3(old)).toBe("403");
+          await project.restart();
+          expect(s3(next)).toBe("200");
+          expect(s3(old)).toBe("403");
+        });
+      } finally {
+        spawnSync("docker", ["volume", "rm", "-f", copy]);
+      }
     });
   },
 );

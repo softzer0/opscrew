@@ -7,9 +7,10 @@
  * copy) while such a copy or a whole-server snapshot needs them. Once a restore puts back a volume
  * copy of a service rotated since, OpsCrew runs the service's rotation recipe with the values of
  * then as the login and the current ones as the new (MySQL's and MariaDB's root first, as their app
- * password's commands log in as root), then waits for its health check. The values reach the server
- * only on SSH's stdin and the container only as `OPSCREW_OLD` and `OPSCREW_NEW`; nothing it prints,
- * audits or asks holds one.
+ * password's commands log in as root), then waits for its health check; Garage's key instead loses
+ * its restored key of then by its ID. The values reach the server only on SSH's stdin and the
+ * container only as `OPSCREW_OLD` and `OPSCREW_NEW` (Garage's key IDs, no secret, as `garage`'s
+ * arguments); nothing it prints, audits or asks holds one.
  */
 import { isDeepStrictEqual } from "node:util";
 import { listText, OpsCrewError } from "@opscrew/core";
@@ -135,7 +136,7 @@ export interface Relogin {
   /**
    * Its recipe's steps that run in its container (a `restart` step's value is read from the env
    * at the start the restore made), the root password's first, each with the value of then
-   * (`old`) and the current one (`new`); empty for a step of several secrets (Garage's key).
+   * (`old`) and the current one (`new`); for Garage's key, its key IDs ({@link isGarageKey}).
    */
   steps: { step: ServiceStep; values: { old: string; new: string } }[];
   /**
@@ -203,8 +204,9 @@ export async function restoreRelogins(
           Number(a.rotation.secrets.includes("root-password")),
       )
       .map((step) => {
-        const [secret, ...more] = step.rotation.secrets;
-        if (secret === undefined || more.length > 0) return { step, values: { old: "", new: "" } };
+        // Garage's key: its key ID, which names it; its secret key never leaves this computer.
+        const secret = isGarageKey(step) ? "key-id" : step.rotation.secrets[0];
+        if (secret === undefined) throw new Error(`${name} has a rotation of no secret.`);
         const old = then?.[secret];
         const now = current[name]?.[secret];
         if (old === undefined || now === undefined) {
@@ -242,16 +244,40 @@ export function reloginLines(relogins: readonly Relogin[]): string[] {
   ];
 }
 
+/** True for Garage's key, whose restore {@link garageRelogin} handles. */
+function isGarageKey(step: ServiceStep): boolean {
+  return step.service.kind === "garage" && step.rotation.secrets.includes("key-id");
+}
+
+/**
+ * Garage's key once the restore started it from the current env: its restored data holds the key
+ * of then under the name its start gives the env's key, which the start made beside it and allows
+ * on the plan's bucket, so a rotation's `begin` (a rename by that name) matches no one key. Instead,
+ * once Garage holds the env's key, the key of then is deleted by its ID, only while Garage holds it
+ * and never when it is the env's: run again, it changes nothing. Step `n`'s values are the key IDs
+ * (`$rot_old_<n>`, `$rot_new_<n>`), which name the keys and are no secret: the image has no shell,
+ * so the host's shell puts them on `garage`'s command line; the secret keys never leave this
+ * computer.
+ */
+function garageRelogin(n: number): string[] {
+  const garage = (args: string) =>
+    `docker exec "$rot_c" /garage key ${args} < /dev/null >> ${ROTATE_LOG} 2>&1`;
+  return [
+    garage(`info "$rot_new_${n}"`),
+    `if [ "$rot_old_${n}" != "$rot_new_${n}" ] && ${garage(`info "$rot_old_${n}"`)}; then ${garage(`delete --yes "$rot_old_${n}"`)}; fi`,
+  ].map((line) => `retry ${shellQuote(line)} || late`);
+}
+
 /**
  * The command and stdin that give the restored services of `relogins` (on one machine) their
  * current values (POSIX sh, in the app's folder as the deploy user), once the restore started them
- * without waiting for their health checks, which may log in: the values read from stdin, two lines
- * per step, as `rotate.sh` reads them; then per service its container found, each step's `begin`,
- * the service created again where its recipe needs it (Garage's key), each step's `finish`, and the
- * wait for its health check; each command as `rotate.sh` runs it ({@link inContainer}, its output
- * in {@link ROTATE_LOG}), tried again every 2 seconds while the service boots, for at most its
- * {@link Relogin.seconds} (the recipes are guarded, so a try again changes nothing done). A failure
- * names the service and stops.
+ * from their current env files without waiting for their health checks, which may log in: the
+ * values read from stdin, two lines per step, as `rotate.sh` reads them; then per service its
+ * container found, each step's `begin` (Garage's key: {@link garageRelogin}), each step's `finish`,
+ * and the wait for its health check; each command as `rotate.sh` runs it ({@link inContainer}, its
+ * output in {@link ROTATE_LOG}), tried again every 2 seconds while the service boots, for at most
+ * its {@link Relogin.seconds} (the recipes are guarded, so a try again changes nothing done). A
+ * failure names the service and stops.
  */
 export function reloginCommand(relogins: readonly Relogin[]): { command: string; input: string } {
   const steps = relogins.flatMap((relogin) => relogin.steps);
@@ -260,8 +286,8 @@ export function reloginCommand(relogins: readonly Relogin[]): { command: string;
     'rot_c="$(docker compose ps -q "$s" | head -n 1)"',
     '[ -n "$rot_c" ] || failed',
   ];
-  const run = (command: RotationStep, n: number) =>
-    `retry ${shellQuote(inContainer(command, n, false))} || late`;
+  const run = (commands: readonly RotationStep[], n: number) =>
+    commands.map((command) => `retry ${shellQuote(inContainer(command, n, false))} || late`);
   let count = 0;
   const lines = [
     "umask 077",
@@ -276,18 +302,13 @@ export function reloginCommand(relogins: readonly Relogin[]): { command: string;
     ]),
     ...relogins.flatMap((relogin) => {
       const numbered = relogin.steps.map((step) => ({ ...step, n: ++count }));
-      const recreate = numbered.some(({ step }) => step.rotation.recreate);
       return [
         `t=${relogin.seconds}`,
         ...container(relogin.service),
-        ...numbered.flatMap(({ step, n }) => step.step.begin.map((cmd) => run(cmd, n))),
-        ...(recreate
-          ? [
-              `docker compose up -d --no-deps --force-recreate "$s" >> ${ROTATE_LOG} 2>&1 || failed`,
-              ...container(relogin.service),
-            ]
-          : []),
-        ...numbered.flatMap(({ step, n }) => step.step.finish.map((cmd) => run(cmd, n))),
+        ...numbered.flatMap(({ step, n }) =>
+          isGarageKey(step) ? garageRelogin(n) : run(step.step.begin, n),
+        ),
+        ...numbered.flatMap(({ step, n }) => (isGarageKey(step) ? [] : run(step.step.finish, n))),
         `docker compose up -d --no-deps --wait "$s" >> ${ROTATE_LOG} 2>&1 || failed`,
       ];
     }),

@@ -1369,7 +1369,9 @@ const GARAGE_OLD_KEY_NAME = "opscrew-previous";
  * key has the old key's new name; `finish` deletes the old key only while a key has the name the
  * start gives the new one (a start from an env still naming the old key makes none); `undo` acts
  * only once the old key is renamed, deleting the new key if the start made it and giving the old
- * one its name back. None deletes the key in use.
+ * one its name back. None deletes the key in use. A restore of a copy from before a rotation does
+ * not use them: its data holds the old key under the name the start then gives the env's key too,
+ * so the restore's re-login deletes the old key by its ID instead (agents' snapshot generations).
  */
 const GARAGE_KEY: SecretRotation = {
   secrets: ["key-id", "secret-key"],
