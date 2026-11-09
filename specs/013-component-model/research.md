@@ -772,3 +772,13 @@ the split names); no derivation of `APP_URL`; the only kept folder is SQLite's
 
 An installer that asks for the database's host, name, user and password (rather than reading the
 environment) needs them once; the guide says where OpsCrew keeps them.
+
+Found later (2026-11-09) on a deployed plain PHP app's own health page: it recommends the `intl`
+and `zip` extensions without requiring them in `composer.json`, as many PHP apps do (they check
+`extension_loaded` or `function_exists` and do without). Without `intl` it refuses international
+domain names and skips Unicode normalization; without `zip` it cannot build its support bundle.
+Railpack installs only what `composer.json` requires and what `RAILPACK_PHP_EXTENSIONS` names, so
+OpsCrew adds both to every PHP image Railpack builds (FR-1343, T1330). The page's other warnings
+are by design: the image's files are root's (FR-1340), so the app's own updater cannot replace
+them and updates come from a deploy; PHP's time limit is 30 s for web requests and none on the
+command line, where the cron job runs, which is what apps made for shared hosting expect.

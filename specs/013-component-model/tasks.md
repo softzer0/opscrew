@@ -721,4 +721,14 @@ Horizon, PostgreSQL and Redis.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm lint`
   - Effort: high
 
+- [ ] T1330 [US8] intl and zip in every PHP image Railpack builds (found 2026-11-09 on a real plain PHP app's health page; research R10, FR-1343)
+  - Owns: `packages/iac-templates/src/**` (+ tests and snapshots), not `src/generated/**`; `packages/cli/test/e2e/docker.test.ts`; `docs/guide/builders.md`
+  - Reads: research R10's last paragraph; `workflow/build.ts` (`phpExtensionsSetting`, `PHP_DRIVERS`); `workflow/build.test.ts` ("a PHP app's drivers for its services")
+  - Accept:
+    - **Always intl and zip:** every PHP app Railpack builds (plain PHP and Laravel) gets `RAILPACK_PHP_EXTENSIONS` (to `prepare` and as a BuildKit secret, as today) with `intl` and `zip` beside its services' drivers, each once and sorted: `intl,pdo_mysql,zip` with MySQL, `intl,zip` with no such service. Other languages and builders unchanged.
+    - **Tests:** the drivers tests follow; snapshots change only where this changes them; the Docker check (`OPSCREW_DOCKER_TESTS=1`) asserts that `php -m` in a running plain PHP app's container lists `intl` and `zip`.
+    - **The guide:** `builders.md`'s PHP extensions item says every PHP image also gets `intl` and `zip`, which many PHP apps use when present without requiring them (international domain names, ZIP files).
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates && pnpm lint`, then `OPSCREW_DOCKER_TESTS=1 OPSCREW_DOCKER_EXAMPLES=php-plain-mysql pnpm --filter opscrew exec vitest run test/e2e/docker.test.ts`
+  - Effort: medium
+
 - [ ] T1326 [US8] The release 0.2.6 (lead): `docs/releasing.md`, together with 025 credential rotation (founder, 2026-11-08).

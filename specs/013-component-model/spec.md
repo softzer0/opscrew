@@ -529,6 +529,8 @@ second deploy, and its cron runs.
   cron, Portainer, snapshots and restores, retarget, environments, destroy and the runbook.
 - **FR-1342** (US8): `cron.php` at the root or `bin/cron.php` MUST give a cron job `php <file>` every
   minute; the example `examples/php-plain-mysql` joins the acceptance matrix.
+- **FR-1343** (US8): Every PHP app built by Railpack MUST also get the `intl` and `zip` extensions,
+  which PHP apps often use when present without requiring them in `composer.json`.
 
 ### Key Entities
 
