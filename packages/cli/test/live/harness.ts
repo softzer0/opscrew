@@ -194,9 +194,13 @@ export interface ServerSettings {
 }
 
 /** The cleanup's budget for `opscrew destroy` runs, before the API deletes what is left. */
-export const CLEANUP_DESTROY_BUDGET_MS = minutes(10);
-/** The longest one `opscrew` run of the cleanup may take, within that budget. */
-export const CLEANUP_DESTROY_RUN_MS = minutes(4);
+export const CLEANUP_DESTROY_BUDGET_MS = minutes(20);
+/**
+ * The longest one `opscrew` run of the cleanup may take, within that budget. A destroy that also
+ * takes the app's hostnames out of OpsCrew's shared Cloudflare rules took about 9 minutes live, and
+ * a run cut short leaves them listed there.
+ */
+export const CLEANUP_DESTROY_RUN_MS = minutes(12);
 /** What a cleanup's `teardown` may take: the destroy budget, then the API deletions after it. */
 const TEARDOWN_TIMEOUT_MS = CLEANUP_DESTROY_BUDGET_MS + minutes(15);
 
