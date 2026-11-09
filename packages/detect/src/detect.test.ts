@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { ProjectFactsSchema } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { detectProject, detectProjectDetails } from "./index";
-import { makeTree, removeTree } from "./test-helpers";
+import { makeTree, removeTree, writeTree } from "./test-helpers";
 
 const FIXTURES = fileURLToPath(new URL("../test/fixtures/", import.meta.url));
 const FIXTURE_NAMES = [
@@ -666,6 +666,33 @@ describe("plain PHP apps", () => {
     expect(facts.healthEndpoint).toBe("/");
     expect(facts.webRoot).toBe("public");
     expect(facts.frameworks).toEqual([]);
+  });
+
+  it("reads none of OpsCrew's own files on a second analyze", async () => {
+    const root = await php({ require: { php: ">=8.3", "ext-pdo_mysql": "*" } });
+    const before = await detectProject(root);
+    await writeTree(root, {
+      "opscrew/check/check.mjs":
+        "const summary = process.env.GITHUB_STEP_SUMMARY;\nconst tmp = process.env.RUNNER_TEMP;\n",
+      "opscrew/runtime/compose.yaml":
+        "services:\n  app:\n    image: app\n    ports: ['3000:3000']\n  redis:\n    image: redis:7\n",
+      "opscrew/runtime/Dockerfile": "FROM node:20\nEXPOSE 3000\n",
+      ".github/workflows/opscrew-deploy.yml":
+        "on: push\njobs:\n  deploy:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/setup-node@v4\n        with:\n          node-version: 18\n",
+    });
+    expect(await detectProject(root)).toEqual(before);
+  });
+
+  it("reads a folder named opscrew below the root as an ordinary folder", async () => {
+    const root = await tree({
+      "package.json": JSON.stringify({ name: "x", dependencies: { express: "^4" } }),
+      "index.js": "process.env.SHOWN_VAR",
+      "apps/x/opscrew/worker.js": "process.env.NESTED_VAR",
+    });
+    expect((await detectProject(root)).envVars.map((v) => v.name)).toEqual([
+      "NESTED_VAR",
+      "SHOWN_VAR",
+    ]);
   });
 
   it("stays unknown without public/index.php", async () => {

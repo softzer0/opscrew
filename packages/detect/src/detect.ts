@@ -289,6 +289,14 @@ export function jsRun(
   return `${pm} run ${script}`;
 }
 
+/**
+ * True for the files OpsCrew writes into the repository: the root `opscrew/` folder and its own
+ * `.github/workflows/opscrew-*.yml`. A folder named `opscrew` below the root stays the app's.
+ */
+function isOpsCrewFile(file: string): boolean {
+  return file.startsWith("opscrew/") || /^\.github\/workflows\/opscrew-[^/]*\.ya?ml$/.test(file);
+}
+
 /** Detects repository facts and returns them with the app directory and monorepo candidates. */
 export async function detectProjectDetails(
   root: string,
@@ -299,7 +307,7 @@ export async function detectProjectDetails(
     absRoot,
     options.maxFiles === undefined ? {} : { maxFiles: options.maxFiles },
   );
-  const files = listing.files;
+  const files = listing.files.filter((file) => !isOpsCrewFile(file));
   const fileSet = new Set(files);
   // Only files that survived the walk (ignore rules, size limit) are ever read.
   const read: ReadText = async (path) => {
