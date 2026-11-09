@@ -469,37 +469,50 @@ export function heldSaid(plan: DeployPlan, variable: string, prefix: string): st
 /** The start of {@link heldProbe}'s line while a rotation holds the app, before its plan's hash. */
 const ROTATION_HELD = `held ${ROTATION_HOLDER} `;
 
+/** What a rotation's hold says, its `%s` the plan's hash. */
+function rotationHolds(plan: DeployPlan): string {
+  return `a credential rotation holds the app (the rotation of the plan %s), so its services may have new values the app does not use yet: finish the rotation with ${opscrew(plan, "rotate")}, or put the old values back with ${opscrew(plan, "rotate --undo")}, then try again.`;
+}
+
 /** The printf of a rotation's hold, after `prefix`; `variable` holds {@link heldProbe}'s line. */
 function rotationSaid(plan: DeployPlan, variable: string, prefix: string): string {
-  const rotation = `${prefix}a credential rotation holds the app (the rotation of the plan %s), so its services may have new values the app does not use yet: finish the rotation with ${opscrew(plan, "rotate")}, or put the old values back with ${opscrew(plan, "rotate --undo")}, then try again.`;
-  return `${said(rotation)} "\${${variable}#${ROTATION_HELD}}"`;
+  return `${said(`${prefix}${rotationHolds(plan)}`)} "\${${variable}#${ROTATION_HELD}}"`;
 }
 
 /**
- * The sh line that ends with `end` (`return 1` or `exit 1`), saying why after `prefix`, while a
- * rotation holds the app ({@link RESTORE_HELD} reads `rotation <hash>`); `variable` is the shell
- * variable it uses. A restore's hold, or none, lets it go on.
+ * The sh function `snapshot_rotation_held <prefix>`, which succeeds, saying why after `prefix`,
+ * while a rotation holds the app ({@link RESTORE_HELD} reads `rotation <hash>`), and fails on a
+ * restore's hold or none: `if snapshot_rotation_held '<prefix>'; then return 1; fi`.
  */
-export function rotationHeldStop(
-  plan: DeployPlan,
-  prefix: string,
-  end: string,
-  variable: string,
-): string {
-  return `${variable}="held $(cat ${RESTORE_HELD} 2> /dev/null || true)"; case "$${variable}" in "${ROTATION_HELD}"*) ${rotationSaid(plan, variable, prefix)} >&2; ${end} ;; esac`;
+export function rotationHeldFunction(plan: DeployPlan): string[] {
+  return [
+    "snapshot_rotation_held() {",
+    `  _holder="held $(cat ${RESTORE_HELD} 2> /dev/null || true)"`,
+    `  case "$_holder" in "${ROTATION_HELD}"*) ${said(`%s${rotationHolds(plan)}`)} "$1" "\${_holder#${ROTATION_HELD}}" >&2; return 0 ;; esac`,
+    "  return 1",
+    "}",
+  ];
+}
+
+/**
+ * The sh line, run while the app is held ({@link RESTORE_HELD}), that says why after `prefix`
+ * ({@link heldSaid}) and ends with `end`.
+ */
+export function heldStop(plan: DeployPlan, prefix: string, end: string): string {
+  return `held="held $(cat ${RESTORE_HELD})"; ${heldSaid(plan, "held", prefix)} >&2; ${end}`;
 }
 
 /**
  * The one line that stops a script, before it changes anything, while the app is held
  * ({@link RESTORE_HELD}): with `outcome`, it prints that word and what the marker says and exits 0
  * (the rollback script, whose step then says why: {@link HELD_ROLLBACK}), else it fails, saying why
- * ({@link heldSaid}, after {@link HELD_STOP}). None in a preview's scripts: nothing holds a preview.
+ * ({@link heldStop}, after {@link HELD_STOP}). None in a preview's scripts: nothing holds a preview.
  */
 function heldRefusal(plan: DeployPlan, o: ScriptOptions, outcome?: string): string[] {
   if (o.preview === true) return [];
   return [
     outcome === undefined
-      ? `if [ -f ${RESTORE_HELD} ]; then held="held $(cat ${RESTORE_HELD})"; ${heldSaid(plan, "held", HELD_STOP)} >&2; exit 1; fi`
+      ? `if [ -f ${RESTORE_HELD} ]; then ${heldStop(plan, HELD_STOP, "exit 1")}; fi`
       : `if [ -f ${RESTORE_HELD} ]; then echo ${outcome} $(cat ${RESTORE_HELD}); exit 0; fi`,
   ];
 }

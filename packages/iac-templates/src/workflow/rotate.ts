@@ -1,5 +1,6 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are shell syntax, not JavaScript templates.
 import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
+import type { RotationCommand, RotationMode, RotationStep } from "../catalog/types";
 import { shellQuote } from "../runtime/services";
 import { maskFileScript } from "./index";
 import { opscrew, said } from "./shared";
@@ -8,7 +9,7 @@ import {
   appFolder,
   approvalExpiry,
   EDGE_FUNCTION,
-  heldSaid,
+  heldStop,
   processServices,
   proxyHosts,
   RESTORE_HELD,
@@ -64,26 +65,6 @@ const FINISHED = `${ROTATE_DIR}/finished`;
 const APP_ENV = "app.env";
 
 /**
- * One command of a rotation in the service's running container, an argument list (the catalog's
- * `RotationCommand`): run with `docker exec -e OPSCREW_OLD -e OPSCREW_NEW <container> …`, the two
- * values only in that environment.
- */
-export type RotateCommand = readonly string[];
-
-/**
- * A command run only on its checks there (the catalog's `ConditionalCommand`): `run` when every
- * `when` succeeds and every `unless` fails, all in the same container with the same values.
- */
-export interface RotateConditional {
-  when?: readonly RotateCommand[];
-  unless?: readonly RotateCommand[];
-  run: RotateCommand;
-}
-
-/** A step's command: a command, or one run on a condition. */
-export type RotateStepCommand = RotateCommand | RotateConditional;
-
-/**
  * One secret's rotation on a server, from the catalog's `rotation` of its service (T2503), as
  * `rotate.sh` runs it. Its two values come on the script's stdin ({@link rotateInput}).
  */
@@ -93,18 +74,18 @@ export interface RotateStep {
   /** The service's env file in the app's folder (`<service>.env`), which its new values change. */
   envFile: string;
   /** The catalog's mode: a `restart` step gets its new env file and is recreated in step 3. */
-  mode: "dual" | "swap" | "restart";
+  mode: RotationMode;
   /** Makes the new value work: `OPSCREW_OLD` is the value the service has, `OPSCREW_NEW` the new. */
-  begin: readonly RotateStepCommand[];
+  begin: readonly RotationStep[];
   /** Drops the old value once the app runs on the new one. */
-  finish: readonly RotateStepCommand[];
+  finish: readonly RotationStep[];
   /** True when the service is created again from its new env file before the app's switch. */
   recreate: boolean;
   /**
    * The commands that undo `begin` and `finish` where running them again with the two values
    * swapped does not (Garage's key), after the app's switch back; they see the values swapped too.
    */
-  undo?: readonly RotateStepCommand[];
+  undo?: readonly RotationStep[];
   /**
    * The generation the service's values have once rotated (the rotation record's, one more than
    * now; the same on each step of the service), which {@link SNAPSHOT_GENERATIONS} records once its
@@ -183,9 +164,9 @@ interface UndoUnit {
  * {@link ROTATE_LOG}: a conditional one runs only when each `when` check succeeds and each `unless`
  * check fails, and a check's outcome is no failure.
  */
-export function inContainer(command: RotateStepCommand, n: number, swapped: boolean): string {
+export function inContainer(command: RotationStep, n: number, swapped: boolean): string {
   const [old, now] = swapped ? ["new", "old"] : ["old", "new"];
-  const exec = (words: RotateCommand) =>
+  const exec = (words: RotationCommand) =>
     `OPSCREW_OLD="$rot_${old}_${n}" OPSCREW_NEW="$rot_${now}_${n}" docker exec -e OPSCREW_OLD -e OPSCREW_NEW "$rot_c" ${words.map(shellQuote).join(" ")} < /dev/null >> ${ROTATE_LOG} 2>&1`;
   if (!("run" in command)) return exec(command);
   const checks = [
@@ -319,12 +300,12 @@ export function renderRotateScript(
   /** Adds `unit`, returning its number. */
   const push = (unit: Unit) => units.push(unit);
   /** `command` in the container of step `i`'s service, with its values. */
-  const inService = (step: RotateStep, i: number, command: RotateStepCommand, swapped: boolean) => [
+  const inService = (step: RotateStep, i: number, command: RotationStep, swapped: boolean) => [
     `rot_container ${step.service}`,
     inContainer(command, i + 1, swapped),
   ];
   /** Each step's `begin` commands with their units in step 3, by the step's index. */
-  const begun = new Map<number, { command: RotateStepCommand; unit: number }[]>();
+  const begun = new Map<number, { command: RotationStep; unit: number }[]>();
   /** Each service's first unit in step 3. */
   const first = new Map<string, number>();
   const firstOf = (service: string, unit: number) => {
@@ -518,6 +499,10 @@ export function renderRotateScript(
   const ours = `[ "$(cat ${RESTORE_HELD} 2> /dev/null || true)" = "${ROTATION_HOLDER} $rot_hash" ]`;
   /** The hold released, only when it is this rotation's. */
   const unhold = `if ${ours}; then rm -f ${RESTORE_HELD}; fi`;
+  /** The refusal of `finish` on an extra server before `begin` gave its services their new values. */
+  const notBegun = `This rotation's services don't have their new values on ${where} yet, so nothing was changed. Run ${rotate} again to go on with it.`;
+  /** The refusal while another holds the app. */
+  const heldElsewhere = heldStop(plan, "The rotation changed nothing: ", "exit 1");
   // The hold goes last: a run that finds this rotation finished removes a hold it left.
   const release = [
     `rot_step=6; rot_what=${shellQuote("releasing the app's deploys")}`,
@@ -649,10 +634,7 @@ export function renderRotateScript(
           "    exit 0",
           "  fi",
           `  if [ "$rot_action" = finish ] && [ "$rot_done" -lt ${envUnit} ]; then`,
-          ...refuse(
-            `This rotation's services don't have their new values on ${where} yet, so nothing was changed. Run ${rotate} again to go on with it.`,
-            "    ",
-          ),
+          ...refuse(notBegun, "    "),
           "  fi",
         ]),
     `elif [ "$(cat ${FINISHED} 2> /dev/null || true)" = "$rot_hash" ]; then`,
@@ -672,18 +654,9 @@ export function renderRotateScript(
     'elif [ "$rot_action" = undo ]; then',
     `  echo ${shellQuote(`No rotation of this plan is unfinished on ${where}, so there is nothing to undo.`)} >&2`,
     "  exit 0",
-    ...(app
-      ? []
-      : [
-          'elif [ "$rot_action" = finish ]; then',
-          ...refuse(
-            `This rotation's services don't have their new values on ${where} yet, so nothing was changed. Run ${rotate} again to go on with it.`,
-          ),
-        ]),
+    ...(app ? [] : ['elif [ "$rot_action" = finish ]; then', ...refuse(notBegun)]),
     `elif [ -f ${RESTORE_HELD} ]; then`,
-    `  held="held $(cat ${RESTORE_HELD})"`,
-    `  ${heldSaid(plan, "held", "The rotation changed nothing: ")} >&2`,
-    "  exit 1",
+    `  ${heldElsewhere}`,
     "fi",
     // An unfinished rotation goes on only under its own hold: without it a deploy may have run
     // since it stopped, and under another's a restore or another rotation holds the app.
@@ -696,9 +669,7 @@ export function renderRotateScript(
     ),
     "    fi",
     `  elif ! ${ours}; then`,
-    `    held="held $(cat ${RESTORE_HELD})"`,
-    `    ${heldSaid(plan, "held", "The rotation changed nothing: ")} >&2`,
-    "    exit 1",
+    `    ${heldElsewhere}`,
     "  fi",
     "fi",
     ...(app

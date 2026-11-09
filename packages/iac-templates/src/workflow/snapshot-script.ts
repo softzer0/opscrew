@@ -33,7 +33,7 @@ import {
   readApproval,
   recordRunning,
   resumeApp,
-  rotationHeldStop,
+  rotationHeldFunction,
   SCRIPT_ROOTS,
   serverWords,
   startApp,
@@ -282,7 +282,7 @@ function takeCommand(plan: DeployPlan, server: string): string[] {
     "snapshot_cmd_take() {",
     '  _kind="${1:-}"',
     '  case "$_kind" in manual | release | scheduled) shift ;; *) snapshot_usage; return 1 ;; esac',
-    `  if [ "$_kind" = manual ]; then ${rotationHeldStop(plan, "OpsCrew took no snapshot: ", "return 1", "_holder")}; fi`,
+    `  if [ "$_kind" = manual ] && snapshot_rotation_held ${shellQuote("OpsCrew took no snapshot: ")}; then return 1; fi`,
     '  case "$_kind" in',
     `    release) _stop=${shellQuote(stopOnly(plan, server, plan.deploy.snapshotStop ?? []))} ;;`,
     `    scheduled) _stop=${shellQuote(stopOnly(plan, server, schedule?.stop ?? []))} ;;`,
@@ -333,7 +333,7 @@ function takeCommand(plan: DeployPlan, server: string): string[] {
           `      if [ -e ${SNAPSHOTS_DIR}/"$_id" ]; then return 0; fi`,
           `      (umask 077 && mkdir -p ${SNAPSHOTS_DIR} && : > ${SCHEDULED_LOG})`,
           `      exec >> ${SCHEDULED_LOG} 2>&1`,
-          `      ${rotationHeldStop(plan, "Warning: OpsCrew skipped this scheduled snapshot: ", "return 0", "_holder")} ;;`,
+          `      if snapshot_rotation_held ${shellQuote("Warning: OpsCrew skipped this scheduled snapshot: ")}; then return 0; fi ;;`,
         ]),
     "    *)",
     `      if [ -n "$_id" ] && [ -e ${SNAPSHOTS_DIR}/"$_id" ]; then`,
@@ -383,7 +383,7 @@ function takeCommand(plan: DeployPlan, server: string): string[] {
  * `snapshot_cmd_restore <id> [--only <service>] [--no-wait <service>]...` (024 plan.md 3. and 6.): refuses before any change
  * without the one-time approval for exactly this restore ({@link RESTORE_APPROVAL_FILE}, read and
  * removed at once, as the rollback's), while a credential rotation holds the app
- * ({@link rotationStop}), or when the snapshot is not complete. On the app's server
+ * ({@link ROTATION_STOP}), or when the snapshot is not complete. On the app's server
  * the app's requests wait and its web, workers and cron stop ({@link holdRequests},
  * {@link stopApp}); after `hold` ({@link RESTORE_HELD}) they stay held, and the app is not started again
  * by the restore either way. Then the parts it restores are copied as they are now (a `manual`
@@ -428,7 +428,7 @@ function restoreCommand(plan: DeployPlan, server: string): string[] {
       `echo ${shellQuote("The one-time approval of this restore expired before it started, so nothing was changed. Run opscrew restore again.")} >&2`,
       "return 1",
     ]).map((line) => `  ${line}`),
-    `  ${rotationStop(plan)}`,
+    `  ${ROTATION_STOP}`,
     '  if ! snapshot_complete "$_id"; then',
     `    ${said("The snapshot %s is not complete on this server, so nothing was changed.")} "$_id" >&2`,
     "    return 1",
@@ -490,32 +490,30 @@ function restoreCommand(plan: DeployPlan, server: string): string[] {
 
 /**
  * The line that stops `snapshot.sh hold`, `resume` and `restore` before any change while a
- * credential rotation holds the app, naming it and the way out ({@link rotationHeldStop}): its
+ * credential rotation holds the app, naming it and the way out ({@link rotationHeldFunction}): its
  * hold is not theirs to replace or remove.
  */
-function rotationStop(plan: DeployPlan): string {
-  return rotationHeldStop(plan, "OpsCrew changed nothing: ", "return 1", "_holder");
-}
+const ROTATION_STOP = `if snapshot_rotation_held ${shellQuote("OpsCrew changed nothing: ")}; then return 1; fi`;
 
 /**
  * The app's server's `snapshot_cmd_hold` and `snapshot_cmd_resume` (D8), the pieces of the
  * workflow's hold script (`appHoldCommands`): which workers and cron run is recorded while the web
  * runs ({@link recordRunning}), then the app is held ({@link holdApp}); `resume` ends the hold
  * ({@link resumeApp}). `hold` leaves {@link RESTORE_HELD}, which `resume` removes; while a rotation
- * holds the app, both refuse ({@link rotationStop}). `opscrew restore` runs them around its
+ * holds the app, both refuse ({@link ROTATION_STOP}). `opscrew restore` runs them around its
  * restores. They change no data, so they need no approval; kamal-proxy lets requests through itself
  * after its longest hold, to the stopped app.
  */
 function holdCommands(plan: DeployPlan): string[] {
   return [
     "snapshot_cmd_hold() {",
-    `  ${rotationStop(plan)}`,
+    `  ${ROTATION_STOP}`,
     `  (umask 077 && mkdir -p ${SNAPSHOTS_DIR} && : > ${RESTORE_HELD})`,
     ...recordRunning(plan).map((line) => `  ${line}`),
     ...holdApp(plan).map((line) => `  ${line}`),
     "}",
     "snapshot_cmd_resume() {",
-    `  ${rotationStop(plan)}`,
+    `  ${ROTATION_STOP}`,
     ...resumeApp(plan).map((line) => `  ${line}`),
     `  rm -f ${RESTORE_HELD}`,
     "}",
@@ -587,6 +585,7 @@ export function snapshotScript(plan: DeployPlan, server: string = APP_SERVER): s
     `  while [ -e ${SNAPSHOTS_DIR}/"$_new" ]; do sleep 1; _new="$(date -u +%Y%m%dT%H%M%SZ)"; done`,
     '  echo "$_new"',
     "}",
+    ...rotationHeldFunction(plan),
     ...offsiteFunctions(plan, server),
     ...takeCommand(plan, server),
     ...restoreCommand(plan, server),
@@ -659,6 +658,7 @@ function holdScript(plan: DeployPlan): string[] {
     "set -eu",
     `cd ${appFolder(plan)}`,
     EDGE_FUNCTION,
+    ...rotationHeldFunction(plan),
     ...holdCommands(plan),
     'case "${1:-}" in',
     "  hold | resume)",

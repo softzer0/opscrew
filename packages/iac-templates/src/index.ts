@@ -15,10 +15,8 @@ export {
   splitDatabaseSettings,
 } from "./catalog";
 export type {
-  ConditionalCommand,
   DatabaseSettings,
   GeneratedSecret,
-  GrantRotation,
   ImagePinKey,
   RotationCommand,
   RotationMode,
@@ -26,7 +24,6 @@ export type {
   SecretRotation,
   ServiceConfigFile,
   ServiceContext,
-  ServiceRotation,
   ServiceSpec,
 } from "./catalog/types";
 export * from "./check";
@@ -70,7 +67,6 @@ export {
   type RotateStep,
   renderRotateScript,
   rotateApprovalLine,
-  rotateEnvFiles,
   rotateInput,
 } from "./workflow/rotate";
 export {

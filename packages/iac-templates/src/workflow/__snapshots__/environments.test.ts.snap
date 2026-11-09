@@ -494,10 +494,15 @@ jobs:
             while [ -e .snapshots/"$_new" ]; do sleep 1; _new="$(date -u +%Y%m%dT%H%M%SZ)"; done
             echo "$_new"
           }
+          snapshot_rotation_held() {
+            _holder="held $(cat .snapshots/.held 2> /dev/null || true)"
+            case "$_holder" in "held rotation "*) printf '%sa credential rotation holds the app (the rotation of the plan %s), so its services may have new values the app does not use yet: finish the rotation with opscrew rotate --env staging, or put the old values back with opscrew rotate --undo --env staging, then try again.\\n' "$1" "\${_holder#held rotation }" >&2; return 0 ;; esac
+            return 1
+          }
           snapshot_cmd_take() {
             _kind="\${1:-}"
             case "$_kind" in manual | release | scheduled) shift ;; *) snapshot_usage; return 1 ;; esac
-            if [ "$_kind" = manual ]; then _holder="held $(cat .snapshots/.held 2> /dev/null || true)"; case "$_holder" in "held rotation "*) printf 'OpsCrew took no snapshot: a credential rotation holds the app (the rotation of the plan %s), so its services may have new values the app does not use yet: finish the rotation with opscrew rotate --env staging, or put the old values back with opscrew rotate --undo --env staging, then try again.\\n' "\${_holder#held rotation }" >&2; return 1 ;; esac; fi
+            if [ "$_kind" = manual ] && snapshot_rotation_held 'OpsCrew took no snapshot: '; then return 1; fi
             case "$_kind" in
               release) _stop='' ;;
               scheduled) _stop='' ;;
@@ -607,7 +612,7 @@ jobs:
               echo 'The one-time approval of this restore expired before it started, so nothing was changed. Run opscrew restore again.' >&2
               return 1
             fi
-            _holder="held $(cat .snapshots/.held 2> /dev/null || true)"; case "$_holder" in "held rotation "*) printf 'OpsCrew changed nothing: a credential rotation holds the app (the rotation of the plan %s), so its services may have new values the app does not use yet: finish the rotation with opscrew rotate --env staging, or put the old values back with opscrew rotate --undo --env staging, then try again.\\n' "\${_holder#held rotation }" >&2; return 1 ;; esac
+            if snapshot_rotation_held 'OpsCrew changed nothing: '; then return 1; fi
             if ! snapshot_complete "$_id"; then
               printf 'The snapshot %s is not complete on this server, so nothing was changed.\\n' "$_id" >&2
               return 1
@@ -659,13 +664,13 @@ jobs:
             return 5
           }
           snapshot_cmd_hold() {
-            _holder="held $(cat .snapshots/.held 2> /dev/null || true)"; case "$_holder" in "held rotation "*) printf 'OpsCrew changed nothing: a credential rotation holds the app (the rotation of the plan %s), so its services may have new values the app does not use yet: finish the rotation with opscrew rotate --env staging, or put the old values back with opscrew rotate --undo --env staging, then try again.\\n' "\${_holder#held rotation }" >&2; return 1 ;; esac
+            if snapshot_rotation_held 'OpsCrew changed nothing: '; then return 1; fi
             (umask 077 && mkdir -p .snapshots && : > .snapshots/.held)
             edge exec -T kamal-proxy kamal-proxy pause shop-staging --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
             docker compose stop app
           }
           snapshot_cmd_resume() {
-            _holder="held $(cat .snapshots/.held 2> /dev/null || true)"; case "$_holder" in "held rotation "*) printf 'OpsCrew changed nothing: a credential rotation holds the app (the rotation of the plan %s), so its services may have new values the app does not use yet: finish the rotation with opscrew rotate --env staging, or put the old values back with opscrew rotate --undo --env staging, then try again.\\n' "\${_holder#held rotation }" >&2; return 1 ;; esac
+            if snapshot_rotation_held 'OpsCrew changed nothing: '; then return 1; fi
             docker compose start app
             edge exec -T kamal-proxy kamal-proxy resume shop-staging < /dev/null > /dev/null 2>&1 || true
             rm -f .snapshots/.held
@@ -1795,10 +1800,15 @@ jobs:
             while [ -e .snapshots/"$_new" ]; do sleep 1; _new="$(date -u +%Y%m%dT%H%M%SZ)"; done
             echo "$_new"
           }
+          snapshot_rotation_held() {
+            _holder="held $(cat .snapshots/.held 2> /dev/null || true)"
+            case "$_holder" in "held rotation "*) printf '%sa credential rotation holds the app (the rotation of the plan %s), so its services may have new values the app does not use yet: finish the rotation with opscrew rotate, or put the old values back with opscrew rotate --undo, then try again.\\n' "$1" "\${_holder#held rotation }" >&2; return 0 ;; esac
+            return 1
+          }
           snapshot_cmd_take() {
             _kind="\${1:-}"
             case "$_kind" in manual | release | scheduled) shift ;; *) snapshot_usage; return 1 ;; esac
-            if [ "$_kind" = manual ]; then _holder="held $(cat .snapshots/.held 2> /dev/null || true)"; case "$_holder" in "held rotation "*) printf 'OpsCrew took no snapshot: a credential rotation holds the app (the rotation of the plan %s), so its services may have new values the app does not use yet: finish the rotation with opscrew rotate, or put the old values back with opscrew rotate --undo, then try again.\\n' "\${_holder#held rotation }" >&2; return 1 ;; esac; fi
+            if [ "$_kind" = manual ] && snapshot_rotation_held 'OpsCrew took no snapshot: '; then return 1; fi
             case "$_kind" in
               release) _stop='' ;;
               scheduled) _stop='' ;;
@@ -1908,7 +1918,7 @@ jobs:
               echo 'The one-time approval of this restore expired before it started, so nothing was changed. Run opscrew restore again.' >&2
               return 1
             fi
-            _holder="held $(cat .snapshots/.held 2> /dev/null || true)"; case "$_holder" in "held rotation "*) printf 'OpsCrew changed nothing: a credential rotation holds the app (the rotation of the plan %s), so its services may have new values the app does not use yet: finish the rotation with opscrew rotate, or put the old values back with opscrew rotate --undo, then try again.\\n' "\${_holder#held rotation }" >&2; return 1 ;; esac
+            if snapshot_rotation_held 'OpsCrew changed nothing: '; then return 1; fi
             if ! snapshot_complete "$_id"; then
               printf 'The snapshot %s is not complete on this server, so nothing was changed.\\n' "$_id" >&2
               return 1
@@ -1960,13 +1970,13 @@ jobs:
             return 5
           }
           snapshot_cmd_hold() {
-            _holder="held $(cat .snapshots/.held 2> /dev/null || true)"; case "$_holder" in "held rotation "*) printf 'OpsCrew changed nothing: a credential rotation holds the app (the rotation of the plan %s), so its services may have new values the app does not use yet: finish the rotation with opscrew rotate, or put the old values back with opscrew rotate --undo, then try again.\\n' "\${_holder#held rotation }" >&2; return 1 ;; esac
+            if snapshot_rotation_held 'OpsCrew changed nothing: '; then return 1; fi
             (umask 077 && mkdir -p .snapshots && : > .snapshots/.held)
             edge exec -T kamal-proxy kamal-proxy pause shop --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
             docker compose stop app
           }
           snapshot_cmd_resume() {
-            _holder="held $(cat .snapshots/.held 2> /dev/null || true)"; case "$_holder" in "held rotation "*) printf 'OpsCrew changed nothing: a credential rotation holds the app (the rotation of the plan %s), so its services may have new values the app does not use yet: finish the rotation with opscrew rotate, or put the old values back with opscrew rotate --undo, then try again.\\n' "\${_holder#held rotation }" >&2; return 1 ;; esac
+            if snapshot_rotation_held 'OpsCrew changed nothing: '; then return 1; fi
             docker compose start app
             edge exec -T kamal-proxy kamal-proxy resume shop < /dev/null > /dev/null 2>&1 || true
             rm -f .snapshots/.held
@@ -2690,10 +2700,15 @@ exports[`the deploy job > reads OPSCREW_<ENV>_* repository secrets with prefixed
             while [ -e .snapshots/"$_new" ]; do sleep 1; _new="$(date -u +%Y%m%dT%H%M%SZ)"; done
             echo "$_new"
           }
+          snapshot_rotation_held() {
+            _holder="held $(cat .snapshots/.held 2> /dev/null || true)"
+            case "$_holder" in "held rotation "*) printf '%sa credential rotation holds the app (the rotation of the plan %s), so its services may have new values the app does not use yet: finish the rotation with opscrew rotate --env eu-staging, or put the old values back with opscrew rotate --undo --env eu-staging, then try again.\\n' "$1" "\${_holder#held rotation }" >&2; return 0 ;; esac
+            return 1
+          }
           snapshot_cmd_take() {
             _kind="\${1:-}"
             case "$_kind" in manual | release | scheduled) shift ;; *) snapshot_usage; return 1 ;; esac
-            if [ "$_kind" = manual ]; then _holder="held $(cat .snapshots/.held 2> /dev/null || true)"; case "$_holder" in "held rotation "*) printf 'OpsCrew took no snapshot: a credential rotation holds the app (the rotation of the plan %s), so its services may have new values the app does not use yet: finish the rotation with opscrew rotate --env eu-staging, or put the old values back with opscrew rotate --undo --env eu-staging, then try again.\\n' "\${_holder#held rotation }" >&2; return 1 ;; esac; fi
+            if [ "$_kind" = manual ] && snapshot_rotation_held 'OpsCrew took no snapshot: '; then return 1; fi
             case "$_kind" in
               release) _stop='' ;;
               scheduled) _stop='' ;;
@@ -2803,7 +2818,7 @@ exports[`the deploy job > reads OPSCREW_<ENV>_* repository secrets with prefixed
               echo 'The one-time approval of this restore expired before it started, so nothing was changed. Run opscrew restore again.' >&2
               return 1
             fi
-            _holder="held $(cat .snapshots/.held 2> /dev/null || true)"; case "$_holder" in "held rotation "*) printf 'OpsCrew changed nothing: a credential rotation holds the app (the rotation of the plan %s), so its services may have new values the app does not use yet: finish the rotation with opscrew rotate --env eu-staging, or put the old values back with opscrew rotate --undo --env eu-staging, then try again.\\n' "\${_holder#held rotation }" >&2; return 1 ;; esac
+            if snapshot_rotation_held 'OpsCrew changed nothing: '; then return 1; fi
             if ! snapshot_complete "$_id"; then
               printf 'The snapshot %s is not complete on this server, so nothing was changed.\\n' "$_id" >&2
               return 1
@@ -2855,13 +2870,13 @@ exports[`the deploy job > reads OPSCREW_<ENV>_* repository secrets with prefixed
             return 5
           }
           snapshot_cmd_hold() {
-            _holder="held $(cat .snapshots/.held 2> /dev/null || true)"; case "$_holder" in "held rotation "*) printf 'OpsCrew changed nothing: a credential rotation holds the app (the rotation of the plan %s), so its services may have new values the app does not use yet: finish the rotation with opscrew rotate --env eu-staging, or put the old values back with opscrew rotate --undo --env eu-staging, then try again.\\n' "\${_holder#held rotation }" >&2; return 1 ;; esac
+            if snapshot_rotation_held 'OpsCrew changed nothing: '; then return 1; fi
             (umask 077 && mkdir -p .snapshots && : > .snapshots/.held)
             edge exec -T kamal-proxy kamal-proxy pause shop-eu-staging --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
             docker compose stop app
           }
           snapshot_cmd_resume() {
-            _holder="held $(cat .snapshots/.held 2> /dev/null || true)"; case "$_holder" in "held rotation "*) printf 'OpsCrew changed nothing: a credential rotation holds the app (the rotation of the plan %s), so its services may have new values the app does not use yet: finish the rotation with opscrew rotate --env eu-staging, or put the old values back with opscrew rotate --undo --env eu-staging, then try again.\\n' "\${_holder#held rotation }" >&2; return 1 ;; esac
+            if snapshot_rotation_held 'OpsCrew changed nothing: '; then return 1; fi
             docker compose start app
             edge exec -T kamal-proxy kamal-proxy resume shop-eu-staging < /dev/null > /dev/null 2>&1 || true
             rm -f .snapshots/.held
@@ -3560,10 +3575,15 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
             while [ -e .snapshots/"$_new" ]; do sleep 1; _new="$(date -u +%Y%m%dT%H%M%SZ)"; done
             echo "$_new"
           }
+          snapshot_rotation_held() {
+            _holder="held $(cat .snapshots/.held 2> /dev/null || true)"
+            case "$_holder" in "held rotation "*) printf '%sa credential rotation holds the app (the rotation of the plan %s), so its services may have new values the app does not use yet: finish the rotation with opscrew rotate --env staging, or put the old values back with opscrew rotate --undo --env staging, then try again.\\n' "$1" "\${_holder#held rotation }" >&2; return 0 ;; esac
+            return 1
+          }
           snapshot_cmd_take() {
             _kind="\${1:-}"
             case "$_kind" in manual | release | scheduled) shift ;; *) snapshot_usage; return 1 ;; esac
-            if [ "$_kind" = manual ]; then _holder="held $(cat .snapshots/.held 2> /dev/null || true)"; case "$_holder" in "held rotation "*) printf 'OpsCrew took no snapshot: a credential rotation holds the app (the rotation of the plan %s), so its services may have new values the app does not use yet: finish the rotation with opscrew rotate --env staging, or put the old values back with opscrew rotate --undo --env staging, then try again.\\n' "\${_holder#held rotation }" >&2; return 1 ;; esac; fi
+            if [ "$_kind" = manual ] && snapshot_rotation_held 'OpsCrew took no snapshot: '; then return 1; fi
             case "$_kind" in
               release) _stop='' ;;
               scheduled) _stop='' ;;
@@ -3673,7 +3693,7 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
               echo 'The one-time approval of this restore expired before it started, so nothing was changed. Run opscrew restore again.' >&2
               return 1
             fi
-            _holder="held $(cat .snapshots/.held 2> /dev/null || true)"; case "$_holder" in "held rotation "*) printf 'OpsCrew changed nothing: a credential rotation holds the app (the rotation of the plan %s), so its services may have new values the app does not use yet: finish the rotation with opscrew rotate --env staging, or put the old values back with opscrew rotate --undo --env staging, then try again.\\n' "\${_holder#held rotation }" >&2; return 1 ;; esac
+            if snapshot_rotation_held 'OpsCrew changed nothing: '; then return 1; fi
             if ! snapshot_complete "$_id"; then
               printf 'The snapshot %s is not complete on this server, so nothing was changed.\\n' "$_id" >&2
               return 1
@@ -3725,13 +3745,13 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
             return 5
           }
           snapshot_cmd_hold() {
-            _holder="held $(cat .snapshots/.held 2> /dev/null || true)"; case "$_holder" in "held rotation "*) printf 'OpsCrew changed nothing: a credential rotation holds the app (the rotation of the plan %s), so its services may have new values the app does not use yet: finish the rotation with opscrew rotate --env staging, or put the old values back with opscrew rotate --undo --env staging, then try again.\\n' "\${_holder#held rotation }" >&2; return 1 ;; esac
+            if snapshot_rotation_held 'OpsCrew changed nothing: '; then return 1; fi
             (umask 077 && mkdir -p .snapshots && : > .snapshots/.held)
             edge exec -T kamal-proxy kamal-proxy pause shop-staging --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
             docker compose stop app
           }
           snapshot_cmd_resume() {
-            _holder="held $(cat .snapshots/.held 2> /dev/null || true)"; case "$_holder" in "held rotation "*) printf 'OpsCrew changed nothing: a credential rotation holds the app (the rotation of the plan %s), so its services may have new values the app does not use yet: finish the rotation with opscrew rotate --env staging, or put the old values back with opscrew rotate --undo --env staging, then try again.\\n' "\${_holder#held rotation }" >&2; return 1 ;; esac
+            if snapshot_rotation_held 'OpsCrew changed nothing: '; then return 1; fi
             docker compose start app
             edge exec -T kamal-proxy kamal-proxy resume shop-staging < /dev/null > /dev/null 2>&1 || true
             rm -f .snapshots/.held
@@ -4444,10 +4464,15 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
             while [ -e .snapshots/"$_new" ]; do sleep 1; _new="$(date -u +%Y%m%dT%H%M%SZ)"; done
             echo "$_new"
           }
+          snapshot_rotation_held() {
+            _holder="held $(cat .snapshots/.held 2> /dev/null || true)"
+            case "$_holder" in "held rotation "*) printf '%sa credential rotation holds the app (the rotation of the plan %s), so its services may have new values the app does not use yet: finish the rotation with opscrew rotate --env dev, or put the old values back with opscrew rotate --undo --env dev, then try again.\\n' "$1" "\${_holder#held rotation }" >&2; return 0 ;; esac
+            return 1
+          }
           snapshot_cmd_take() {
             _kind="\${1:-}"
             case "$_kind" in manual | release | scheduled) shift ;; *) snapshot_usage; return 1 ;; esac
-            if [ "$_kind" = manual ]; then _holder="held $(cat .snapshots/.held 2> /dev/null || true)"; case "$_holder" in "held rotation "*) printf 'OpsCrew took no snapshot: a credential rotation holds the app (the rotation of the plan %s), so its services may have new values the app does not use yet: finish the rotation with opscrew rotate --env dev, or put the old values back with opscrew rotate --undo --env dev, then try again.\\n' "\${_holder#held rotation }" >&2; return 1 ;; esac; fi
+            if [ "$_kind" = manual ] && snapshot_rotation_held 'OpsCrew took no snapshot: '; then return 1; fi
             case "$_kind" in
               release) _stop='' ;;
               scheduled) _stop='' ;;
@@ -4557,7 +4582,7 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
               echo 'The one-time approval of this restore expired before it started, so nothing was changed. Run opscrew restore again.' >&2
               return 1
             fi
-            _holder="held $(cat .snapshots/.held 2> /dev/null || true)"; case "$_holder" in "held rotation "*) printf 'OpsCrew changed nothing: a credential rotation holds the app (the rotation of the plan %s), so its services may have new values the app does not use yet: finish the rotation with opscrew rotate --env dev, or put the old values back with opscrew rotate --undo --env dev, then try again.\\n' "\${_holder#held rotation }" >&2; return 1 ;; esac
+            if snapshot_rotation_held 'OpsCrew changed nothing: '; then return 1; fi
             if ! snapshot_complete "$_id"; then
               printf 'The snapshot %s is not complete on this server, so nothing was changed.\\n' "$_id" >&2
               return 1
@@ -4609,13 +4634,13 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
             return 5
           }
           snapshot_cmd_hold() {
-            _holder="held $(cat .snapshots/.held 2> /dev/null || true)"; case "$_holder" in "held rotation "*) printf 'OpsCrew changed nothing: a credential rotation holds the app (the rotation of the plan %s), so its services may have new values the app does not use yet: finish the rotation with opscrew rotate --env dev, or put the old values back with opscrew rotate --undo --env dev, then try again.\\n' "\${_holder#held rotation }" >&2; return 1 ;; esac
+            if snapshot_rotation_held 'OpsCrew changed nothing: '; then return 1; fi
             (umask 077 && mkdir -p .snapshots && : > .snapshots/.held)
             edge exec -T kamal-proxy kamal-proxy pause shop-dev --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
             docker compose stop app
           }
           snapshot_cmd_resume() {
-            _holder="held $(cat .snapshots/.held 2> /dev/null || true)"; case "$_holder" in "held rotation "*) printf 'OpsCrew changed nothing: a credential rotation holds the app (the rotation of the plan %s), so its services may have new values the app does not use yet: finish the rotation with opscrew rotate --env dev, or put the old values back with opscrew rotate --undo --env dev, then try again.\\n' "\${_holder#held rotation }" >&2; return 1 ;; esac
+            if snapshot_rotation_held 'OpsCrew changed nothing: '; then return 1; fi
             docker compose start app
             edge exec -T kamal-proxy kamal-proxy resume shop-dev < /dev/null > /dev/null 2>&1 || true
             rm -f .snapshots/.held
