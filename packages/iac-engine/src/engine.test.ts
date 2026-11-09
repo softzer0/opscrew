@@ -69,6 +69,55 @@ describe("init", () => {
     });
   });
 
+  it("tries again when the provider registry does not answer, then goes on", async () => {
+    const busy = {
+      exitCode: 1,
+      stderr:
+        "Error: Failed to install provider\n\nError while installing hetznercloud/hcloud v1.70.2: could not query provider\nregistry for registry.opentofu.org/hetznercloud/hcloud: failed to retrieve\ncryptographic signature for provider: request failed after 2 attempts: 504\n",
+    };
+    const runner = new ScriptedRunner().on("init", busy, busy, { stdout: "ok" });
+    const waits: number[] = [];
+    const engine = createEngine(
+      { name: "tofu", version: "1.13.1", binary: "/bin/tofu" },
+      {
+        runner,
+        env: { PATH: "/usr/bin" },
+        now: () => NOW,
+        sleep: async (ms) => {
+          waits.push(ms);
+        },
+      },
+    );
+    await engine.init(dir);
+    expect(runner.subcommands()).toEqual(["init", "init", "init"]);
+    expect(waits).toEqual([5_000, 15_000]);
+  });
+
+  it("stops after three tries of an unanswering registry, and never tries again otherwise", async () => {
+    const busy = {
+      exitCode: 1,
+      stderr:
+        "Error while installing x/y v1.0.0: could not query provider registry for registry.opentofu.org/x/y: 503\n",
+    };
+    const runner = new ScriptedRunner().on("init", busy);
+    const sleep = async () => {};
+    const engine = (r: ScriptedRunner) =>
+      createEngine(
+        { name: "tofu", version: "1.13.1", binary: "/bin/tofu" },
+        { runner: r, env: { PATH: "/usr/bin" }, now: () => NOW, sleep },
+      );
+    const error = await failure(engine(runner).init(dir));
+    expect(error.code).toBe("ENGINE_FAILED");
+    expect(runner.subcommands()).toEqual(["init", "init", "init"]);
+
+    const other = new ScriptedRunner().on("init", {
+      exitCode: 1,
+      stderr: "Error: Unsupported argument\n",
+    });
+    await failure(engine(other).init(dir));
+    expect(other.subcommands()).toEqual(["init"]);
+  });
+
   it("maps a failure to ENGINE_FAILED with a redacted stderr tail", async () => {
     const token = fakeSecret("hcloud-token");
     const stderr = `${Array.from({ length: 30 }, (_, i) => `line ${i}`).join("\n")}\nError: bad token ${token}\n`;

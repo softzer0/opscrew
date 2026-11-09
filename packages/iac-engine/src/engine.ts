@@ -54,7 +54,17 @@ export interface EngineOptions {
   redactor?: Redactor;
   /** Clock for `PlanSummary.createdAt`. Default `() => new Date()`. */
   now?: () => Date;
+  /** Waits before `init` tries an unanswering provider registry again. Default: a timer. */
+  sleep?: (ms: number) => Promise<void>;
 }
+
+/**
+ * `init` output when the provider registry did not answer (a 5xx or a network error, as
+ * registry.opentofu.org gave in a live pass); only this is tried again.
+ */
+const REGISTRY_UNANSWERED = /could not query\s+provider\s+registry/i;
+/** The waits before the second and the third `init`. */
+const INIT_RETRY_WAITS_MS = [5_000, 15_000] as const;
 
 /** Display name for an engine (`OpenTofu`, `Terraform`). */
 export function engineLabel(name: IacEngineName): string {
@@ -111,6 +121,7 @@ class Engine implements IacEngine {
   private readonly baseEnv: Record<string, string | undefined>;
   private readonly redactor: Redactor;
   private readonly now: () => Date;
+  private readonly sleep: (ms: number) => Promise<void>;
   private readonly label: string;
   /** Parsed `providers schema -json` per resolved directory. */
   private readonly schemas = new Map<string, unknown>();
@@ -121,6 +132,7 @@ class Engine implements IacEngine {
     this.baseEnv = options.env ?? process.env;
     this.redactor = options.redactor ?? new Redactor();
     this.now = options.now ?? (() => new Date());
+    this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.label = engineLabel(info.name);
   }
 
@@ -129,7 +141,13 @@ class Engine implements IacEngine {
     for (const [key, value] of Object.entries(options.backendConfig ?? {})) {
       args.push(`-backend-config=${key}=${value}`);
     }
-    const result = await this.exec("init", path.resolve(dir), args, options);
+    let result = await this.exec("init", path.resolve(dir), args, options);
+    for (const wait of INIT_RETRY_WAITS_MS) {
+      const output = `${result.stdout}\n${result.stderr}`;
+      if (result.timedOut || result.exitCode === 0 || !REGISTRY_UNANSWERED.test(output)) break;
+      await this.sleep(wait);
+      result = await this.exec("init", path.resolve(dir), args, options);
+    }
     this.assertOk("init", result);
   }
 
