@@ -187,6 +187,22 @@ function isHashBound(kind: ApprovalKind): kind is HashBoundKind {
   return Object.hasOwn(HASH_BOUND, kind);
 }
 
+/**
+ * What a change approved as `remote-exec` by its hash (a credential rotation's) says when no such
+ * approval is recorded. A `remote-exec` request needs no hash, so it is not one of {@link
+ * HASH_BOUND}'s kinds.
+ */
+function remoteExecNotApproved(hash: string): Refusal {
+  return {
+    message: "This change has not been approved, so OpsCrew will not make it.",
+    hint: `Review the plan, then approve it when asked or re-run with --approve ${hash}.`,
+    audit: "no remote-exec approval recorded for this hash",
+  };
+}
+
+/** The kinds an apply asserts an approval of by its hash. */
+type AssertedKind = HashBoundKind | "remote-exec";
+
 /** Approval store backed by a JSONL file (normally `.opscrew/approvals.jsonl`). */
 export class JsonlApprovalStore implements ApprovalStore {
   constructor(private readonly file: string) {}
@@ -378,6 +394,15 @@ export class ApprovalGate {
     return this.approvedRecord("promote", promotionHash);
   }
 
+  /**
+   * {@link assertApprovedPromotion} for a `remote-exec` approval bound to `hash` (a credential
+   * rotation's, whose hash binds the stack plan it applies). Call before every change made under
+   * it.
+   */
+  assertApprovedRemoteExec(hash: string): Promise<ApprovalRecord> {
+    return this.approvedRecord("remote-exec", hash);
+  }
+
   private async assertApproved(
     kind: DestroyingKind,
     planHash: string,
@@ -392,7 +417,7 @@ export class ApprovalGate {
   }
 
   /** The latest approved record of `kind` for `planHash`, or audits the refusal and throws. */
-  private async approvedRecord(kind: HashBoundKind, planHash: string): Promise<ApprovalRecord> {
+  private async approvedRecord(kind: AssertedKind, planHash: string): Promise<ApprovalRecord> {
     const wanted = planHash.toLowerCase();
     const record = isPlanHash(planHash)
       ? (await this.store.list()).findLast(
@@ -400,7 +425,10 @@ export class ApprovalGate {
         )
       : undefined;
     if (record === undefined) {
-      const refusal = HASH_BOUND[kind].notApproved(planHash);
+      const refusal =
+        kind === "remote-exec"
+          ? remoteExecNotApproved(planHash)
+          : HASH_BOUND[kind].notApproved(planHash);
       throw await this.refusal("PLAN_NOT_APPROVED", kind, planHash, refusal);
     }
     return record;
@@ -409,7 +437,7 @@ export class ApprovalGate {
   /** Audits the refusal of an apply and returns the error to throw. */
   private async refusal(
     code: "PLAN_NOT_APPROVED" | "DESTROY_NOT_APPROVED",
-    kind: HashBoundKind,
+    kind: AssertedKind,
     planHash: string,
     refusal: Refusal,
   ): Promise<OpsCrewError> {

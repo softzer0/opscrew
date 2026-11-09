@@ -28,7 +28,6 @@ export * from "./rollback";
 export { publishRotatedKey, type RotatedKeyResult } from "./rotate/addons";
 export { rotateBeszel } from "./rotate/addons-beszel";
 export {
-  ADDON_ROTATION_HASH,
   type AddonRotation,
   type AddonRotationOptions,
   rotateMonitoring,
@@ -98,7 +97,11 @@ export {
   type TokenExpiry,
   tokenExpiries,
 } from "./rotate/tokens";
-export { dropPendingRotation, readPendingRotation } from "./rotate/values-pending";
+export {
+  ADDON_ROTATION_HASH,
+  dropPendingRotation,
+  readPendingRotation,
+} from "./rotate/values-pending";
 export {
   type AddRunnerHostInput,
   addRunnerHost,

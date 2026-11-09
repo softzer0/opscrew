@@ -42,6 +42,9 @@ class FakeGitHub {
     this.secrets.delete(name);
     this.log.push(`delete ${name}`);
   }
+  async setEnvironmentSecret(): Promise<void> {
+    throw new Error("A site's values are repository secrets.");
+  }
   async dispatchWorkflow(
     _owner: string,
     _repo: string,

@@ -12,7 +12,6 @@ import { generatedValuesFile } from "../shared/app-secrets";
 import { createTestPhaseDeps, type TestPhaseDeps, testPlan } from "../testing";
 import {
   appConsequence,
-  appEnvAfter,
   appSecretLines,
   appSecretNames,
   dropPreviousNames,
@@ -215,7 +214,7 @@ describe("newAppValues", () => {
       APP_PREVIOUS_KEYS: earlier,
       BETTER_AUTH_SECRETS: `2:${two},1:${one}`,
     };
-    expect(appEnvAfter(kept, values)).toEqual({
+    expect(withAppRecord(kept, values, "new")).toEqual({
       APP_KEY: "k",
       BETTER_AUTH_SECRETS: `2:${two}`,
     });

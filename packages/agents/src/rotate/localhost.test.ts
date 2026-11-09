@@ -513,7 +513,20 @@ describe("rotateLocalServices", () => {
     expect(old.hint).toContain("Run `opscrew provision` first");
     expect(await held(stale)).toBeUndefined();
 
-    for (const w of [runner, edited, restoring, stale]) {
+    // A service that does not run is refused before the approval, not at its first exec.
+    const stopped = await world();
+    stopped.docker.running.delete("cache");
+    const down = await failure(stopped.rotate(["db", "cache"]));
+    expect(down.code).toBe("PHASE_PRECONDITION");
+    expect(down.message).toBe(
+      "cache (Valkey) is not running on this computer, so OpsCrew can't change its value. Nothing was changed.",
+    );
+    expect(down.hint).toBe(
+      "Start it with a deploy (`opscrew provision`), then run `opscrew rotate db cache` again.",
+    );
+    expect(await held(stopped)).toBeUndefined();
+
+    for (const w of [runner, edited, restoring, stale, stopped]) {
       expect(w.docker.execs).toEqual([]);
       expect((w.deps.approvalHandler as ScriptedApprovalHandler).requests).toEqual([]);
       expect(await exists(pendingRotationFile(w.deps))).toBe(false);

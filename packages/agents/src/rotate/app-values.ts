@@ -9,13 +9,13 @@
  * target applies them through its own switch: the servers' `rotate.sh`, Portainer's stack plan,
  * this computer's env file and Compose, a site's GitHub secrets and a deploy. No value is shown.
  */
-import { listText, OpsCrewError, sha256Hex } from "@opscrew/core";
+import { listText, OpsCrewError, sha256Hex, upperFirst } from "@opscrew/core";
 import { PREVIOUS_VALUES, previousValueVariables } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { dotenvLine, newGeneratedValue } from "../shared/app-env";
 import { GeneratedValuesSchema, generatedValuesFile } from "../shared/app-secrets";
-import { type RotationValues, readStrict } from "./values-pending";
+import { type RotationValues, readStrict, type ValuePair } from "./values-pending";
 
 /** Each app variable a rotation changes, by name, its old and new value (empty: unset). */
 export type AppValues = NonNullable<RotationValues["app"]>;
@@ -271,21 +271,25 @@ export function withAppRecord(
   return result;
 }
 
-/** The generated app values `env` once the rotation of `values` is done: the new side, kept. */
-export function appEnvAfter(
-  env: Readonly<Record<string, string>> | undefined,
-  values: AppValues | undefined,
-): Record<string, string> {
-  return withAppRecord(env ?? {}, values, "new");
+/** The fingerprints of `pair` a rotation's hash binds, never the values themselves. */
+export function pairFingerprint(pair: ValuePair) {
+  return { old: sha256Hex(pair.old), new: sha256Hex(pair.new) };
+}
+
+/** The fingerprints of each service's secrets in `services` a rotation's hash binds. */
+export function serviceFingerprints(services: RotationValues["services"]) {
+  return Object.entries(services).map(([service, secrets]) => ({
+    service,
+    secrets: Object.entries(secrets).map(([secret, pair]) => ({
+      secret,
+      ...pairFingerprint(pair),
+    })),
+  }));
 }
 
 /** The fingerprints of `values` a rotation's hash binds, never the values themselves. */
 export function appFingerprints(values: AppValues | undefined) {
-  return Object.entries(values ?? {}).map(([name, pair]) => ({
-    name,
-    old: sha256Hex(pair.old),
-    new: sha256Hex(pair.new),
-  }));
+  return Object.entries(values ?? {}).map(([name, pair]) => ({ name, ...pairFingerprint(pair) }));
 }
 
 /** How one app variable of `values` rotates; `undefined` for a previous value that follows it. */
@@ -348,7 +352,7 @@ export function appConsequence(
   ];
   const said = parts.join(", and ");
   return {
-    line: `${said.charAt(0).toUpperCase()}${said.slice(1)}. To go ahead, type the app's name, ${app}.`,
+    line: `${upperFirst(said)}. To go ahead, type the app's name, ${app}.`,
     guard: { allowDestroy: true, confirmPhrase: app },
   };
 }

@@ -6,23 +6,24 @@
  * (`history`) for restores of older snapshots. The services' env files and the app's settings with
  * either side of them. No value is ever shown, logged or audited.
  */
-import { randomBytes } from "node:crypto";
 import { OpsCrewError } from "@opscrew/core";
-import { type GeneratedSecret, serviceSpec } from "@opscrew/iac-templates";
+import { serviceSpec } from "@opscrew/iac-templates";
 import type { DeployPlan, PlanService } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { serviceEnvFiles, withGrantHashes } from "../provision/secrets";
-import { dotenvLine, serviceAppVariables } from "../shared/app-env";
+import { dotenvLine, newSecretValue, serviceAppVariables } from "../shared/app-env";
 import { changeGenerated, GeneratedValuesSchema, generatedValuesFile } from "../shared/app-secrets";
 import { randomPassword } from "../shared/ssh-keys";
 import { passwordKey } from "../vpn/grants";
-import { appEnvAfter } from "./app-values";
+import { withAppRecord } from "./app-values";
+import { readCredentialsRecord, recordRotation } from "./record";
 import {
   dropPendingRotation,
   type RotationValues,
   readStrict,
   registerRotationValues,
+  type ValuePair,
 } from "./values-pending";
 
 /**
@@ -60,13 +61,6 @@ function keptValue(values: KeptValues, service: PlanService, secret: string) {
   return isDbPassword(service, secret)
     ? values.dbPassword
     : values.services?.[service.name]?.[secret];
-}
-
-/** A new value in the catalog's `format`: 32 random bytes as hex, or `GK` and 12 as hex. */
-function newValue(format: GeneratedSecret["format"]): string {
-  return format === "garage-key-id"
-    ? `GK${randomBytes(12).toString("hex")}`
-    : randomBytes(32).toString("hex");
 }
 
 /** A device's own login to a service (018's grants), which a rotation gives a new password. */
@@ -117,7 +111,7 @@ export async function newRotationValues(
     values.grants = { ...values.grants, [grantKey(grant)]: { old, new: randomPassword(32) } };
   }
   for (const service of services) {
-    const secrets: Record<string, { old: string; new: string }> = {};
+    const secrets: Record<string, ValuePair> = {};
     for (const { name, format } of serviceSpec(service.kind).secrets) {
       const old = keptValue(kept, service, name);
       if (old === undefined) {
@@ -129,7 +123,7 @@ export async function newRotationValues(
           },
         );
       }
-      secrets[name] = { old, new: newValue(format) };
+      secrets[name] = { old, new: newSecretValue(format) };
     }
     values.services[service.name] = secrets;
   }
@@ -171,6 +165,22 @@ export async function serviceValues(
   }
   const rotated = Object.entries(values.grants ?? {}).map(([key, pair]) => [key, pair[side]]);
   return withGrantHashes(plan, services, { ...kept.grants, ...Object.fromEntries(rotated) });
+}
+
+/**
+ * The services' values ({@link serviceValues}) a switch to `side` of `values` goes from (`from`,
+ * the other side) and to (`to`), as {@link swapAppEnv} takes them.
+ */
+export async function serviceSides(
+  deps: Pick<PhaseDeps, "paths">,
+  plan: DeployPlan,
+  values: RotationValues,
+  side: "old" | "new",
+): Promise<{ from: ServiceValues; to: ServiceValues }> {
+  return {
+    from: await serviceValues(deps, plan, values, side === "new" ? "old" : "new"),
+    to: await serviceValues(deps, plan, values, side),
+  };
 }
 
 /** `<service>.env` of every running service of `plan` with `services`' values, by file name. */
@@ -243,18 +253,29 @@ export function swapAppEnv(
 }
 
 /**
+ * The generation of each credential of the environment of `deps.paths` in the rotation record, by
+ * its name: 1 for one never rotated (T2514).
+ */
+export async function recordedGeneration(
+  deps: Pick<PhaseDeps, "paths">,
+): Promise<(name: string) => number> {
+  const record = (await readCredentialsRecord(deps)).environments[deps.paths.environment] ?? {};
+  return (name) => record[name]?.generation ?? 1;
+}
+
+/**
  * Makes the new values of `values` the services' own (PostgreSQL's as `dbPassword`), the device
  * logins' (`grants`) and the app's (`env`, an emptied variable removed), keeping the services' old
- * ones under `history` at the generation each credential had (`generations`, by name; 1 when
- * absent) and every other generated value as it was (0600); then forgets the unfinished rotation.
+ * ones under `history` at the generation each credential has in the record and every other
+ * generated value as it was (0600); then forgets the unfinished rotation and records it.
  * @throws OpsCrewError `ARTIFACT_INVALID` when the generated values are damaged.
  */
 export async function completePendingRotation(
-  deps: Pick<PhaseDeps, "paths">,
+  deps: Pick<PhaseDeps, "paths" | "clock">,
   plan: DeployPlan,
   values: RotationValues,
-  generations: Readonly<Record<string, number>>,
 ): Promise<void> {
+  const generation = await recordedGeneration(deps);
   await changeGenerated(deps, (current) => {
     const services: ServiceValues = {
       ...GeneratedValuesSchema.shape.services.parse(current.services),
@@ -265,7 +286,7 @@ export async function completePendingRotation(
       const service = plan.services.find((s) => s.name === name);
       if (service === undefined) throw new Error(`The plan has no service ${name}.`);
       const old = Object.fromEntries(Object.entries(secrets).map(([s, pair]) => [s, pair.old]));
-      history[name] = { ...history[name], [String(generations[name] ?? 1)]: old };
+      history[name] = { ...history[name], [String(generation(name))]: old };
       for (const [secret, pair] of Object.entries(secrets)) {
         if (isDbPassword(service, secret)) dbPassword = pair.new;
         else services[name] = { ...services[name], [secret]: pair.new };
@@ -278,7 +299,7 @@ export async function completePendingRotation(
       ...(dbPassword === undefined ? {} : { dbPassword }),
       services,
       history,
-      ...(values.app === undefined ? {} : { env: appEnvAfter(env, values.app) }),
+      ...(values.app === undefined ? {} : { env: withAppRecord(env ?? {}, values.app, "new") }),
       ...(grants.length === 0
         ? {}
         : {
@@ -290,4 +311,5 @@ export async function completePendingRotation(
     };
   });
   await dropPendingRotation(deps);
+  await recordRotation(deps, values.names);
 }

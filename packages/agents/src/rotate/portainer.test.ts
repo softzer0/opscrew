@@ -486,6 +486,28 @@ describe.skipIf(!findExecutable("git"))("rotatePortainerServices", () => {
     expectNoValue(w, [...w.old.values(), ...next.values()], error.message);
   });
 
+  it("goes on with a rotation that began although a service stopped since: its switch starts it again", async () => {
+    const w = await world();
+    // The rotation stops at cache's change, after db's.
+    w.docker.answer = (service) => (service === "cache" ? 1 : 0);
+    const error = await failure(w.rotate(["db", "cache"]));
+    expect(error.message).toContain("while changing cache to its new value");
+    w.docker.answer = () => 0;
+    w.docker.running.delete("db");
+    // The stack plan's apply creates the app's containers again, db among them.
+    const before = w.portainer.calls.length;
+    const list = w.docker.listContainers.bind(w.docker);
+    w.docker.listContainers = async () => {
+      const calls = w.portainer.calls.slice(before);
+      if (calls.some((call) => call.startsWith("PUT /api/stacks/"))) w.docker.running.add("db");
+      return list();
+    };
+    const result = await w.rotate(["db", "cache"]);
+    expect(result).toMatchObject({ hash: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    expect(await exists(pendingRotationFile(w.deps))).toBe(false);
+    expect(w.docker.running.has("db")).toBe(true);
+  });
+
   it("never applies a stack plan with changes without an approval its caller holds", async () => {
     const w = await world();
     const old = w.old.get("db/password") as string;
@@ -583,6 +605,29 @@ describe.skipIf(!findExecutable("git"))("rotatePortainerServices", () => {
     expect(w.portainer.mutations()).toHaveLength(mutations);
   });
 
+  it("applies the stack plan only when the approval store records the bound approval", async () => {
+    const w = await world();
+    const request = w.deps.approvals.request.bind(w.deps.approvals);
+    // An approval of the bound hash that the approval store never recorded.
+    w.deps.approvals.request = async (input) =>
+      input.kind === "remote-exec"
+        ? {
+            id: "unrecorded",
+            kind: input.kind,
+            title: input.title,
+            planHash: input.planHash as string,
+            approved: true,
+            approver: "test-user",
+            decidedAt: "2026-11-08T10:00:00.000Z",
+          }
+        : request(input);
+    const mutations = w.portainer.mutations().length;
+    const error = await failure(w.rotate(["db"]));
+    expect(error.code).toBe("PLAN_NOT_APPROVED");
+    expect(error.message).toContain("This change has not been approved");
+    expect(w.portainer.mutations()).toHaveLength(mutations);
+  });
+
   it("refuses before anything changes: a refused approval, a start command from before 025, other names", async () => {
     const refused = await world((request) => request.kind !== "remote-exec");
     const mutations = refused.portainer.mutations().length;
@@ -607,7 +652,19 @@ describe.skipIf(!findExecutable("git"))("rotatePortainerServices", () => {
     expect(rotationRequests(stale)).toEqual([]);
     expect(stale.docker.execs).toEqual([]);
 
+    // A service that does not run is refused before the approval, not at its first exec.
     stale.docker.stale.clear();
+    stale.docker.running.delete("cache");
+    const stopped = await failure(stale.rotate(["db", "cache"]));
+    expect(stopped.code).toBe("PHASE_PRECONDITION");
+    expect(stopped.message).toBe(
+      "cache (Valkey) is not running in your Portainer, so OpsCrew can't change its value. Nothing was changed.",
+    );
+    expect(stopped.hint).toContain("`opscrew provision`");
+    expect(rotationRequests(stale)).toEqual([]);
+    expect(stale.docker.execs).toEqual([]);
+    stale.docker.running.add("cache");
+
     stale.docker.answer = () => 1;
     await failure(stale.rotate(["db"]));
     const other = await failure(stale.rotate(["cache"]));

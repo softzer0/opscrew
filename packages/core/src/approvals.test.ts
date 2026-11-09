@@ -936,6 +936,53 @@ describe("promote approvals", () => {
   });
 });
 
+// Feature 025 (T2521): a change approved as remote-exec by its hash (a credential rotation's,
+// whose hash binds the stack plan it applies) is checked against the store before it is made.
+describe("assertApprovedRemoteExec", () => {
+  it("returns the latest approved remote-exec record bound to the hash, in any case", async () => {
+    const store = new JsonlApprovalStore(join(root, "approvals.jsonl"));
+    await store.append(record({ id: "1", kind: "remote-exec", planHash: HASH_A }));
+    await store.append(record({ id: "2", kind: "remote-exec", planHash: HASH_A }));
+    await store.append(record({ id: "3", kind: "remote-exec", planHash: HASH_B }));
+    expect((await gateOver(store).assertApprovedRemoteExec(HASH_A.toUpperCase())).id).toBe("2");
+  });
+
+  it("refuses a refused approval, another kind's, one without a hash and an invalid hash, audited", async () => {
+    const { gate, store, audit } = makeGate();
+    await store.append(record({ kind: "remote-exec", planHash: HASH_A, approved: false }));
+    await store.append(record({ kind: "stack-apply", planHash: HASH_B }));
+    const { planHash: _none, ...unbound } = record({ kind: "remote-exec" });
+    await store.append(unbound);
+    for (const hash of [HASH_A, HASH_B, HASH_D, "not-a-hash"]) {
+      await expect(gate.assertApprovedRemoteExec(hash)).rejects.toMatchObject({
+        code: "PLAN_NOT_APPROVED",
+        message: "This change has not been approved, so OpsCrew will not make it.",
+        hint: `Review the plan, then approve it when asked or re-run with --approve ${hash}.`,
+      });
+    }
+    expect(audit.entries.at(-2)).toMatchObject({
+      kind: "approval",
+      action: "remote-exec",
+      target: HASH_D,
+      decision: "refused",
+      detail: "no remote-exec approval recorded for this hash",
+    });
+  });
+
+  it("never lets a remote-exec approval authorise a plan's apply, nor a stack plan's approval a remote-exec", async () => {
+    const { gate } = makeGate();
+    await gate.request({ kind: "remote-exec", title: "Rotate db", details: "", planHash: HASH_A });
+    await gate.request({ kind: "stack-apply", title: "Apply", details: "", planHash: HASH_B });
+    expect((await gate.assertApprovedRemoteExec(HASH_A)).kind).toBe("remote-exec");
+    await expect(gate.assertApprovedStackPlan(HASH_A)).rejects.toMatchObject({
+      code: "PLAN_NOT_APPROVED",
+    });
+    await expect(gate.assertApprovedRemoteExec(HASH_B)).rejects.toMatchObject({
+      code: "PLAN_NOT_APPROVED",
+    });
+  });
+});
+
 // Feature 015: GitHub repository settings (an environment, its rules, the fork-PR policy) are
 // approved like GitHub secrets, without a plan hash.
 describe("github-settings approvals", () => {

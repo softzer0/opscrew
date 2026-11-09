@@ -3,16 +3,26 @@
  * values per service and secret, the hash of its plan and how far it got, in
  * `pending_rotation.json` beside the generated values (0600), never in the recovery copy, and
  * apart from the generated values, which provision rewrites. Kept until the rotation is done or
- * undone; provision refuses while it is there.
+ * undone; provision refuses while it is there. Also the refusals and the forgetting every path of
+ * a rotation shares.
  */
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
-import { OpsCrewError, type Redactor, readTextIfExists, writeFileAtomic } from "@opscrew/core";
+import {
+  listText,
+  OpsCrewError,
+  type Redactor,
+  readTextIfExists,
+  writeFileAtomic,
+} from "@opscrew/core";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 
 /** A secret's value before (`old`) and after (`new`) a rotation. */
 const PairSchema = z.strictObject({ old: z.string().min(1), new: z.string().min(1) });
+
+/** A secret's old and new value ({@link PairSchema}). */
+export type ValuePair = z.infer<typeof PairSchema>;
 
 /**
  * The values of a rotation: the credentials, by the names `opscrew rotate` takes (the services in
@@ -133,4 +143,96 @@ export async function keepPendingRotation(
 /** Forgets the unfinished rotation (once done, or undone: the services keep their values). */
 export async function dropPendingRotation(deps: Pick<PhaseDeps, "paths">): Promise<void> {
   await rm(pendingRotationFile(deps), { force: true });
+}
+
+// --- What every path of a rotation says --------------------------------------------------------
+
+/**
+ * The hash an add-on's unfinished rotation keeps: never a plan's, since its host plans are what is
+ * approved, each by its own hash. The services' rotations know an add-on's file by it, so a
+ * service named `monitoring` or `beszel` never takes it for its own.
+ */
+export const ADDON_ROTATION_HASH = "0".repeat(64);
+
+/** Where a rotation runs: its unfinished rotation's `target`, or the servers. */
+export type RotationTarget = NonNullable<PendingRotation["target"]> | "server";
+
+/** Where a rotation runs, in words: "began on the servers". */
+export const TARGET_WORDS: Readonly<Record<RotationTarget, string>> = {
+  server: "on the servers",
+  portainer: "in your Portainer",
+  localhost: "on this computer",
+  site: "in the site's GitHub secrets",
+};
+
+/** True when `a` and `b` name the same credentials, in any order. */
+export function sameNames(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && [...a].sort().join(" ") === [...b].sort().join(" ");
+}
+
+/** `opscrew rotate <names><flags>`: the command that rotates `names`, or goes on with it. */
+export function rotateCommand(names: readonly string[], flags: string): string {
+  return `opscrew rotate ${names.join(" ")}${flags}`;
+}
+
+/**
+ * The refusal while `existing`, the environment's unfinished rotation, is another one than the
+ * command's: "The rotation of … in … is unfinished, " then `after`, with how to finish it or to
+ * undo it (never once it switched, nor an add-on's: they only go forward).
+ */
+export function unfinishedRotation(
+  existing: PendingRotation,
+  environment: string,
+  flags: string,
+  after = "so OpsCrew starts no other one. Nothing was changed.",
+): OpsCrewError {
+  const theirs = rotateCommand(existing.names, flags);
+  const forward = existing.step === "switched" || existing.hash === ADDON_ROTATION_HASH;
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `The rotation of ${listText(existing.names)} in ${environment} is unfinished, ${after}`,
+    {
+      hint: `Finish it with \`${theirs}\`${forward ? "" : `, or put the old values back with \`${theirs} --undo\``}, then run this command again.`,
+    },
+  );
+}
+
+/** The refusal of an undo while no rotation of `names` is unfinished. */
+export function nothingToUndo(names: readonly string[], environment: string): OpsCrewError {
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `No rotation of ${listText(names)} is unfinished in ${environment}, so there is nothing to undo. Nothing was changed.`,
+  );
+}
+
+/**
+ * The refusal of `began`, the command's own rotation, when it began elsewhere than `here` (the
+ * plan runs the app elsewhere since): its state is where it began. `again` goes on with it.
+ */
+export function beganElsewhere(
+  began: PendingRotation,
+  here: RotationTarget,
+  again: string,
+): OpsCrewError {
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `The rotation of ${listText(began.names)} began ${TARGET_WORDS[began.target ?? "server"]}, and its state is there, not ${TARGET_WORDS[here]}. Nothing was changed.`,
+    {
+      hint: `Finish it with \`${again}\`${began.step === "switched" ? "" : `, or put the old values back with \`${again} --undo\``}, while the plan still runs the app where the rotation began.`,
+    },
+  );
+}
+
+/**
+ * Forgets the rotation of `names` that was only planned (its undo): never approved, so nothing but
+ * this computer's file holds its new values.
+ */
+export async function forgetPlannedRotation(
+  deps: Pick<PhaseDeps, "paths" | "reporter">,
+  names: readonly string[],
+): Promise<void> {
+  await dropPendingRotation(deps);
+  deps.reporter.success(
+    `Forgot the rotation of ${listText(names)} in ${deps.paths.environment}: it was never approved, so nothing else had changed.`,
+  );
 }

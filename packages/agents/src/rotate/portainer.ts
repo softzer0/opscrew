@@ -36,8 +36,8 @@ import {
   type DockerUndo,
   rotateThroughDocker,
 } from "./portainer-localhost";
-import { type ServiceValues, serviceValues, swapAppEnv } from "./values";
-import type { RotationValues } from "./values-pending";
+import { type ServiceValues, serviceSides, swapAppEnv } from "./values";
+import { type RotationValues, rotateCommand } from "./values-pending";
 
 /** What a rotation in Portainer reaches; each defaults to the real one. */
 export interface PortainerRotationServices {
@@ -119,7 +119,7 @@ export function rotatePortainerServices(
   };
   const command = async () => {
     const { root, environment, app } = deps.paths;
-    return `opscrew rotate ${names.join(" ")}${await commandFlags(root, environment, app)}`;
+    return rotateCommand(names, await commandFlags(root, environment, app));
   };
   /** The app's stacks, with the values this computer keeps (`rewrite`: changed first). */
   const stacksFor = async (
@@ -166,10 +166,7 @@ export function rotatePortainerServices(
             );
           }
         }
-        const sides = {
-          from: await serviceValues(deps, plan, values, "old"),
-          to: await serviceValues(deps, plan, values, "new"),
-        };
+        const sides = await serviceSides(deps, plan, values, "new");
         const setup = await stacksFor((environment) =>
           withNewValues(plan, environment, values, sides),
         );
@@ -223,13 +220,15 @@ export function rotatePortainerServices(
             "The rotation's stack plan was not planned before it.",
           );
         }
-        // Exactly the stack plan shown, only under the approval its hash is bound into.
+        // Exactly the stack plan shown, only under the approval its hash is bound into, as the
+        // approval store records it.
         if (!approval.approved || approval.planHash !== prepared.bound) {
           throw new OpsCrewError(
             "INTERNAL",
             "The rotation's stack plan is applied only under the approval bound to its hash.",
           );
         }
+        await deps.approvals.assertApprovedRemoteExec(prepared.bound);
         await prepared.setup.stacks.apply(prepared.planned, approval);
       },
     },

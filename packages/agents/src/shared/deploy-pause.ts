@@ -13,7 +13,7 @@ import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import type { ProvisionServices } from "../provision/types";
-import { readPendingRotation } from "../rotate/values-pending";
+import { readPendingRotation, rotateCommand } from "../rotate/values-pending";
 import { codeOf } from "./errors";
 import { pollUntil } from "./wait";
 
@@ -170,7 +170,7 @@ export async function rotationWindowText(
   if (pending === undefined || pending.hash !== hash || pending.step === "planned") {
     return "a credential rotation's window, begun on another computer: `opscrew rotate` with its services, or with `--undo`, ends it there";
   }
-  const rotate = `opscrew rotate ${pending.names.join(" ")}${flags}`;
+  const rotate = rotateCommand(pending.names, flags);
   return `a credential rotation's window: \`${rotate}\` or \`${rotate} --undo\` ends it`;
 }
 

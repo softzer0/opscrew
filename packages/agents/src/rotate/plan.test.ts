@@ -159,7 +159,8 @@ describe("the rotation's hash and approval", () => {
 
   it("says what each step costs the running app, and asks by the hash", async () => {
     const { deps, plan, rotation } = await input("one");
-    const hash = await approveRotation(deps, plan, rotation, "opscrew rotate db events search");
+    const hash = rotationHash(deps, plan, rotation);
+    await approveRotation(deps, plan, rotation, hash, "opscrew rotate db events search");
     const handler = deps.approvalHandler as ScriptedApprovalHandler;
     const request = handler.requests[0];
     expect(request).toMatchObject({ kind: "remote-exec", planHash: hash });

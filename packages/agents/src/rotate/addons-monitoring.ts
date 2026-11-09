@@ -23,11 +23,15 @@ import { hasDeployment, randomPassword } from "../shared";
 import { appServers } from "../shared/servers";
 import { assertValuesCurrent, recordRotation } from "./record";
 import {
+  ADDON_ROTATION_HASH,
   dropPendingRotation,
   keepPendingRotation,
   type PendingRotation,
   readPendingRotation,
   registerRotationValues,
+  sameNames,
+  unfinishedRotation,
+  type ValuePair,
 } from "./values-pending";
 
 /** What an add-on's rotation reaches besides this computer. */
@@ -43,16 +47,6 @@ export interface AddonRotation {
   /** The recovery copy, refreshed: its files for the caller's pull request. */
   copy: RefreshRecoveryResult;
 }
-
-/** An add-on's secrets in a rotation, by name, each with its old and new value. */
-type Pairs = Record<string, { old: string; new: string }>;
-
-/**
- * The hash an add-on's unfinished rotation keeps: never a plan's, since its host plans are what is
- * approved, each by its own hash. The services' rotations know an add-on's file by it, so a
- * service named `monitoring` or `beszel` never takes it for its own.
- */
-export const ADDON_ROTATION_HASH = "0".repeat(64);
 
 /** The secrets of the monitoring's rotation, as its unfinished rotation names them. */
 const MONITORING_SECRETS = ["grafanaAdminPassword", "postgresPassword"] as const;
@@ -83,23 +77,18 @@ export async function addonRotationValues(
   name: string,
   secrets: readonly string[],
   flags: string,
-  make: () => Promise<Pairs>,
+  make: () => Promise<Record<string, ValuePair>>,
 ): Promise<PendingRotation> {
   const existing = await readPendingRotation(deps);
   if (
-    existing?.names.length === 1 &&
-    existing.names[0] === name &&
+    existing !== undefined &&
+    sameNames(existing.names, [name]) &&
     Object.keys(existing.services[name] ?? {}).every((secret) => secrets.includes(secret))
   ) {
     return existing;
   }
   if (existing !== undefined && existing.step !== "planned") {
-    const theirs = `opscrew rotate ${existing.names.join(" ")}${flags}`;
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      `The rotation of ${listText(existing.names)} in ${deps.paths.environment} is unfinished: its new values are on this computer, and maybe on the servers. Nothing was changed.`,
-      { hint: `Finish it with \`${theirs}\` first, then run this command again.` },
-    );
+    throw unfinishedRotation(existing, deps.paths.environment, flags);
   }
   const pairs = await make();
   const pending: PendingRotation = {
@@ -188,7 +177,7 @@ export async function rotateMonitoring(
     flags,
     async () => {
       const kept = await monitoringValues(deps);
-      const pairs: Pairs = {};
+      const pairs: Record<string, ValuePair> = {};
       if (owner === undefined) {
         const old = kept?.grafanaAdminPassword;
         if (old === undefined) throw missingValue(environment, "Grafana's admin password", flags);

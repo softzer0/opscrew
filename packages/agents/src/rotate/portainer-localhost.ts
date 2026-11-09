@@ -13,7 +13,7 @@
  * server's `rotate.sh` and GitHub's secrets, which neither target has, and name its steps.
  */
 import type { ApprovalRecord } from "@opscrew/contracts";
-import { canonicalJson, isUserFacingError, listText, OpsCrewError, sha256Hex } from "@opscrew/core";
+import { canonicalJson, listText, OpsCrewError, sha256Hex, upperFirst } from "@opscrew/core";
 import {
   hasLogin,
   type RotationCommand,
@@ -25,9 +25,8 @@ import type { DeployPlan, PlanService } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
 import { type RefreshRecoveryResult, refreshRecoveryCopy } from "../secrets/copy";
-import { PlanRefusedError } from "../shared/approvals";
-import { codeOf } from "../shared/errors";
-import { ADDON_ROTATION_HASH } from "./addons-monitoring";
+import { requestApproval } from "../shared/approvals";
+import { continued } from "../shared/errors";
 import {
   type AppValues,
   appConsequence,
@@ -37,27 +36,29 @@ import {
   appSuccessNote,
   isAppName,
   newAppValues,
+  serviceFingerprints,
 } from "./app-values";
-import { rotationContext, undoHash } from "./plan";
-import { assertValuesCurrent, readCredentialsRecord, recordRotation } from "./record";
-import { completePendingRotation, newRotationValues } from "./values";
+import { rotationContext, SWITCH_SECONDS, startsMatch, undoHash } from "./plan";
+import { assertValuesCurrent } from "./record";
+import { completePendingRotation, newRotationValues, recordedGeneration } from "./values";
 import {
+  ADDON_ROTATION_HASH,
+  beganElsewhere,
   dropPendingRotation,
+  forgetPlannedRotation,
   keepPendingRotation,
+  nothingToUndo,
   type PendingRotation,
-  pendingRotationFile,
   type RotationValues,
   readPendingRotation,
+  rotateCommand,
+  sameNames,
+  unfinishedRotation,
+  type ValuePair,
 } from "./values-pending";
 
 /** Where a rotation through Docker runs: the user's Portainer, or this computer's Docker. */
 export type DockerTarget = "portainer" | "localhost";
-
-/** The old and the new value of one secret. */
-export interface ValuePair {
-  old: string;
-  new: string;
-}
 
 /** One secret rotation of a service, from the catalog, with its commands and its values. */
 export interface ServiceStep {
@@ -86,12 +87,12 @@ export interface DockerRotationTarget {
    * Stops before the approval when the target can't take the rotation of `hash` (with what to
    * do); also before an undo.
    */
-  check?(steps: readonly ServiceStep[], values: RotationValues, hash: string): Promise<void>;
+  check(steps: readonly ServiceStep[], values: RotationValues, hash: string): Promise<void>;
   /**
    * Runs the rotation's (or its undo's) units under the target's own lock or pause; `rotation`
    * is the command that goes on and the rotation's hash.
    */
-  locked?<T>(fn: () => Promise<T>, rotation: { command: string; hash: string }): Promise<T>;
+  locked<T>(fn: () => Promise<T>, rotation: { command: string; hash: string }): Promise<T>;
   /**
    * The command and entrypoint the running container of `service` started with; `undefined` when
    * none runs.
@@ -156,9 +157,6 @@ export interface DockerRotationOptions {
   /** `--undo`: puts the old values back, before the old ones began to be dropped. */
   undo?: boolean;
 }
-
-/** The window of a swap or a restart until the app runs on the new value (plan, Decisions 2). */
-const SWITCH_SECONDS = 30;
 
 // --- The plan -----------------------------------------------------------------------------------
 
@@ -259,14 +257,7 @@ function planHash(
       environment: deps.paths.environment,
       app: plan.app.name,
       services: values.names,
-      values: Object.entries(values.services).map(([service, secrets]) => ({
-        service,
-        secrets: Object.entries(secrets).map(([secret, pair]) => ({
-          secret,
-          old: sha256Hex(pair.old),
-          new: sha256Hex(pair.new),
-        })),
-      })),
+      values: serviceFingerprints(values.services),
       steps: steps.map((step) => ({
         service: step.service.name,
         secrets: [...step.rotation.secrets],
@@ -520,7 +511,7 @@ export async function rotateThroughDocker(
   // The app's own secrets, as `app:<NAME>` (`app` names each), after the services.
   const appSecrets = appNames.length === 0 ? [] : await appSecretNames(deps, plan, appNames);
   const named = [...services.map((service) => service.name), ...appSecrets];
-  const again = `opscrew rotate ${named.join(" ")}${flags}`;
+  const again = rotateCommand(named, flags);
   const existing = await readPendingRotation(deps);
   const same = existing !== undefined && sameNames(existing.names, named);
   // An add-on's rotation (`monitoring`, `beszel`) is another rotation, whatever its name.
@@ -529,41 +520,14 @@ export async function rotateThroughDocker(
   // A rotation only planned changed nothing yet: one of other services replaces it, but never an
   // add-on's of the same name, which this command could not finish.
   if (existing !== undefined && (existing.step !== "planned" || (addon && same))) {
-    const theirs = `opscrew rotate ${existing.names.join(" ")}${flags}`;
-    if (reused === undefined) {
-      throw new OpsCrewError(
-        "PHASE_PRECONDITION",
-        `The rotation of ${listText(existing.names)} in ${environment} is unfinished, so OpsCrew starts no other one. Nothing was changed.`,
-        {
-          hint: `Finish it with \`${theirs}\`${existing.step === "switched" || addon ? "" : `, or put the old values back with \`${theirs} --undo\``}, then run this command again.`,
-        },
-      );
-    }
-    if (existing.target !== target.target) {
-      throw new OpsCrewError(
-        "PHASE_PRECONDITION",
-        `The unfinished rotation of ${listText(existing.names)} began ${TARGET_WORDS[existing.target ?? "server"]}, but the ${environment} environment now runs ${target.where}. Nothing was changed.`,
-        {
-          hint: `Check each service's password where the rotation began, then delete ${pendingRotationFile(deps)}.`,
-        },
-      );
-    }
+    if (reused === undefined) throw unfinishedRotation(existing, environment, flags);
+    if (existing.target !== target.target) throw beganElsewhere(existing, target.target, again);
   }
   const began = reused !== undefined && reused.step !== "planned" ? reused : undefined;
   if (options.undo === true) {
-    if (reused === undefined) {
-      throw new OpsCrewError(
-        "INVALID_INPUT",
-        `There is no unfinished rotation of ${listText(named)} in ${environment} to undo. Nothing was changed.`,
-        { hint: "Run `opscrew rotate` to list the credentials and their dates." },
-      );
-    }
+    if (reused === undefined) throw nothingToUndo(named, environment);
     if (began === undefined) {
-      // Never approved: nothing but this computer's file holds its new values.
-      await dropPendingRotation(deps);
-      deps.reporter.success(
-        `Forgot the rotation of ${listText(reused.names)} in ${environment}: it was never approved, so nothing else had changed.`,
-      );
+      await forgetPlannedRotation(deps, reused.names);
       return { hash: reused.hash, undone: true };
     }
     return undoRotation(deps, target, began, stepsOf(plan, services, began), again);
@@ -593,8 +557,8 @@ export async function rotateThroughDocker(
       },
     );
   }
-  await target.check?.(steps, values, began?.hash ?? identity);
-  await requireCurrentStart(target, plan, steps, flags);
+  await target.check(steps, values, began?.hash ?? identity);
+  await requireCurrentStart(target, plan, steps, { again, flags, begun: began !== undefined });
   // What the switch applies, planned now and bound into the hash, unless the switch is done.
   const done = began?.done ?? 0;
   const { switching } = rotationUnits(target, steps, values, identity);
@@ -631,32 +595,29 @@ export async function rotateThroughDocker(
     step: pending.step === "planned" ? "started" : pending.step,
   };
   await keepPendingRotation(deps, started);
-  return locked(target, { command: again, hash }, () =>
-    runRotation(deps, plan, target, started, steps, { again, approval }),
-  );
+  return target.locked(() => runRotation(deps, plan, target, started, steps, { again, approval }), {
+    command: again,
+    hash,
+  });
 }
 
-/** Where a pending rotation began, after "began". */
-const TARGET_WORDS: Record<NonNullable<PendingRotation["target"]> | "server", string> = {
-  server: "on the servers",
-  portainer: "in your Portainer",
-  localhost: "on this computer",
-  site: "in the site's GitHub secrets",
-};
-
 /**
- * Refuses, before anything changes, a service a step runs commands in whose container still runs
- * another start command than the catalog's (one from before 025, or a plan change not deployed
- * yet): only the catalog's start writes the container file of its current value, which the
- * rotation's commands read and rewrite.
- * @throws OpsCrewError `PHASE_PRECONDITION` saying that provision puts it on the new one.
+ * Refuses, before anything changes, a service a step runs commands in that does not run on the
+ * target (the commands run in its container) while the rotation has not `begun` (one that began
+ * goes on, and its switch starts the service again; provision refuses while it is unfinished), or
+ * whose container still runs another start command than the catalog's (one from before 025, or a
+ * plan change not deployed yet): only the catalog's start writes the container file of its current
+ * value, which the rotation's commands read and rewrite. `again` goes on, `flags` are the commands'.
+ * @throws OpsCrewError `PHASE_PRECONDITION` saying that a deploy starts it, or that provision puts
+ * it on the new start command.
  */
 async function requireCurrentStart(
   target: DockerRotationTarget,
   plan: DeployPlan,
   steps: readonly ServiceStep[],
-  flags: string,
+  run: { again: string; flags: string; begun: boolean },
 ): Promise<void> {
+  const { again, flags, begun } = run;
   const services = [
     ...new Set(
       steps
@@ -665,16 +626,18 @@ async function requireCurrentStart(
     ),
   ];
   for (const service of services) {
-    const spec = serviceSpec(service.kind);
-    const ctx = rotationContext(plan, service);
-    const command = spec.command?.(ctx);
-    const entrypoint = spec.entrypoint?.(ctx);
-    if (command === undefined && entrypoint === undefined) continue;
     const running = await target.startCommand(service.name);
-    if (running === undefined) continue;
-    const same = (want: string[] | undefined, has: readonly string[] | undefined) =>
-      want === undefined || JSON.stringify(want) === JSON.stringify(has ?? []);
-    if (same(command, running.command) && same(entrypoint, running.entrypoint)) continue;
+    if (running === undefined) {
+      if (begun) continue;
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        `${service.name} (${serviceSpec(service.kind).title}) is not running ${target.where}, so OpsCrew can't change its value. Nothing was changed.`,
+        {
+          hint: `Start it with a deploy (\`opscrew provision${flags}\`), then run \`${again}\` again.`,
+        },
+      );
+    }
+    if (startsMatch(plan, service, running)) continue;
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       `${service.name} ${target.where} still runs on a start command from before this version of OpsCrew (or one the plan changed since it was last deployed), so its container has no file of its current value for the rotation to change. Nothing was changed.`,
@@ -683,18 +646,6 @@ async function requireCurrentStart(
       },
     );
   }
-}
-
-function sameNames(a: readonly string[], b: readonly string[]): boolean {
-  return a.length === b.length && [...a].sort().join(" ") === [...b].sort().join(" ");
-}
-
-function locked<T>(
-  target: DockerRotationTarget,
-  rotation: { command: string; hash: string },
-  fn: () => Promise<T>,
-): Promise<T> {
-  return target.locked === undefined ? fn() : target.locked(fn, rotation);
 }
 
 /** Shows the plan and asks its approval, bound to its hash. */
@@ -745,19 +696,16 @@ async function approve(
       : `If a step fails, the old and new values stay on this computer: \`${again}\` goes on from that step, and before step ${actions.length} \`${again} --undo\` puts the old values back.`,
     `Rotation hash: ${hash}`,
   ].join("\n");
-  const approval = await deps.approvals.request({
-    kind: "remote-exec",
+  return requestApproval(deps, {
     title: `Rotate the ${secrets.length === 0 ? "passwords" : "credentials"} of ${listText(credentials)} in ${deps.paths.environment}`,
     details,
-    planHash: hash,
-    ...consequence?.guard,
-  });
-  if (approval.approved) return approval;
-  throw new PlanRefusedError({
-    plan: `rotation of ${listText(credentials)}`,
-    ...(approval.reason === undefined ? {} : { reason: approval.reason }),
-    unchanged: `Nothing ${target.where} was changed.`,
-    hint: `Run \`${again}\` again when you are ready (in a script: --approve ${hash}).`,
+    hash,
+    guard: consequence?.guard,
+    refused: {
+      plan: `rotation of ${listText(credentials)}`,
+      unchanged: `Nothing ${target.where} was changed.`,
+      again,
+    },
   });
 }
 
@@ -785,8 +733,8 @@ async function nextGenerations(
   deps: PhaseDeps,
   names: readonly string[],
 ): Promise<Map<string, number>> {
-  const record = (await readCredentialsRecord(deps)).environments[deps.paths.environment] ?? {};
-  return new Map(names.map((name) => [name, (record[name]?.generation ?? 1) + 1]));
+  const generation = await recordedGeneration(deps);
+  return new Map(names.map((name) => [name, generation(name) + 1]));
 }
 
 /** The units from the first one not done, each recorded once done; then the end. */
@@ -818,7 +766,7 @@ async function runRotation(
     "approved",
   );
   for (const unit of units.slice(done)) {
-    deps.reporter.step(`${capitalize(unit.what)} ${target.where}`);
+    deps.reporter.step(`${upperFirst(unit.what)} ${target.where}`);
     try {
       await unit.run();
     } catch (error) {
@@ -834,14 +782,7 @@ async function runRotation(
     });
   }
   await target.release?.(hash);
-  const record = (await readCredentialsRecord(deps)).environments[deps.paths.environment] ?? {};
-  await completePendingRotation(
-    deps,
-    plan,
-    pending,
-    Object.fromEntries(pending.names.map((name) => [name, record[name]?.generation ?? 1])),
-  );
-  await recordRotation(deps, pending.names);
+  await completePendingRotation(deps, plan, pending);
   await audit(deps, target, pending, hash, "rotation finished", "approved");
   deps.reporter.success(
     `Rotated the generated secrets of ${listText(pending.names)} ${target.where}: the app runs on the new values, and the old ones no longer work.${appSuccessNote(pending.app)}`,
@@ -874,50 +815,49 @@ async function undoRotation(
       { hint: `Run \`${again}\` to finish it.` },
     );
   }
-  await target.check?.(steps, pending, hash);
+  await target.check(steps, pending, hash);
   const undoing = undoHash(hash);
-  const approval = await deps.approvals.request({
-    kind: "remote-exec",
+  await requestApproval(deps, {
     title: `Put back the old values of ${listText(pending.names)} in ${deps.paths.environment}`,
     details: [
       `The rotation ${hash} stopped before it dropped any old value. Undoing it puts the old values back ${target.where}: where the app and its services read them, in each service that took its new value, and in the app, which switches back to them.`,
       `Undo hash: ${undoing}`,
     ].join("\n"),
-    planHash: undoing,
-  });
-  if (!approval.approved) {
-    throw new PlanRefusedError({
+    hash: undoing,
+    refused: {
       plan: `undo of the rotation of ${listText(pending.names)}`,
-      ...(approval.reason === undefined ? {} : { reason: approval.reason }),
       unchanged: `Nothing ${target.where} was changed.`,
-      hint: `Run \`${again} --undo\` again when you are ready (in a script: --approve ${undoing}).`,
-    });
-  }
-  return locked(target, { command: `${again} --undo`, hash }, async () => {
-    let undone = pending.undone ?? 0;
-    await keepPendingRotation(deps, { ...pending, undone });
-    for (const unit of undo.slice(undone)) {
-      // A unit of the rotation may have run (in part) once the units before it were done.
-      if (done >= unit.after) {
-        deps.reporter.step(`${capitalize(unit.what)} ${target.where}`);
-        try {
-          await unit.run();
-        } catch (error) {
-          await audit(deps, target, pending, hash, `undo stopped while ${unit.what}`, "refused");
-          throw stopped(error, unit.what, undefined, `${again} --undo`, true);
-        }
-      }
-      undone += 1;
-      await keepPendingRotation(deps, { ...pending, undone });
-    }
-    await target.release?.(hash);
-    await dropPendingRotation(deps);
-    await audit(deps, target, pending, hash, "rotation undone", "approved");
-    deps.reporter.success(
-      `Put the old values of ${listText(pending.names)} back ${target.where}: the app runs on them as before the rotation.`,
-    );
-    return { hash, undone: true as const };
+      again: `${again} --undo`,
+    },
   });
+  return target.locked(
+    async () => {
+      let undone = pending.undone ?? 0;
+      await keepPendingRotation(deps, { ...pending, undone });
+      for (const unit of undo.slice(undone)) {
+        // A unit of the rotation may have run (in part) once the units before it were done.
+        if (done >= unit.after) {
+          deps.reporter.step(`${upperFirst(unit.what)} ${target.where}`);
+          try {
+            await unit.run();
+          } catch (error) {
+            await audit(deps, target, pending, hash, `undo stopped while ${unit.what}`, "refused");
+            throw stopped(error, unit.what, undefined, `${again} --undo`, true);
+          }
+        }
+        undone += 1;
+        await keepPendingRotation(deps, { ...pending, undone });
+      }
+      await target.release?.(hash);
+      await dropPendingRotation(deps);
+      await audit(deps, target, pending, hash, "rotation undone", "approved");
+      deps.reporter.success(
+        `Put the old values of ${listText(pending.names)} back ${target.where}: the app runs on them as before the rotation.`,
+      );
+      return { hash, undone: true as const };
+    },
+    { command: `${again} --undo`, hash },
+  );
 }
 
 /**
@@ -931,20 +871,12 @@ function stopped(
   again: string,
   undoing = false,
 ): unknown {
-  if (!isUserFacingError(error)) return error;
-  const said = error.message.replace(/\s+$/, "");
-  const where = `${undoing ? "Undoing the rotation" : "The rotation"} stopped while ${what}; the old and new values stay on this computer.`;
-  const next = undoing
-    ? `Then run \`${again}\` again to finish the undo.`
-    : undo === undefined
-      ? `Then run \`${again}\` again to finish it: it has begun to drop the old values, so it can no longer be undone.`
-      : `Then run \`${again}\` again to go on from this step, or \`${undo}\` to put the old values back.`;
-  return new OpsCrewError(codeOf(error), `${said} ${where}`, {
-    hint: `${error.hint ? `${error.hint} ` : ""}${next}`,
-    cause: error,
+  return continued(error, {
+    said: `${undoing ? "Undoing the rotation" : "The rotation"} stopped while ${what}; the old and new values stay on this computer.`,
+    next: undoing
+      ? `Then run \`${again}\` again to finish the undo.`
+      : undo === undefined
+        ? `Then run \`${again}\` again to finish it: it has begun to drop the old values, so it can no longer be undone.`
+        : `Then run \`${again}\` again to go on from this step, or \`${undo}\` to put the old values back.`,
   });
-}
-
-function capitalize(text: string): string {
-  return `${text.charAt(0).toUpperCase()}${text.slice(1)}`;
 }

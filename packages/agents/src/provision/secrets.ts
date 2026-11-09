@@ -5,6 +5,7 @@ import type {
   EnvironmentCapability,
   EnvironmentReviewer,
   EnvironmentView,
+  GitHubClient,
 } from "@opscrew/connector-github";
 import type { PhaseName } from "@opscrew/contracts";
 import {
@@ -45,7 +46,7 @@ import { commandFlags } from "../environments/choice";
 import { USER_TOKENS } from "../rotate/inventory";
 import { assertValuesCurrent } from "../rotate/record";
 import { tokenFirstSeen } from "../rotate/record-tokens";
-import { readPendingRotation } from "../rotate/values-pending";
+import { readPendingRotation, unfinishedRotation } from "../rotate/values-pending";
 import {
   type AppEnvironment,
   assembleAppEnv,
@@ -194,14 +195,11 @@ export async function buildAppEnvironment(
   const rotation = options.rotating === true ? undefined : await readPendingRotation(deps);
   if (rotation !== undefined) {
     const { root, environment, app } = deps.paths;
-    const flags = await commandFlags(root, environment, app);
-    const rotate = `opscrew rotate ${rotation.names.join(" ")}${flags}`;
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      `The rotation of ${listText(rotation.names)} in ${environment} is unfinished, and provision would give the app values the rotation is replacing. ${stopped}`,
-      {
-        hint: `Finish it with \`${rotate}\`${rotation.step === "switched" ? "" : `, or put the old values back with \`${rotate} --undo\``}, then run \`opscrew provision${flags}\` again.`,
-      },
+    throw unfinishedRotation(
+      rotation,
+      environment,
+      await commandFlags(root, environment, app),
+      `and provision would give the app values the rotation is replacing. ${stopped}`,
     );
   }
   for (const token of USER_TOKENS) {
@@ -978,6 +976,47 @@ export function deploySecretPlaces(
 export interface SecretPlace {
   name: string;
   environment?: string;
+}
+
+/**
+ * Where GitHub holds the deploy secret `unprefixed` (`DEPLOY_SECRETS.appEnv`) of `plan`'s
+ * environment: its name there, in the environment's GitHub environment when its secrets live in one.
+ */
+export function deploySecretPlace(plan: DeployPlan, unprefixed: string): SecretPlace {
+  const environment = secretsEnvironment(plan);
+  const name = deploySecretName(plan, unprefixed);
+  return environment === undefined ? { name } : { name, environment };
+}
+
+/**
+ * Sets `value` as GitHub's secret at `place`, sealed on this computer; audited by name only (with
+ * the phase it belongs to, when one).
+ */
+export async function setSecretAt(
+  deps: Pick<PhaseDeps, "audit">,
+  github: {
+    api: Pick<GitHubClient, "setActionsSecret" | "setEnvironmentSecret">;
+    owner: string;
+    repo: string;
+  },
+  place: SecretPlace,
+  value: string,
+  phase?: PhaseName,
+): Promise<void> {
+  const { api, owner, repo } = github;
+  if (place.environment === undefined) {
+    await api.setActionsSecret(owner, repo, place.name, value);
+  } else {
+    await api.setEnvironmentSecret(owner, repo, place.environment, place.name, value);
+  }
+  await deps.audit.append({
+    kind: "secret-set",
+    actor: "opscrew",
+    action: `set secret ${place.name}${place.environment === undefined ? "" : ` in the environment ${place.environment}`}`,
+    ...(phase === undefined ? {} : { phase }),
+    target: `${owner}/${repo}`,
+    decision: "approved",
+  });
 }
 
 /** A secret's name with where it lives, when that is a GitHub environment. */

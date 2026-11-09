@@ -21,10 +21,14 @@ import {
   testPlan,
 } from "../testing";
 import { rotateBeszel } from "./addons-beszel";
-import { ADDON_ROTATION_HASH } from "./addons-monitoring";
 import { credentialsRecordFile } from "./record";
 import { rotateServices } from "./server";
-import { keepPendingRotation, pendingRotationFile, readPendingRotation } from "./values-pending";
+import {
+  ADDON_ROTATION_HASH,
+  keepPendingRotation,
+  pendingRotationFile,
+  readPendingRotation,
+} from "./values-pending";
 
 const NOW = new Date("2026-11-08T10:00:00.000Z");
 

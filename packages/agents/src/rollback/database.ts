@@ -37,6 +37,7 @@ import { formatUtc } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
 import { appFolder } from "../localhost/services";
 import { NOTHING_CHANGED } from "../promote/shared";
+import { APPROVAL_SECONDS } from "../shared/approvals";
 import { serverWords } from "../shared/server-address";
 import { rotatedLogins } from "../snapshot/generations";
 import { type About, aboutOf } from "../snapshot/store";
@@ -59,8 +60,8 @@ export interface DatabaseQuestion {
   default: DatabaseChoice;
 }
 
-/** How long the start script accepts the one-time approval. */
-export const APPROVAL_SECONDS = 30 * 60;
+/** How long the start script accepts the one-time approval (`shared/approvals`). */
+export { APPROVAL_SECONDS };
 
 /** The 64 hex digits of the digest a digest or an image reference ends with, as the files name it. */
 export function hexOf(image: string): string | undefined {

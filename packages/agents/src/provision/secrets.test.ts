@@ -43,12 +43,15 @@ import { runProvision } from "./run";
 import {
   buildAppEnvironment,
   deploySecretNames,
+  deploySecretPlace,
   deploySecrets,
   keepMonitoringValues,
   monitoringPassword,
   monitoringValues,
+  secretsEnvironment,
   serviceEnvSecrets,
   setDeploySecrets,
+  setSecretAt,
 } from "./secrets";
 import type { ProvisionServices } from "./types";
 
@@ -1032,6 +1035,54 @@ describe("deploySecretNames on the server-less targets", () => {
     // GitHub Pages publishes with the workflow's own token: only the app's values are secrets.
     expect(deploySecretNames(pagesTestPlan({ env: ["API_KEY"] }))).toEqual(["OPSCREW_ENV_API_KEY"]);
     expect(deploySecretNames(pagesTestPlan())).toEqual([]);
+  });
+});
+
+describe("a deploy secret's place in GitHub (deploySecretPlace, setSecretAt)", () => {
+  it("sets a repository secret, or one in the environment's GitHub environment, audited by name with the phase when given", async () => {
+    const deps = await createTestPhaseDeps();
+    const github = new FakeGitHub();
+    const setup = { api: github, owner: "acme", repo: "shop" };
+    const plan = testPlan({ userSecret: false });
+    const apart = DeployPlanSchema.parse({
+      ...plan,
+      environment: { ...plan.environment, secrets: "environment" },
+    });
+    const environment = secretsEnvironment(apart) as string;
+    expect(environment).toBeDefined();
+    github.environments.set(environment, new Map());
+
+    const repository = deploySecretPlace(plan, DEPLOY_SECRETS.appEnv);
+    const inEnvironment = deploySecretPlace(apart, DEPLOY_SECRETS.appEnv);
+    expect(repository).toEqual({ name: DEPLOY_SECRETS.appEnv });
+    expect(inEnvironment).toEqual({ name: DEPLOY_SECRETS.appEnv, environment });
+
+    const one = fakeSecret("generic-password", "repository");
+    const two = fakeSecret("generic-password", "environment");
+    await setSecretAt(deps, setup, repository, one);
+    await setSecretAt(deps, setup, inEnvironment, two, "provision");
+    expect(github.secrets.get(DEPLOY_SECRETS.appEnv)).toBe(one);
+    expect(github.environments.get(environment)?.get(DEPLOY_SECRETS.appEnv)).toBe(two);
+
+    const audited = deps.audit.entries.filter((e) => e.kind === "secret-set");
+    expect(audited).toMatchObject([
+      {
+        actor: "opscrew",
+        action: `set secret ${DEPLOY_SECRETS.appEnv}`,
+        target: "acme/shop",
+        decision: "approved",
+      },
+      {
+        actor: "opscrew",
+        action: `set secret ${DEPLOY_SECRETS.appEnv} in the environment ${environment}`,
+        phase: "provision",
+        target: "acme/shop",
+        decision: "approved",
+      },
+    ]);
+    expect(audited[0]).not.toHaveProperty("phase");
+    expect(JSON.stringify(deps.audit.entries)).not.toContain(one);
+    expect(JSON.stringify(deps.audit.entries)).not.toContain(two);
   });
 });
 

@@ -4,6 +4,7 @@
  * (on an extra server its `begin` before the app's server's whole run and its `finish` after, split
  * placement), what each step costs the running app, and the hash its approval is bound to.
  */
+import { isDeepStrictEqual } from "node:util";
 import { canonicalJson, listText, sha256Hex, toPosixRelative } from "@opscrew/core";
 import {
   type RotateStep,
@@ -15,21 +16,26 @@ import {
 import { APP_SERVER, type DeployPlan, type PlanService } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import type { SecretPlace } from "../provision/secrets";
-import { APPROVAL_SECONDS } from "../rollback/database";
-import { PlanRefusedError } from "../shared/approvals";
+import { APPROVAL_SECONDS, requestApproval } from "../shared/approvals";
 import { serverWords } from "../shared/server-address";
 import { extraServers, hasExtraServers } from "../shared/servers";
 import { passwordKey } from "../vpn/grants";
-import { appConsequence, appFingerprints, appSecretLines } from "./app-values";
+import {
+  appConsequence,
+  appFingerprints,
+  appSecretLines,
+  pairFingerprint,
+  serviceFingerprints,
+} from "./app-values";
 import { credentialsRecordFile } from "./record";
 import type { GrantLogin } from "./values";
-import type { RotationValues } from "./values-pending";
+import type { RotationValues, ValuePair } from "./values-pending";
 
 /**
  * About how long the app's switch to the new values takes, which a swap's or a restart's window
  * adds to the service's own seconds (plan, Decisions 2).
  */
-const SWITCH_SECONDS = 30;
+export const SWITCH_SECONDS = 30;
 
 /** One secret's rotation on its server: the catalog's recipe as `rotate.sh` runs it. */
 export interface ServiceStep {
@@ -59,6 +65,25 @@ export function rotationContext(plan: DeployPlan, service: PlanService): Service
       throw new Error(`${service.name}'s secret ${name} cannot appear in a rotation's step`);
     },
   };
+}
+
+/**
+ * True when `running`, the start of `service`'s container as Docker holds it, is the catalog's
+ * (a start from before 025 keeps no copy of the service's value in its container).
+ */
+export function startsMatch(
+  plan: DeployPlan,
+  service: PlanService,
+  running: { entrypoint?: unknown; command?: unknown },
+): boolean {
+  const spec = serviceSpec(service.kind);
+  const ctx = rotationContext(plan, service);
+  const entrypoint = spec.entrypoint?.(ctx);
+  const command = spec.command?.(ctx);
+  return (
+    (entrypoint === undefined || isDeepStrictEqual(running.entrypoint, entrypoint)) &&
+    (command === undefined || isDeepStrictEqual(running.command, command))
+  );
 }
 
 /**
@@ -126,10 +151,7 @@ export function grantSteps(grants: readonly GrantLogin[]): ServiceStep[] {
  * The old and the new value `rotate.sh` gets for `step`: a device login's passwords, else none for
  * a step of several secrets.
  */
-export function stepValues(
-  step: ServiceStep,
-  values: RotationValues,
-): { old: string; new: string } {
+export function stepValues(step: ServiceStep, values: RotationValues): ValuePair {
   if (step.device !== undefined) {
     return values.grants?.[passwordKey(step.device, step.service.name)] ?? { old: "", new: "" };
   }
@@ -171,11 +193,6 @@ export function serverRuns(
     }));
 }
 
-/** The credentials `input` rotates, by the names `opscrew rotate` takes. */
-function rotatedNames(input: RotationPlan): string[] {
-  return input.values.names;
-}
-
 /** What a rotation's approval names and its hash binds. */
 export interface RotationPlan {
   /** The services rotated, by plan name, in the plan's order. */
@@ -202,14 +219,7 @@ export function rotationHash(
       environment: deps.paths.environment,
       app: plan.app.name,
       services: input.services.map((service) => service.name),
-      values: Object.entries(input.values.services).map(([service, secrets]) => ({
-        service,
-        secrets: Object.entries(secrets).map(([secret, pair]) => ({
-          secret,
-          old: sha256Hex(pair.old),
-          new: sha256Hex(pair.new),
-        })),
-      })),
+      values: serviceFingerprints(input.values.services),
       servers: input.runs.map((run) => ({ server: run.server, script: sha256Hex(run.script) })),
       secrets: input.secrets,
       ...(input.values.grants === undefined
@@ -217,8 +227,7 @@ export function rotationHash(
         : {
             grants: Object.entries(input.values.grants).map(([grant, pair]) => ({
               grant,
-              old: sha256Hex(pair.old),
-              new: sha256Hex(pair.new),
+              ...pairFingerprint(pair),
             })),
           }),
       ...(input.values.app === undefined ? {} : { appValues: appFingerprints(input.values.app) }),
@@ -294,19 +303,20 @@ function switchText(plan: DeployPlan): string {
 }
 
 /**
- * Asks the rotation's approval, bound to its hash (`remote-exec`, as 024's restore; `--approve
- * <hash>` in a script), listing each credential and what it costs, then each step in order.
+ * Asks the rotation's approval, bound to `hash` (its {@link rotationHash}; `remote-exec`, as 024's
+ * restore; `--approve <hash>` in a script), listing each credential and what it costs, then each
+ * step in order.
  * @throws PlanRefusedError when it is not given.
  */
 export async function approveRotation(
   deps: PhaseDeps,
   plan: DeployPlan,
   input: RotationPlan,
+  hash: string,
   again: string,
-): Promise<string> {
-  const hash = rotationHash(deps, plan, input);
+): Promise<void> {
   const { environment } = deps.paths;
-  const names = listText(rotatedNames(input));
+  const names = listText(input.values.names);
   const extras = input.runs.filter((run) => run.server !== APP_SERVER);
   const app = input.runs.find((run) => run.server === APP_SERVER);
   const servicesOf = (run: ServerRun) =>
@@ -342,19 +352,16 @@ export async function approveRotation(
         ]),
     `Rotation hash: ${hash}`,
   ];
-  const approval = await deps.approvals.request({
-    kind: "remote-exec",
+  await requestApproval(deps, {
     title: `Rotate the credentials of ${names} in ${environment}`,
     details: lines.join("\n"),
-    planHash: hash,
-    ...consequence?.guard,
-  });
-  if (approval.approved) return hash;
-  throw new PlanRefusedError({
-    plan: `rotation of ${names}`,
-    ...(approval.reason === undefined ? {} : { reason: approval.reason }),
-    unchanged: "Nothing on the servers or in GitHub was changed.",
-    hint: `Run \`${again}\` again when you are ready (in a script: --approve ${hash}).`,
+    hash,
+    guard: consequence?.guard,
+    refused: {
+      plan: `rotation of ${names}`,
+      unchanged: "Nothing on the servers or in GitHub was changed.",
+      again,
+    },
   });
 }
 
@@ -371,7 +378,7 @@ export async function approveUndo(
 ): Promise<string> {
   const undo = undoHash(hash);
   const { environment } = deps.paths;
-  const names = listText(rotatedNames(input));
+  const names = listText(input.values.names);
   const steps =
     input.runs.length === 0
       ? ["No server runs them: the new values are forgotten on this computer."]
@@ -384,21 +391,19 @@ export async function approveUndo(
           `${secretsText(input.secrets)} get the old values back.`,
           "Deploys resume, and the new values are forgotten on this computer.",
         ].map((line, i) => `${i + 1}. ${line}`);
-  const approval = await deps.approvals.request({
-    kind: "remote-exec",
+  await requestApproval(deps, {
     title: `Put the old values of ${names} back in ${environment}`,
     details: [
       `The rotation ${hash} of ${names} in ${environment} stopped before it finished; its old values come back, and the new ones are dropped.`,
       ...steps,
       `Undo hash: ${undo}`,
     ].join("\n"),
-    planHash: undo,
+    hash: undo,
+    refused: {
+      plan: `undo of the rotation of ${names}`,
+      unchanged: "Nothing on the servers or in GitHub was changed.",
+      again: `${again} --undo`,
+    },
   });
-  if (approval.approved) return undo;
-  throw new PlanRefusedError({
-    plan: `undo of the rotation of ${names}`,
-    ...(approval.reason === undefined ? {} : { reason: approval.reason }),
-    unchanged: "Nothing on the servers or in GitHub was changed.",
-    hint: `Run \`${again} --undo\` again when you are ready (in a script: --approve ${undo}).`,
-  });
+  return undo;
 }

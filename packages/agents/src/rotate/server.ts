@@ -8,15 +8,12 @@
  * A failure keeps the values and the deploys paused, and says the step and how to go on or put the
  * old values back (`--undo`). Nothing it prints, audits or asks holds a value or a server's address.
  */
-import { isDeepStrictEqual } from "node:util";
 import type { CommandResult, RemoteRunOptions } from "@opscrew/contracts";
 import { isUserFacingError, listText, OpsCrewError, upperFirst } from "@opscrew/core";
 import {
   appDir,
-  checkEnvironmentKey,
   DEPLOY_PAUSED_VARIABLE,
   DEPLOY_SECRETS,
-  deploySecretName,
   hasLogin,
   ROTATE_APPROVAL_FILE,
   ROTATE_DIR,
@@ -29,50 +26,56 @@ import {
 import { APP_SERVER, type DeployPlan, onOneServer, type PlanService } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
-import { withDeploysPausedUntilDone } from "../move/deploys";
+import { requireNoOtherPause, withDeploysPausedUntilDone } from "../move/deploys";
 import type { GitHubSetup } from "../provision/credentials";
-import { type SecretPlace, secretsEnvironment } from "../provision/secrets";
+import { deploySecretPlace, setSecretAt } from "../provision/secrets";
 import type { ProvisionServices } from "../provision/types";
-import { APPROVAL_SECONDS } from "../rollback/database";
 import { type RefreshRecoveryResult, refreshRecoveryCopy } from "../secrets/copy";
 import { registerAppSecrets } from "../shared/app-secrets";
-import { deployPauseOf, pinnedText, rotationWindowText } from "../shared/deploy-pause";
-import { codeOf } from "../shared/errors";
+import { APPROVAL_SECONDS } from "../shared/approvals";
+import { codeOf, continued, hintOf } from "../shared/errors";
 import { serverWords } from "../shared/server-address";
 import { READ_TIMEOUT_MS, scriptSaid } from "../snapshot/hosts";
 import { requireNoDeployOrMove } from "../snapshot/run";
 import { serverShell } from "../status/servers";
 import { passwordKey } from "../vpn/grants";
-import { ADDON_ROTATION_HASH } from "./addons-monitoring";
 import { appSecretNames, appSuccessNote, isAppName, newAppValues, withAppEnv } from "./app-values";
 import {
   approveRotation,
   approveUndo,
   grantSteps,
   type RotationPlan,
-  rotationContext,
   rotationHash,
   type ServerRun,
   serverRuns,
   serviceSteps,
+  startsMatch,
   stepValues,
 } from "./plan";
-import { assertValuesCurrent, readCredentialsRecord, recordRotation } from "./record";
+import { assertValuesCurrent } from "./record";
 import {
   completePendingRotation,
   type GrantLogin,
   grantName,
   newRotationValues,
+  recordedGeneration,
   serviceEnvTexts,
-  serviceValues,
+  serviceSides,
   swapAppEnv,
 } from "./values";
 import {
+  ADDON_ROTATION_HASH,
+  beganElsewhere,
   dropPendingRotation,
+  forgetPlannedRotation,
   keepPendingRotation,
+  nothingToUndo,
   type PendingRotation,
   type RotationValues,
   readPendingRotation,
+  rotateCommand,
+  sameNames,
+  unfinishedRotation,
 } from "./values-pending";
 
 /** What {@link rotateServices} reaches besides this computer. */
@@ -229,46 +232,6 @@ function namedServices(plan: DeployPlan, names: readonly string[], flags: string
   return services;
 }
 
-/**
- * Refuses, before any change, while a move or another credential rotation pauses the app's
- * deploys in GitHub (`OPSCREW_DEPLOY_PAUSED`), and while a rollback pins them: the rotation pauses
- * them itself and resumes them at its end, which would end the pin. Only the pause of this
- * rotation, once it began (`began`: its hash), is its own, kept since it stopped.
- */
-async function requireNoPause(
-  deps: PhaseDeps,
-  github: RotateServicesOptions["github"],
-  plan: DeployPlan,
-  again: string,
-  flags: string,
-  began: string | undefined,
-): Promise<void> {
-  const pause = await deployPauseOf(github, plan);
-  if (pause === undefined || (pause.reason === "rotation" && pause.hash === began)) return;
-  const key = checkEnvironmentKey(plan);
-  if (pause.reason === "rotation") {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      `The deploys of ${key} are paused since ${pause.since} for ${await rotationWindowText(deps, flags, pause.hash)}, so this rotation can't begin. Nothing was changed.`,
-      { hint: `Finish or undo that rotation first, then run \`${again}\` again.` },
-    );
-  }
-  if (pause.reason === "move") {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      `The deploys of ${key} are paused for a move since ${pause.since} (the repository variable ${DEPLOY_PAUSED_VARIABLE}), and OpsCrew does not rotate credentials while the app moves. Nothing was changed.`,
-      {
-        hint: `Let the move finish, then run \`${again}\` again. If no move runs (an earlier run of OpsCrew was stopped), remove ${key} from ${DEPLOY_PAUSED_VARIABLE} in the repository's Settings → Secrets and variables → Actions → Variables first.`,
-      },
-    );
-  }
-  throw new OpsCrewError(
-    "PHASE_PRECONDITION",
-    `The deploys of ${key} are paused since ${pause.since}: ${pinnedText(pause)}. A rotation pauses the deploys itself and resumes them at its end, which would end that pin. Nothing was changed.`,
-    { hint: `Run \`opscrew rollback${flags} --resume\` first, then \`${again}\` again.` },
-  );
-}
-
 /** The read-only script that prints each running service's start command, by service. */
 function startsScript(services: readonly string[]): string {
   return [
@@ -282,8 +245,8 @@ function startsScript(services: readonly string[]): string {
 }
 
 /** {@link startsScript}'s answer: each service's entrypoint and command, as Docker holds them. */
-function readStarts(stdout: string): Map<string, { entrypoint?: unknown; cmd?: unknown }> {
-  const starts = new Map<string, { entrypoint?: unknown; cmd?: unknown }>();
+function readStarts(stdout: string): Map<string, { entrypoint?: unknown; command?: unknown }> {
+  const starts = new Map<string, { entrypoint?: unknown; command?: unknown }>();
   for (const match of stdout.matchAll(/^(entrypoint|cmd) ([a-z0-9-]+) (.*)$/gm)) {
     const service = match[2] ?? "";
     let value: unknown;
@@ -292,25 +255,28 @@ function readStarts(stdout: string): Map<string, { entrypoint?: unknown; cmd?: u
     } catch {
       value = match[3];
     }
-    starts.set(service, { ...starts.get(service), [match[1] ?? ""]: value });
+    const key = match[1] === "cmd" ? "command" : "entrypoint";
+    starts.set(service, { ...starts.get(service), [key]: value });
   }
   return starts;
 }
 
 /**
- * Refuses, before any change, a rotated service that does not run on its server, or runs on a
- * start command other than the catalog's (one from before 025, which keeps no copy of its value in
- * its container, so a restart would put the old value back): a deploy first starts it on the new
- * one. Read-only, one command per server.
+ * Refuses, before any change, a rotated service that does not run on its server while the
+ * rotation has not `begun` (one that began goes on, and its switch starts the service again;
+ * provision refuses while it is unfinished), or one that runs on a start command other than the
+ * catalog's (one from before 025, which keeps no copy of its value in its container, so a restart
+ * would put the old value back): a deploy first starts it on the new one. Read-only, one command
+ * per server.
  */
 async function requireCurrentStarts(
   deps: PhaseDeps,
   plan: DeployPlan,
   runs: readonly ServerRun[],
   hosts: ReadonlyMap<string, RotateHost>,
-  again: string,
-  flags: string,
+  rotation: { again: string; flags: string; begun: boolean },
 ): Promise<void> {
+  const { again, flags, begun } = rotation;
   for (const run of runs) {
     const services = [
       ...new Map(run.steps.map((step) => [step.service.name, step.service])).values(),
@@ -329,6 +295,7 @@ async function requireCurrentStarts(
       const spec = serviceSpec(service.kind);
       const found = starts.get(service.name);
       if (found === undefined) {
+        if (begun) continue;
         throw new OpsCrewError(
           "PHASE_PRECONDITION",
           `${service.name} (${spec.title}) is not running on ${host.words}, so OpsCrew can't change its value. Nothing was changed.`,
@@ -337,15 +304,7 @@ async function requireCurrentStarts(
           },
         );
       }
-      const ctx = rotationContext(plan, service);
-      const entrypoint = spec.entrypoint?.(ctx);
-      const command = spec.command?.(ctx);
-      if (
-        (entrypoint === undefined || isDeepStrictEqual(found.entrypoint, entrypoint)) &&
-        (command === undefined || isDeepStrictEqual(found.cmd, command))
-      ) {
-        continue;
-      }
+      if (startsMatch(plan, service, found)) continue;
       throw new OpsCrewError(
         "PHASE_PRECONDITION",
         `${service.name} (${spec.title}) on ${host.words} still runs on a start command from before this version of OpsCrew, which keeps no copy of its value in the container: a restart would bring the old value back. Nothing was changed.`,
@@ -386,13 +345,6 @@ async function readAppEnv(
   return result.stdout;
 }
 
-/** Where GitHub holds the deploy secret `name` of `plan`'s environment. */
-function secretPlace(plan: DeployPlan, name: string): SecretPlace {
-  const environment = secretsEnvironment(plan);
-  const stored = deploySecretName(plan, name);
-  return environment === undefined ? { name: stored } : { name: stored, environment };
-}
-
 /**
  * The deploy secrets a rotation of `services` replaces, by their unprefixed names: the app's
  * settings and each running one's env file.
@@ -411,21 +363,8 @@ async function replaceSecrets(
   plan: DeployPlan,
   secrets: Readonly<Record<string, string>>,
 ): Promise<void> {
-  const { api, owner, repo } = github;
   for (const [name, value] of Object.entries(secrets)) {
-    const place = secretPlace(plan, name);
-    if (place.environment === undefined) {
-      await api.setActionsSecret(owner, repo, place.name, value);
-    } else {
-      await api.setEnvironmentSecret(owner, repo, place.environment, place.name, value);
-    }
-    await deps.audit.append({
-      kind: "secret-set",
-      actor: "opscrew",
-      action: `set secret ${place.name}${place.environment === undefined ? "" : ` in the environment ${place.environment}`}`,
-      target: `${owner}/${repo}`,
-      decision: "approved",
-    });
+    await setSecretAt(deps, github, deploySecretPlace(plan, name), value);
   }
 }
 
@@ -506,27 +445,23 @@ async function runScript(rotation: Rotation, run: ServerRun, action: RotateActio
 /**
  * `error` of the rotation's `stage` with what is true after it and how to go on: until the app's
  * server finished its run the rotation goes on or is undone; after it (`finish`, or a run that
- * found it `switched`) it only goes on.
+ * found it `switched`) it only goes on. GitHub's failure is named before the error's words.
  */
 function stopped(error: unknown, rotation: Rotation, stage: "secrets" | "servers" | "finish") {
-  if (!isUserFacingError(error)) return error;
   const { again, from } = rotation;
   const forward = stage === "finish" || from === "switched";
-  const said = error.message.replace(/\s+$/, "");
-  const message =
-    stage === "secrets"
-      ? `OpsCrew could not replace the deploy secrets in GitHub: ${said}${from === "planned" ? " No server was changed yet." : ""}`
-      : said;
   const until = forward ? `\`${again}\`` : `\`${again}\` or \`${again} --undo\``;
+  const said = `The old and the new values stay on this computer until the rotation is done or undone, and the app's deploys stay paused (${DEPLOY_PAUSED_VARIABLE}) until ${until} finishes.`;
+  const fallback = "Fix what it names. ";
+  const next = forward
+    ? `The app runs on the new values, so the rotation only goes forward: run \`${again}\` again to finish it.`
+    : `Then run \`${again}\` again to go on from where it stopped, or \`${again} --undo\` to put the old values back.`;
+  if (stage !== "secrets") return continued(error, { said, fallback, next });
+  if (!isUserFacingError(error)) return error;
   return new OpsCrewError(
     codeOf(error),
-    `${message} The old and the new values stay on this computer until the rotation is done or undone, and the app's deploys stay paused (${DEPLOY_PAUSED_VARIABLE}) until ${until} finishes.`,
-    {
-      hint: forward
-        ? `The app runs on the new values, so the rotation only goes forward: fix what it names, then run \`${again}\` again to finish it.`
-        : `${error.hint ? `${error.hint} ` : "Fix what it names. "}Then run \`${again}\` again to go on from where it stopped, or \`${again} --undo\` to put the old values back.`,
-      cause: error,
-    },
+    `OpsCrew could not replace the deploy secrets in GitHub: ${error.message.replace(/\s+$/, "")}${from === "planned" ? " No server was changed yet." : ""} ${said}`,
+    { hint: `${hintOf(error) || fallback}${next}`, cause: error },
   );
 }
 
@@ -586,15 +521,11 @@ async function undoOnServers(
     deps.reporter.step("Putting the old values back in GitHub's deploy secrets");
     await replaceSecrets(deps, github, plan, secrets);
   } catch (error) {
-    if (!isUserFacingError(error)) throw error;
-    throw new OpsCrewError(
-      codeOf(error),
-      `${error.message.replace(/\s+$/, "")} The old and the new values stay on this computer until the rotation is done or undone, and the app's deploys stay paused (${DEPLOY_PAUSED_VARIABLE}) until \`${again} --undo\` or \`${again}\` finishes.`,
-      {
-        hint: `Fix what it names, then run \`${again} --undo\` again to finish the undo. If it says the rotation finished on the app's server, it can only go forward: run \`${again}\` to finish it.`,
-        cause: error,
-      },
-    );
+    throw continued(error, {
+      said: `The old and the new values stay on this computer until the rotation is done or undone, and the app's deploys stay paused (${DEPLOY_PAUSED_VARIABLE}) until \`${again} --undo\` or \`${again}\` finishes.`,
+      fallback: "Fix what it names. ",
+      next: `Then run \`${again} --undo\` again to finish the undo. If it says the rotation finished on the app's server, it can only go forward: run \`${again}\` to finish it.`,
+    });
   }
 }
 
@@ -606,9 +537,7 @@ async function envFilesWith(
   appEnv: string | undefined,
   side: "old" | "new",
 ): Promise<Record<string, string>> {
-  const other = side === "new" ? "old" : "new";
-  const from = await serviceValues(deps, plan, values, other);
-  const to = await serviceValues(deps, plan, values, side);
+  const { from, to } = await serviceSides(deps, plan, values, side);
   return {
     ...serviceEnvTexts(plan, to),
     ...(appEnv === undefined
@@ -728,7 +657,7 @@ async function runRotation(
   const changed = plan.services.filter(
     (s) => services.includes(s) || grants.some((grant) => grant.service.name === s.name),
   );
-  const again = `opscrew rotate ${named.join(" ")}${flags}`;
+  const again = rotateCommand(named, flags);
   if (!onOneServer(plan.target.provider)) {
     throw new Error(`rotateServices rotates on servers, not on ${plan.target.provider}.`);
   }
@@ -742,55 +671,26 @@ async function runRotation(
   await assertValuesCurrent(deps);
   await registerAppSecrets(deps, plan);
   const existing = await readPendingRotation(deps);
-  const sorted = (list: readonly string[]) => [...list].sort();
-  const sameNames =
-    existing !== undefined && isDeepStrictEqual(sorted(existing.names), sorted(named));
+  const same = existing !== undefined && sameNames(existing.names, named);
   // An add-on's rotation (`monitoring`, `beszel`) is another rotation, whatever its name.
   const addon = existing?.hash === ADDON_ROTATION_HASH;
-  const reused = sameNames && !addon ? existing : undefined;
+  const reused = same && !addon ? existing : undefined;
   // One that began in the user's Portainer or on this computer keeps its state there (T2507).
   if (reused !== undefined && reused.step !== "planned" && reused.target !== undefined) {
-    const where = {
-      portainer: "in your Portainer",
-      localhost: "on this computer",
-      site: "in the site's GitHub secrets",
-    }[reused.target];
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      `The rotation of ${listText(named)} began ${where}, and its state is there, not on the servers. Nothing was changed.`,
-      {
-        hint: `Finish it with \`${again}\`${reused.step === "switched" ? "" : `, or put the old values back with \`${again} --undo\``}, while the plan still runs the app where the rotation began.`,
-      },
-    );
+    throw beganElsewhere(reused, "server", again);
   }
   // A rotation only planned changed nothing yet: one of other services replaces it, but never an
   // add-on's of the same name, which this command could not finish.
   if (
     existing !== undefined &&
     reused === undefined &&
-    (existing.step !== "planned" || (addon && sameNames))
+    (existing.step !== "planned" || (addon && same))
   ) {
-    const theirs = `opscrew rotate ${existing.names.join(" ")}${flags}`;
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      `The rotation of ${listText(existing.names)} in ${environment} is unfinished: its new values are on this computer, and maybe on the servers. Nothing was changed.`,
-      {
-        hint: `Finish it with \`${theirs}\`${existing.step === "switched" || addon ? "" : `, or put the old values back with \`${theirs} --undo\``}, then run this command again.`,
-      },
-    );
+    throw unfinishedRotation(existing, environment, flags);
   }
-  if (options.undo === true && reused === undefined) {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      `No rotation of ${listText(named)} is unfinished in ${environment}, so there is nothing to undo. Nothing was changed.`,
-    );
-  }
+  if (options.undo === true && reused === undefined) throw nothingToUndo(named, environment);
   if (options.undo === true && reused?.step === "planned") {
-    // Never approved: nothing but this computer's file holds its new values.
-    await dropPendingRotation(deps);
-    deps.reporter.success(
-      `Forgot the rotation of ${listText(named)} in ${environment}: it was never approved, so nothing else had changed.`,
-    );
+    await forgetPlannedRotation(deps, named);
     return { hash: reused.hash, copy: { changed: false }, values: reused };
   }
   if (options.undo === true && reused?.step === "switched") {
@@ -804,23 +704,21 @@ async function runRotation(
     { deps, plan, environment, flags, services: { github: options.github.api } },
     "rotate credentials",
   );
-  await requireNoPause(
-    deps,
-    options.github,
-    plan,
+  const begun = reused !== undefined && reused.step !== "planned";
+  await requireNoOtherPause(deps, options.github, plan, {
+    own: begun ? reused.hash : undefined,
     again,
     flags,
-    reused !== undefined && reused.step !== "planned" ? reused.hash : undefined,
-  );
+  });
   // Each service's generation once rotated, which `rotate.sh` records for the snapshots (T2514);
   // a device login touches no snapshot's data.
-  const now = (await readCredentialsRecord(deps)).environments[environment] ?? {};
+  const generation = await recordedGeneration(deps);
   const runs = serverRuns(
     plan,
     [
       ...serviceSteps(plan, services).map((s) => ({
         ...s,
-        step: { ...s.step, generation: (now[s.service.name]?.generation ?? 1) + 1 },
+        step: { ...s.step, generation: generation(s.service.name) + 1 },
       })),
       ...grantSteps(grants),
     ],
@@ -828,7 +726,9 @@ async function runRotation(
   );
   const hosts = new Map<string, RotateHost>();
   for (const run of runs) hosts.set(run.server, await rotateHost(deps, plan, run.server, options));
-  if (options.undo !== true) await requireCurrentStarts(deps, plan, runs, hosts, again, flags);
+  if (options.undo !== true) {
+    await requireCurrentStarts(deps, plan, runs, hosts, { again, flags, begun });
+  }
   const appEnv =
     runs.length === 0
       ? undefined
@@ -853,7 +753,8 @@ async function runRotation(
     services,
     values,
     runs,
-    secrets: runs.length === 0 ? [] : rotatedSecrets(changed).map((n) => secretPlace(plan, n)),
+    secrets:
+      runs.length === 0 ? [] : rotatedSecrets(changed).map((n) => deploySecretPlace(plan, n)),
   };
   const hash = rotationHash(deps, plan, input);
   // The servers' state of a rotation that began is bound to its hash.
@@ -870,10 +771,6 @@ async function runRotation(
   // Kept before the approval, so a run approved by the hash shown reuses the same values.
   const pending: PendingRotation = { ...values, hash, step: from };
   await keepPendingRotation(deps, pending);
-  const paused = {
-    ...(options.sleep ? { sleep: options.sleep } : {}),
-    ...(options.now ? { now: options.now } : {}),
-  };
   const rotation: Rotation = { deps, plan, hash, pending, from, runs, hosts, envFiles, again };
 
   if (options.undo === true) {
@@ -884,7 +781,7 @@ async function runRotation(
         deps,
         options.github,
         plan,
-        paused,
+        options,
         { command: `${again} --undo`, hash },
         () => undoOnServers(rotation, secretValues(changed, old), options.github),
       );
@@ -896,7 +793,7 @@ async function runRotation(
     return { hash: undo, copy: await refreshRecoveryCopy(deps, plan), values };
   }
 
-  await approveRotation(deps, plan, input, again);
+  await approveRotation(deps, plan, input, hash, again);
   if (runs.length > 0) {
     rotation.pending = { ...pending, step: from === "planned" ? "started" : from };
     await keepPendingRotation(deps, rotation.pending);
@@ -904,19 +801,12 @@ async function runRotation(
       deps,
       options.github,
       plan,
-      paused,
+      options,
       { command: again, hash },
       () => rotateOnServers(rotation, secretValues(changed, envFiles), options.github),
     );
   }
-  const record = (await readCredentialsRecord(deps)).environments[environment] ?? {};
-  await completePendingRotation(
-    deps,
-    plan,
-    values,
-    Object.fromEntries(named.map((name) => [name, record[name]?.generation ?? 1])),
-  );
-  await recordRotation(deps, named);
+  await completePendingRotation(deps, plan, values);
   deps.reporter.success(
     runs.length === 0
       ? `Made new values for ${listText(named)} in ${environment} on this computer: ${named.length === 1 ? "it is" : "they are"} off and start with them.`

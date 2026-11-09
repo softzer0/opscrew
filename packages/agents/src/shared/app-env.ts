@@ -141,6 +141,14 @@ function secretFormat(format: GeneratedSecret["format"] | undefined): PreviewSec
 }
 
 /**
+ * A new value of a service's secret in the catalog's `format`: `GK` and 12 random bytes as hex (a
+ * Garage key id), else 32 random bytes as hex.
+ */
+export function newSecretValue(format: GeneratedSecret["format"] | undefined): string {
+  return randomValue(secretFormat(format));
+}
+
+/**
  * A new value for the generated app variable `name`: in its {@link FRAMEWORK_ENV} format (Laravel's
  * `APP_KEY`), else a random password, as {@link assembleAppEnv} makes one.
  */
@@ -700,7 +708,7 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
       value =
         options.previous?.services?.[service.name]?.[name] ??
         options.password?.() ??
-        randomValue(secretFormat(format));
+        newSecretValue(format);
       generated.services ??= {};
       generated.services[service.name] = { ...generated.services[service.name], [name]: value };
     }

@@ -5,17 +5,11 @@
  */
 import type { CommandResult } from "@opscrew/contracts";
 import { OpsCrewError, type Redactor } from "@opscrew/core";
-import {
-  appDir,
-  DEPLOY_SECRETS,
-  deploySecretName,
-  maskFileScript,
-  serviceSpec,
-} from "@opscrew/iac-templates";
+import { appDir, DEPLOY_SECRETS, maskFileScript, serviceSpec } from "@opscrew/iac-templates";
 import type { DeployPlan, Move } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import type { GitHubSetup } from "../provision/credentials";
-import { secretsEnvironment } from "../provision/secrets";
+import { deploySecretPlace, setSecretAt } from "../provision/secrets";
 import { dotenvLine, readValidJson, serverWords } from "../shared";
 import { GeneratedValuesSchema, generatedValuesFile } from "../shared/app-secrets";
 import type { MoveShell } from "./shells";
@@ -166,19 +160,11 @@ export async function storeAppEnv(
   plan: DeployPlan,
   text: string,
 ): Promise<void> {
-  const name = deploySecretName(plan, DEPLOY_SECRETS.appEnv);
-  const environment = secretsEnvironment(plan);
-  if (environment === undefined) {
-    await github.api.setActionsSecret(github.owner, github.repo, name, text);
-  } else {
-    await github.api.setEnvironmentSecret(github.owner, github.repo, environment, name, text);
-  }
-  await deps.audit.append({
-    kind: "secret-set",
-    actor: "opscrew",
-    action: `set secret ${name}${environment === undefined ? "" : ` in the environment ${environment}`}`,
-    phase: "provision",
-    target: `${github.owner}/${github.repo}`,
-    decision: "approved",
-  });
+  await setSecretAt(
+    deps,
+    github,
+    deploySecretPlace(plan, DEPLOY_SECRETS.appEnv),
+    text,
+    "provision",
+  );
 }

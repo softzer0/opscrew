@@ -2,15 +2,23 @@
  * The app's deploys, paused during a move's maintenance window (feature 018): the repository
  * variable `OPSCREW_DEPLOY_PAUSED` names the app's environment with reason `move`, so the deploy
  * workflow skips its deploy job while the window runs, and the window starts only once no deploy
- * of the app runs.
+ * of the app runs. A credential rotation (feature 025) pauses them the same way, by its own entry.
  */
+import { OpsCrewError } from "@opscrew/core";
 import { checkEnvironmentKey, DEPLOY_PAUSED_VARIABLE } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { failureReason } from "../destroy/deletion";
 import type { GitHubSetup } from "../provision/credentials";
 import type { ProvisionServices } from "../provision/types";
-import { clearDeployPause, setDeployPause, waitForDeploys } from "../shared/deploy-pause";
+import {
+  clearDeployPause,
+  deployPauseOf,
+  pinnedText,
+  rotationWindowText,
+  setDeployPause,
+  waitForDeploys,
+} from "../shared/deploy-pause";
 
 type Deps = Pick<PhaseDeps, "audit" | "clock" | "reporter">;
 type GitHub = Pick<GitHubSetup, "api" | "owner" | "repo">;
@@ -77,6 +85,46 @@ export async function withDeploysPausedUntilDone<T>(
   const result = await window();
   await resumeDeploys(deps, github, plan, "rotation");
   return result;
+}
+
+/**
+ * Refuses, before any change, while a move or another credential rotation pauses the app's deploys
+ * in GitHub (`OPSCREW_DEPLOY_PAUSED`), and while a rollback pins them: a rotation pauses them
+ * itself and resumes them at its end, which would end the pin. Only the rotation's own pause (`own`:
+ * its hash, once it began) is kept since it stopped. `again` goes on, `flags` are the commands'.
+ * @throws OpsCrewError `PHASE_PRECONDITION` naming what holds the deploys and how to end it.
+ */
+export async function requireNoOtherPause(
+  deps: Pick<PhaseDeps, "paths" | "redactor">,
+  github: GitHub,
+  plan: DeployPlan,
+  rotation: { own: string | undefined; again: string; flags: string },
+): Promise<void> {
+  const { own, again, flags } = rotation;
+  const pause = await deployPauseOf(github, plan);
+  if (pause === undefined || (pause.reason === "rotation" && pause.hash === own)) return;
+  const key = checkEnvironmentKey(plan);
+  if (pause.reason === "rotation") {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `The deploys of ${key} are paused since ${pause.since} for ${await rotationWindowText(deps, flags, pause.hash)}, so this rotation can't begin. Nothing was changed.`,
+      { hint: `Finish or undo that rotation first, then run \`${again}\` again.` },
+    );
+  }
+  if (pause.reason === "move") {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `The deploys of ${key} are paused for a move since ${pause.since} (the repository variable ${DEPLOY_PAUSED_VARIABLE}), and OpsCrew does not rotate credentials while the app moves. Nothing was changed.`,
+      {
+        hint: `Let the move finish, then run \`${again}\` again. If no move runs (an earlier run of OpsCrew was stopped), remove ${key} from ${DEPLOY_PAUSED_VARIABLE} in the repository's Settings → Secrets and variables → Actions → Variables first.`,
+      },
+    );
+  }
+  throw new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `The deploys of ${key} are paused since ${pause.since}: ${pinnedText(pause)}. A rotation pauses the deploys itself and resumes them at its end, which would end that pin. Nothing was changed.`,
+    { hint: `Run \`opscrew rollback${flags} --resume\` first, then \`${again}\` again.` },
+  );
 }
 
 /**

@@ -13,17 +13,17 @@
  */
 import { posix } from "node:path";
 import type { GitHubClient } from "@opscrew/connector-github";
-import { canonicalJson, isUserFacingError, listText, OpsCrewError, sha256Hex } from "@opscrew/core";
+import { canonicalJson, listText, OpsCrewError, sha256Hex } from "@opscrew/core";
 import { deploySecretName, deploySecretNamesFor, siteEnvSecret } from "@opscrew/iac-templates";
 import { type DeployPlan, isServerlessTarget } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
+import { setSecretAt } from "../provision/secrets";
 import { type RefreshRecoveryResult, refreshRecoveryCopy } from "../secrets/copy";
 import { registerAppSecrets } from "../shared/app-secrets";
-import { PlanRefusedError } from "../shared/approvals";
+import { requestApproval } from "../shared/approvals";
 import { type DispatchRepository, dispatchAndFollow } from "../shared/deploy-run";
-import { codeOf } from "../shared/errors";
-import { ADDON_ROTATION_HASH } from "./addons-monitoring";
+import { continued } from "../shared/errors";
 import {
   type AppValues,
   appConsequence,
@@ -34,14 +34,20 @@ import {
   newAppValues,
 } from "./app-values";
 import { undoHash } from "./plan";
-import { assertValuesCurrent, readCredentialsRecord, recordRotation } from "./record";
+import { assertValuesCurrent } from "./record";
 import { completePendingRotation } from "./values";
 import {
+  beganElsewhere,
   dropPendingRotation,
+  forgetPlannedRotation,
   keepPendingRotation,
+  nothingToUndo,
   type PendingRotation,
   type RotationValues,
   readPendingRotation,
+  rotateCommand,
+  sameNames,
+  unfinishedRotation,
 } from "./values-pending";
 
 /** What a site's rotation reaches: the repository's secrets and its deploy workflow. */
@@ -49,7 +55,11 @@ export interface SiteRotationOptions {
   github: DispatchRepository & {
     api: Pick<
       GitHubClient,
-      "setActionsSecret" | "deleteActionsSecret" | "dispatchWorkflow" | "waitForWorkflowRun"
+      | "setActionsSecret"
+      | "setEnvironmentSecret"
+      | "deleteActionsSecret"
+      | "dispatchWorkflow"
+      | "waitForWorkflowRun"
     >;
   };
   /** `--undo`: puts the old values of the unfinished rotation back instead. */
@@ -128,12 +138,15 @@ async function setSecrets(
   for (const { variable, name } of secrets) {
     const value = values[variable]?.[side];
     if (value === undefined) throw new Error(`The rotation has no value of ${variable}.`);
-    if (value === "") await api.deleteActionsSecret(owner, repo, name);
-    else await api.setActionsSecret(owner, repo, name, value);
+    if (value !== "") {
+      await setSecretAt(deps, github, { name }, value);
+      continue;
+    }
+    await api.deleteActionsSecret(owner, repo, name);
     await deps.audit.append({
       kind: "secret-set",
       actor: "opscrew",
-      action: `${value === "" ? "delete" : "set"} secret ${name}`,
+      action: `delete secret ${name}`,
       target: `${owner}/${repo}`,
       decision: "approved",
     });
@@ -168,15 +181,12 @@ async function deploy(
 
 /** `error` with what stays true and how to go on: the values kept, run again or undo. */
 function stopped(error: unknown, again: string, undoing: boolean): unknown {
-  if (!isUserFacingError(error)) return error;
-  return new OpsCrewError(
-    codeOf(error),
-    `${error.message.replace(/\s+$/, "")} The old and the new values stay on this computer until the rotation is done or undone.`,
-    {
-      hint: `${error.hint ? `${error.hint} ` : ""}${undoing ? `Then run \`${again} --undo\` again to finish the undo.` : `Then run \`${again}\` again to go on, or \`${again} --undo\` to put the old values back.`}`,
-      cause: error,
-    },
-  );
+  return continued(error, {
+    said: "The old and the new values stay on this computer until the rotation is done or undone.",
+    next: undoing
+      ? `Then run \`${again} --undo\` again to finish the undo.`
+      : `Then run \`${again}\` again to go on, or \`${again} --undo\` to put the old values back.`,
+  });
 }
 
 /**
@@ -216,42 +226,17 @@ export async function rotateSiteAppSecrets(
   await assertValuesCurrent(deps);
   await registerAppSecrets(deps, plan);
   const named = await appSecretNames(deps, plan, names);
-  const again = `opscrew rotate ${named.join(" ")}${flags}`;
+  const again = rotateCommand(named, flags);
   const existing = await readPendingRotation(deps);
-  const reused =
-    existing !== undefined && [...existing.names].sort().join(" ") === [...named].sort().join(" ")
-      ? existing
-      : undefined;
+  const reused = existing !== undefined && sameNames(existing.names, named) ? existing : undefined;
   if (existing !== undefined && reused === undefined && existing.step !== "planned") {
-    const theirs = `opscrew rotate ${existing.names.join(" ")}${flags}`;
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      `The rotation of ${listText(existing.names)} in ${environment} is unfinished, so OpsCrew starts no other one. Nothing was changed.`,
-      {
-        hint: `Finish it with \`${theirs}\`${existing.step === "switched" || existing.hash === ADDON_ROTATION_HASH ? "" : `, or put the old values back with \`${theirs} --undo\``}, then run this command again.`,
-      },
-    );
+    throw unfinishedRotation(existing, environment, flags);
   }
   const began = reused !== undefined && reused.step !== "planned" ? reused : undefined;
-  if (began !== undefined && began.target !== "site") {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      `The unfinished rotation of ${listText(began.names)} began where the ${environment} environment ran before, not in its site's GitHub secrets. Nothing was changed.`,
-      { hint: "Finish or undo it where it began, then run the command again." },
-    );
-  }
-  if (options.undo === true && reused === undefined) {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      `No rotation of ${listText(named)} is unfinished in ${environment}, so there is nothing to undo. Nothing was changed.`,
-    );
-  }
+  if (began !== undefined && began.target !== "site") throw beganElsewhere(began, "site", again);
+  if (options.undo === true && reused === undefined) throw nothingToUndo(named, environment);
   if (options.undo === true && began === undefined && reused !== undefined) {
-    // Never approved: nothing but this computer's file holds its new values.
-    await dropPendingRotation(deps);
-    deps.reporter.success(
-      `Forgot the rotation of ${listText(named)} in ${environment}: it was never approved, so nothing else had changed.`,
-    );
+    await forgetPlannedRotation(deps, named);
     return { hash: reused.hash, copy: { changed: false } };
   }
   const appValues = reused?.app ?? (await newAppValues(deps, plan, named));
@@ -285,8 +270,7 @@ export async function rotateSiteAppSecrets(
 
   if (options.undo === true) {
     const undo = undoHash(hash);
-    const approval = await deps.approvals.request({
-      kind: "remote-exec",
+    await requestApproval(deps, {
       title: `Put the old values of ${listText(named)} back in ${environment}`,
       details: [
         `The rotation ${hash} of ${listText(named)} in ${environment} stopped before it finished; its old values come back, and the new ones are dropped.`,
@@ -294,16 +278,13 @@ export async function rotateSiteAppSecrets(
         "2. The site's deploy is started and followed to its end, so the site runs on them again.",
         `Undo hash: ${undo}`,
       ].join("\n"),
-      planHash: undo,
-    });
-    if (!approval.approved) {
-      throw new PlanRefusedError({
+      hash: undo,
+      refused: {
         plan: `undo of the rotation of ${listText(named)}`,
-        ...(approval.reason === undefined ? {} : { reason: approval.reason }),
         unchanged: "Nothing in GitHub was changed.",
-        hint: `Run \`${again} --undo\` again when you are ready (in a script: --approve ${undo}).`,
-      });
-    }
+        again: `${again} --undo`,
+      },
+    });
     try {
       deps.reporter.step("Putting the old values back in the site's GitHub secrets");
       await setSecrets(deps, options.github, appValues, secrets, "old");
@@ -319,8 +300,7 @@ export async function rotateSiteAppSecrets(
   }
 
   const consequence = appConsequence(plan, appValues);
-  const approval = await deps.approvals.request({
-    kind: "remote-exec",
+  await requestApproval(deps, {
     title: `Rotate the credentials of ${listText(named)} in ${environment}`,
     details: [
       ...(consequence === undefined ? [] : [consequence.line]),
@@ -332,17 +312,14 @@ export async function rotateSiteAppSecrets(
       `The old values stay on this computer until the deploy passed: if a step fails, \`${again}\` goes on, and \`${again} --undo\` puts the old values back.`,
       `Rotation hash: ${hash}`,
     ].join("\n"),
-    planHash: hash,
-    ...consequence?.guard,
-  });
-  if (!approval.approved) {
-    throw new PlanRefusedError({
+    hash,
+    guard: consequence?.guard,
+    refused: {
       plan: `rotation of ${listText(named)}`,
-      ...(approval.reason === undefined ? {} : { reason: approval.reason }),
       unchanged: "Nothing in GitHub was changed.",
-      hint: `Run \`${again}\` again when you are ready (in a script: --approve ${hash}).`,
-    });
-  }
+      again,
+    },
+  });
   await keepPendingRotation(deps, { ...pending, step: "started" });
   try {
     deps.reporter.step("Replacing the site's GitHub secrets with the new values");
@@ -351,14 +328,7 @@ export async function rotateSiteAppSecrets(
   } catch (error) {
     throw stopped(error, again, false);
   }
-  const record = (await readCredentialsRecord(deps)).environments[environment] ?? {};
-  await completePendingRotation(
-    deps,
-    plan,
-    values,
-    Object.fromEntries(named.map((name) => [name, record[name]?.generation ?? 1])),
-  );
-  await recordRotation(deps, named);
+  await completePendingRotation(deps, plan, values);
   deps.reporter.success(
     `Rotated ${listText(named)} in ${environment}: the site runs on the new values, and the old ones no longer work.`,
   );

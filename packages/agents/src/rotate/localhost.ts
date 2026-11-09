@@ -37,10 +37,9 @@ import {
   type DockerRotationOptions,
   type DockerUndo,
   rotateThroughDocker,
-  type ValuePair,
 } from "./portainer-localhost";
-import { serviceEnvTexts, serviceValues, swapAppEnv } from "./values";
-import type { RotationValues } from "./values-pending";
+import { serviceEnvTexts, serviceSides, serviceValues, swapAppEnv } from "./values";
+import type { RotationValues, ValuePair } from "./values-pending";
 
 const WHERE = "on this computer";
 
@@ -109,8 +108,7 @@ export function rotateLocalServices(
   };
   /** The app's settings, `app.env`, with `values` swapped from one side to `which`. */
   const appEnvWith = async (values: RotationValues, which: keyof ValuePair, text: string) => {
-    const from = await serviceValues(deps, plan, values, which === "new" ? "old" : "new");
-    const to = await serviceValues(deps, plan, values, which);
+    const { from, to } = await serviceSides(deps, plan, values, which);
     return withAppEnv(swapAppEnv(plan, text, values, from, to), values.app, which);
   };
   /**

@@ -548,8 +548,9 @@ describe("rotateServices when a step fails", () => {
     const w = await world(splitStagingPlan());
     w.github.failSecret = "OPSCREW_STAGING_SERVICE_DB_ENV";
     const error = await failure(w.run(["db", "cache"]));
-    expect(error.message).toContain("GitHub answered 502.");
-    expect(error.message).toContain("No server was changed yet.");
+    expect(error.message).toMatch(
+      /^OpsCrew could not replace the deploy secrets in GitHub: GitHub answered 502\. No server was changed yet\. The old and the new values stay/,
+    );
     expect(error.hint).toContain("`opscrew rotate db cache` again");
     expect(error.hint).toContain("`opscrew rotate db cache --undo`");
     expect(w.log.filter((line) => !line.startsWith("github"))).toEqual([]);
@@ -635,6 +636,17 @@ describe("rotateServices when a step fails", () => {
     expect(after.history).toBeUndefined();
     await expect(readFile(credentialsRecordFile(w.deps.paths), "utf8")).rejects.toThrow();
     expectNoValue(w, values);
+  });
+
+  it("goes on with a rotation that began although a service stopped since: its run starts it again", async () => {
+    const w = await world(stagingPlan([{ kind: "postgres", name: "db" }]));
+    w.servers.app.fail.set("rotate", { exitCode: 1, stderr: "stopped" });
+    await failure(w.run(["db"]));
+    expect((await pending(w))?.step).toBe("started");
+    w.servers.app.starts.delete("db");
+    await w.run(["db"]);
+    expect(await pending(w)).toBeUndefined();
+    expect(w.servers.app.runs.map((run) => run.action)).toEqual(["rotate", "rotate"]);
   });
 
   it("only goes forward once the app's server finished: no undo after an extra server's finish failed", async () => {

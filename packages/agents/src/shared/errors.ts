@@ -14,3 +14,19 @@ export function codeOf(error: unknown): ErrorCode {
 export function hintOf(error: unknown): string {
   return isUserFacingError(error) && error.hint ? `${error.hint} ` : "";
 }
+
+/**
+ * A user-facing `error` continued with what is true after it and the way on: its message, then
+ * `said`; its hint (`fallback`, as "Fix what it names. ", when it has none), then `next`. Any other
+ * error is returned as it is.
+ */
+export function continued(
+  error: unknown,
+  text: { said: string; next: string; fallback?: string },
+): unknown {
+  if (!isUserFacingError(error)) return error;
+  return new OpsCrewError(codeOf(error), `${error.message.replace(/\s+$/, "")} ${text.said}`, {
+    hint: `${hintOf(error) || (text.fallback ?? "")}${text.next}`,
+    cause: error,
+  });
+}

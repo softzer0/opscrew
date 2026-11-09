@@ -10,6 +10,7 @@ import { assembleAppEnv } from "../shared/app-env";
 import { generatedValuesFile } from "../shared/app-secrets";
 import { stagingPlan } from "../snapshot/__fixtures__/world";
 import { createTestPhaseDeps, type TestPhaseDeps } from "../testing";
+import { readCredentialsRecord, recordRotation } from "./record";
 import { completePendingRotation, newRotationValues, serviceValues, swapAppEnv } from "./values";
 import {
   dropPendingRotation,
@@ -113,7 +114,7 @@ describe("the pending rotation", () => {
     await expect(readPendingRotation(deps)).rejects.toMatchObject({ code: "ARTIFACT_INVALID" });
   });
 
-  it("makes the new values the services' own once done, the old kept by generation, or drops them on an undo", async () => {
+  it("makes the new values the services' own once done, the old kept by the record's generation, or drops them on an undo", async () => {
     const p = plan();
     const deps = await withValues();
     const values = await newRotationValues(deps, services(p, "db", "files"));
@@ -122,9 +123,15 @@ describe("the pending rotation", () => {
     expect(await exists(pendingRotationFile(deps))).toBe(false);
     expect(JSON.parse(await readFile(generatedValuesFile(deps), "utf8"))).toEqual(KEPT);
 
+    // `files` was rotated twice before: its values now are its generation 3, db's its first.
+    await recordRotation(deps, ["files"]);
+    await recordRotation(deps, ["files"]);
     await keepPendingRotation(deps, planned(values));
-    await completePendingRotation(deps, p, values, { db: 1, files: 3 });
+    await completePendingRotation(deps, p, values);
     expect(await exists(pendingRotationFile(deps))).toBe(false);
+    // The rotation is recorded too: each credential one generation on.
+    const record = (await readCredentialsRecord(deps)).environments.staging ?? {};
+    expect([record.db?.generation, record.files?.generation]).toEqual([2, 4]);
     const pending = values;
     const done = JSON.parse(await readFile(generatedValuesFile(deps), "utf8"));
     expect(done.dbPassword).toBe(pending.services.db?.password?.new);
