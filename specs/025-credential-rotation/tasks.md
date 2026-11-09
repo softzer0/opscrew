@@ -100,7 +100,7 @@ secret in any test: `fakeSecret(kind)` and `{{FAKE:<kind>}}` (`@opscrew/core/tes
 
 ## Phase 4: Wave 3
 
-- [ ] T2509 [P] [US4] App secrets
+- [x] T2509 [P] [US4] App secrets
   - Owns: `packages/agents/src/rotate/app*.ts`, `packages/agents/src/shared/app-env.ts` (+ tests)
   - Depends: T2506
   - Accept: plan 6: Laravel's `APP_PREVIOUS_KEYS` and Better Auth's `BETTER_AUTH_SECRETS` keep the old value (`--drop-previous` drops it); the others need the typed app name after the consequence line; `CRON_SECRET` with both sides; Cloudflare-hosted sites through their GitHub secret and a deploy.
