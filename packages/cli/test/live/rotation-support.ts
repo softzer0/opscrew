@@ -465,6 +465,28 @@ export function cookieHeader(jar: CookieJar): string {
     .join("; ");
 }
 
+/**
+ * Stand-in production values for the variables examples/laravel-app's `.env.example` names that
+ * OpsCrew neither generates nor derives; provision asks a script for them. None is a real
+ * credential, and the app pass never uses mail, Redis or S3. A dotenv text ending in a newline.
+ */
+export const LARAVEL_STAND_INS = `${[
+  "AWS_ACCESS_KEY_ID=e2e-stand-in-key-id",
+  "AWS_SECRET_ACCESS_KEY=e2e-stand-in-secret",
+  "AWS_DEFAULT_REGION=us-east-1",
+  "AWS_BUCKET=e2e-stand-in-bucket",
+  "BCRYPT_ROUNDS=12",
+  "BROADCAST_CONNECTION=log",
+  "MAIL_SCHEME=null",
+  "MAIL_USERNAME=null",
+  "MAIL_PASSWORD=null",
+  "MAIL_FROM_NAME=OpsCrewE2E",
+  "REDIS_PASSWORD=e2e-stand-in-redis",
+  "SESSION_DOMAIN=null",
+  "SESSION_DRIVER=cookie",
+  "VITE_APP_NAME=OpsCrewE2E",
+].join("\n")}\n`;
+
 /** The routes the app pass adds to examples/laravel-app (`routes/web.php`, the whole file). */
 export const LARAVEL_ROUTES = `<?php
 

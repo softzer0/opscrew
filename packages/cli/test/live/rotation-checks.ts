@@ -55,7 +55,7 @@ import {
   windowAcceptor,
 } from "./rotation-support";
 import { workerRunning } from "./site-checks";
-import { deployRunProblem, jsonStrings, leakedLabels } from "./support";
+import { deployRunProblem, leakedLabels } from "./support";
 import { requireDocker } from "./tls-checks";
 
 // ---------------------------------------------------------------------------------------------
@@ -304,8 +304,9 @@ export async function generatedValuesOf(paths: { projectHomeDir: string }): Prom
 }
 
 /**
- * Adds every value of the environment's unfinished rotation (`pending_rotation.json`: its old and
- * new values) to the scrubber; whether there is one.
+ * Adds the old and new values of the environment's unfinished rotation (`pending_rotation.json`)
+ * to the scrubber; whether there is one. Only the pairs' `old` and `new`: the file also holds the
+ * rotation's plan hash, which approvals and hints name on purpose, and the services' names.
  */
 export async function rememberPending(
   run: LiveRun,
@@ -313,10 +314,19 @@ export async function rememberPending(
 ): Promise<boolean> {
   const file = join(paths.projectHomeDir, "pending_rotation.json");
   if (!existsSync(file)) return false;
-  for (const value of jsonStrings(JSON.parse(await readFile(file, "utf8")))) {
+  for (const value of pairValues(JSON.parse(await readFile(file, "utf8")))) {
     run.scrubber.add(value, "pending-rotation-value");
   }
   return true;
+}
+
+/** Every string under an `old` or a `new` key, at any depth. */
+function pairValues(json: unknown): string[] {
+  if (Array.isArray(json)) return json.flatMap(pairValues);
+  if (json === null || typeof json !== "object") return [];
+  return Object.entries(json).flatMap(([key, value]) =>
+    (key === "old" || key === "new") && typeof value === "string" ? [value] : pairValues(value),
+  );
 }
 
 /**

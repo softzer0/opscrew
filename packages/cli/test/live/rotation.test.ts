@@ -21,7 +21,7 @@
  * and state file, the deploy jobs' logs and, on the server, the rotation's log and every
  * container's log, for every value OpsCrew made, the old and the new.
  */
-import { readFile } from "node:fs/promises";
+import { appendFile, readFile } from "node:fs/promises";
 import { join, posix } from "node:path";
 import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect } from "vitest";
@@ -61,6 +61,7 @@ import {
   generatesVariable,
   inContainerWithInput,
   LARAVEL_ROUTES,
+  LARAVEL_STAND_INS,
   listedCredentials,
   listedWindowSeconds,
   passSkip,
@@ -682,6 +683,16 @@ describe.skipIf(SKIP.app !== undefined)(
           "config/session.php": cookieSessions(session),
         });
         expect(generatesVariable(plan, "APP_KEY"), "OpsCrew generates APP_KEY").toBe(true);
+        // The example's .env.example names these; provision asks a script for their values.
+        await appendFile(join(run.work, "production.env"), LARAVEL_STAND_INS);
+        // Only the secret-named ones are searched for: a region or a name may be committed.
+        for (const line of LARAVEL_STAND_INS.split("\n")) {
+          const name = line.slice(0, line.indexOf("="));
+          const value = line.slice(line.indexOf("=") + 1);
+          if (/KEY|SECRET|PASSWORD/.test(name) && value.length >= 8) {
+            run.scrubber.add(value, "app-env-value");
+          }
+        }
         await run.adaptAndMerge();
         await envs.provision("prod", "prod");
         deployRuns.push({ what: "the first deploy", id: await run.deployAny("the first deploy") });
