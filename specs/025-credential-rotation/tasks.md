@@ -330,7 +330,7 @@ Behaviour, hashes and approval texts stay as they are unless a task says otherwi
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew && pnpm typecheck && pnpm lint`
   - Effort: high
 
-- [ ] T2532 [US1] Garage's key after a restore (T2516's live pass)
+- [x] T2532 [US1] Garage's key after a restore (T2516's live pass)
   - Owns: `packages/agents/src/snapshot/generations.ts` (Garage's re-login) (+ test), Garage's recipe in `packages/iac-templates/src/catalog/entries.ts` (+ tests, `src/docker/rotation.docker.test.ts`)
   - Accept:
     - **The cause:** a restore of a Garage copy from before its key's rotation brings back the old key named "default access key". The restore's start then makes the env's key under the same name, and the re-login's `key rename` by name never matches one key.
