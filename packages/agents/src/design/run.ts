@@ -59,6 +59,7 @@ import { readEnvironmentRequirements } from "../environments/requirements";
 import {
   type SharedPartsSource,
   sharedPartsSource,
+  sharedStorage,
   withSharedParts,
 } from "../environments/shared-parts";
 import {
@@ -1455,13 +1456,7 @@ function sourceComponents(
   kept: readonly PlanService[],
 ): Components {
   const { storage: _storage, ...rest } = planned;
-  const { sqlite: _sqlite, files: _files, ...ownStorage } = planned.storage ?? {};
-  const { sqlite, files } = source.storage ?? {};
-  const storage = {
-    ...ownStorage,
-    ...(sqlite === undefined ? {} : { sqlite }),
-    ...(files === undefined ? {} : { files }),
-  };
+  const storage = sharedStorage(planned.storage, source);
   return {
     ...rest,
     processes: source.processes,

@@ -23,6 +23,7 @@ import {
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { providerProfile, type VpsConnectorOptions, vpsConnector } from "../providers";
+import { lastLines } from "../provision/plan-apply";
 import {
   describeChanges,
   nothingDeletedHint,
@@ -118,10 +119,6 @@ export async function savePlan(
 /** Deletes a plan file so it can never be applied later. */
 export async function discardPlan(summary: PlanSummary): Promise<void> {
   await rm(summary.planFile, { force: true });
-}
-
-function lastLines(text: string, count = 8): string {
-  return text.trim().split(/\r?\n/).slice(-count).join("\n");
 }
 
 /**

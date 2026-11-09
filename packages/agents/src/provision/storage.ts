@@ -27,12 +27,20 @@ import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import type { RefreshRecoveryOptions } from "../secrets";
 import { knownRecipients } from "../secrets/store";
-import { r2Endpoint, STORAGE_ENDPOINTS, type StorageLogin } from "../shared";
+import {
+  backupsStateFile,
+  r2Endpoint,
+  STORAGE_ENDPOINTS,
+  type StorageLogin,
+  storageStateFile,
+} from "../shared";
 import { storageS3Client } from "../shared/s3";
 import type { CloudflareSetup, GitHubSetup } from "./credentials";
 import { type PlanAndApplyResult, type PlanPrice, planAndApply } from "./plan-apply";
 import { type RecoveryCopy, recoveryCopyFiles } from "./publish";
 import type { ProvisionServices } from "./types";
+
+export { backupsStateFile, storageStateFile } from "../shared";
 
 export { type BucketProvider, type ProviderBucket, providerBucket };
 
@@ -105,11 +113,6 @@ const StoredKeySchema = z.object({
  */
 export function storageKeyFile(paths: Pick<ProjectPaths, "projectHomeDir">): string {
   return join(paths.projectHomeDir, "storage_key.json");
-}
-
-/** The `storage` root's state, beside the deployment's. */
-export function storageStateFile(paths: Pick<ProjectPaths, "files">): string {
-  return join(paths.files.tfstateDir, "storage.tfstate");
 }
 
 /** File name ending of a saved plan of the `storage` root. */
@@ -625,11 +628,6 @@ const IMPORT_INTERVAL_MS = 10_000;
  */
 export function storageCreateFile(paths: Pick<ProjectPaths, "projectHomeDir">): string {
   return join(paths.projectHomeDir, "storage-create.json");
-}
-
-/** The `backups` root's state, beside the deployment's. */
-export function backupsStateFile(paths: Pick<ProjectPaths, "files">): string {
-  return join(paths.files.tfstateDir, "backups.tfstate");
 }
 
 /** File name ending of a saved plan of the `backups` root. */

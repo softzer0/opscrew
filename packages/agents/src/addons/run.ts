@@ -547,6 +547,16 @@ function dashboardsPublished(plan: DeployPlan, ownFacts: HostFacts | undefined):
   );
 }
 
+/** The files `renderAddon` renders for `kind` on `plan`, by path (`facts`: the user's own server's). */
+function addonFiles(
+  plan: DeployPlan,
+  kind: AddonKind,
+  facts: HostFacts | undefined,
+): Record<string, string> {
+  const ctx = { dashboardsOnNetwork: dashboardsPublished(plan, facts) };
+  return Object.fromEntries(renderAddon(plan, kind, ctx).map((file) => [file.path, file.content]));
+}
+
 /**
  * Beszel's host plan in hub mode with the hub's secrets `hub` written anew (`opscrew rotate
  * beszel`, feature 025): its files as `opscrew addon enable beszel` renders them (on the user's own
@@ -564,11 +574,7 @@ export function beszelHubPlan(
     runAs: ownFacts ? "root" : "login",
     ...(ownFacts ? { facts: ownFacts } : {}),
     enable: {
-      files: Object.fromEntries(
-        renderAddon(plan, "beszel", {
-          dashboardsOnNetwork: dashboardsPublished(plan, ownFacts),
-        }).map((file) => [file.path, file.content]),
-      ),
+      files: addonFiles(plan, "beszel", ownFacts),
       mode: "hub",
       email: BESZEL_EMAIL,
       hubKey: hub.hubPublicKey,
@@ -599,13 +605,7 @@ function addonPlan(
       secretsChanged: change.input?.tokenVariable !== undefined,
     });
   }
-  const files = change.enabling
-    ? Object.fromEntries(
-        renderAddon(plan, change.kind, {
-          dashboardsOnNetwork: dashboardsPublished(plan, ownRun?.facts),
-        }).map((file) => [file.path, file.content]),
-      )
-    : {};
+  const files = change.enabling ? addonFiles(plan, change.kind, ownRun?.facts) : {};
   const enable = change.input?.step === undefined ? { files } : { ...change.input.step, files };
   return planAddon(stepKind(change.kind), {
     app: plan.app.name,

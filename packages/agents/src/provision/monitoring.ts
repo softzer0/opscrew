@@ -604,9 +604,7 @@ async function grantStep(
   const privilege = server.facts.privilege;
   // A password made or rotated in this run reaches the login only through the step: never in place
   // then, and the server's check (which sees the login, never its password) does not skip it.
-  const secretsChanged =
-    !remove &&
-    (run.kept.postgresPassword === undefined || run.rotating?.postgresPassword !== undefined);
+  const secretsChanged = !remove && newLoginPassword(run);
   let inPlace = false;
   if (!secretsChanged) {
     inPlace = await readGrant(server.remote, { app, grant }, privilege, rootImageOf(server));
@@ -635,6 +633,11 @@ async function grantStep(
       ? `Removing OpsCrew's monitoring login from ${postgres.name}`
       : `Setting up OpsCrew's monitoring login on ${postgres.name}`,
   };
+}
+
+/** True when this run makes the monitoring login's password or rotates it. */
+function newLoginPassword(run: Run): boolean {
+  return run.kept.postgresPassword === undefined || run.rotating?.postgresPassword !== undefined;
 }
 
 /**
@@ -919,9 +922,7 @@ function alloyStep(run: Run, server: Reached, needs: SetupNeeds): HostPlanStep {
       facts: server.facts,
       enable: monitoringAlloy(plan, server.name),
       // A login password made or rotated in this run reaches Alloy only through the step.
-      secretsChanged:
-        postgres !== undefined &&
-        (run.kept.postgresPassword === undefined || run.rotating?.postgresPassword !== undefined),
+      secretsChanged: postgres !== undefined && newLoginPassword(run),
     }),
     title: `Run Grafana Alloy on ${words}, sending its figures and logs to the monitoring stack${grafanaCloud === undefined ? "" : " and to Grafana Cloud"}`,
     upToDate: `Grafana Alloy on ${words} already runs as planned; nothing on it changes.`,

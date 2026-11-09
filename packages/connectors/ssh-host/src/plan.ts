@@ -2935,27 +2935,20 @@ export function planTunnelToken(options: {
   connector: { dir?: string; compose: string; tunnelId: string };
 }): HostPlan {
   const { app, runAs, connector } = options;
+  const dir = connector.dir ?? tunnelDir(app);
+  // The title and reason are this step's own, so the subdomain's owner is never shown.
+  const step = tunnelConnectorStep(app, runAs, { ...connector, dir, needsToken: true }, "");
   const plan: HostPlan = {
     schemaVersion: HOST_PLAN_SCHEMA_VERSION,
     purpose: "setup",
     app,
     steps: [
       {
-        id: "tunnel-connector",
+        ...step,
         title: `Give the Cloudflare Tunnel connector of "${app}" its new token${imageIn(connector.compose)}`,
-        state: "change",
-        scope: "app",
         reason:
           "The tunnel's secret changed in Cloudflare, and with it its token: OpsCrew writes the new token to a file only its owner can read (supplied at apply time, never part of this plan) and recreates the connector, which reconnects in seconds. The tunnel itself stays as it is.",
-        params: {
-          app,
-          compose: connector.compose,
-          tunnelId: connector.tunnelId,
-          needsToken: true,
-          dir: connector.dir ?? tunnelDir(app),
-          runAs,
-          rewrite: true,
-        },
+        params: { ...step.params, rewrite: true },
       },
     ],
     findings: [],

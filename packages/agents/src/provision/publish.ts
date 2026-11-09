@@ -1250,11 +1250,10 @@ export async function commitAndPropose(
       deps.reporter.info(`The pull request is already open: ${existing.url}`);
       return result;
     }
+    const unchanged = `Pushed to the open pull request ${existing.url}; its title and body stay as they were.`;
     const text = await branchText();
     if (text === undefined) {
-      deps.reporter.warn(
-        `Pushed to the open pull request ${existing.url}; its title and body stay as they were.`,
-      );
+      deps.reporter.warn(unchanged);
       return result;
     }
     const { title, body } = text;
@@ -1264,9 +1263,7 @@ export async function commitAndPropose(
       details: body,
     });
     if (!update.approved) {
-      deps.reporter.warn(
-        `Pushed to the open pull request ${existing.url}; its title and body stay as they were.`,
-      );
+      deps.reporter.warn(unchanged);
       return result;
     }
     await github.api.updatePullRequest({

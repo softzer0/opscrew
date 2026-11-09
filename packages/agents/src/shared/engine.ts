@@ -79,6 +79,16 @@ export function pagesVerificationStateFile(paths: Pick<ProjectPaths, "files">): 
   return join(paths.files.tfstateDir, "github-pages-verification.tfstate");
 }
 
+/** The `storage` root's state, beside the deployment's. */
+export function storageStateFile(paths: Pick<ProjectPaths, "files">): string {
+  return join(paths.files.tfstateDir, "storage.tfstate");
+}
+
+/** The `backups` root's state, beside the deployment's. */
+export function backupsStateFile(paths: Pick<ProjectPaths, "files">): string {
+  return join(paths.files.tfstateDir, "backups.tfstate");
+}
+
 /** True when the environment's state file exists and is not empty. */
 export async function hasState(paths: ProjectPaths): Promise<boolean> {
   try {
@@ -204,14 +214,14 @@ export interface ProjectEngineOptions {
 
 /**
  * The states the project's passphrase encrypts, in the order their key name is read: the
- * environment's own, the app's bucket's and the off-server copies' bucket's (`storageStateFile`
- * and `backupsStateFile` in provision, which imports this module), GitHub's verification record's.
+ * environment's own, the app's bucket's and the off-server copies' bucket's, GitHub's verification
+ * record's.
  */
 function encryptedStateFiles(paths: ProjectPaths): string[] {
   return [
     tfstateFile(paths),
-    join(paths.files.tfstateDir, "storage.tfstate"),
-    join(paths.files.tfstateDir, "backups.tfstate"),
+    storageStateFile(paths),
+    backupsStateFile(paths),
     pagesVerificationStateFile(paths),
   ];
 }

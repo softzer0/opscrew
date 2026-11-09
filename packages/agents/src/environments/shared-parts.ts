@@ -50,6 +50,20 @@ export function sharedPartsDiffer(source: DeployPlan, plan: DeployPlan): string[
   return [...services, ...parts];
 }
 
+/** `own` storage with the SQLite and kept folders of `source` in place of its own. */
+export function sharedStorage(
+  own: DeployPlan["storage"],
+  source: DeployPlan,
+): NonNullable<DeployPlan["storage"]> {
+  const { sqlite: _sqlite, files: _files, ...ownStorage } = own ?? {};
+  const { sqlite, files } = source.storage ?? {};
+  return {
+    ...ownStorage,
+    ...(sqlite === undefined ? {} : { sqlite }),
+    ...(files === undefined ? {} : { files }),
+  };
+}
+
 /**
  * `plan` with the shared parts of `source` (the rest of `storage` stays the plan's own): the
  * source's services, then the `kept` ones the image the environment runs may still use.
@@ -61,13 +75,7 @@ export function withSharedParts(
 ): DeployPlan {
   const { build: _build, releaseCommand: _release, ...app } = plan.app;
   const { storage: _storage, ...rest } = plan;
-  const { sqlite: _sqlite, files: _files, ...ownStorage } = plan.storage ?? {};
-  const { sqlite, files } = source.storage ?? {};
-  const storage = {
-    ...ownStorage,
-    ...(sqlite === undefined ? {} : { sqlite }),
-    ...(files === undefined ? {} : { files }),
-  };
+  const storage = sharedStorage(plan.storage, source);
   return {
     ...rest,
     app: {

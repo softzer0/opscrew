@@ -1,6 +1,9 @@
 import { listText, plural } from "@opscrew/core";
 import type { AppKind, PlatformExport, ProjectFacts, ServiceKind } from "@opscrew/plan-schema";
 import { chooseBuilder } from "../design/builder";
+import { frameworkName } from "./names";
+
+export { frameworkName } from "./names";
 
 /** Plain-English summary and deployment risks of a project. */
 export interface FactsSummary {
@@ -13,33 +16,6 @@ export interface SummarizeOptions {
   /** Deployable app directories when a monorepo has several (from `detectProjectDetails`). */
   appCandidates?: readonly string[];
 }
-
-const FRAMEWORK_NAMES: Record<string, string> = {
-  next: "Next.js",
-  nuxt: "Nuxt",
-  remix: "Remix",
-  "react-router": "React Router",
-  sveltekit: "SvelteKit",
-  astro: "Astro",
-  vite: "Vite",
-  "create-react-app": "Create React App",
-  angular: "Angular",
-  react: "React",
-  vue: "Vue",
-  svelte: "Svelte",
-  solid: "Solid",
-  preact: "Preact",
-  express: "Express",
-  fastify: "Fastify",
-  nestjs: "NestJS",
-  hono: "Hono",
-  koa: "Koa",
-  fastapi: "FastAPI",
-  flask: "Flask",
-  django: "Django",
-  rails: "Rails",
-  laravel: "Laravel",
-};
 
 const LANGUAGE_NAMES: Record<string, string> = {
   javascript: "JavaScript",
@@ -99,11 +75,6 @@ export const SERVICE_NAMES: Record<ServiceKind, string> = {
   neo4j: "Neo4j",
   cassandra: "Cassandra",
 };
-
-/** Display name of a detected framework (`next` → `Next.js`). */
-export function frameworkName(name: string): string {
-  return FRAMEWORK_NAMES[name] ?? name;
-}
 
 /** Display name of a language (`typescript` → `TypeScript`). */
 export function languageName(name: string): string {

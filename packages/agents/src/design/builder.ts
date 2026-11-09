@@ -11,7 +11,7 @@ import type {
   ProjectFacts,
   RuntimeLanguage,
 } from "@opscrew/plan-schema";
-import { frameworkName } from "../analyze/summary";
+import { frameworkName } from "../analyze/names";
 import { offered, RUNTIME_NAMES, resolveRuntime } from "./runtime-version";
 
 /** A CPU architecture an image is built for. */
