@@ -128,13 +128,20 @@ function serviceCredential(service: PlanService): Omit<Credential, "date"> {
 const SEAMLESS_APP_SECRETS: Readonly<Record<string, string>> = {
   APP_KEY:
     "The old key stays in APP_PREVIOUS_KEYS, so nobody is logged out and encrypted data stays readable.",
-  BETTER_AUTH_SECRET:
-    "The old secret stays in BETTER_AUTH_SECRETS, so nobody is logged out and encrypted data stays readable.",
   CRON_SECRET: "The app and OpsCrew's cron caller change together in one deploy.",
 };
 
 const LOGOUT =
   "Every user of the app is logged out, or the tokens the app issued stop working; you type the app's name to go ahead.";
+
+/**
+ * The app secrets that log users out while their framework keeps the old value for its data:
+ * Better Auth checks sessions with the current secret only (research R8, T2533).
+ */
+const LOGOUT_APP_SECRETS: Readonly<Record<string, string>> = {
+  BETTER_AUTH_SECRET:
+    "Every user of the app is logged out: Better Auth checks sessions with the current secret only. The old secret stays in BETTER_AUTH_SECRETS, and BETTER_AUTH_SECRET, Better Auth's fallback for data from before its versions, stays as it is, so the data they encrypted stays readable; you type the app's name to go ahead.",
+};
 
 function appSecretCredentials(names: readonly string[]): Omit<Credential, "date">[] {
   const parts = names.map((name): Omit<Credential, "date"> => {
@@ -143,7 +150,7 @@ function appSecretCredentials(names: readonly string[]): Omit<Credential, "date"
       name: `app:${name}`,
       kind: "app-secret",
       rotation: seamless === undefined ? { mode: "logout" } : { mode: "seamless" },
-      changes: seamless ?? LOGOUT,
+      changes: seamless ?? LOGOUT_APP_SECRETS[name] ?? LOGOUT,
     };
   });
   if (parts.length === 0) return [];

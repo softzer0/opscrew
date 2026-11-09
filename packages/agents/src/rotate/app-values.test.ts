@@ -14,6 +14,7 @@ import {
   appConsequence,
   appSecretLines,
   appSecretNames,
+  appSuccessNote,
   dropPreviousNames,
   newAppValues,
   withAppEnv,
@@ -101,16 +102,28 @@ describe("appSecretNames", () => {
     expect((await failure(dropPreviousNames(deps, plan()))).message).toContain("nothing to drop");
   });
 
-  it("offers no second drop: Better Auth's current version alone is all a drop would leave", async () => {
-    const secret = hex();
-    const deps = await keeping({
-      BETTER_AUTH_SECRET: secret,
-      BETTER_AUTH_SECRETS: `2:${secret}`,
-    });
-    expect((await failure(dropPreviousNames(deps, plan()))).message).toContain("nothing to drop");
-    expect(
-      (await failure(appSecretNames(deps, plan(), ["app:BETTER_AUTH_SECRETS"]))).message,
-    ).toContain("keeps no previous value of BETTER_AUTH_SECRET");
+  it("drops Better Auth's while either variable holds an older value, and not once both hold only the current one", async () => {
+    const [one, two] = [hex(), hex()];
+    for (const env of [
+      { BETTER_AUTH_SECRET: one, BETTER_AUTH_SECRETS: `2:${two},1:${one}` },
+      // Its versions dropped by hand, BETTER_AUTH_SECRET still the fallback's old value.
+      { BETTER_AUTH_SECRET: one, BETTER_AUTH_SECRETS: `2:${two}` },
+    ]) {
+      expect(await dropPreviousNames(await keeping(env), plan())).toEqual([
+        "app:BETTER_AUTH_SECRETS",
+      ]);
+    }
+    for (const env of [
+      { BETTER_AUTH_SECRET: two, BETTER_AUTH_SECRETS: `2:${two}` },
+      // Never rotated: BETTER_AUTH_SECRET alone.
+      { BETTER_AUTH_SECRET: one },
+    ] as Record<string, string>[]) {
+      const deps = await keeping(env);
+      expect((await failure(dropPreviousNames(deps, plan()))).message).toContain("nothing to drop");
+      expect(
+        (await failure(appSecretNames(deps, plan(), ["app:BETTER_AUTH_SECRETS"]))).message,
+      ).toContain("keeps no previous value of BETTER_AUTH_SECRET");
+    }
   });
 });
 
@@ -160,7 +173,7 @@ describe("rotationHash", () => {
 });
 
 describe("newAppValues", () => {
-  it("keeps Laravel's old key first in APP_PREVIOUS_KEYS and Better Auth's as the earlier version", async () => {
+  it("keeps Laravel's old key first in APP_PREVIOUS_KEYS, and Better Auth's new secret first in BETTER_AUTH_SECRETS with BETTER_AUTH_SECRET as it is", async () => {
     const key = laravelKey();
     const earlier = laravelKey();
     const auth = hex();
@@ -174,27 +187,35 @@ describe("newAppValues", () => {
     expect(values.APP_KEY?.old).toBe(key);
     expect(fresh).toMatch(/^base64:[A-Za-z0-9+/]{43}=$/);
     expect(values.APP_PREVIOUS_KEYS).toEqual({ old: earlier, new: `${key},${earlier}` });
-    const secret = values.BETTER_AUTH_SECRET?.new as string;
+    // BETTER_AUTH_SECRET stays Better Auth's fallback for data from before the versioned envelope.
+    expect(values.BETTER_AUTH_SECRET).toEqual({ old: auth, new: auth });
+    const secrets = values.BETTER_AUTH_SECRETS?.new as string;
+    const secret = secrets.split(",")[0]?.slice("2:".length) as string;
+    expect(secret).not.toBe("");
     expect(secret).not.toBe(auth);
     expect(values.BETTER_AUTH_SECRETS).toEqual({ old: "", new: `2:${secret},1:${auth}` });
 
-    // The next rotation's version follows the current one.
+    // The next rotation's version follows the current one; BETTER_AUTH_SECRET stays the first.
     const next = await keeping({
-      BETTER_AUTH_SECRET: secret,
+      BETTER_AUTH_SECRET: auth,
       BETTER_AUTH_SECRETS: `2:${secret},1:${auth}`,
     });
     const again = await newAppValues(next, plan(), ["app:BETTER_AUTH_SECRET"]);
-    const third = again.BETTER_AUTH_SECRET?.new as string;
+    expect(again.BETTER_AUTH_SECRET).toEqual({ old: auth, new: auth });
+    const third = again.BETTER_AUTH_SECRETS?.new.split(",")[0]?.slice("3:".length) as string;
+    expect(third).not.toBe(secret);
     expect(again.BETTER_AUTH_SECRETS?.new).toBe(`3:${third},2:${secret},1:${auth}`);
     // Every value is registered with the redactor.
     expect(deps.redactor.redact(`${fresh} ${secret} ${key}`)).not.toContain(fresh);
+    expect(deps.redactor.redact(secret)).not.toContain(secret);
   });
 
-  it("drops all but the current one: APP_PREVIOUS_KEYS unset, Better Auth's current version kept", async () => {
+  it("drops all but the current one: APP_PREVIOUS_KEYS unset, Better Auth's current version kept and BETTER_AUTH_SECRET its value", async () => {
     const earlier = laravelKey();
     const [one, two] = [hex(), hex()];
     const deps = await keeping({
       APP_PREVIOUS_KEYS: earlier,
+      BETTER_AUTH_SECRET: one,
       BETTER_AUTH_SECRETS: `2:${two},1:${one}`,
     });
     const values = await newAppValues(deps, plan(), [
@@ -204,20 +225,42 @@ describe("newAppValues", () => {
     expect(values).toEqual({
       APP_PREVIOUS_KEYS: { old: earlier, new: "" },
       BETTER_AUTH_SECRETS: { old: `2:${two},1:${one}`, new: `2:${two}` },
+      BETTER_AUTH_SECRET: { old: one, new: two },
     });
     // Dropping loses what the earlier values encrypted: the app's name is typed.
     const consequence = appConsequence(plan(), values);
-    expect(consequence?.line).toMatch(/^What is still encrypted with the dropped previous values/);
+    expect(consequence?.line).toBe(
+      "What is still encrypted with the dropped previous values can no longer be read (app:APP_PREVIOUS_KEYS and app:BETTER_AUTH_SECRETS). To go ahead, type the app's name, shop.",
+    );
     expect(consequence?.guard.confirmPhrase).toBe("shop");
+    expect(appSecretLines(values)).toEqual([
+      "app:APP_PREVIOUS_KEYS: the earlier values of APP_KEY are dropped; sessions, cookies and data still encrypted with them can no longer be read.",
+      "app:BETTER_AUTH_SECRETS: the earlier values of BETTER_AUTH_SECRET are dropped; sessions, cookies and data still encrypted with them can no longer be read.",
+    ]);
+    expect(appSuccessNote(values)).toBe("");
     const kept = {
       APP_KEY: "k",
       APP_PREVIOUS_KEYS: earlier,
+      BETTER_AUTH_SECRET: one,
       BETTER_AUTH_SECRETS: `2:${two},1:${one}`,
     };
     expect(withAppRecord(kept, values, "new")).toEqual({
       APP_KEY: "k",
+      BETTER_AUTH_SECRET: two,
       BETTER_AUTH_SECRETS: `2:${two}`,
     });
+
+    // Its versions already alone: the drop sets BETTER_AUTH_SECRET only.
+    const fallback = await newAppValues(
+      await keeping({ BETTER_AUTH_SECRET: one, BETTER_AUTH_SECRETS: `2:${two}` }),
+      plan(),
+      ["app:BETTER_AUTH_SECRETS"],
+    );
+    expect(fallback).toEqual({
+      BETTER_AUTH_SECRETS: { old: `2:${two}`, new: `2:${two}` },
+      BETTER_AUTH_SECRET: { old: one, new: two },
+    });
+    expect(appConsequence(plan(), fallback)?.line).toContain("(app:BETTER_AUTH_SECRETS)");
   });
 
   it("refuses a secret this computer keeps no value of", async () => {
@@ -247,6 +290,22 @@ describe("the plan's words", () => {
       line: "Every user of shop is logged out, or the tokens it issued stop working (app:SESSION_SECRET). To go ahead, type the app's name, shop.",
       guard: { allowDestroy: true, confirmPhrase: "shop" },
     });
+  });
+
+  it("says first that Better Auth's users are logged out, and that its old secret stays for its data", async () => {
+    const deps = await keeping({ APP_KEY: laravelKey(), BETTER_AUTH_SECRET: hex() });
+    const values = await newAppValues(deps, plan(), ["app:APP_KEY", "app:BETTER_AUTH_SECRET"]);
+    expect(appConsequence(plan(), values)).toEqual({
+      line: "Every user of shop is logged out, or the tokens it issued stop working (app:BETTER_AUTH_SECRET). To go ahead, type the app's name, shop.",
+      guard: { allowDestroy: true, confirmPhrase: "shop" },
+    });
+    expect(appSecretLines(values)).toEqual([
+      expect.stringMatching(/^app:APP_KEY: seamless: /),
+      "app:BETTER_AUTH_SECRET: every user of the app is logged out, as Better Auth checks sessions with the current secret only. The new secret is current in BETTER_AUTH_SECRETS and the old one stays there; BETTER_AUTH_SECRET, Better Auth's fallback for data from before its versions, stays as it is, so what they encrypted stays readable until `opscrew rotate app --drop-previous`.",
+    ]);
+    expect(appSuccessNote(values)).toBe(
+      " The old value of APP_KEY and BETTER_AUTH_SECRET stays as the previous one (APP_PREVIOUS_KEYS and BETTER_AUTH_SECRETS) until `opscrew rotate app --drop-previous`.",
+    );
   });
 });
 

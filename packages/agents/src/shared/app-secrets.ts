@@ -1,5 +1,6 @@
 import { isAbsolute, join } from "node:path";
 import { OpsCrewError, readTextIfExists, writeFileAtomic } from "@opscrew/core";
+import { PREVIOUS_VALUES } from "@opscrew/iac-templates";
 import { type DeployPlan, WireGuardKeySchema } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
@@ -66,6 +67,19 @@ const GeneratedFileSchema = z.looseObject({
   monitoring: MonitoringValuesSchema.optional(),
 });
 
+/**
+ * The values the previous-value variable `name` (of `PREVIOUS_VALUES`) holds in `value`, its comma
+ * list's entries in order without a `<version>:` (Better Auth's; Laravel's keys start `base64:`),
+ * so each can be registered or searched for on its own; none for any other variable.
+ */
+export function previousEntries(name: string, value: string): string[] {
+  if (!Object.values(PREVIOUS_VALUES).includes(name)) return [];
+  return value
+    .split(",")
+    .map((entry) => entry.replace(/^\d+:/, ""))
+    .filter((entry) => entry !== "");
+}
+
 /** The app's values by name, and the services' secrets. */
 interface AppSecrets {
   named: Record<string, string>;
@@ -102,6 +116,7 @@ export async function registerAppSecrets(
       fixedProductionValue(name) !== value
     ) {
       deps.redactor.addLiteral(value, "app-env");
+      for (const entry of previousEntries(name, value)) deps.redactor.addLiteral(entry, "app-env");
     }
   }
   // Each service's generated secrets (Postgres's password among them).

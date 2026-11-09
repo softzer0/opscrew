@@ -659,45 +659,71 @@ export function versionSecretNames(json: unknown): string[] {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Better Auth with both of its variables.
+// Better Auth's secret as a rotation and its drop leave it.
 
 /** The Better Auth check's markers, which the script prints. */
 export const BETTER_AUTH_MARKERS = {
-  started: "started with both: yes",
-  oldKept: "old session: kept",
+  bareHex: "old data: bare hex",
+  started: "started as the rotation leaves it: yes",
+  oldLost: "old session: lost",
   newOk: "new session: ok",
+  oldReadable: "old data: readable",
+  newVersion2: "new data: version 2",
+  version2Readable: "version 2 data: readable",
+  oldGone: "old data: no longer readable",
 } as const;
 
 /**
- * The Node script of the Better Auth check, run in two processes: `phase` `old` signs a user up
- * with `BETTER_AUTH_SECRET` alone and keeps the users and sessions (in Better Auth's memory
- * adapter) and the session's cookie in `/work`; `phase` `both` starts with `BETTER_AUTH_SECRET`
- * the new value and `BETTER_AUTH_SECRETS` both, as a rotation leaves them, reads the old session
- * and signs in again. Values come from the environment only, and none is printed.
+ * The Node script of the Better Auth check, run in three processes, each with its phase's
+ * variables, keeping Better Auth's memory adapter, the session's cookie and the encrypted values
+ * in `/work`. `old` (`BETTER_AUTH_SECRET` alone) signs a user up and encrypts a value, bare hex;
+ * `rotated` (`BETTER_AUTH_SECRET` the old value, `BETTER_AUTH_SECRETS` `2:new,1:old`) reads the old
+ * session, signs in again, decrypts the old value and encrypts a new one; `dropped`
+ * (`BETTER_AUTH_SECRET` the new value, `BETTER_AUTH_SECRETS` `2:new`) decrypts both. The key is
+ * Better Auth's own `secretConfig`. Values come from the environment only, and none is printed.
  */
 export function betterAuthScript(): string {
   return `import { readFileSync, writeFileSync } from "node:fs";
 import { betterAuth } from "better-auth";
 import { memoryAdapter } from "better-auth/adapters/memory";
+import { symmetricDecrypt, symmetricEncrypt } from "better-auth/crypto";
 const phase = process.argv[2];
 const file = "/work/db.json";
 const revive = (key, value) => (/At$/.test(key) && typeof value === "string" ? new Date(value) : value);
 const db = phase === "old" ? { user: [], session: [], account: [], verification: [] } : JSON.parse(readFileSync(file, "utf8"), revive);
 const auth = betterAuth({ baseURL: "http://localhost:3000", database: memoryAdapter(db), emailAndPassword: { enabled: true } });
+const key = (await auth.$context).secretConfig;
+const data = "OpsCrew E2E data";
+const readable = async (name) => {
+  try {
+    return (await symmetricDecrypt({ key, data: readFileSync("/work/" + name, "utf8") })) === data;
+  } catch {
+    return false;
+  }
+};
 const body = { email: "e2e@example.invalid", password: process.env.E2E_USER_PASSWORD, name: "OpsCrew E2E" };
 const cookieOf = (headers) => (headers.get("set-cookie") ?? "").split(";")[0];
 if (phase === "old") {
   const signed = await auth.api.signUpEmail({ body, returnHeaders: true });
   writeFileSync(file, JSON.stringify(db));
   writeFileSync("/work/cookie", cookieOf(signed.headers));
-  console.log("signed up");
-} else {
+  const encrypted = await symmetricEncrypt({ key, data });
+  writeFileSync("/work/old.enc", encrypted);
+  console.log(/^[0-9a-f]+$/.test(encrypted) ? "${BETTER_AUTH_MARKERS.bareHex}" : "old data: not bare hex");
+} else if (phase === "rotated") {
   console.log("${BETTER_AUTH_MARKERS.started}");
   const old = await auth.api.getSession({ headers: new Headers({ cookie: readFileSync("/work/cookie", "utf8") }) });
-  console.log(old?.session ? "${BETTER_AUTH_MARKERS.oldKept}" : "old session: lost");
+  console.log(old?.session ? "old session: kept" : "${BETTER_AUTH_MARKERS.oldLost}");
   const signed = await auth.api.signInEmail({ body: { email: body.email, password: body.password }, returnHeaders: true });
   const fresh = await auth.api.getSession({ headers: new Headers({ cookie: cookieOf(signed.headers) }) });
   console.log(fresh?.session ? "${BETTER_AUTH_MARKERS.newOk}" : "new session: failed");
+  console.log((await readable("old.enc")) ? "${BETTER_AUTH_MARKERS.oldReadable}" : "old data: unreadable");
+  const encrypted = await symmetricEncrypt({ key, data });
+  writeFileSync("/work/new.enc", encrypted);
+  console.log(encrypted.startsWith("$ba$2$") ? "${BETTER_AUTH_MARKERS.newVersion2}" : "new data: not version 2");
+} else {
+  console.log((await readable("new.enc")) ? "${BETTER_AUTH_MARKERS.version2Readable}" : "version 2 data: unreadable");
+  console.log((await readable("old.enc")) ? "old data: still readable" : "${BETTER_AUTH_MARKERS.oldGone}");
 }
 // Better Auth may keep a timer alive (a live run hung here for 10 minutes): the check is done.
 process.exit(0);

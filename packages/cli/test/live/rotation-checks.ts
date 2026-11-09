@@ -677,14 +677,18 @@ export function runUntil(
 }
 
 // ---------------------------------------------------------------------------------------------
-// Better Auth with both of its variables, in Docker on this computer.
+// Better Auth's secret as a rotation and its drop leave it, in Docker on this computer.
 
 /**
- * The T2509 check of a real Better Auth (the latest on npm, in OpsCrew's pinned Node image): a
- * user signed up under `BETTER_AUTH_SECRET` alone, then a start with `BETTER_AUTH_SECRET` the new
- * value and `BETTER_AUTH_SECRETS` both, as a rotation leaves them. Returns what the script printed
- * (its markers and Better Auth's version only); the values are made here and stay in Docker's
- * environment.
+ * The T2533 check of a real Better Auth (the latest on npm, in OpsCrew's pinned Node image), in
+ * three phases (research R8): a session made and a value encrypted (bare hex) under
+ * `BETTER_AUTH_SECRET` alone; then as a rotation leaves it (`BETTER_AUTH_SECRET` the old value,
+ * `BETTER_AUTH_SECRETS` `2:<new>,1:<old>`): it starts, the old session is gone, a new sign-in
+ * works, the old value still decrypts and a new one encrypts with version 2; then as
+ * `--drop-previous` leaves it (`BETTER_AUTH_SECRET` the new value, `BETTER_AUTH_SECRETS`
+ * `2:<new>`): the version-2 value decrypts and the old one no longer does. Returns what the script
+ * printed (its markers and Better Auth's version only); the values are made here and stay in
+ * Docker's environment.
  */
 export async function betterAuthCheck(run: LiveRun): Promise<string> {
   await requireDocker(
@@ -703,7 +707,7 @@ export async function betterAuthCheck(run: LiveRun): Promise<string> {
   ] as const) {
     run.scrubber.add(value, label);
   }
-  const phase = async (name: "old" | "both", values: Record<string, string>) => {
+  const phase = async (name: "old" | "rotated" | "dropped", values: Record<string, string>) => {
     const result = await run.runner.run(
       "docker",
       [
@@ -728,17 +732,41 @@ export async function betterAuthCheck(run: LiveRun): Promise<string> {
     }
     return run.scrub(result.stdout);
   };
-  await phase("old", { BETTER_AUTH_SECRET: old, E2E_USER_PASSWORD: password });
-  const said = await phase("both", {
-    BETTER_AUTH_SECRET: fresh,
-    BETTER_AUTH_SECRETS: `2:${fresh},1:${old}`,
-    E2E_USER_PASSWORD: password,
-  });
-  for (const marker of Object.values(BETTER_AUTH_MARKERS)) {
-    expect(
-      said.includes(marker),
-      `Better Auth with both variables says "${marker}":\n${said}`,
-    ).toBe(true);
+  const markers = BETTER_AUTH_MARKERS;
+  const phases = [
+    {
+      what: "under BETTER_AUTH_SECRET alone",
+      said: await phase("old", { BETTER_AUTH_SECRET: old, E2E_USER_PASSWORD: password }),
+      markers: [markers.bareHex],
+    },
+    {
+      what: "as a rotation leaves it",
+      said: await phase("rotated", {
+        BETTER_AUTH_SECRET: old,
+        BETTER_AUTH_SECRETS: `2:${fresh},1:${old}`,
+        E2E_USER_PASSWORD: password,
+      }),
+      markers: [
+        markers.started,
+        markers.oldLost,
+        markers.newOk,
+        markers.oldReadable,
+        markers.newVersion2,
+      ],
+    },
+    {
+      what: "as --drop-previous leaves it",
+      said: await phase("dropped", {
+        BETTER_AUTH_SECRET: fresh,
+        BETTER_AUTH_SECRETS: `2:${fresh}`,
+      }),
+      markers: [markers.version2Readable, markers.oldGone],
+    },
+  ];
+  for (const { what, said, markers: expected } of phases) {
+    for (const marker of expected) {
+      expect(said.includes(marker), `Better Auth ${what} says "${marker}":\n${said}`).toBe(true);
+    }
   }
-  return said;
+  return phases.map(({ what, said }) => `${what}:\n${said}`).join("\n");
 }

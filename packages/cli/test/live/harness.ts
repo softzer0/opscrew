@@ -62,7 +62,7 @@ import {
   userRules,
   type ZoneEntrypoints,
 } from "./support";
-import { generatedSecrets, type ZoneTls } from "./tls-support";
+import { generatedSecrets, previousValueEntries, type ZoneTls } from "./tls-support";
 
 export const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 /** The built CLI the live tests run (`pnpm --filter opscrew build`). */
@@ -229,8 +229,9 @@ export async function readGeneratedValues(
 }
 
 /**
- * {@link readGeneratedValues} with where each value sits in the file (`env.APP_KEYS`): a name,
- * never a value, so a leak report can say which one leaked.
+ * {@link readGeneratedValues} with where each value sits in the file (`env.APP_KEYS`, or an entry of
+ * a previous-value variable, `env.BETTER_AUTH_SECRETS[1]`): a name, never a value, so a leak report
+ * can say which one leaked.
  */
 export async function readGeneratedEntries(
   paths: Pick<ReturnType<typeof resolveProjectPaths>, "projectHomeDir">,
@@ -238,7 +239,13 @@ export async function readGeneratedEntries(
   const file = join(paths.projectHomeDir, "generated_values.json");
   if (!existsSync(file)) return undefined;
   const json: unknown = JSON.parse(await readFile(file, "utf8"));
-  return generatedSecrets(json).map((value) => [pathOfString(json, value) ?? "?", value]);
+  return [
+    ...generatedSecrets(json).map((value): [string, string] => [
+      pathOfString(json, value) ?? "?",
+      value,
+    ]),
+    ...previousValueEntries(json),
+  ];
 }
 
 /** The dotted path of the first string in `json` that holds `value` (a key's line, say). */

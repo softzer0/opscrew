@@ -11,6 +11,7 @@ import {
   readTextIfExists,
   toPosixRelative,
 } from "@opscrew/core";
+import { previousEntries } from "../shared/app-secrets";
 
 /** Prod's copy in the repository (committed); {@link copyPath} gives each environment's. */
 export const COPY_PATH = "opscrew/secrets.sops.json";
@@ -124,12 +125,17 @@ function generatedLeaves(text: string | undefined): Map<string, string> {
 }
 
 /**
- * Registers every value inside `files`' generated values with the redactor, each by itself, under
- * the label provision gives them (`app-env`).
+ * Registers every value inside `files`' generated values with the redactor, each by itself, and
+ * each entry of an app's previous-value variable on its own too (`previousEntries`), under the
+ * label provision gives them (`app-env`).
  */
 export function registerGeneratedValues(redactor: Redactor, files: Record<string, string>): void {
-  for (const value of generatedLeaves(files[GENERATED_VALUES]).values()) {
+  for (const [name, value] of generatedLeaves(files[GENERATED_VALUES])) {
     redactor.addLiteral(value, "app-env");
+    if (!name.startsWith("env.")) continue;
+    for (const entry of previousEntries(name.slice("env.".length), value)) {
+      redactor.addLiteral(entry, "app-env");
+    }
   }
 }
 

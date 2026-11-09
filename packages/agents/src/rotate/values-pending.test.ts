@@ -1,4 +1,5 @@
 // Feature 025 (T2521): what every path of a rotation says about the environment's unfinished one.
+import { randomBytes } from "node:crypto";
 import { exists } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
 import { createTestPhaseDeps } from "../testing";
@@ -10,6 +11,7 @@ import {
   nothingToUndo,
   type PendingRotation,
   pendingRotationFile,
+  registerRotationValues,
   rotateCommand,
   sameNames,
   unfinishedRotation,
@@ -85,5 +87,25 @@ describe("the unfinished rotation's refusals", () => {
     expect(deps.reporter.text()).toContain(
       "Forgot the rotation of db and cache in prod: it was never approved, so nothing else had changed.",
     );
+  });
+});
+
+describe("registerRotationValues", () => {
+  it("registers each value a previous-value variable holds on its own, beside the whole", async () => {
+    const deps = await createTestPhaseDeps();
+    const [key, earlier, auth, current] = [1, 2, 3, 4].map(() => randomBytes(32).toString("hex"));
+    const app = {
+      APP_PREVIOUS_KEYS: { old: "", new: `${key},${earlier}` },
+      BETTER_AUTH_SECRETS: { old: "", new: `2:${current},1:${auth}` },
+    };
+    registerRotationValues(deps.redactor, { names: ["app"], services: {}, app });
+    for (const value of [
+      earlier,
+      current,
+      app.APP_PREVIOUS_KEYS.new,
+      app.BETTER_AUTH_SECRETS.new,
+    ]) {
+      expect(deps.redactor.redact(`x ${value} y`)).not.toContain(value);
+    }
   });
 });

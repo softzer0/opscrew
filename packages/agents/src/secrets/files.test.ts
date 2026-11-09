@@ -1,9 +1,10 @@
 // Feature 025 (T2508): the preview key joins the recovery copy.
+import { randomBytes } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createTestPhaseDeps } from "../testing";
-import { fileMode, isCopyPath, localPath, readLocalFiles } from "./files";
+import { fileMode, isCopyPath, localPath, readLocalFiles, registerGeneratedValues } from "./files";
 
 describe("the recovery copy's files", () => {
   it("hold a preview environment's preview key, both halves, private at 0600", async () => {
@@ -18,5 +19,20 @@ describe("the recovery copy's files", () => {
     await writeFile(deps.paths.files.previewKeyPub, "ssh-ed25519 AAAA opscrew-preview@x\n");
     const files = await readLocalFiles(deps.paths, deps.redactor);
     expect(Object.keys(files).sort()).toEqual(["home/preview_key", "home/preview_key.pub"]);
+  });
+
+  it("register each value a previous-value variable holds on its own, beside the whole", async () => {
+    const deps = await createTestPhaseDeps();
+    const [key, earlier, auth, current] = [1, 2, 3, 4].map(() => randomBytes(32).toString("hex"));
+    const env = {
+      APP_PREVIOUS_KEYS: `${key},${earlier}`,
+      BETTER_AUTH_SECRETS: `2:${current},1:${auth}`,
+    };
+    registerGeneratedValues(deps.redactor, {
+      "home/generated_values.json": `${JSON.stringify({ env })}\n`,
+    });
+    for (const value of [earlier, current, ...Object.values(env)]) {
+      expect(deps.redactor.redact(`x ${value} y`)).not.toContain(value);
+    }
   });
 });

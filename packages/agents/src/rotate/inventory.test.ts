@@ -238,7 +238,7 @@ describe("credentialInventory", () => {
     expect(byName(list, "db")?.date).toBeUndefined();
   });
 
-  it("keeps Laravel's and Better Auth's previous keys and CRON_SECRET seamless; one other logs users out", async () => {
+  it("keeps Laravel's previous keys and CRON_SECRET seamless; Better Auth's and the others log users out", async () => {
     const deps = await createTestPhaseDeps();
     const base = testPlan();
     const env = (names: string[]) =>
@@ -253,22 +253,26 @@ describe("credentialInventory", () => {
         },
       });
     await keepAppSecrets(deps, ["APP_KEY", "BETTER_AUTH_SECRET", "CRON_SECRET", "SECRET_KEY"]);
-    const seamless = await credentialInventory(
-      deps,
-      env(["APP_KEY", "BETTER_AUTH_SECRET", "CRON_SECRET"]),
-    );
+    const seamless = await credentialInventory(deps, env(["APP_KEY", "CRON_SECRET"]));
     const apps = seamless.filter((c) => c.kind === "app-secret");
     expect(apps.map((c) => [c.name, c.rotation.mode])).toEqual([
       ["app", "seamless"],
       ["app:APP_KEY", "seamless"],
-      ["app:BETTER_AUTH_SECRET", "seamless"],
       ["app:CRON_SECRET", "seamless"],
     ]);
     expect(byName(apps, "app:APP_KEY")?.changes).toContain("APP_PREVIOUS_KEYS");
-    expect(byName(apps, "app:BETTER_AUTH_SECRET")?.changes).toContain("BETTER_AUTH_SECRETS");
     expect(byName(apps, "app")?.changes).toBe(
-      "Rotates each of the app's generated secrets (APP_KEY, BETTER_AUTH_SECRET, CRON_SECRET).",
+      "Rotates each of the app's generated secrets (APP_KEY, CRON_SECRET).",
     );
+    // Better Auth checks sessions with the current secret alone: its users are logged out, while
+    // the old secret keeps what it encrypted readable.
+    const auth = await credentialInventory(deps, env(["APP_KEY", "BETTER_AUTH_SECRET"]));
+    expect(byName(auth, "app")?.rotation).toEqual({ mode: "logout" });
+    expect(byName(auth, "app:BETTER_AUTH_SECRET")).toMatchObject({
+      rotation: { mode: "logout" },
+      changes:
+        "Every user of the app is logged out: Better Auth checks sessions with the current secret only. The old secret stays in BETTER_AUTH_SECRETS, and BETTER_AUTH_SECRET, Better Auth's fallback for data from before its versions, stays as it is, so the data they encrypted stays readable; you type the app's name to go ahead.",
+    });
     const mixed = await credentialInventory(deps, env(["SECRET_KEY", "CRON_SECRET"]));
     expect(byName(mixed, "app")?.rotation).toEqual({ mode: "logout" });
     expect(byName(mixed, "app:SECRET_KEY")?.rotation).toEqual({ mode: "logout" });

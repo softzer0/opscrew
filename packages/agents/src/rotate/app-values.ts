@@ -14,8 +14,13 @@ import { PREVIOUS_VALUES, previousValueVariables } from "@opscrew/iac-templates"
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { dotenvLine, newGeneratedValue } from "../shared/app-env";
-import { GeneratedValuesSchema, generatedValuesFile } from "../shared/app-secrets";
-import { type RotationValues, readStrict, type ValuePair } from "./values-pending";
+import { GeneratedValuesSchema, generatedValuesFile, previousEntries } from "../shared/app-secrets";
+import {
+  type RotationValues,
+  readStrict,
+  registerRotationValues,
+  type ValuePair,
+} from "./values-pending";
 
 /** Each app variable a rotation changes, by name, its old and new value (empty: unset). */
 export type AppValues = NonNullable<RotationValues["app"]>;
@@ -28,12 +33,17 @@ const SECRET_OF = new Map(Object.entries(PREVIOUS_VALUES).map(([s, variable]) =>
 
 /**
  * How each previous-value variable takes the old value (`kept`: what it holds, empty when unset)
- * and what it keeps once dropped.
+ * and what it keeps once dropped; `fallback` when its secret stays as it is in a rotation and takes
+ * the current value at the drop.
  */
 const PREVIOUS_FORMATS: Readonly<
   Record<
     string,
-    { add(kept: string, old: string, fresh: string): string; drop(kept: string): string }
+    {
+      add(kept: string, old: string, fresh: string): string;
+      drop(kept: string): string;
+      fallback?: (kept: string) => string;
+    }
   >
 > = {
   // A comma list Laravel tries after APP_KEY, the latest first.
@@ -42,7 +52,9 @@ const PREVIOUS_FORMATS: Readonly<
     drop: () => "",
   },
   // `<version>:<value>,…`, the first current and the version each encrypted value names: the
-  // current one keeps its version once the others are dropped.
+  // current one keeps its version once the others are dropped. BETTER_AUTH_SECRET is only Better
+  // Auth's fallback for data from before the versioned envelope (bare hex), so it keeps the old
+  // value until the drop gives it the current one (research R8).
   BETTER_AUTH_SECRETS: {
     add: (kept, old, fresh) => {
       const entries = kept === "" ? [`1:${old}`] : kept.split(",");
@@ -50,8 +62,16 @@ const PREVIOUS_FORMATS: Readonly<
       return [`${version + 1}:${fresh}`, ...entries].join(",");
     },
     drop: (kept) => kept.split(",")[0] ?? "",
+    fallback: (kept) => previousEntries("BETTER_AUTH_SECRETS", kept)[0] ?? "",
   },
 };
+
+/** True when `values` drop the previous values of `variable` (a previous-value variable). */
+function dropped(values: AppValues, variable: string): boolean {
+  const pair = values[variable];
+  const format = PREVIOUS_FORMATS[variable];
+  return pair !== undefined && format !== undefined && format.drop(pair.old) === pair.new;
+}
 
 /** True for a name of the app's own secrets: `app` or `app:<NAME>`. */
 export function isAppName(name: string): boolean {
@@ -73,16 +93,19 @@ function generatedKept(plan: DeployPlan, env: Readonly<Record<string, string>>):
 /**
  * True when a drop of the previous-value variable `variable` changes something: OpsCrew gives it
  * beside a generated secret (`previousValueVariables`, not one the plan names as the user's) and
- * it keeps more than its drop leaves (Better Auth's current version alone is not dropped again).
+ * it keeps more than its drop leaves, or the secret is a fallback that does not hold the current
+ * value yet (Better Auth's current version alone, in both variables, is not dropped again).
  */
 function droppable(plan: DeployPlan, env: Readonly<Record<string, string>>, variable: string) {
   const kept = env[variable] ?? "";
   const format = PREVIOUS_FORMATS[variable];
+  const secret = SECRET_OF.get(variable) ?? "";
   return (
     format !== undefined &&
     previousValueVariables(plan).includes(variable) &&
-    generatedKept(plan, env).includes(SECRET_OF.get(variable) ?? "") &&
-    format.drop(kept) !== kept
+    generatedKept(plan, env).includes(secret) &&
+    (format.drop(kept) !== kept ||
+      (kept !== "" && format.fallback !== undefined && format.fallback(kept) !== env[secret]))
   );
 }
 
@@ -164,7 +187,8 @@ export async function dropPreviousNames(
  * the old one, which is added to the secret's previous values where its framework reads them and
  * OpsCrew gives that variable (`previousValueVariables`: not one `plan` names as the user's, whose
  * secret then rotates as any other); a previous-value variable's name drops all but the current.
- * Each registered with the redactor; nothing is kept yet.
+ * A fallback secret (`BETTER_AUTH_SECRET`) keeps its value in a rotation and takes the current one
+ * at the drop. Each registered with the redactor; nothing is kept yet.
  * @throws OpsCrewError `PHASE_PRECONDITION` when this computer keeps no value of one,
  * `ARTIFACT_INVALID` when the generated values are damaged.
  */
@@ -191,21 +215,24 @@ export async function newAppValues(
     const format = PREVIOUS_FORMATS[variable];
     if (format !== undefined) {
       values[variable] = { old, new: format.drop(old) };
+      const secret = SECRET_OF.get(variable);
+      if (format.fallback !== undefined && secret !== undefined) {
+        values[secret] = { old: env[secret] ?? "", new: format.fallback(old) };
+      }
       continue;
     }
     const fresh = newGeneratedValue(variable);
-    values[variable] = { old, new: fresh };
     const previous = PREVIOUS_VALUES[variable];
     const add = previous === undefined ? undefined : PREVIOUS_FORMATS[previous];
-    if (previous !== undefined && add !== undefined && companions.includes(previous)) {
-      const kept = env[previous] ?? "";
-      values[previous] = { old: kept, new: add.add(kept, old, fresh) };
+    if (previous === undefined || add === undefined || !companions.includes(previous)) {
+      values[variable] = { old, new: fresh };
+      continue;
     }
+    values[variable] = { old, new: add.fallback === undefined ? fresh : old };
+    const kept = env[previous] ?? "";
+    values[previous] = { old: kept, new: add.add(kept, old, fresh) };
   }
-  for (const pair of Object.values(values)) {
-    for (const value of [pair.old, pair.new])
-      if (value !== "") deps.redactor.addLiteral(value, "app-env");
-  }
+  registerRotationValues(deps.redactor, { names: [...names], services: {}, app: values });
   return values;
 }
 
@@ -292,16 +319,21 @@ export function appFingerprints(values: AppValues | undefined) {
   return Object.entries(values ?? {}).map(([name, pair]) => ({ name, ...pairFingerprint(pair) }));
 }
 
-/** How one app variable of `values` rotates; `undefined` for a previous value that follows it. */
+/**
+ * How one app variable of `values` rotates (`fallback`: users are logged out, and the old value
+ * stays as the previous one and the secret's own); `undefined` for a variable that follows another:
+ * a previous value beside its secret, a fallback secret beside its drop.
+ */
 function modeOf(
   values: AppValues,
   name: string,
-): "previous" | "both" | "logout" | "drop" | undefined {
-  const secret = SECRET_OF.get(name);
-  if (secret !== undefined) return values[secret] === undefined ? "drop" : undefined;
+): "previous" | "fallback" | "both" | "logout" | "drop" | undefined {
+  if (SECRET_OF.has(name)) return dropped(values, name) ? "drop" : undefined;
   if (name === "CRON_SECRET") return "both";
   const previous = PREVIOUS_VALUES[name];
-  return previous !== undefined && values[previous] !== undefined ? "previous" : "logout";
+  if (previous === undefined || values[previous] === undefined) return "logout";
+  if (dropped(values, previous)) return undefined;
+  return PREVIOUS_FORMATS[previous]?.fallback === undefined ? "previous" : "fallback";
 }
 
 /** The plan's line for each app secret of `values`: how it rotates and what it costs. */
@@ -313,6 +345,7 @@ export function appSecretLines(values: AppValues | undefined): string[] {
     const previous = PREVIOUS_VALUES[name];
     const said = {
       previous: `seamless: the new value is current, and the old one stays beside it in ${previous}, so nobody is logged out and what it encrypted stays readable; drop it with \`opscrew rotate app --drop-previous\` once nothing needs it.`,
+      fallback: `every user of the app is logged out, as Better Auth checks sessions with the current secret only. The new secret is current in ${previous} and the old one stays there; ${name}, Better Auth's fallback for data from before its versions, stays as it is, so what they encrypted stays readable until \`opscrew rotate app --drop-previous\`.`,
       both: "seamless: the app and its cron jobs get the new value in the same switch.",
       logout: "every user of the app is logged out, or the tokens it issued stop working.",
       drop: `the earlier values of ${SECRET_OF.get(name)} are dropped; sessions, cookies and data still encrypted with them can no longer be read.`,
@@ -330,11 +363,11 @@ export function appConsequence(
   plan: DeployPlan,
   values: AppValues | undefined,
 ): { line: string; guard: { allowDestroy: true; confirmPhrase: string } } | undefined {
-  const names = (mode: string) =>
+  const names = (...modes: string[]) =>
     Object.keys(values ?? {})
-      .filter((name) => values !== undefined && modeOf(values, name) === mode)
+      .filter((name) => values !== undefined && modes.includes(modeOf(values, name) ?? ""))
       .map((name) => `${PREFIX}${name}`);
-  const logout = names("logout");
+  const logout = names("logout", "fallback");
   const drop = names("drop");
   if (logout.length === 0 && drop.length === 0) return undefined;
   const app = plan.app.name;
@@ -359,9 +392,10 @@ export function appConsequence(
 
 /** What a finished rotation of `values` says beside its success: the previous values kept. */
 export function appSuccessNote(values: AppValues | undefined): string {
-  const kept = Object.keys(values ?? {}).filter(
-    (name) => values !== undefined && modeOf(values, name) === "previous",
-  );
+  const kept = Object.keys(values ?? {}).filter((name) => {
+    const mode = values === undefined ? undefined : modeOf(values, name);
+    return mode === "previous" || mode === "fallback";
+  });
   if (kept.length === 0) return "";
   return ` The old value of ${listText(kept)} stays as the previous one (${listText(kept.map((name) => PREVIOUS_VALUES[name] as string))}) until \`opscrew rotate app --drop-previous\`.`;
 }

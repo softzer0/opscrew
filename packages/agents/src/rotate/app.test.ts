@@ -302,20 +302,53 @@ describe("rotateServices with the app's own secrets", () => {
     expect(w.server.appEnv).toContain(`${dotenvLine("APP_KEY", fresh)}\n`);
   });
 
-  it("keeps Better Auth's old secret as version 1 of BETTER_AUTH_SECRETS, and changes CRON_SECRET with no typed name", async () => {
+  it("puts Better Auth's new secret first in BETTER_AUTH_SECRETS once the app's name is typed, keeping the old one there and as BETTER_AUTH_SECRET; CRON_SECRET goes in the same switch", async () => {
     const w = await serverWorld();
     await w.run(["app:BETTER_AUTH_SECRET", "app:CRON_SECRET"]);
     const env = await generatedEnv(w.deps);
-    expect(env.BETTER_AUTH_SECRETS).toBe(
-      `2:${env.BETTER_AUTH_SECRET},1:${w.old.env.BETTER_AUTH_SECRET}`,
+    const old = w.old.env.BETTER_AUTH_SECRET;
+    const [current = "", ...earlier] = (env.BETTER_AUTH_SECRETS ?? "").split(",");
+    const fresh = current.slice("2:".length);
+    expect(current).toBe(`2:${fresh}`);
+    expect(fresh).not.toBe("");
+    expect(fresh).not.toBe(old);
+    expect(earlier).toEqual([`1:${old}`]);
+    // Better Auth's fallback for data from before the versioned envelope stays as it is.
+    expect(env.BETTER_AUTH_SECRET).toBe(old);
+    expect(w.server.appEnv).toContain(`${dotenvLine("BETTER_AUTH_SECRET", old)}\n`);
+    expect(w.server.appEnv).toContain(
+      `${dotenvLine("BETTER_AUTH_SECRETS", env.BETTER_AUTH_SECRETS as string)}\n`,
     );
     expect(env.CRON_SECRET).not.toBe(w.old.env.CRON_SECRET);
     // The app and its cron jobs read the same app.env, which the one switch gives both.
     expect(w.server.appEnv).toContain(`${dotenvLine("CRON_SECRET", env.CRON_SECRET as string)}\n`);
-    expect(w.handler.requests[0]?.confirmPhrase).toBeUndefined();
-    expect(w.handler.requests[0]?.details).toContain(
+    // Sessions are checked with the current secret alone: every user is logged out.
+    const [request] = w.handler.requests;
+    expect(request?.details.split("\n")[0]).toBe(
+      "Every user of shop-staging is logged out, or the tokens it issued stop working (app:BETTER_AUTH_SECRET). To go ahead, type the app's name, shop-staging.",
+    );
+    expect(request?.confirmPhrase).toBe("shop-staging");
+    expect(request?.allowDestroy).toBe(true);
+    expect(request?.details).toContain(
+      "app:BETTER_AUTH_SECRET: every user of the app is logged out, as Better Auth checks sessions with the current secret only.",
+    );
+    expect(request?.details).toContain(
       "app:CRON_SECRET: seamless: the app and its cron jobs get the new value in the same switch.",
     );
+    expect(w.deps.reporter.text()).toContain("stays as the previous one (BETTER_AUTH_SECRETS)");
+    expectNoValue(w, [fresh, old], ...w.server.commands);
+
+    // `--drop-previous`: the current version alone, and BETTER_AUTH_SECRET its value.
+    const names = await dropPreviousNames(w.deps, w.plan);
+    expect(names).toEqual(["app:BETTER_AUTH_SECRETS"]);
+    await w.run(names);
+    expect(w.handler.requests[1]?.confirmPhrase).toBe(w.plan.app.name);
+    const dropped = await generatedEnv(w.deps);
+    expect(dropped.BETTER_AUTH_SECRETS).toBe(current);
+    expect(dropped.BETTER_AUTH_SECRET).toBe(fresh);
+    expect(w.server.appEnv).toContain(`${dotenvLine("BETTER_AUTH_SECRET", fresh)}\n`);
+    expect(w.server.appEnv).toContain(`${dotenvLine("BETTER_AUTH_SECRETS", current)}\n`);
+    expect((await failure(dropPreviousNames(w.deps, w.plan))).message).toContain("nothing to drop");
   });
 
   it("logs users out only after the consequence line and the app's name typed", async () => {
@@ -327,7 +360,7 @@ describe("rotateServices with the app's own secrets", () => {
     expect(error.code).toBe("APPROVAL_REFUSED");
     const [request] = w.handler.requests;
     expect(request?.details.split("\n")[0]).toBe(
-      "Every user of shop-staging is logged out, or the tokens it issued stop working (app:SESSION_SECRET). To go ahead, type the app's name, shop-staging.",
+      "Every user of shop-staging is logged out, or the tokens it issued stop working (app:SESSION_SECRET and app:BETTER_AUTH_SECRET). To go ahead, type the app's name, shop-staging.",
     );
     expect(request?.allowDestroy).toBe(true);
     expect(request?.confirmPhrase).toBe("shop-staging");
@@ -342,7 +375,9 @@ describe("rotateServices with the app's own secrets", () => {
     expect(right.handler.requests[0]?.planHash).toBe(result.hash);
     const env = await generatedEnv(right.deps);
     for (const [name, value] of Object.entries(right.old.env)) {
-      expect(env[name]).not.toBe(value);
+      // Better Auth's old secret stays its fallback; its new one is first in BETTER_AUTH_SECRETS.
+      if (name === "BETTER_AUTH_SECRET") expect(env[name]).toBe(value);
+      else expect(env[name]).not.toBe(value);
     }
     expectNoValue(right, [...Object.values(right.old.env), ...Object.values(env)]);
   });

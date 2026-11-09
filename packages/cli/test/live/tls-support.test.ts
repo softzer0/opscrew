@@ -17,6 +17,7 @@ import {
   longestInterruption,
   minTlsDecision,
   otherRecordChanges,
+  previousValueEntries,
   privateLines,
   tlsLeft,
   tlsLeftText,
@@ -428,6 +429,27 @@ describe("the secret parts of the generated values", () => {
     expect(kept).toContain(first);
     expect(kept).not.toContain(second);
     expect(kept).toHaveLength(rest.length);
+  });
+
+  it("names each value a previous-value variable holds by the variable and its position", () => {
+    const [key, earlier, current, old] = ["key", "earlier", "current", "old"].map((seed) =>
+      fakeSecret("generic-password", seed),
+    );
+    const values = {
+      env: {
+        APP_KEY: fakeSecret("generic-password", "app"),
+        APP_PREVIOUS_KEYS: `${key},${earlier}`,
+        BETTER_AUTH_SECRETS: `2:${current},1:${old}`,
+      },
+    };
+    expect(previousValueEntries(values)).toEqual([
+      ["env.APP_PREVIOUS_KEYS[1]", key],
+      ["env.APP_PREVIOUS_KEYS[2]", earlier],
+      ["env.BETTER_AUTH_SECRETS[1]", current],
+      ["env.BETTER_AUTH_SECRETS[2]", old],
+    ]);
+    expect(previousValueEntries({})).toEqual([]);
+    expect(previousValueEntries(["not an object value"])).toEqual([]);
   });
 
   it("keeps monitoring's two passwords, not its owner's plan, server and interface", () => {

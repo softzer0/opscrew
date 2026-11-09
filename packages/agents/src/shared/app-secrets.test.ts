@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DeployPlanSchema } from "@opscrew/plan-schema";
@@ -7,6 +8,7 @@ import { assembleAppEnv } from "./app-env";
 import {
   GeneratedValuesSchema,
   generatedValuesFile,
+  previousEntries,
   recordGeneratedEntries,
   registerAppSecrets,
 } from "./app-secrets";
@@ -167,6 +169,30 @@ describe("registerAppSecrets with the values this computer keeps", () => {
   it("registers nothing, and fails nothing, before provision kept any value", async () => {
     const deps = await createTestPhaseDeps();
     await expect(registerAppSecrets(deps, laravelPlan())).resolves.toBeUndefined();
+  });
+
+  it("registers each value a previous-value variable holds on its own, beside the whole", async () => {
+    const [key, earlier, auth, current] = [1, 2, 3, 4].map(() => randomBytes(32).toString("hex"));
+    const deps = await createTestPhaseDeps();
+    const file = generatedValuesFile(deps);
+    await mkdir(dirname(file), { recursive: true });
+    const env = {
+      APP_PREVIOUS_KEYS: `${key},${earlier}`,
+      BETTER_AUTH_SECRET: auth as string,
+      BETTER_AUTH_SECRETS: `2:${current},1:${auth}`,
+    };
+    await writeFile(file, `${JSON.stringify({ env })}\n`);
+    await registerAppSecrets(deps, laravelPlan());
+    // The second of Laravel's previous keys, and Better Auth's current secret without its version.
+    for (const value of [earlier, current, ...Object.values(env)]) {
+      expect(masked(deps.redactor, value as string)).toBe(true);
+    }
+    expect(previousEntries("BETTER_AUTH_SECRETS", env.BETTER_AUTH_SECRETS)).toEqual([
+      current,
+      auth,
+    ]);
+    expect(previousEntries("APP_PREVIOUS_KEYS", env.APP_PREVIOUS_KEYS)).toEqual([key, earlier]);
+    expect(previousEntries("APP_KEY", "a,b")).toEqual([]);
   });
 
   it("says so when OPSCREW_APP_ENV_FILE names a missing file", async () => {

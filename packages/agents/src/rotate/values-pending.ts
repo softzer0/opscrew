@@ -17,6 +17,7 @@ import {
 } from "@opscrew/core";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
+import { previousEntries } from "../shared/app-secrets";
 
 /** A secret's value before (`old`) and after (`new`) a rotation. */
 const PairSchema = z.strictObject({ old: z.string().min(1), new: z.string().min(1) });
@@ -113,9 +114,12 @@ export function registerRotationValues(
     redactor.addLiteral(pair.old, "grant-password");
     redactor.addLiteral(pair.new, "grant-password");
   }
-  for (const pair of Object.values(values.app ?? {})) {
-    for (const value of [pair.old, pair.new])
-      if (value !== "") redactor.addLiteral(value, "app-env");
+  for (const [name, pair] of Object.entries(values.app ?? {})) {
+    for (const value of [pair.old, pair.new]) {
+      if (value === "") continue;
+      redactor.addLiteral(value, "app-env");
+      for (const entry of previousEntries(name, value)) redactor.addLiteral(entry, "app-env");
+    }
   }
 }
 

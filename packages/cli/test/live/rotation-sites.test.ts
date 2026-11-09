@@ -2,10 +2,11 @@
  * The live passes of feature 025 on the server-less targets (docs/e2e.md "Credential rotation"),
  * with `sites` in `OPSCREW_E2E_ROTATION`, each skipped without its own variables:
  * - **a Worker on Cloudflare's hosting**: examples/astro-ssr with Better Auth's secret listed in
- *   its `.env.example`, so OpsCrew makes it. `rotate app` stopped while its deploy runs (that
- *   deploy's version holds `BETTER_AUTH_SECRETS`), then `--undo`: the version its deploy uploads
- *   with `--secrets-file` must not keep `BETTER_AUTH_SECRETS`, dropped from the file (T2509). Then
- *   the rotation run to its end, and its record.
+ *   its `.env.example`, so OpsCrew makes it. `rotate app` (with `--confirm <app>`, as Better
+ *   Auth's users are logged out) stopped while its deploy runs (that deploy's version holds
+ *   `BETTER_AUTH_SECRETS`), then `--undo`: the version its deploy uploads with `--secrets-file`
+ *   must not keep `BETTER_AUTH_SECRETS`, dropped from the file (T2509). Then the rotation run to
+ *   its end, and its record.
  * - **GitHub Pages**: examples/hugo-site in the public repository with `SESSION_SECRET` listed:
  *   `rotate app` logs users out, so a script needs `--confirm <app>` beside `--approve`; the
  *   site's GitHub secret is replaced and its deploy follows.
@@ -110,16 +111,28 @@ describe.skipIf(SKIP.worker !== undefined)(
     );
 
     run.step(
-      `2. opscrew rotate app, stopped while its deploy runs: that deploy's version holds ${AUTH_SECRETS}, and the rotation stays unfinished`,
+      `2. opscrew rotate app with --confirm <app> (Better Auth's users are logged out), stopped while its deploy runs: that deploy's version holds ${AUTH_SECRETS}, and the rotation stays unfinished`,
       minutes(40),
       async () => {
         const shown = await shownRotation(run, ["app"]);
         await run.checkoutMain();
         const head = await run.git("rev-parse", "HEAD");
         const since = new Date();
+        // Better Auth's users are logged out, so the plan asks the app's name.
+        expect(
+          shown.output.includes(`--confirm ${envs.app()}`),
+          `the plan asks the app's name:\n${run.tail(shown.output)}`,
+        ).toBe(true);
         await runUntil(
           run,
-          ["rotate", "app", ...shown.hashes.flatMap((hash) => ["--approve", hash]), "--yes"],
+          [
+            "rotate",
+            "app",
+            ...shown.hashes.flatMap((hash) => ["--approve", hash]),
+            "--confirm",
+            envs.app(),
+            "--yes",
+          ],
           "Waiting for the deploy run",
         );
         const deployed = await run.github.waitForDeploy({
@@ -159,11 +172,11 @@ describe.skipIf(SKIP.worker !== undefined)(
     );
 
     run.step(
-      `4. opscrew rotate app to its end: the version holds ${AUTH_SECRET} and ${AUTH_SECRETS}, and the record is merged (US4)`,
+      `4. opscrew rotate app with --confirm <app> to its end: the version holds ${AUTH_SECRET} and ${AUTH_SECRETS}, and the record is merged (US4)`,
       minutes(40),
       async () => {
         const since = new Date();
-        const { done } = await scriptedRotation(run, ["app"]);
+        const { done } = await scriptedRotation(run, ["app"], { confirm: envs.app() });
         expect(
           done.output.includes("the site runs on the new values"),
           `the result:\n${run.tail(done.output)}`,

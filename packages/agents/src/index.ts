@@ -130,6 +130,7 @@ export {
 export * from "./secrets";
 export * from "./secure";
 export * from "./shared";
+export { previousEntries } from "./shared/app-secrets";
 export * from "./shared/apply-command";
 export * from "./shared/approval-text";
 export * from "./shared/own-server-design";

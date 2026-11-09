@@ -6,6 +6,7 @@
  * interruption a load saw, and the secret parts of OpsCrew's generated values. No network, no
  * processes; unit-tested in `tls-support.test.ts`.
  */
+import { previousEntries } from "@opscrew/agents";
 import { OPSCREW_MANAGED_COMMENT, type SharedRecord } from "@opscrew/connector-cloudflare";
 import { EDGE_PROJECT, type EdgeProxy } from "@opscrew/iac-templates";
 import { DEEP_TOOL_NAME, type DeepTool } from "@opscrew/secops";
@@ -393,6 +394,26 @@ export function privateLines(pem: string, publics: readonly string[]): string[] 
     .map((line) => line.trim())
     .filter((line) => line.length >= 16 && !line.startsWith("-----"))
     .filter((line) => !flat.some((text) => text.includes(line)));
+}
+
+/**
+ * Each value the previous-value variables in OpsCrew's generated values hold on its own (Laravel's
+ * previous keys, Better Auth's secrets without their versions), labelled with the variable and its
+ * position (`env.BETTER_AUTH_SECRETS[1]`), never the value: the whole variable is one string to
+ * {@link generatedSecrets}, and an entry can leak alone.
+ */
+export function previousValueEntries(json: unknown): [string, string][] {
+  const env =
+    json !== null && typeof json === "object" ? (json as { env?: unknown }).env : undefined;
+  if (env === null || typeof env !== "object") return [];
+  return Object.entries(env).flatMap(([name, value]) =>
+    typeof value === "string"
+      ? previousEntries(name, value).map((entry, at): [string, string] => [
+          `env.${name}[${at + 1}]`,
+          entry,
+        ])
+      : [],
+  );
 }
 
 export function generatedSecrets(json: unknown): string[] {

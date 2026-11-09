@@ -9,9 +9,10 @@
  *   `OPSCREW_E2E_ROTATION_TERMINAL=1`): every connection from before Cloudflare's PATCH is still up
  *   after it, the connector restarts on the new token, and requests fail for one restart at most.
  * - **portainer**: examples/nextjs-postgres (Better Auth's secret listed in its `.env.example`)
- *   with Valkey added, in a Portainer set up as the user's: `rotate db cache app` through
- *   Portainer's Docker exec and the stack plan; the stack's Env reaches `BETTER_AUTH_SECRETS`, which
- *   its compose file names bare.
+ *   with Valkey added, in a Portainer set up as the user's: `rotate db cache app` (with
+ *   `--confirm <app>`, as Better Auth's users are logged out) through Portainer's Docker exec and
+ *   the stack plan; the stack's Env reaches `BETTER_AUTH_SECRETS`, which its compose file names
+ *   bare, while `BETTER_AUTH_SECRET` stays as it is.
  * Each pass ends with the leak search, the server's container logs included.
  */
 import { mkdir, writeFile } from "node:fs/promises";
@@ -638,7 +639,7 @@ describe.skipIf(SKIP.portainer !== undefined)(
     );
 
     run.step(
-      "P3. opscrew rotate db cache app in a script under load, through Portainer: the new values log in and the old are refused; the stack's Env reaches BETTER_AUTH_SECRETS, named bare in the compose file (T2507, T2509)",
+      "P3. opscrew rotate db cache app in a script under load with --confirm <app> (Better Auth's users are logged out), through Portainer: the new values log in and the old are refused; the stack's Env reaches BETTER_AUTH_SECRETS 2:<new>,1:<old>, named bare in the compose file, and BETTER_AUTH_SECRET stays as it is (T2507, T2509, T2533)",
       minutes(45),
       async () => {
         const names = ["db", "cache", "app"];
@@ -651,7 +652,7 @@ describe.skipIf(SKIP.portainer !== undefined)(
           [await run.healthUrl()],
           "the rotation in your Portainer",
           listedWindowSeconds(listed, names),
-          () => approvedRotation(run, names, shown.hashes),
+          () => approvedRotation(run, names, shown.hashes, { confirm: run.app() }),
         );
         await run.rememberGeneratedValues();
         const fresh = await values();
@@ -685,12 +686,23 @@ describe.skipIf(SKIP.portainer !== undefined)(
             works: false,
           },
         ]);
-        expect(fresh.auth !== old.auth, "BETTER_AUTH_SECRET changed on this computer").toBe(true);
-        expect(await inApp("BETTER_AUTH_SECRET", fresh.auth), "the app's BETTER_AUTH_SECRET").toBe(
+        // Better Auth's new secret is first in BETTER_AUTH_SECRETS; BETTER_AUTH_SECRET, its
+        // fallback for data from before the versioned envelope, stays the old one.
+        expect(fresh.auth === old.auth, "BETTER_AUTH_SECRET unchanged on this computer").toBe(true);
+        const secrets = generatedSecret(await generatedValuesOf(run.paths()), [
+          "env",
+          "BETTER_AUTH_SECRETS",
+        ]);
+        const current = (secrets.split(",")[0] ?? "").slice("2:".length);
+        expect(
+          current !== "" && current !== old.auth && secrets === `2:${current},1:${old.auth}`,
+          "BETTER_AUTH_SECRETS is 2:<new>,1:<old> on this computer",
+        ).toBe(true);
+        expect(await inApp("BETTER_AUTH_SECRET", old.auth), "the app's BETTER_AUTH_SECRET").toBe(
           "same",
         );
         expect(
-          await inApp("BETTER_AUTH_SECRETS", `2:${fresh.auth},1:${old.auth}`),
+          await inApp("BETTER_AUTH_SECRETS", secrets),
           "the app's BETTER_AUTH_SECRETS, from the stack's Env",
         ).toBe("same");
         expect(await deploysPaused(run), "deploys paused after the rotation").toBe(false);

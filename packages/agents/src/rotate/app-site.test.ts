@@ -136,16 +136,21 @@ async function failure(promise: Promise<unknown>): Promise<OpsCrewError> {
 }
 
 describe("rotateSiteAppSecrets", () => {
-  it("keeps the old app key in APP_PREVIOUS_KEYS and Better Auth's as version 1, with no typed name; a drop removes them", async () => {
+  it("keeps the old app key in APP_PREVIOUS_KEYS and Better Auth's as version 1 and its fallback, once the app's name is typed; a drop removes them", async () => {
     const w = await world();
     const result = await w.run(["app:APP_KEY", "app:BETTER_AUTH_SECRET"]);
 
     const env = await generatedEnv(w.deps);
     expect(env.APP_KEY).not.toBe(w.old.APP_KEY);
     expect(env.APP_PREVIOUS_KEYS).toBe(w.old.APP_KEY);
-    expect(env.BETTER_AUTH_SECRETS).toBe(
-      `2:${env.BETTER_AUTH_SECRET},1:${w.old.BETTER_AUTH_SECRET}`,
-    );
+    // Better Auth's new secret is first in BETTER_AUTH_SECRETS; BETTER_AUTH_SECRET stays the old.
+    expect(env.BETTER_AUTH_SECRET).toBe(w.old.BETTER_AUTH_SECRET);
+    const [current = "", ...earlier] = (env.BETTER_AUTH_SECRETS ?? "").split(",");
+    const fresh = current.slice("2:".length);
+    expect(current).toBe(`2:${fresh}`);
+    expect(fresh).not.toBe("");
+    expect(fresh).not.toBe(w.old.BETTER_AUTH_SECRET);
+    expect(earlier).toEqual([`1:${w.old.BETTER_AUTH_SECRET}`]);
     // Each in its own secret, which the site's workflow reads.
     for (const name of [
       "APP_KEY",
@@ -160,8 +165,12 @@ describe("rotateSiteAppSecrets", () => {
     expect(others).toEqual([]);
     expect(request?.kind).toBe("remote-exec");
     expect(request?.planHash).toBe(result.hash);
-    expect(request?.confirmPhrase).toBeUndefined();
-    expect(request?.allowDestroy).toBeUndefined();
+    // Better Auth checks sessions with the current secret alone: its users are logged out.
+    expect(request?.confirmPhrase).toBe(w.plan.app.name);
+    expect(request?.allowDestroy).toBe(true);
+    expect(request?.details.split("\n")[0]).toBe(
+      `Every user of ${w.plan.app.name} is logged out, or the tokens it issued stop working (app:BETTER_AUTH_SECRET). To go ahead, type the app's name, ${w.plan.app.name}.`,
+    );
     const record = await readArtifact("credentials", credentialsRecordFile(w.deps.paths));
     expect(Object.keys(record.environments.prod ?? {}).sort()).toEqual([
       "app:APP_KEY",
@@ -174,16 +183,17 @@ describe("rotateSiteAppSecrets", () => {
     }
 
     // The drop: the app's name typed, APP_PREVIOUS_KEYS's secret deleted, Better Auth's current
-    // version alone.
+    // version alone and BETTER_AUTH_SECRET its value.
     await w.run(await dropPreviousNames(w.deps, w.plan));
     expect(w.handler.requests[1]?.confirmPhrase).toBe(w.plan.app.name);
     expect(w.github.secrets.has("OPSCREW_ENV_APP_PREVIOUS_KEYS")).toBe(false);
     expect(w.github.log).toContain("delete OPSCREW_ENV_APP_PREVIOUS_KEYS");
     const dropped = await generatedEnv(w.deps);
     expect(dropped.APP_PREVIOUS_KEYS).toBeUndefined();
-    expect(w.github.secrets.get("OPSCREW_ENV_BETTER_AUTH_SECRETS")).toBe(
-      `2:${env.BETTER_AUTH_SECRET}`,
-    );
+    expect(dropped.BETTER_AUTH_SECRETS).toBe(current);
+    expect(dropped.BETTER_AUTH_SECRET).toBe(fresh);
+    expect(w.github.secrets.get("OPSCREW_ENV_BETTER_AUTH_SECRETS")).toBe(current);
+    expect(w.github.secrets.get("OPSCREW_ENV_BETTER_AUTH_SECRET")).toBe(fresh);
   });
 
   it("logs the site's users out of a session secret only after the typed app name", async () => {

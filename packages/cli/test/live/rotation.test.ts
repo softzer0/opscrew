@@ -11,8 +11,9 @@
  *   do, and the next deploy works.
  * - **app**: examples/laravel-app with a session counter and an encrypted value (its own routes):
  *   `rotate app` keeps sessions and the value readable (`APP_PREVIOUS_KEYS`); `--drop-previous`
- *   asks the app's name and drops it. Then a real Better Auth with both of its variables, in Docker
- *   on this computer.
+ *   asks the app's name and drops it. Then a real Better Auth, in Docker on this computer, as a
+ *   rotation and its drop leave its secret: users logged out, its encrypted data readable until
+ *   the drop.
  * - **restore**: examples/s3-uploads with its bucket in Garage and RabbitMQ added: a snapshot,
  *   then both rotated, then `opscrew restore`: the app reads its files with the current key and
  *   RabbitMQ takes the current password. With `OPSCREW_E2E_ROTATION_SERVER_RESTORE=1` (once T2520
@@ -767,7 +768,7 @@ describe.skipIf(SKIP.app !== undefined)(
     );
 
     run.step(
-      "4. Better Auth, the latest on npm, starts with both BETTER_AUTH_SECRET and BETTER_AUTH_SECRETS, keeps the session made before and makes new ones (T2509; Docker on this computer)",
+      "4. Better Auth, the latest on npm, as a rotation leaves its secret (BETTER_AUTH_SECRET the old, BETTER_AUTH_SECRETS 2:new,1:old): the old session is gone, a new sign-in works, the old bare-hex value still decrypts and a new one encrypts as version 2; as --drop-previous leaves it, the version-2 value decrypts and the old one no longer does (T2533; Docker on this computer)",
       minutes(20),
       async () => {
         run.log(`Better Auth said:\n${await betterAuthCheck(run)}`);
