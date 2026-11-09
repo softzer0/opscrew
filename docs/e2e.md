@@ -2928,6 +2928,323 @@ servers (feature 018), the free-disk refusal, a restore that fails partway and p
 taken before it, kinds other than these five, Portainer's scheduled snapshots and off-server copy,
 and the scheduled check's report of a failed scheduled snapshot.
 
+## Credential rotation
+
+Feature 025's `opscrew rotate` runs in nine passes, in four files:
+- `rotation.test.ts`: `services`, `keys`, `app` and `restore`, at Hetzner;
+- `rotation-targets.test.ts`: `own`, `tunnel` and `portainer`;
+- `rotation-addons.test.ts`: `addons`;
+- `rotation-sites.test.ts`: `sites`.
+
+`OPSCREW_E2E_ROTATION` names the passes to run, as a comma list (`services,keys`). A name that is
+no pass gets a warning. Each pass has its own run id, hostname, server and cleanup. A pass without
+its variables is skipped with a message naming them. `OPSCREW_E2E_APP` is ignored: each pass
+deploys its own example.
+
+**Every rotation runs as a script runs it.** The first run has no `--approve`. It must stop at its
+approval (exit 1) and show a hash, as `Rotation hash:`, `Undo hash:` or a printed
+`--approve <hash>`. Each later run passes every hash shown so far, and `--yes` so the record and
+the recovery copy go into the deploy pull request. When a later run stops at another plan (the
+deploy key's copy at Hetzner, a host plan, the removal of an old key), the hash it printed is
+approved next, in at most five runs. A rotation that loses something also gets `--confirm <app>`.
+
+**What a rotation is checked for:**
+- **The values:** the old and new values come from `generated_values.json` (and from
+  `pending_rotation.json` for an unfinished rotation). Each login is tried in the service's
+  container, with the value on the SSH session's standard input, never on a command line:
+  - PostgreSQL and MySQL over their loopback, MySQL's root too;
+  - Valkey with `REDISCLI_AUTH`;
+  - RabbitMQ with `rabbitmqctl authenticate_user`, which takes the value as an argument inside the
+    container, as OpsCrew's own recipe does.
+
+  The new value must log in (tried for up to 2 minutes), and the old one must be refused.
+- **The record:** the deploy pull request is merged; it starts no deploy, since the deploy
+  workflows leave `opscrew/**` out. `opscrew/credentials.yaml` on `main` must then show each
+  credential at its generation, rotated during the run. The next deploy is dispatched on `main`,
+  as a user starts one.
+- **Under load:** 20 requests per second go to the health route (and `/data`, which reads the
+  app's Valkey), as for [the builders](#the-builders). A failed request counts unless it falls
+  within one window from the first failure. The window is the longest one the rotation states for
+  new connections: the plan's "fail for about N seconds" where a script sees the plan, else the
+  `seconds` of `rotate --json`, plus 15 seconds. A seamless rotation allows no failed request.
+- **Nothing leaked:** at the end, as for environments, over every CLI output, commit, pull request,
+  audit entry, saved plan and state file, and, in the passes at Hetzner, the deploy job's log of
+  each deploy run they waited for. Every value OpsCrew made is searched for, the old and the new,
+  an unfinished rotation's too. On each server,
+  before its destroy, the search also reads the rotation's own log (`.rotate/rotate.log` in the
+  app's folder) and the last 5,000 lines of every container's log of the app's and the add-ons'
+  Compose projects.
+
+### The passes
+
+**`services`** (`-t "rotation, services"`): `examples/node-bullmq`, whose Valkey `queue` holds its
+worker's jobs, with PostgreSQL (`db`) and MySQL (`mysql`) added to staging's plan, at Hetzner.
+1. Prod is designed but never provisioned, as for [snapshots](#snapshots-and-restores). Then
+   staging is added, given the two services, provisioned and deployed. A value is written through
+   the app, and the worker runs a job (`POST /jobs/<id>`, then `GET /jobs/<id>` answers 200).
+2. `rotate --json --env staging` must list `db` as a swap, and `mysql` and `queue` as seamless,
+   each dated from the first deploy. It must change no file.
+3. `rotate db mysql queue --env staging`, under load (SC-2501). Then:
+   - every value differs on this computer;
+   - the new values log in, MySQL's root included, and the old ones are refused;
+   - no service's container started again;
+   - the app reads the value, and the worker runs a job;
+   - deploys are no longer paused, and no unfinished rotation is left;
+   - the record shows the three at generation 2;
+   - after the next deploy, the new values still log in.
+4. **A stop and its undo** (FR-2512): MySQL's container is paused, and `rotate db mysql` is
+   approved. The run must fail and name `opscrew rotate db mysql --env staging --undo`. Then:
+   - the unfinished rotation is kept, and the deploys stay paused;
+   - with MySQL started again, `--undo` must say "Put the old values of";
+   - the values on this computer are those of step 3;
+   - those values log in, and the undone rotation's new ones are refused;
+   - the deploys resume, and the app and its worker work.
+5. The server's logs are searched, then staging is destroyed, as for snapshots, and the leak
+   search runs (SC-2503).
+
+**`keys`** (`-t "rotation, keys"`): `examples/flask-sqlite` on prod at Hetzner. Design turns on
+the scheduled check, so prod has a check key.
+1. Provision and the first deploy. Copies of the deploy key and the check key are kept in the run's
+   folder, and each must log in (the check key's forced command runs).
+2. `rotate deploy-key` with `--confirm <app>` (US3, SC-2502):
+   - the old key's copy must be refused (SSH exits 255), and the new key logs in;
+   - Hetzner's SSH key labelled for the app holds the new public key;
+   - the record is merged;
+   - `provision`, as the rotation says to run next, must plan no replacement. Its files are
+     merged, and the next deploy works.
+3. `rotate check-key`, proven by a check run: the old copy is refused, the new key is let in, and
+   the record is merged.
+4. A merged change deploys. Then destroy and the leak search.
+
+**`app`** (`-t "rotation, app"`): `examples/laravel-app` on prod at Hetzner, with two changes
+written over it:
+- `routes/web.php` adds `/e2e-session`, a session's counter, and `/e2e-encrypt` with
+  `/e2e-decrypt`, a value encrypted with `APP_KEY` and read back, or HTTP 409;
+- `config/session.php` keeps sessions in their encrypted cookie, so a session survives the app's
+  new container and only the key decides whether it reads.
+1. Provision and the first deploy. The session counts to 2, and its cookies are kept as they are,
+   the old key's. A value is encrypted.
+2. `rotate app` must not ask the app's name (US4, FR-2507). Then:
+   - `APP_KEY` differs;
+   - in the app's container, `APP_KEY` is the new value and `APP_PREVIOUS_KEYS` the old one,
+     compared there with the value on standard input, never printed;
+   - the session goes on (3), and the value is readable;
+   - the record shows `app:APP_KEY` at generation 2.
+3. `rotate app --drop-previous`: its plan must ask for `--confirm <app>`, and a run with
+   `--approve` alone must exit 1. With the name:
+   - `APP_PREVIOUS_KEYS` is unset in the container;
+   - the value is "unreadable";
+   - the old key's cookies start a new session (1), and the current session goes on (4);
+   - after the next deploy, the session still goes on (5).
+4. **Better Auth with both of its variables** (T2509), in Docker on this computer: the latest
+   `better-auth` from npm, in OpsCrew's pinned Node image, with its memory adapter.
+   - A user signs up under `BETTER_AUTH_SECRET` alone.
+   - A second process starts as a rotation leaves the app: `BETTER_AUTH_SECRET` the new value, and
+     `BETTER_AUTH_SECRETS=2:<new>,1:<old>`. It must say "started with both: yes", "old session:
+     kept" and "new session: ok".
+
+   The secrets and the user's password are made by the test, live only in Docker's environment,
+   and are searched for.
+5. The server's logs, destroy and the leak search.
+
+**`restore`** (`-t "rotation, restore"`): `examples/s3-uploads` on prod at Hetzner. Its bucket is
+moved to Garage on the server (`storage.objectStorage.provider: garage`), and RabbitMQ (`mq`) is
+added; design then plans the Garage service.
+1. Provision, the first deploy, and a file written through the app.
+2. `snapshot --allow-downtime` must copy `garage` and `mq`.
+3. `rotate garage mq`:
+   - Garage's key and RabbitMQ's password differ;
+   - the app reads the file and writes another with the new key;
+   - RabbitMQ takes the new password and refuses the old;
+   - the record is merged.
+4. `restore <id>` of that snapshot, approved as for snapshots (FR-2512, SC-2504):
+   - the app must read the snapshot's file and write a new one, logging in to Garage with the
+     current key (the restore's start makes the env's key first, and `finish` is skipped while
+     Garage boots: T2514);
+   - RabbitMQ must take the current password, not the snapshot's.
+5. **W** (with `OPSCREW_E2E_ROTATION_SERVER_RESTORE=1` too, once T2520 is on main; PostgreSQL
+   `db` is then added in step 1): a whole-server snapshot, `rotate db`, then `restore --server
+   <id>`. The restored server's PostgreSQL must take the current password and refuse the
+   snapshot's, and the app reads its file. The snapshot is deleted afterwards.
+6. The server's logs, destroy and the leak search.
+
+**`own`** (`-t "rotation, own"`): `examples/node-bullmq` with PostgreSQL, on a throwaway Hetzner
+server set up as the user's own, DNS only, as in [Your own server](#your-own-server).
+1. The server, then the interview (root, the test key, `dns-only`) and design with its host key,
+   adapt, provision until done, the first deploy, and a value written.
+2. `rotate db queue` under load, with root's login on the server for the checks. The new values
+   log in, the old are refused, the app reads the value, the worker runs, the deploys are not
+   paused, and the record is merged.
+3. `rotate deploy-key` through the server's host plans: one with both keys, then one with the new
+   key alone, each approved by its hash. The old key's copy must be refused as `deploy`, the new
+   key logs in, the record is merged, and the next deploy works.
+4. The server's logs, then `destroy --confirm <app> --undo-host`, leaving nothing in Cloudflare,
+   and the leak search.
+
+**`tunnel`** (`-t "rotation, tunnel"`): `examples/flask-sqlite` on such a server in tunnel mode.
+1. The server, then the interview with `server.serve: tunnel`, provision and the first deploy,
+   which answers through Cloudflare. The tunnel's token and the Access service token are kept for
+   the leak search.
+2. In a script, `rotate tunnel-token` must fail, saying it "runs only in a terminal". With
+   `--approve <hash>` it must exit 2, saying it "rotates only in a terminal".
+3. **In a terminal** (R11, T2511), under load. The tunnel's connections at Cloudflare are read
+   first. The rotation then runs one of two ways:
+   - in a pty, with `script` (util-linux on Linux and in WSL, BSD on macOS). Each approval is
+     answered once its prompt is drawn: `y` for "Approve this change?", the name for a typed one;
+   - by hand, without `script` (Windows), with `OPSCREW_E2E_ROTATION_TERMINAL=1`. The pass writes
+     `rotate-in-a-terminal.sh` in the run's folder and logs `sh <path>`; run it in a terminal and
+     answer its prompts within 30 minutes. It holds the run's settings, tokens included, and goes
+     with the run's folder. Its output is not captured, so the leak search misses it.
+
+   Then:
+   - once the audit log shows "change the Cloudflare Tunnel's secret" (Cloudflare's PATCH), and
+     before the next prompt is answered, every connection from before must still be listed;
+   - the run must exit 0;
+   - within 3 minutes a new connector serves the tunnel, on the new token;
+   - a failed request counts unless it falls within 30 seconds (and the 15) of the first, one
+     connector's restart;
+   - the new token is kept for the leak search, and the record is merged.
+
+   Without a pty or the variable, this step is skipped with a message.
+4. The server's logs, destroy with `--undo-host`, and the leak search.
+
+**`portainer`** (`-t "rotation, portainer"`): `examples/nextjs-postgres` in a Portainer set up as
+the user's, as in [Snapshots and restores](#snapshots-and-restores), with the updater and the
+tunnel. The test writes `.env.example`, listing `DATABASE_URL` and `BETTER_AUTH_SECRET`, so OpsCrew
+makes Better Auth's secret and names `BETTER_AUTH_SECRETS` bare in the stack's compose file.
+Valkey (`cache`) is added to the plan.
+1. Portainer, then the design, provision until done, and the first deploy.
+2. `rotate db cache app` under load, through Portainer's Docker exec and the stack plan (T2507).
+   Then:
+   - the new values log in, and the old are refused, as root on the host;
+   - in the app's container, `BETTER_AUTH_SECRET` is the new value, and `BETTER_AUTH_SECRETS` is
+     `2:<new>,1:<old>`: the stack's Env reaches a key the compose file names bare (T2509);
+   - the deploys are not paused, and the record is merged;
+   - after the next deploy, the new values still log in.
+3. The host's container logs, then `destroy --confirm <app> --delete-data`: no container or volume
+   of the stack is left, and nothing of the app in Cloudflare. Then the leak search.
+
+**`addons`** (`-t "rotation, addons"`): `examples/nextjs-postgres` on prod at Hetzner.
+1. The first deploy. Then, as a user turns them on:
+   - `addon enable monitoring`, with provision and the deploy, until every server's figures and
+     logs are in the stack;
+   - Beszel in hub mode (`addon enable beszel`);
+   - Portainer (`portainer enable`).
+
+   Its password and Beszel's secrets are kept for the leak search.
+2. `rotate monitoring`, its host plans by hash (T2519):
+   - Grafana's container must be read-only; its image is logged (13.3);
+   - from the monitoring server, Grafana's API answers 200 with the new admin password and 401
+     with the old;
+   - the monitoring's own login to PostgreSQL (`opscrew_monitor`) takes the new password and
+     refuses the old;
+   - the stack has figures again within 5 minutes, and the record is merged.
+3. `rotate beszel`, its host plan by hash (T2519):
+   - the hub's dashboard user and its superuser, each made from `hub.env`, must take the new
+     password (200) and refuse the old (400). Their passwords were changed by PATCH, with curl
+     reading its configuration from standard input;
+   - within 3 minutes every system shows `up` again: the agent's new token came through config
+     sync, and the hub read its new `id_ed25519` at its start;
+   - the record is merged.
+4. `rotate portainer`: Portainer's `/api/auth` must take the new admin password (200) and refuse
+   the old. The record is merged.
+5. Both servers' logs, destroy (the monitoring server with it), and the leak search.
+
+**`sites`**: two parts, each with its own variables.
+- **A Worker** (`-t "rotation, sites: examples/astro-ssr"`): `examples/astro-ssr` on Cloudflare's
+  hosting, as in [Cloudflare's hosting](#cloudflares-hosting), with `BETTER_AUTH_SECRET` listed
+  in its `.env.example`. The secrets of the version the Worker serves are read through
+  Cloudflare's API, by name only.
+  1. After the first deploy, its version holds `BETTER_AUTH_SECRET` and not
+     `BETTER_AUTH_SECRETS`.
+  2. `rotate app` is approved, then stopped once it says "Waiting for the deploy run". That
+     deploy must pass, and its version holds both secrets. The rotation stays unfinished.
+  3. `rotate app --undo`: its deploy uploads a version with `--secrets-file`, which must keep
+     `BETTER_AUTH_SECRET` and **not** `BETTER_AUTH_SECRETS`, the secret dropped from the file
+     (T2509).
+  4. `rotate app` to its end: its version holds both, and the record is merged. Then destroy and
+     the leak search.
+- **GitHub Pages** (`-t "rotation, sites: examples/hugo-site"`): `examples/hugo-site` in the public
+  repository `OPSCREW_E2E_GITHUB_REPO_C`, as in [GitHub Pages](#github-pages), with
+  `SESSION_SECRET` listed.
+  1. Provision with a stand-in verification value, and the first deploy, served over HTTP.
+  2. `rotate app`: its plan must say it logs users out, asking for `--confirm <app>`. A run with
+     `--approve` alone must exit 1 and leave the site's GitHub secret as it was. With the name,
+     the secret is replaced, the deploy passes, the record is merged, and the site answers.
+  3. `destroy --delete-verification`, and the leak search.
+
+### Cleanup
+
+Each pass's cleanup is the one for environments, after every step and always: `opscrew destroy`
+if needed, Hetzner's API by the app's labels, the GitHub environments, deploy secrets and deploy
+pauses (a stopped rotation leaves one), the app's records in Cloudflare, and the repository reset.
+The throwaway servers of the `own`, `tunnel` and `portainer` passes are deleted with their SSH keys
+and firewalls. The `restore` pass also deletes this run's whole-server snapshots of the app's
+server, as the snapshots pass does. The Better Auth check leaves no container (`docker run --rm`).
+
+**If a run was interrupted**, delete by hand what the environments test lists, and the throwaway
+server `opscrew-e2e-rot-<pass>-<run id>` (labelled `managed-by=opscrew-e2e`).
+
+| Variable | What it is |
+|---|---|
+| `OPSCREW_E2E_ROTATION` | The passes to run: a comma list of `services`, `keys`, `app`, `tunnel`, `restore`, `own`, `portainer`, `addons`, `sites`. |
+| `OPSCREW_E2E_HCLOUD_TOKEN`, `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN`, `OPSCREW_E2E_CLOUDFLARE_TOKEN`, `OPSCREW_E2E_DOMAIN` | Every pass but `sites`, as for environments. |
+| `OPSCREW_E2E_GHCR_READ_TOKEN` | `portainer`: Portainer pulls the app's image with it, as for [your existing Portainer](#your-existing-portainer). |
+| `OPSCREW_E2E_REPO_READ_TOKEN` | `portainer`, when `OPSCREW_E2E_GITHUB_REPO` is private. |
+| `OPSCREW_E2E_CLOUDFLARE_DEPLOY_TOKEN` | `sites`, the Worker: as for [Cloudflare's hosting](#cloudflares-hosting), with `OPSCREW_E2E_GITHUB_REPO`, the GitHub token, the Cloudflare token and the domain. |
+| `OPSCREW_E2E_GITHUB_REPO_C` | `sites`, GitHub Pages: as for [GitHub Pages](#github-pages), with the GitHub token, the Cloudflare token and the domain. |
+| `OPSCREW_E2E_ROTATION_SERVER_RESTORE` | With `restore`, `1` also runs step W, the whole-server restore after a rotation (T2520). |
+| `OPSCREW_E2E_ROTATION_TERMINAL` | With `tunnel` on a computer without `script` (Windows), `1` runs the tunnel token's rotation by hand from the launcher the pass writes. |
+| `OPSCREW_E2E_REGION` | Optional, as above. |
+
+The `app` pass needs Docker on this computer, with network access to npm, for the Better Auth
+check.
+
+```bash
+pnpm --filter opscrew build
+cd packages/cli
+export OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e \
+  OPSCREW_E2E_GITHUB_TOKEN=… OPSCREW_E2E_CLOUDFLARE_TOKEN=… OPSCREW_E2E_DOMAIN=e2e.example.com
+# The Hetzner passes, one or more of them.
+OPSCREW_E2E_ROTATION=services,keys npx vitest run test/live/rotation.test.ts
+OPSCREW_E2E_ROTATION=app,restore npx vitest run test/live/rotation.test.ts
+# Your own server, the tunnel and your Portainer.
+OPSCREW_E2E_ROTATION=own,tunnel,portainer OPSCREW_E2E_GHCR_READ_TOKEN=… \
+  npx vitest run test/live/rotation-targets.test.ts
+# The add-ons.
+OPSCREW_E2E_ROTATION=addons npx vitest run test/live/rotation-addons.test.ts
+# The sites.
+OPSCREW_E2E_ROTATION=sites OPSCREW_E2E_CLOUDFLARE_DEPLOY_TOKEN=… OPSCREW_E2E_GITHUB_REPO_C=you/opscrew-e2e-pages \
+  npx vitest run test/live/rotation-sites.test.ts
+```
+
+Several passes in one file run one after another. Run one alone with `-t` and its title (above).
+
+Not measured yet. What each pass runs, at about 0.01–0.02 EUR an hour per server of the sizes
+design picks (check Hetzner's price list):
+- **services:** one staging server (with MySQL, a few GB of memory) for about 1.5 hours, and three
+  deploy runs;
+- **keys:** one server for about 1.5 hours, four deploy runs and one check run;
+- **app:** one server for about an hour, with three deploy runs and Railpack's build;
+- **restore:** one server for about an hour, and two deploy runs. With step W, about 45 minutes
+  more, and a whole-server snapshot of a few GB for minutes (well under a cent);
+- **own** and **tunnel:** one throwaway server each for about an hour, and two or three deploy
+  runs;
+- **portainer:** the Portainer server for about 1.5 hours, and two deploy runs with a build;
+- **addons:** the app's server and the monitoring server for about two hours, and two deploy runs;
+- **sites:** no server. Cloudflare's Workers stay in the free plan; GitHub Pages is free on a
+  public repository. Four deploy runs for the Worker and two for Pages.
+
+What these passes don't cover:
+- DigitalOcean;
+- a split placement's extra servers (`rotate.sh begin` and `finish`);
+- this computer's rotation;
+- the private network, devices and their logins;
+- the Access service token and the state passphrase;
+- the recovery key and the user's own tokens;
+- the scheduled check's credentials issue;
+- the kinds other than these six.
+
 ## Price tables
 
 Before each release, check that the dated price tables OpsCrew falls back to without a token still
