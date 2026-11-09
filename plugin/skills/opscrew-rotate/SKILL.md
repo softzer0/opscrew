@@ -37,8 +37,9 @@ Before they run it, say what the list says it costs:
   seconds, until its switch; open ones stay (NATS closes them and the clients reconnect);
 - **a restart** (Meilisearch, Typesense's start key, Garage's RPC secret): the service is down for
   a few seconds; a new Meilisearch master key changes every API key made from it;
-- **users logged out**: app secrets other than Laravel's `APP_KEY`, Better Auth's secret and
-  `CRON_SECRET`. The plan says so and the user types the app's name;
+- **users logged out**: app secrets other than Laravel's `APP_KEY` and `CRON_SECRET`, Better
+  Auth's secret included (its old value stays only to decrypt). The plan says so and the user
+  types the app's name;
 - **devices**: `network` and `device:<name>` write new WireGuard configurations to import (`--qr`
   draws each as a QR code); `grant:<device>/<service>` shows the device login's new password once.
 

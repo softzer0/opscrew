@@ -92,13 +92,19 @@ Kafka and Redpanda without their login have nothing to rotate; the list says so.
 `app` rotates every secret OpsCrew generated for the app; `app:<NAME>` only that one, for example
 `app:SECRET_KEY_BASE`. Secrets you set yourself are yours to change.
 
-- **Laravel's `APP_KEY` and Better Auth's secret** rotate without logging anyone out. The new
-  value becomes current and the old one stays as the previous one: in `APP_PREVIOUS_KEYS` for
-  Laravel, in `BETTER_AUTH_SECRETS` for Better Auth. Sessions and encrypted data stay readable.
+- **Laravel's `APP_KEY`** rotates without logging anyone out. The new key becomes current and the
+  old one stays as the previous one, in `APP_PREVIOUS_KEYS`. Sessions and encrypted data stay
+  readable.
+- **Better Auth's secret** keeps what it encrypted readable, but logs every user out: Better Auth
+  checks sessions with its current secret only. The new secret becomes current in
+  `BETTER_AUTH_SECRETS`. The old one stays there, and `BETTER_AUTH_SECRET` keeps its value, both
+  only to decrypt what was encrypted before, such as two-factor secrets and OAuth tokens. The plan
+  says users are logged out, and you type the app's name, as below.
 - **The previous value stays until you drop it**, because data encrypted with it may remain: the
   app encrypts again only what it writes again. When nothing encrypted with the old key is left,
-  drop it with `npx opscrew rotate app --drop-previous`. What is still encrypted with it can't
-  be read afterwards, so the plan says so and you type the app's name, as below.
+  drop it with `npx opscrew rotate app --drop-previous`. For Better Auth, `BETTER_AUTH_SECRET`
+  then takes the current secret too. What is still encrypted with the old key can't be read
+  afterwards, so the plan says so and you type the app's name, as below.
 - **Every other app secret logs your users out**, or makes the tokens the app issued stop
   working. Examples are Rails's `SECRET_KEY_BASE`, Django's and Flask's `SECRET_KEY`, Auth.js's
   `AUTH_SECRET`, NextAuth's `NEXTAUTH_SECRET`, `SESSION_SECRET`, `JWT_SECRET` and
