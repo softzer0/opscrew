@@ -56,6 +56,14 @@ function swap(secret: string, seconds: number, begin: SecretRotation["begin"]): 
   return { secrets: [secret], mode: "swap", seconds, recreate: false, begin, finish: () => [] };
 }
 
+/** A rotation of one secret that keeps both values working from `begin` until `finish`. */
+function dual(
+  secret: string,
+  steps: Pick<SecretRotation, "begin" | "finish" | "undo">,
+): SecretRotation {
+  return { secrets: [secret], mode: "dual", recreate: false, ...steps };
+}
+
 /** A secret that changes only with a restart: the service created again with the new env. */
 function restart(secret: string, seconds: number): SecretRotation {
   return {
@@ -92,10 +100,15 @@ function keepFile(variable: string, file = PASSWORD_FILE): string {
 
 /**
  * A rotation's command that makes the value in `variable` (`$OPSCREW_NEW`, or `$OPSCREW_OLD` for
- * an undo) the value of `file`, replaced at once.
+ * an undo) the value of `file`, replaced at once: `write` writes it to `<file><suffix>` first.
  */
-function newFile(file = PASSWORD_FILE, variable = "OPSCREW_NEW"): string {
-  return `${writeFile(variable, `${file}.new`)} && mv -f ${file}.new ${file}`;
+function newFile(
+  file = PASSWORD_FILE,
+  variable = "OPSCREW_NEW",
+  write: (variable: string, file: string) => string = writeFile,
+  suffix = ".new",
+): string {
+  return `${write(variable, `${file}${suffix}`)} && mv -f ${file}${suffix} ${file}`;
 }
 
 /** The value of `file`, as a shell word. */
@@ -374,10 +387,7 @@ function redisRotation(cli: string): ServiceRotation {
   const device = (name: string) => DeviceNameSchema.parse(name);
   return {
     secrets: [
-      {
-        secrets: [PASSWORD.name],
-        mode: "dual",
-        recreate: false,
+      dual(PASSWORD.name, {
         begin: () => [
           sh(
             `${unlessDone(redisLogsIn(cli, "default", NEW), aclCommand(cli, OLD, "ACL SETUSER default >%s", NEW))} && ${newFile()}`,
@@ -391,7 +401,7 @@ function redisRotation(cli: string): ServiceRotation {
             ),
           ),
         ],
-      },
+      }),
     ],
     grant: {
       // Adding a password it holds already changes nothing.
@@ -591,6 +601,22 @@ function rootAccounts(change: string): string {
   return `ALTER USER 'root'@'localhost' ${change}; ALTER USER 'root'@'%%' ${change};`;
 }
 
+/**
+ * Root's `begin` through `client`: both accounts given the new password with `change` (logged in
+ * with the old) unless it logs in already, then the container's current root password rewritten.
+ */
+function rootBegin(client: string, change: string): SecretRotation["begin"] {
+  return () => [
+    unlessNewLogsIn(client, "root", asRoot(client, OLD, rootAccounts(change), NEW, NEW)),
+    sh(newFile(ROOT_PASSWORD_FILE)),
+  ];
+}
+
+/** MySQL's `statement` logged in as root with the container's current root password. */
+function mysqlRoot(statement: string, ...values: string[]): string {
+  return asRoot("mysql", current(ROOT_PASSWORD_FILE), statement, ...values);
+}
+
 const MYSQL: ServiceSpec = {
   kind: "mysql",
   title: "MySQL",
@@ -636,63 +662,29 @@ const MYSQL: ServiceSpec = {
   // and `finish` would then discard it.
   rotation: {
     secrets: [
-      {
-        secrets: [PASSWORD.name],
-        mode: "dual",
-        recreate: false,
+      dual(PASSWORD.name, {
         begin: () => [
           unlessNewLogsIn(
             "mysql",
             "app",
-            asRoot(
-              "mysql",
-              current(ROOT_PASSWORD_FILE),
-              "ALTER USER 'app'@'%%' IDENTIFIED BY '%s' RETAIN CURRENT PASSWORD;",
-              NEW,
-            ),
+            mysqlRoot("ALTER USER 'app'@'%%' IDENTIFIED BY '%s' RETAIN CURRENT PASSWORD;", NEW),
           ),
         ],
         // A discard with no old password left changes nothing.
-        finish: () => [
-          bash(
-            asRoot(
-              "mysql",
-              current(ROOT_PASSWORD_FILE),
-              "ALTER USER 'app'@'%%' DISCARD OLD PASSWORD;",
-            ),
-          ),
-        ],
+        finish: () => [bash(mysqlRoot("ALTER USER 'app'@'%%' DISCARD OLD PASSWORD;"))],
         // The old password the only one again (a new primary keeps the retained one until the
         // discard); run again, it changes nothing.
         undo: () => [
           bash(
-            asRoot(
-              "mysql",
-              current(ROOT_PASSWORD_FILE),
+            mysqlRoot(
               "ALTER USER 'app'@'%%' IDENTIFIED BY '%s'; ALTER USER 'app'@'%%' DISCARD OLD PASSWORD;",
               OLD,
             ),
           ),
         ],
-      },
-      {
-        secrets: [ROOT_PASSWORD.name],
-        mode: "dual",
-        recreate: false,
-        begin: () => [
-          unlessNewLogsIn(
-            "mysql",
-            "root",
-            asRoot(
-              "mysql",
-              OLD,
-              rootAccounts("IDENTIFIED BY '%s' RETAIN CURRENT PASSWORD"),
-              NEW,
-              NEW,
-            ),
-          ),
-          sh(newFile(ROOT_PASSWORD_FILE)),
-        ],
+      }),
+      dual(ROOT_PASSWORD.name, {
+        begin: rootBegin("mysql", "IDENTIFIED BY '%s' RETAIN CURRENT PASSWORD"),
         finish: () => [bash(asRoot("mysql", NEW, rootAccounts("DISCARD OLD PASSWORD")))],
         // The file's first, then the old password the only one on both accounts again, logged in
         // with it: before `finish` it always logs in (retained beside the new, or alone), also run
@@ -709,7 +701,7 @@ const MYSQL: ServiceSpec = {
             ),
           ),
         ],
-      },
+      }),
     ],
   },
 };
@@ -762,20 +754,10 @@ const MARIADB: ServiceSpec = {
           ),
         ),
       ]),
-      {
-        secrets: [ROOT_PASSWORD.name],
-        mode: "dual",
-        recreate: false,
-        begin: () => [
-          unlessNewLogsIn(
-            "mariadb",
-            "root",
-            asRoot("mariadb", OLD, rootAccounts("IDENTIFIED BY '%s'"), NEW, NEW),
-          ),
-          sh(newFile(ROOT_PASSWORD_FILE)),
-        ],
+      dual(ROOT_PASSWORD.name, {
+        begin: rootBegin("mariadb", "IDENTIFIED BY '%s'"),
         finish: () => [],
-      },
+      }),
     ],
   },
 };
@@ -1034,7 +1016,7 @@ const NATS: ServiceSpec = {
       {
         ...swap("token", 1, () => [
           sh(
-            `${natsTokenFile("OPSCREW_NEW", `${NATS_TOKEN_FILE}.new`)} && mv -f ${NATS_TOKEN_FILE}.new ${NATS_TOKEN_FILE} && nats-server --signal reload=1`,
+            `${newFile(NATS_TOKEN_FILE, "OPSCREW_NEW", natsTokenFile)} && nats-server --signal reload=1`,
           ),
         ]),
         closesConnections: true,
@@ -1902,7 +1884,7 @@ const CLICKHOUSE: ServiceSpec = {
     secrets: [
       swap(PASSWORD.name, 2, () => [
         bash(
-          `${clickhouseUserFile("OPSCREW_NEW", `${CLICKHOUSE_APP_USER}.tmp`)} && mv -f ${CLICKHOUSE_APP_USER}.tmp ${CLICKHOUSE_APP_USER} && for i in $(seq 40); do CLICKHOUSE_PASSWORD=${NEW} clickhouse-client -u app -q 'SELECT 1' > /dev/null 2>&1 && exit 0; sleep 0.25; done; exit 1`,
+          `${newFile(CLICKHOUSE_APP_USER, "OPSCREW_NEW", clickhouseUserFile, ".tmp")} && for i in $(seq 40); do CLICKHOUSE_PASSWORD=${NEW} clickhouse-client -u app -q 'SELECT 1' > /dev/null 2>&1 && exit 0; sleep 0.25; done; exit 1`,
         ),
       ]),
     ],
