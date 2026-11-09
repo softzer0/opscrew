@@ -571,7 +571,7 @@ describe("replaceToken", () => {
     );
     expect(error).toMatchObject({ code: "APPROVAL_REFUSED" });
     expect(error.message).toBe(
-      "The Cloudflare deploy token was not replaced. Nothing was changed.",
+      "The replacement of the Cloudflare deploy token was not approved. Nothing was changed.",
     );
     const [request] = (deps.approvalHandler as ScriptedApprovalHandler).requests as [
       ApprovalRequest,

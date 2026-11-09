@@ -18,7 +18,30 @@ import type { ProvisionServices } from "../provision/types";
 import { committedText } from "../shared/files";
 import { approveAndApplyHostPlan } from "../shared/host-plan";
 import { networkServer, VPN_PHASE, type VpnServices } from "../vpn/servers";
-import type { TunnelConnectors, TunnelModule } from "./infra";
+
+/** A tunnel of the root module, by its module: the app's, or the one in front of Portainer's webhook. */
+export type TunnelModule = "tunnel" | "portainer_tunnel";
+
+/** A tunnel whose secret a `tunnel-token` rotation changed, with its new token. */
+export interface RotatedTunnel {
+  module: TunnelModule;
+  tunnelId: string;
+  token: string;
+}
+
+/**
+ * The connectors of the tunnels a `tunnel-token` rotation changed (the user's own server's host
+ * plan, a cloud server's connector, the user's Portainer's stacks).
+ */
+export interface TunnelConnectors {
+  /** Refuses, before anything changes, when the connectors' setup has changes of its own. */
+  check(): Promise<void>;
+  /**
+   * Restarts the connectors of `tunnels` with their new tokens, each change approved by its own
+   * hash; where several connectors run, one at a time.
+   */
+  restart(tunnels: readonly RotatedTunnel[]): Promise<void>;
+}
 
 /**
  * The connector of the app's tunnel on its server: `restart` inspects the app's server

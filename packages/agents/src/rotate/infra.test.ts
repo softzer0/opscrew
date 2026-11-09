@@ -45,15 +45,17 @@ import {
 import type { VpnServices } from "../vpn/servers";
 import {
   accessTokenAddress,
-  type RotatedTunnel,
   replaceDeployKeyObject,
   rotateAccessToken,
   rotateStatePassphrase,
   rotateTunnelToken,
-  type TunnelConnectors,
   tunnelModules,
 } from "./infra";
-import { portainerTunnelConnectors } from "./infra-connectors";
+import {
+  portainerTunnelConnectors,
+  type RotatedTunnel,
+  type TunnelConnectors,
+} from "./infra-connectors";
 import { credentialsRecordFile } from "./record";
 
 const NOW = new Date("2026-11-08T10:00:00.000Z");
@@ -878,7 +880,7 @@ describe("rotateAccessToken", () => {
     });
     const error = await failure(rotateAccessToken(w.deps, w.plan, services(w)));
     expect(error).toMatchObject({ code: "PHASE_PRECONDITION" });
-    expect(error.message).toContain("are paused since 2026-11-08T09:00:00Z");
+    expect(error.message).toContain("are paused for a move since 2026-11-08T09:00:00Z");
     expect(w.engine.calls).toEqual([]);
   });
 

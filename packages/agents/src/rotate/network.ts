@@ -31,7 +31,7 @@ import type { NetworkServer } from "../provision/network";
 import { type RefreshRecoveryResult, refreshRecoveryCopy } from "../secrets/copy";
 import { outcomeSummary, withApprovals, writePlanIfChanged } from "../shared";
 import { recordGeneratedEntries } from "../shared/app-secrets";
-import { PlanRefusedError } from "../shared/approvals";
+import { requestApproval } from "../shared/approvals";
 import { appServers } from "../shared/servers";
 import { deviceConfigFile, type VpnAddResult, vpnAdd, writeDeviceConfig } from "../vpn/devices";
 import { sharedMonitoringServer } from "../vpn/monitoring";
@@ -222,18 +222,15 @@ async function approveNetworkRotation(
     `If a step stops, \`${again}\` goes on with the same keys.`,
     `Rotation hash: ${hash}`,
   ];
-  const approval = await deps.approvals.request({
-    kind: "remote-exec",
+  await requestApproval(deps, {
     title: `Rotate the private network's keys of ${environment}`,
     details: lines.join("\n"),
-    planHash: hash,
-  });
-  if (approval.approved) return;
-  throw new PlanRefusedError({
-    plan: "rotation of the private network's keys",
-    ...(approval.reason === undefined ? {} : { reason: approval.reason }),
-    unchanged: "Nothing on this computer or the servers was changed.",
-    hint: `Run \`${again}\` again when you are ready (in a script: --approve ${hash}).`,
+    hash,
+    refused: {
+      plan: "rotation of the private network's keys",
+      unchanged: "Nothing on this computer or the servers was changed.",
+      again,
+    },
   });
 }
 

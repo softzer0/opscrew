@@ -19,8 +19,14 @@ import { type InitCheckId, type InitServices, runInitChecks } from "../init";
 import { providerProfile } from "../providers";
 import { setupGitHub } from "../provision/credentials";
 import { type RunProvisionOptions, runProvision } from "../provision/run";
-import { deploySecretPlaces, type SecretPlace, secretsEnvironment } from "../provision/secrets";
+import {
+  deploySecretPlaces,
+  type SecretPlace,
+  secretsEnvironment,
+  setSecretAt,
+} from "../provision/secrets";
 import type { GitHubApi, ProvisionResult } from "../provision/types";
+import { requestApproval } from "../shared/approvals";
 import { gitClient, githubClientFromToken } from "../shared/github";
 import { readPortainerConnection } from "../shared/server-record";
 import { credentialInventory, USER_TOKENS } from "./inventory";
@@ -394,7 +400,7 @@ export async function replaceToken(
         secrets: places,
       }),
     );
-    const approval = await deps.approvals.request({
+    await requestApproval(deps, {
       kind: "github-secrets",
       title: `Replace the ${title} in ${secrets.length} GitHub secret${secrets.length === 1 ? "" : "s"} of ${repo}`,
       details: [
@@ -402,35 +408,10 @@ export async function replaceToken(
         ...secrets.map(copyText),
         `Hash: ${hash}`,
       ].join("\n"),
-      planHash: hash,
+      hash,
+      refused: { plan: `replacement of the ${title}`, unchanged: "Nothing was changed.", again },
     });
-    if (!approval.approved) {
-      throw new OpsCrewError(
-        "APPROVAL_REFUSED",
-        `The ${title} was not replaced. Nothing was changed.`,
-        { hint: `Run \`${again}\` again when you are ready (in a script: --approve ${hash}).` },
-      );
-    }
-    for (const place of places) {
-      if (place.environment === undefined) {
-        await github.api.setActionsSecret(github.owner, github.repo, place.name, set.value);
-      } else {
-        await github.api.setEnvironmentSecret(
-          github.owner,
-          github.repo,
-          place.environment,
-          place.name,
-          set.value,
-        );
-      }
-      await deps.audit.append({
-        kind: "secret-set",
-        actor: "opscrew",
-        action: `set secret ${place.name}${place.environment === undefined ? "" : ` in the environment ${place.environment}`}`,
-        target: repo,
-        decision: "approved",
-      });
-    }
+    for (const place of places) await setSecretAt(deps, github, place, set.value);
   }
   if (copies.some((copy) => copy.kind === "portainer-registry")) {
     deps.reporter.step(

@@ -14,7 +14,6 @@ import {
   CHECK_SECRETS,
   CHECK_WORKFLOW_FILE,
   DEPLOY_SECRETS,
-  deploySecretName,
   deploySecretNamesFor,
   usesTunnel,
 } from "@opscrew/iac-templates";
@@ -27,18 +26,19 @@ import {
   prepareExtraOwnServer,
   prepareOwnServer,
 } from "../provision/own";
-import { secretsEnvironment } from "../provision/secrets";
+import { deploySecretPlace, type SecretPlace, setSecretAt } from "../provision/secrets";
 import type { ProvisionServices } from "../provision/types";
 import { type RefreshRecoveryResult, refreshRecoveryCopy } from "../secrets/copy";
-import { PlanRefusedError } from "../shared/approvals";
+import { requestApproval } from "../shared/approvals";
 import { dispatchAndFollow } from "../shared/deploy-run";
 import { type EngineFactory, infrastructureOutputs } from "../shared/engine";
-import { codeOf } from "../shared/errors";
+import { codeOf, continued } from "../shared/errors";
 import { replaceDeployKeyObject } from "./infra";
 import {
   bareKey,
   forgetPrevious,
   type KeyHalves,
+  type KeyStage,
   keyStage,
   moveIntoPlace,
   type SshKeyName,
@@ -154,21 +154,6 @@ const NAMES: Record<SshKeyName, string> = {
   "check-key": "scheduled check's key",
   "preview-key": "preview key",
 };
-
-/** Where GitHub holds the key's private half. */
-interface SecretPlace {
-  name: string;
-  environment?: string;
-}
-
-function secretPlace(plan: DeployPlan, which: SshKeyName): SecretPlace {
-  if (which === "check-key") return { name: CHECK_SECRETS.sshKey };
-  const environment = secretsEnvironment(plan);
-  return {
-    name: deploySecretName(plan, DEPLOY_SECRETS.sshKey),
-    ...(environment === undefined ? {} : { environment }),
-  };
-}
 
 /** `GitHub's secret X of owner/repo`, with its GitHub environment when it has one. */
 function secretText(place: SecretPlace, repository: string): string {
@@ -307,55 +292,17 @@ async function approve(
           `The new ${name} (${newKey}) of ${deps.paths.environment} is in place and proved itself.`,
           `The old one (${oldKey}) is removed from ${serversText(holders)}.`,
         ];
-  const approval = await deps.approvals.request({
-    kind: "remote-exec",
+  await requestApproval(deps, {
     title: `Replace the ${name} of ${deps.paths.environment}`,
     details: [...lines, `Rotation hash: ${hash}`].join("\n"),
-    planHash: hash,
-  });
-  if (approval.approved) return hash;
-  throw new PlanRefusedError({
-    plan: `rotation of the ${name}`,
-    ...(approval.reason === undefined ? {} : { reason: approval.reason }),
-    unchanged: "Nothing on the servers or in GitHub was changed.",
-    hint: `Run \`${again}\` again when you are ready (in a script: --approve ${hash}).`,
-  });
-}
-
-/** `error` with what stays true before the removal: both keys work, and how to go on. */
-function bothKeysWork(error: unknown, again: string): unknown {
-  if (!isUserFacingError(error)) return error;
-  const said = error.message.replace(/\s+$/, "");
-  return new OpsCrewError(
-    codeOf(error),
-    `${said} The old key still works beside the new one: nothing removed it.`,
-    {
-      hint: `${error.hint ? `${error.hint} ` : ""}Then run \`${again}\` again to go on.`,
-      cause: error,
+    hash,
+    refused: {
+      plan: `rotation of the ${name}`,
+      unchanged: "Nothing on the servers or in GitHub was changed.",
+      again,
     },
-  );
-}
-
-/** Replaces GitHub's secret of the key with `privateKey` (audited by name only). */
-async function replaceSecret(
-  deps: PhaseDeps,
-  github: SshKeyGitHub,
-  place: SecretPlace,
-  privateKey: string,
-): Promise<void> {
-  const { api, owner, repo } = github;
-  if (place.environment === undefined) {
-    await api.setActionsSecret(owner, repo, place.name, privateKey);
-  } else {
-    await api.setEnvironmentSecret(owner, repo, place.environment, place.name, privateKey);
-  }
-  await deps.audit.append({
-    kind: "secret-set",
-    actor: "opscrew",
-    action: `set secret ${place.name}${place.environment === undefined ? "" : ` in the environment ${place.environment}`}`,
-    target: `${owner}/${repo}`,
-    decision: "approved",
   });
+  return hash;
 }
 
 /** Audits a change of a server's keys, without its address. */
@@ -507,7 +454,12 @@ export async function rotateSshKey(
   }
   const name = NAMES[which];
   const repository = `${services.github.owner}/${services.github.repo}`;
-  const secret = onlyHere(plan, which) ? undefined : secretPlace(plan, which);
+  // Where GitHub holds the key's private half.
+  const secret = onlyHere(plan, which)
+    ? undefined
+    : which === "check-key"
+      ? { name: CHECK_SECRETS.sshKey }
+      : deploySecretPlace(plan, DEPLOY_SECRETS.sshKey);
   let stage = await keyStage(deps.paths, which, deps.redactor);
   let hash: string;
   if (stage.stage === "add") {
@@ -536,11 +488,15 @@ export async function rotateSshKey(
         ownHostPlan,
       });
       if (secret !== undefined) {
-        await replaceSecret(deps, services.github, secret, next.privateKeyOpenSsh);
+        await setSecretAt(deps, services.github, secret, next.privateKeyOpenSsh);
       }
       await prove(deps, plan, which, { holders, nextFile, services, hash, again });
     } catch (error) {
-      throw bothKeysWork(error, again);
+      // Before the removal both keys work.
+      throw continued(error, {
+        said: "The old key still works beside the new one: nothing removed it.",
+        next: `Then run \`${again}\` again to go on.`,
+      });
     }
     await moveIntoPlace(deps.paths, which, current.publicKeyOpenSsh);
     stage = { stage: "remove", current: next, previousPublicKey: current.publicKeyOpenSsh };
@@ -563,15 +519,10 @@ export async function rotateSshKey(
   try {
     await removeEverywhere(deps, which, { holders, stage, repository, services, ownHostPlan });
   } catch (error) {
-    if (!isUserFacingError(error)) throw error;
-    throw new OpsCrewError(
-      codeOf(error),
-      `${error.message.replace(/\s+$/, "")} The new ${name} is in place and works; the old one may still open the servers OpsCrew did not reach.`,
-      {
-        hint: `${error.hint ? `${error.hint} ` : ""}Then run \`${again}\` again to remove it.`,
-        cause: error,
-      },
-    );
+    throw continued(error, {
+      said: `The new ${name} is in place and works; the old one may still open the servers OpsCrew did not reach.`,
+      next: `Then run \`${again}\` again to remove it.`,
+    });
   }
   if (which === "deploy-key") {
     // The new key proved itself: the provider's copy, which only new servers get, follows it.
@@ -641,7 +592,7 @@ async function removeEverywhere(
   which: SshKeyName,
   input: {
     holders: readonly KeyHolder[];
-    stage: Extract<Awaited<ReturnType<typeof keyStage>>, { stage: "remove" }>;
+    stage: Extract<KeyStage, { stage: "remove" }>;
     repository: string;
     services: SshKeyServices;
     ownHostPlan: (input: OwnHostPlanInput) => Promise<void>;

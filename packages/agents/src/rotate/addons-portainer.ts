@@ -22,7 +22,7 @@ import { commandFlags } from "../environments/choice";
 import { portainerPasswordFile, portainerPasswordToSend } from "../provision/own";
 import type { ProvisionServices } from "../provision/types";
 import { type RefreshRecoveryResult, refreshRecoveryCopy } from "../secrets/copy";
-import { PlanRefusedError } from "../shared/approvals";
+import { requestApproval } from "../shared/approvals";
 import { serverWords } from "../shared/server-address";
 import { randomPassword } from "../shared/ssh-keys";
 import { READ_TIMEOUT_MS, scriptSaid } from "../snapshot/hosts";
@@ -49,8 +49,7 @@ export interface PortainerPasswordRotation {
  * standard input). It logs in to Portainer on its loopback port with the current password (with
  * the new one when an earlier run already changed it, then it only says so) and sets the new one.
  */
-export function portainerPasswordScript(): string {
-  return String.raw`set -u
+const PASSWORD_SCRIPT = String.raw`set -u
 PORT=${PORTAINER_PORT}
 IFS= read -r old || exit 2
 IFS= read -r new || exit 2
@@ -71,7 +70,6 @@ code=$(printf 'header = "Authorization: Bearer %s"\nheader = "Content-Type: appl
 [ "$code" = 204 ] || { echo "Portainer refused the new admin password (HTTP $code)." >&2; exit 7; }
 echo 'opscrew-rotate: portainer changed'
 `;
-}
 
 /** The new password of an unfinished rotation, beside the current one (0600). */
 function nextPasswordFile(deps: Pick<PhaseDeps, "paths">): string {
@@ -103,7 +101,7 @@ function runFailure(deps: PhaseDeps, words: string, result: CommandResult, again
  * registered with the redactor and kept on this computer before it is asked
  * (`portainer_password.next`, 0600; an unfinished or refused rotation's is reused, so its plan has
  * the same hash); the plan shown and approved by
- * its hash (`remote-exec`); then, on the server over SSH, {@link portainerPasswordScript} with both
+ * its hash (`remote-exec`); then, on the server over SSH, {@link PASSWORD_SCRIPT} with both
  * passwords on its standard input (audited without them); then the new one replaces the current
  * one in `portainer_password`, the rotation is recorded and the recovery copy refreshed.
  * @throws OpsCrewError `INVALID_INPUT` without Portainer, `PHASE_PRECONDITION` without its
@@ -152,8 +150,7 @@ export async function rotatePortainerPassword(
       new: sha256Hex(next),
     }),
   );
-  const approval = await deps.approvals.request({
-    kind: "remote-exec",
+  await requestApproval(deps, {
     title: `Rotate the admin password of Portainer in ${environment}`,
     details: [
       `A new admin password made on this computer replaces Portainer's current one on ${words}; neither is ever shown.`,
@@ -162,16 +159,13 @@ export async function rotatePortainerPassword(
       `If a step fails, both passwords stay on this computer, and \`${again}\` goes on from where it stopped.`,
       `Rotation hash: ${hash}`,
     ].join("\n"),
-    planHash: hash,
-  });
-  if (!approval.approved) {
-    throw new PlanRefusedError({
+    hash,
+    refused: {
       plan: "rotation of Portainer's admin password",
-      ...(approval.reason !== undefined ? { reason: approval.reason } : {}),
       unchanged: "Nothing was changed.",
-      hint: `Run \`${again}\` again when you are ready (in a script: --approve ${hash}).`,
-    });
-  }
+      again,
+    },
+  });
   const { docker } = await serverShell(
     deps,
     plan,
@@ -179,7 +173,7 @@ export async function rotatePortainerPassword(
     options.remote === undefined ? {} : { remote: options.remote },
   );
   deps.reporter.step(`Changing Portainer's admin password on ${words}`);
-  const result = await docker.run(portainerPasswordScript(), {
+  const result = await docker.run(PASSWORD_SCRIPT, {
     input: `${current}\n${next}\n`,
     timeoutMs: READ_TIMEOUT_MS,
   });

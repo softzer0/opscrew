@@ -24,7 +24,6 @@ import { CloudflareClient } from "@opscrew/connector-cloudflare";
 import type { IacEngine, ResourceChange } from "@opscrew/contracts";
 import {
   canonicalJson,
-  isUserFacingError,
   listText,
   OpsCrewError,
   readTextIfExists,
@@ -43,9 +42,7 @@ import {
 } from "@opscrew/iac-engine";
 import {
   backupsRootDir,
-  checkEnvironmentKey,
   DEPLOY_PAUSED_VARIABLE,
-  deploySecretName,
   PORTAINER_DEPLOY_SECRETS,
   pagesVerificationRootDir,
   providerBucket,
@@ -59,7 +56,7 @@ import { blockingPolicyFailures, evaluatePlanPolicies } from "@opscrew/secops";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
-import { withDeploysPausedUntilDone } from "../move/deploys";
+import { requireNoOtherPause, withDeploysPausedUntilDone } from "../move/deploys";
 import { cloudflareTokenMissing, type GitHubSetup } from "../provision/credentials";
 import { ownEngineEnv, ownTarget } from "../provision/own";
 import {
@@ -72,7 +69,7 @@ import {
 } from "../provision/plan-apply";
 import { maskSensitivePlanJson } from "../provision/plan-json";
 import { setPortainerOrigin } from "../provision/portainer";
-import { secretsEnvironment } from "../provision/secrets";
+import { deploySecretPlace, setSecretAt } from "../provision/secrets";
 import {
   backupsEngineEnv,
   backupsStateFile,
@@ -84,8 +81,7 @@ import {
 import type { ProvisionServices, SavedPlan } from "../provision/types";
 import { discardSaved } from "../retarget/plans";
 import { type RefreshRecoveryResult, refreshRecoveryCopy } from "../secrets/copy";
-import { PlanRefusedError } from "../shared/approvals";
-import { deployPauseOf, pinnedText, rotationWindowText } from "../shared/deploy-pause";
+import { PlanRefusedError, requestApproval } from "../shared/approvals";
 import {
   chooseEngine,
   type EngineFactory,
@@ -96,7 +92,7 @@ import {
   projectEngine,
   stringOutput,
 } from "../shared/engine";
-import { codeOf } from "../shared/errors";
+import { continued } from "../shared/errors";
 import { readValidJson } from "../shared/files";
 import {
   adoptNextStatePassphrase,
@@ -109,7 +105,13 @@ import {
 import { setPortainerRecordsAddress } from "../shared/server-address";
 import { readPortainerConnection } from "../shared/server-record";
 import type { VpnServices } from "../vpn/servers";
-import { portainerTunnelConnectors, serverTunnelConnectors } from "./infra-connectors";
+import {
+  portainerTunnelConnectors,
+  type RotatedTunnel,
+  serverTunnelConnectors,
+  type TunnelConnectors,
+  type TunnelModule,
+} from "./infra-connectors";
 import { assertValuesCurrent, credentialsRecordFile, recordRotation } from "./record";
 
 /** The engine a rotation plans with. */
@@ -141,9 +143,6 @@ const ACCESS_POLICY = "module.access.cloudflare_zero_trust_access_policy.ssh[0]"
 
 /** The provider objects of the deploy key, which a server gets only when it is created. */
 const DEPLOY_KEY_TYPES: ReadonlySet<string> = new Set(["hcloud_ssh_key", "digitalocean_ssh_key"]);
-
-/** A tunnel of the root module, by its module: the app's, or the one in front of Portainer's webhook. */
-export type TunnelModule = "tunnel" | "portainer_tunnel";
 
 /** The root module's output with each tunnel's id. */
 const TUNNEL_ID_OUTPUTS: Readonly<Record<TunnelModule, string>> = {
@@ -554,56 +553,6 @@ function pauseKey(deps: PhaseDeps, plan: DeployPlan): string {
 }
 
 /**
- * Refuses, before any change, while anything but this rotation's own pause (`key`, left by a run
- * that failed) holds the app's deploys: a move, another rotation, a rollback's pin.
- */
-async function requireNoPause(
-  deps: PhaseDeps,
-  github: AccessTokenServices["github"],
-  plan: DeployPlan,
-  key: string,
-  again: string,
-  flags: string,
-): Promise<void> {
-  const pause = await deployPauseOf(github, plan);
-  if (pause === undefined || (pause.reason === "rotation" && pause.hash === key)) return;
-  const what =
-    pause.reason === "move"
-      ? "a move"
-      : pause.reason === "rotation"
-        ? await rotationWindowText(deps, flags, pause.hash)
-        : pinnedText(pause);
-  throw new OpsCrewError(
-    "PHASE_PRECONDITION",
-    `The deploys of ${checkEnvironmentKey(plan)} are paused since ${pause.since} (the repository variable ${DEPLOY_PAUSED_VARIABLE}) for ${what}, and this rotation pauses them itself. Nothing was changed.`,
-    { hint: `Let that end first, then run \`${again}\` again.` },
-  );
-}
-
-/** Sets each of `secrets` (unprefixed name → value) where GitHub holds the deploy's secrets. */
-async function setDeploySecretValues(
-  deps: PhaseDeps,
-  github: AccessTokenServices["github"],
-  plan: DeployPlan,
-  secrets: Readonly<Record<string, string>>,
-): Promise<void> {
-  const { api, owner, repo } = github;
-  const environment = secretsEnvironment(plan);
-  for (const [unprefixed, value] of Object.entries(secrets)) {
-    const name = deploySecretName(plan, unprefixed);
-    if (environment === undefined) await api.setActionsSecret(owner, repo, name, value);
-    else await api.setEnvironmentSecret(owner, repo, environment, name, value);
-    await deps.audit.append({
-      kind: "secret-set",
-      actor: "opscrew",
-      action: `set secret ${name}${environment === undefined ? "" : ` in the environment ${environment}`}`,
-      target: `${owner}/${repo}`,
-      decision: "approved",
-    });
-  }
-}
-
-/**
  * The new Access service token from the apply's outputs as the deploy secrets that hold it (an own
  * server's tunnel SSH, or a Portainer's webhook), registered with the redactor.
  * @throws OpsCrewError `ENGINE_FAILED` when the outputs lack it.
@@ -668,7 +617,7 @@ export async function rotateAccessToken(
   }
   await assertValuesCurrent(deps);
   const key = pauseKey(deps, plan);
-  await requireNoPause(deps, services.github, plan, key, again, flags);
+  await requireNoOtherPause(deps, services.github, plan, { own: key, again, flags });
   const setup = await rotationEngine(deps, plan, services, again);
   const saved = await planRotation(deps, plan, {
     ...setup,
@@ -694,15 +643,11 @@ export async function rotateAccessToken(
     noun: "infrastructure plan of the rotation of the Cloudflare Access service token",
     again,
   });
-  const paused = {
-    ...(services.sleep !== undefined ? { sleep: services.sleep } : {}),
-    ...(services.now !== undefined ? { now: services.now } : {}),
-  };
   await withDeploysPausedUntilDone(
     deps,
     services.github,
     plan,
-    paused,
+    services,
     { command: again, hash: key },
     async () => {
       try {
@@ -712,22 +657,16 @@ export async function rotateAccessToken(
           again,
         });
         deps.reporter.step("Giving the deploy's GitHub secrets the new Access token");
-        await setDeploySecretValues(
-          deps,
-          services.github,
-          plan,
-          accessSecrets(deps, plan, outputs, again),
-        );
+        const secrets = accessSecrets(deps, plan, outputs, again);
+        for (const [unprefixed, value] of Object.entries(secrets)) {
+          await setSecretAt(deps, services.github, deploySecretPlace(plan, unprefixed), value);
+        }
       } catch (error) {
-        if (!isUserFacingError(error)) throw error;
-        throw new OpsCrewError(
-          codeOf(error),
-          `${error.message.replace(/\s+$/, "")} The app's deploys stay paused (${DEPLOY_PAUSED_VARIABLE}) until \`${again}\` finishes.`,
-          {
-            hint: `${error.hint ? `${error.hint} ` : "Fix what it names. "}Running \`${again}\` again replaces the token once more and resumes the deploys.`,
-            cause: error,
-          },
-        );
+        throw continued(error, {
+          said: `The app's deploys stay paused (${DEPLOY_PAUSED_VARIABLE}) until \`${again}\` finishes.`,
+          fallback: "Fix what it names. ",
+          next: `Running \`${again}\` again replaces the token once more and resumes the deploys.`,
+        });
       }
     },
   );
@@ -736,27 +675,6 @@ export async function rotateAccessToken(
     `Replaced the Cloudflare Access service token of ${environment}: the old one no longer works.`,
   );
   return { hash: saved.planHash, copy: await refreshRecoveryCopy(deps, plan) };
-}
-
-/** A tunnel whose secret a `tunnel-token` rotation changed, with its new token. */
-export interface RotatedTunnel {
-  module: TunnelModule;
-  tunnelId: string;
-  token: string;
-}
-
-/**
- * The connectors of the tunnels a `tunnel-token` rotation changed (the user's own server's host
- * plan, a cloud server's connector, the user's Portainer's stacks).
- */
-export interface TunnelConnectors {
-  /** Refuses, before anything changes, when the connectors' setup has changes of its own. */
-  check(): Promise<void>;
-  /**
-   * Restarts the connectors of `tunnels` with their new tokens, each change approved by its own
-   * hash; where several connectors run, one at a time.
-   */
-  restart(tunnels: readonly RotatedTunnel[]): Promise<void>;
 }
 
 /** What {@link rotateTunnelToken} reaches besides the engine. */
@@ -884,7 +802,7 @@ export async function rotateTunnelToken(
     plan.target.provider === "portainer"
       ? "3. The connectors' stacks in your Portainer get the new token through one stack plan, approved by its own hash. Portainer recreates each connector, so what each tunnel serves pauses for that restart, a few seconds."
       : "3. The connector restarts with the new token through its host plan, approved by its own hash. With one connector, what the tunnel serves pauses for that restart, a few seconds; with two, not at all.";
-  const approval = await deps.approvals.request({
+  await requestApproval(deps, {
     kind: "cloudflare-apply",
     title: `Change the Cloudflare Tunnel token of ${environment}`,
     details: [
@@ -896,16 +814,15 @@ export async function rotateTunnelToken(
       `If a step fails, the running connectors keep the tunnel up, and \`${again}\` starts over with a new secret.`,
       `Rotation hash: ${hash}`,
     ].join("\n"),
-    planHash: hash,
-  });
-  if (!approval.approved) {
-    throw new PlanRefusedError({
+    hash,
+    // It runs only in a terminal: no `--approve`.
+    refused: {
       plan: "rotation of the Cloudflare Tunnel token",
-      ...(approval.reason !== undefined ? { reason: approval.reason } : {}),
       unchanged: "Nothing was changed.",
-      hint: `Run \`${again}\` again when you are ready.`,
-    });
-  }
+      again,
+      scripted: false,
+    },
+  });
   const cloudflare =
     services.cloudflare ??
     new CloudflareClient({
@@ -957,21 +874,17 @@ export async function rotateTunnelToken(
     deps.reporter.step(`Restarting the connectors of ${which} with the new token`);
     await connectors.restart(rotated);
   } catch (error) {
-    if (!isUserFacingError(error) || rotated.length === 0) throw error;
+    if (rotated.length === 0) throw error;
     // The state holds the new token once refreshed: provision gives it to Portainer's stacks
     // (their values follow the state), while a server's connector runs on as it is.
-    const next =
-      recorded && plan.target.provider === "portainer"
-        ? `Then run \`${provision}\`: it gives the stacks the new token the infrastructure state holds.`
-        : `Then run \`${again}\` again: it gives the tunnel another new secret and goes on.`;
-    throw new OpsCrewError(
-      codeOf(error),
-      `${error.message.replace(/\s+$/, "")} Cloudflare holds the tunnel's new secret; the connectors that run keep the tunnel up with the old token.`,
-      {
-        hint: `${error.hint ? `${error.hint} ` : "Fix what it names. "}${next}`,
-        cause: error,
-      },
-    );
+    throw continued(error, {
+      said: "Cloudflare holds the tunnel's new secret; the connectors that run keep the tunnel up with the old token.",
+      fallback: "Fix what it names. ",
+      next:
+        recorded && plan.target.provider === "portainer"
+          ? `Then run \`${provision}\`: it gives the stacks the new token the infrastructure state holds.`
+          : `Then run \`${again}\` again: it gives the tunnel another new secret and goes on.`,
+    });
   }
   await recordRotation(deps, ["tunnel-token"]);
   deps.reporter.success(
