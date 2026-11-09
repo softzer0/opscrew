@@ -211,7 +211,18 @@ files), with deploys already held. After it, the record and the recovery copy (a
 - **A whole-server restore (T2520).** The restored server's own `.snapshots/generations` gives each
   service's generation at the snapshot. For each one behind the record, `rotate.sh` runs from that
   generation's values to the current ones (begin, switch, finish), root first for MySQL and MariaDB,
-  before deploys resume.
+  before deploys resume. Its review added these rules:
+  - **Start commands:** a service on a start command from before 0.2.6 gets only that command, by a
+    Compose override, and the restored definition stays as it is.
+  - **Order:** the app's health is checked after the re-rotation.
+  - **New services:** a service added since the snapshot is left to the next deploy.
+  - **Deploy key:** a snapshot from before a `deploy-key` rotation is refused before the approval. The
+    restored server would hold only the old key, whose private half is gone.
+  - **Check key, network, logins:** rotated since, they are named in the approval, with
+    `opscrew provision` to run next.
+- **Snapshots of deleted servers:** forgetting earlier generations counts the whole-server snapshots
+  of the servers the provider still lists for the app. Counting those of deleted servers would need
+  a provider call that lists snapshots by label, which the contract has no method for (0.2.6).
 - **Snapshots during a rotation.** A snapshot taken by hand is refused while a rotation holds the
   app; a scheduled one is skipped with a warning.
 
