@@ -731,7 +731,7 @@ Horizon, PostgreSQL and Redis.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates && pnpm lint`, then `OPSCREW_DOCKER_TESTS=1 OPSCREW_DOCKER_EXAMPLES=php-plain-mysql pnpm --filter opscrew exec vitest run test/e2e/docker.test.ts`
   - Effort: medium
 
-- [ ] T1331 [US8] A second analyze reads none of OpsCrew's own files (found 2026-11-09 re-analyzing a deployed plain PHP app)
+- [x] T1331 [US8] A second analyze reads none of OpsCrew's own files (found 2026-11-09 re-analyzing a deployed plain PHP app)
   - Owns: `packages/detect/src/**` (+ tests, fixtures)
   - Reads: `files.ts` (`SKIPPED_DIRECTORIES`, `listProjectFiles`), `detect.ts` (the compose and Dockerfile pick), `paths.ts`
   - Accept:
