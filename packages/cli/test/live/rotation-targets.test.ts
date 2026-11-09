@@ -14,7 +14,7 @@
  *   its compose file names bare.
  * Each pass ends with the leak search, the server's container logs included.
  */
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect } from "vitest";
@@ -75,7 +75,9 @@ import {
 } from "./rotation-support";
 
 const ENV = process.env;
-const SETTINGS = serverSettings(ENV);
+// The cheapest type has about 1 GB, too little for the app with PostgreSQL on your own server.
+const SETTINGS = { ...serverSettings(ENV, "OPSCREW_E2E_ROTATION_SERVER_TYPE") };
+SETTINGS.serverType ??= "cx23";
 const PASSES = ["own", "tunnel", "portainer"] as const satisfies readonly RotationPass[];
 const SKIP = Object.fromEntries(PASSES.map((pass) => [pass, passSkip(ENV, pass)])) as Record<
   (typeof PASSES)[number],
@@ -605,6 +607,12 @@ describe.skipIf(SKIP.portainer !== undefined)(
         ).toBe(true);
         project = composeProjectOf(plan);
         await run.snapshotCloudflare(() => [run.appHost, `www.${run.appHost}`]);
+        // The plan keeps off-server snapshot copies, which need the recovery copy's age key; a
+        // script names the key's file, and a public repository gets no committed copy in a script.
+        const copies = join(run.work, "copies");
+        await mkdir(copies, { recursive: true });
+        await run.opscrewOk("secrets", "folder", copies);
+        run.provisionFlags = ["--key-out", join(run.work, "age-key.txt")];
         await run.adaptAndMerge();
         await run.provisionUntilDone("the app in your Portainer");
         await run.rememberGeneratedValues();
