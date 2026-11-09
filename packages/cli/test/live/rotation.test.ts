@@ -555,7 +555,7 @@ describe.skipIf(SKIP.keys !== undefined)(
         const since = new Date();
         const { done } = await scriptedRotation(run, ["check-key"]);
         expect(
-          done.output.includes("Replaced the check key"),
+          done.output.includes("Replaced the scheduled check's key"),
           `the rotation's result:\n${run.tail(done.output)}`,
         ).toBe(true);
         const { files } = envs.paths();
