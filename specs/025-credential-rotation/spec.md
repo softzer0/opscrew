@@ -82,10 +82,13 @@ the old key no longer opens the server.
 
 **Acceptance Scenarios**:
 
-1. **Given** Laravel's `APP_KEY` or Better Auth's secret, **When** the user rotates `app`, **Then**
-   the new value becomes current and the old one stays as the previous one (`APP_PREVIOUS_KEYS`,
-   `BETTER_AUTH_SECRETS`), so nobody is logged out and stored data stays readable; the guide says
-   when the old one can go.
+1. **Given** Laravel's `APP_KEY`, **When** the user rotates `app`, **Then** the new value becomes
+   current and the old one stays as the previous one (`APP_PREVIOUS_KEYS`), so nobody is logged
+   out and stored data stays readable; the guide says when the old one can go. **Given** Better
+   Auth's secret, **Then** the new one becomes current in `BETTER_AUTH_SECRETS` and the old one
+   stays for decrypting only, so stored data stays readable; Better Auth checks sessions with the
+   current secret alone, so every user is logged out, and the user types the app's name to go
+   ahead, as in 2 (T2516's live pass, T2533).
 2. **Given** a secret whose framework can't keep the old value (Rails, Django, Flask, Auth.js and
    NextAuth, `SESSION_SECRET`, `JWT_SECRET`, `COOKIE_SECRET`), **Then** the plan says first that
    every user is logged out or issued tokens stop working, and the user types the app's name to

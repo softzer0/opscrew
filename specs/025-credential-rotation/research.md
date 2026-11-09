@@ -171,7 +171,7 @@ does it today when it finds a new value.
 | Secret | Protects | A new one breaks | The previous one kept beside it |
 |---|---|---|---|
 | Laravel `APP_KEY` | every cookie (sessions too), `Crypt`, the `encrypted` casts (unverified) | sessions; data encrypted with it unreadable | **`APP_PREVIOUS_KEYS`**, a comma list tried after the current key; read by the default `config/app.php` (unverified, the page shows no config) |
-| Better Auth `BETTER_AUTH_SECRET` | "encryption, signing, and hashing" | data tied to it unreadable | **`BETTER_AUTH_SECRETS`** = `2:new,1:old`, the first current, the rest decrypt-only; encrypted data names its version |
+| Better Auth `BETTER_AUTH_SECRET` | "encryption, signing, and hashing" | sessions (signed with the current secret only); data tied to it unreadable | **`BETTER_AUTH_SECRETS`** = `2:new,1:old`, the first current, the rest decrypt-only; encrypted data names its version. Once it is set, `BETTER_AUTH_SECRET` only decrypts data from before the envelope (bare hex), so it keeps the old value. Sessions don't survive (live, Better Auth 1.7.18, 2026-11-09) |
 | Django `SECRET_KEY` | sessions, messages, password-reset links, signing (not passwords) | those invalid | `SECRET_KEY_FALLBACKS`, a setting: only when the app's settings read it from the environment |
 | Flask `SECRET_KEY` | the session cookie, extensions | sessions, signed values | `SECRET_KEY_FALLBACKS` (3.1): from `FLASK_SECRET_KEY_FALLBACKS` (a JSON list) only when the app calls `from_prefixed_env()` |
 | Rails `SECRET_KEY_BASE` | signed and encrypted cookies, sessions, signed ids (unverified); not Active Record encryption (own keys) | "require all users to log in again" | only through `rotate` in the app's code |
@@ -179,11 +179,11 @@ does it today when it finds a new value.
 | `SESSION_SECRET`, `JWT_SECRET`, `COOKIE_SECRET` | what the app's code signs | sessions or issued tokens | only if the app's code takes a list |
 | `CRON_SECRET` | OpsCrew's cron caller to the app's cron route | nothing, both sides change in one deploy | not needed |
 
-So from the environment alone, a seamless app-secret rotation exists for Laravel and Better Auth
-(the old value kept as the previous one for a chosen time, then dropped). Every other one logs the
-app's users out or invalidates its tokens; for Laravel's and Better Auth's encrypted data the
-previous key must stay as long as data encrypted with it exists (the app re-encrypts only what it
-writes again).
+So from the environment alone, a seamless app-secret rotation exists for Laravel only (the old
+value kept as the previous one for a chosen time, then dropped). Better Auth keeps its encrypted
+data readable the same way but logs its users out. Every other one logs the app's users out or
+invalidates its tokens. For Laravel's and Better Auth's encrypted data, the previous key must stay
+as long as data encrypted with it exists: the app re-encrypts only what it writes again.
 
 **The state passphrase (OpenTofu):** a new `pbkdf2` key provider and method, `state` and `plan`
 pointed at them, and a `fallback` block naming the old method; OpenTofu reads with the fallback
@@ -202,7 +202,9 @@ version that added `fallback` unverified, the docs have it from 1.7.)
    NextAuth, `SESSION_SECRET`, `JWT_SECRET`, `COOKIE_SECRET`): rotated after a typed
    confirmation, the plan first saying plainly that every user is logged out or that issued
    tokens stop working. Laravel's `APP_KEY` and Better Auth's secret rotate seamlessly, the old
-   value kept as the previous one.
+   value kept as the previous one. (T2516's live pass showed that Better Auth's sessions don't
+   survive. Its secret keeps the old value for its data and otherwise follows the first rule,
+   T2533.)
 
 ## R10. The spike (2026-11-08)
 

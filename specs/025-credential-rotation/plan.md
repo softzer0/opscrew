@@ -132,7 +132,13 @@ files), with deploys already held. After it, the record and the recovery copy (a
 ### 6. App secrets (US4)
 
 - Laravel `APP_KEY`: the new key current, the old appended to `APP_PREVIOUS_KEYS` (derived; dropped
-  by `--drop-previous`). Better Auth: `BETTER_AUTH_SECRETS=<n+1>:<new>,<n>:<old>,…`.
+  by `--drop-previous`).
+- Better Auth (T2533, research R8):
+  - `BETTER_AUTH_SECRETS=<n+1>:<new>,<n>:<current>,…`, with `BETTER_AUTH_SECRET` kept as it is. It
+    is Better Auth's fallback for data from before the versioned envelope.
+  - Every user is logged out (sessions are signed with the current secret only), so the
+    consequence line and the typed app name apply.
+  - `--drop-previous` keeps the first entry and sets `BETTER_AUTH_SECRET` to it.
 - Others: the plan's consequence line and a typed confirmation of the app's name (R9).
 - `CRON_SECRET`: in the same env write; no confirmation.
 - They go through steps 2, 4 and 5 of `rotate.sh` (no service step). Cloudflare-hosted sites: the

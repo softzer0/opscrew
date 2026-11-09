@@ -345,6 +345,37 @@ Behaviour, hashes and approval texts stay as they are unless a task says otherwi
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/iac-templates && pnpm typecheck && pnpm lint`
   - Effort: high
 
+- [ ] T2533 [US4] Better Auth's secret as Better Auth rotates it (T2516's live pass)
+  - Owns: `packages/agents/src/rotate/{app-values,inventory,values-pending}.ts`, `packages/agents/src/shared/app-secrets.ts` (+ tests, and the rotate tests that assert Better Auth's lines or values: `app.test.ts`, `app-site.test.ts`), `packages/cli/src/commands/rotate.ts` (+ tests, wording only), `packages/cli/test/live/{rotation-support,rotation-checks,rotation-targets.test,rotation-sites.test,rotation.test}.ts` (Better Auth's parts), the live leak search's generated values
+  - Accept:
+    - **What the live check and Better Auth 1.7.18's code show** (research R8, corrected):
+      - Session cookies are signed and checked with the current secret only (`ctx.context.secret`, the first entry of `BETTER_AUTH_SECRETS`). A rotation therefore logs every user out.
+      - `BETTER_AUTH_SECRETS`' other entries only decrypt data in the versioned envelope.
+      - Data encrypted before `BETTER_AUTH_SECRETS` was set (bare hex) is decrypted only with `BETTER_AUTH_SECRET`, which the docs call the legacy fallback. This includes two-factor secrets, OAuth tokens and the JWT plugin's keys.
+    - **The rotation of `app:BETTER_AUTH_SECRET`:**
+      - The new secret becomes `BETTER_AUTH_SECRETS`' first entry at the next version: `<n+1>:<new>,<n>:<current>,…`, the first time `2:<new>,1:<BETTER_AUTH_SECRET>`.
+      - `BETTER_AUTH_SECRET` stays as it is.
+      - It counts as a secret that logs users out (founder R9.2). The plan says so first, with the typed app name (`--confirm <app>` in a script). It also says the old secret stays in `BETTER_AUTH_SECRETS` and `BETTER_AUTH_SECRET` stays as it is, so what they encrypted stays readable until `--drop-previous`.
+      - The list (`rotate`, `--json`) shows it as `logout`, with words to match. The success note still names the previous value kept.
+    - **`--drop-previous` (`app:BETTER_AUTH_SECRETS`):**
+      - `BETTER_AUTH_SECRETS` keeps only its first entry, and `BETTER_AUTH_SECRET` becomes that entry's value.
+      - It can be dropped while either still holds an older value. It is refused (nothing to drop) once both hold only the current one.
+      - It needs the typed confirmation, as now.
+    - **Unchanged:** Laravel's `APP_KEY`, `--undo`, every target's switch, the hashes' shape, and no value on a command line or in output.
+    - **Each entry on its own (found during the task):**
+      - After a rotation, the current secret is only an entry of `BETTER_AUTH_SECRETS`, and an older Laravel key only an entry of `APP_PREVIOUS_KEYS`.
+      - The redactor registers each entry of a previous-value variable on its own, besides the whole value, wherever generated values are registered: `shared/app-secrets.ts` and the pending rotation's registration.
+      - The live leak search looks for each entry too.
+    - **Live checks:**
+      - **The app pass's Better Auth step** runs in three phases:
+        1. Under `BETTER_AUTH_SECRET` alone, a session is made and a value encrypted (bare hex).
+        2. As a rotation leaves it, with `BETTER_AUTH_SECRET` the old value and `BETTER_AUTH_SECRETS=2:new,1:old`: Better Auth starts, the old session is gone (as the plan says), a new sign-in works, the old value still decrypts, and a new value encrypts with version 2.
+        3. As `--drop-previous` leaves it: the version-2 value decrypts and the old one no longer does.
+      - **The Portainer pass (P3)** expects the app's `BETTER_AUTH_SECRET` unchanged and its `BETTER_AUTH_SECRETS` `2:<new>,1:<old>`, and passes `--confirm <app>`. The sites pass passes it too.
+  - Depends: none.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew && pnpm typecheck && pnpm lint`
+  - Effort: high
+
 - [ ] T2518 The release 0.2.6 (lead): `docs/releasing.md`, with 013's US8 (founder, 2026-11-08). The changelog says that existing deployments recreate MySQL, MariaDB, Valkey, Redis, Dragonfly, Kafka, Redpanda, OpenSearch and Elasticsearch once at their next deploy (their start commands changed, T2503), and that apps on Portainer or Cloudflare's hosting or GitHub Pages whose `APP_KEY` or `BETTER_AUTH_SECRET` OpsCrew generates get `APP_PREVIOUS_KEYS` or `BETTER_AUTH_SECRETS` named in their committed stack template or deploy workflow at their next provision. It stays unset until a rotation keeps an old key there (T2509).
 
 ## Dependencies
