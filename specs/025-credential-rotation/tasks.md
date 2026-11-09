@@ -345,7 +345,7 @@ Behaviour, hashes and approval texts stay as they are unless a task says otherwi
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/iac-templates && pnpm typecheck && pnpm lint`
   - Effort: high
 
-- [ ] T2533 [US4] Better Auth's secret as Better Auth rotates it (T2516's live pass)
+- [x] T2533 [US4] Better Auth's secret as Better Auth rotates it (T2516's live pass)
   - Owns: `packages/agents/src/rotate/{app-values,inventory,values-pending}.ts`, `packages/agents/src/shared/app-secrets.ts` (+ tests, and the rotate tests that assert Better Auth's lines or values: `app.test.ts`, `app-site.test.ts`), `packages/cli/src/commands/rotate.ts` (+ tests, wording only), `packages/cli/test/live/{rotation-support,rotation-checks,rotation-targets.test,rotation-sites.test,rotation.test}.ts` (Better Auth's parts), the live leak search's generated values
   - Accept:
     - **What the live check and Better Auth 1.7.18's code show** (research R8, corrected):
