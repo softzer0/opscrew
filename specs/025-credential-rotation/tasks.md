@@ -307,7 +307,7 @@ Behaviour, hashes and approval texts stay as they are unless a task says otherwi
   - Verify: `pnpm turbo run typecheck test --filter=opscrew && pnpm typecheck && pnpm lint`
   - Effort: medium
 
-- [ ] T2530 The catalog's recipe pieces
+- [x] T2530 The catalog's recipe pieces
   - Owns: `packages/iac-templates/src/catalog/entries.ts`
   - Accept:
     - New `dual()` beside `swap()` and `restart()`.
