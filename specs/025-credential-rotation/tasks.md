@@ -303,7 +303,7 @@ Behaviour, hashes and approval texts stay as they are unless a task says otherwi
   - Accept:
     - **One helper:** `rotationApprovals` and `restoreApprovals` share a `showInScript` option, or one helper, in `approval.ts`. `ScriptedRotationApproval`'s narrow `--yes` stays as it is.
     - **`rotate.ts` builds once:** it builds `remote`, `sleep` and `now` once, and passes `provision` in.
-    - **Help text:** the `--undo` help and the `checkFlags` error mention forgetting an add-on rotation that was never approved.
+    - **Help text:** the `--undo` help and the `checkFlags` error mention forgetting an add-on rotation that was never approved. In a script, every refusal prints the request's plan lines (windows, steps) before the `--approve <hash>` hint, not only lossy ones, as the guide says (T2516's harness).
   - Verify: `pnpm turbo run typecheck test --filter=opscrew && pnpm typecheck && pnpm lint`
   - Effort: medium
 
