@@ -262,7 +262,7 @@ Behaviour, hashes and approval texts stay as they are unless a task says otherwi
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm typecheck && pnpm lint`
   - Effort: medium
 
-- [ ] T2526 One refusal for a rotation's deploy pause
+- [x] T2526 One refusal for a rotation's deploy pause
   - Owns: `packages/agents/src/shared/deploy-pause.ts` (the new helper), `packages/agents/src/provision/run.ts`, `packages/agents/src/retarget/window.ts`, `packages/agents/src/promote/shared.ts`, `packages/agents/src/rollback/{server,resume}.ts` (+ tests)
   - Depends: T2521
   - Accept: `rotationPauseRefusal` beside `rotationWindowText`, used by every refusal. The messages stay byte for byte as they are, except that a whole-server restore's pause (T2520 marks it) is described as the restore's window, ended by `opscrew restore --server <id>`, never as a rotation begun on another computer.
