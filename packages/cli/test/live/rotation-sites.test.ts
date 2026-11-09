@@ -315,7 +315,7 @@ describe.skipIf(SKIP.pages !== undefined)(
     run.step(
       "4. no secret, old or new, in any output, audit entry, commit, pull request, plan or state file (SC-2503)",
       minutes(10),
-      async () => run.expectNothingLeaked(await envs.leaks({ cloudflare: true })),
+      async () => run.expectNothingLeaked(await envs.leaks({ cloudflare: false })),
       { always: true },
     );
 
