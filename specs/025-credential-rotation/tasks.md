@@ -376,7 +376,7 @@ Behaviour, hashes and approval texts stay as they are unless a task says otherwi
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew && pnpm typecheck && pnpm lint`
   - Effort: high
 
-- [ ] T2534 [US4] A Worker's previous values written empty, not left out (T2516's live pass)
+- [x] T2534 [US4] A Worker's previous values written empty, not left out (T2516's live pass)
   - Owns: `packages/iac-templates/src/workflow/cloudflare-workers.ts` (+ tests), `packages/cli/test/live/rotation-sites.test.ts` and its helpers in `packages/cli/test/live/rotation-checks.ts`
   - Accept:
     - **What the live pass and Wrangler 4.152.0 show:**
