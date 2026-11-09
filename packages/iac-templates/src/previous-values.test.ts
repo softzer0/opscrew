@@ -85,7 +85,7 @@ describe("a site's workflow", () => {
     }
   });
 
-  it("gives a server-rendered version the previous values only when their secret is not empty", () => {
+  it("always gives a server-rendered version the previous values, empty when their secret is", () => {
     const content = renderCloudflareWorkersWorkflow(generating(ssrPlan()), testContext()).content;
     const prepare = steps(content, "deploy").find((s) => s.name === "Prepare Wrangler");
     expect(prepare?.env?.OPSCREW_ENV_APP_PREVIOUS_KEYS).toBe(
@@ -93,11 +93,33 @@ describe("a site's workflow", () => {
     );
     const filter = /jq -n '([^']*)'/.exec(prepare?.run ?? "")?.[1] ?? "";
     expect(filter).toBe(
-      '{"APP_KEY": env.OPSCREW_ENV_APP_KEY, "BETTER_AUTH_SECRET": env.OPSCREW_ENV_BETTER_AUTH_SECRET} + ({"APP_PREVIOUS_KEYS": env.OPSCREW_ENV_APP_PREVIOUS_KEYS, "BETTER_AUTH_SECRETS": env.OPSCREW_ENV_BETTER_AUTH_SECRETS} | with_entries(select((.value // "") != "")))',
+      '{"APP_KEY": env.OPSCREW_ENV_APP_KEY, "BETTER_AUTH_SECRET": env.OPSCREW_ENV_BETTER_AUTH_SECRET, "APP_PREVIOUS_KEYS": (env.OPSCREW_ENV_APP_PREVIOUS_KEYS // ""), "BETTER_AUTH_SECRETS": (env.OPSCREW_ENV_BETTER_AUTH_SECRETS // "")}',
     );
   });
 
-  it.skipIf(!findExecutable("jq"))("drops an empty previous value from the secrets file", () => {
+  it.skipIf(!findExecutable("jq"))("writes an empty or unset previous value as empty", () => {
+    const content = renderCloudflareWorkersWorkflow(generating(ssrPlan()), testContext()).content;
+    const prepare = steps(content, "deploy").find((s) => s.name === "Prepare Wrangler");
+    const filter = /jq -n '([^']*)'/.exec(prepare?.run ?? "")?.[1] ?? "";
+    const { OPSCREW_ENV_APP_PREVIOUS_KEYS: _unset, ...env } = process.env;
+    const result = spawnSync("jq", ["-c", "-n", filter], {
+      encoding: "utf8",
+      env: {
+        ...env,
+        OPSCREW_ENV_APP_KEY: "k2",
+        OPSCREW_ENV_BETTER_AUTH_SECRET: "s1",
+        OPSCREW_ENV_BETTER_AUTH_SECRETS: "",
+      },
+    });
+    expect(JSON.parse(result.stdout)).toEqual({
+      APP_KEY: "k2",
+      BETTER_AUTH_SECRET: "s1",
+      APP_PREVIOUS_KEYS: "",
+      BETTER_AUTH_SECRETS: "",
+    });
+  });
+
+  it.skipIf(!findExecutable("jq"))("writes a set previous value into the secrets file", () => {
     const content = renderCloudflareWorkersWorkflow(generating(ssrPlan()), testContext()).content;
     const prepare = steps(content, "deploy").find((s) => s.name === "Prepare Wrangler");
     const filter = /jq -n '([^']*)'/.exec(prepare?.run ?? "")?.[1] ?? "";
@@ -108,13 +130,14 @@ describe("a site's workflow", () => {
         OPSCREW_ENV_APP_KEY: "k2",
         OPSCREW_ENV_BETTER_AUTH_SECRET: "s1",
         OPSCREW_ENV_APP_PREVIOUS_KEYS: "k1",
-        OPSCREW_ENV_BETTER_AUTH_SECRETS: "",
+        OPSCREW_ENV_BETTER_AUTH_SECRETS: "1:s0",
       },
     });
     expect(JSON.parse(result.stdout)).toEqual({
       APP_KEY: "k2",
       BETTER_AUTH_SECRET: "s1",
       APP_PREVIOUS_KEYS: "k1",
+      BETTER_AUTH_SECRETS: "1:s0",
     });
   });
 

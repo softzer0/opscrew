@@ -623,6 +623,35 @@ export async function servingSecrets(run: LiveRun, worker: string): Promise<stri
   return versionSecretNames(got.json);
 }
 
+/** The lengths of Better Auth's two variables a site's `/e2e-secret-lengths` page answers. */
+export interface SecretLengths {
+  BETTER_AUTH_SECRET: number;
+  BETTER_AUTH_SECRETS: number;
+}
+
+/**
+ * The lengths `https://<appHost>/e2e-secret-lengths` answers (the test's own page, never a value),
+ * asked again for up to 2 minutes until `settled` holds, while a new version propagates.
+ */
+export function secretLengths(
+  run: LiveRun,
+  settled: (lengths: SecretLengths) => boolean,
+): Promise<SecretLengths> {
+  const url = `https://${run.appHost}/e2e-secret-lengths`;
+  return waitFor(
+    `${url} answering the lengths expected`,
+    minutes(2),
+    async () => {
+      const answer = await httpRequest(url);
+      if (answer.status !== 200) throw new Error(`${url} answered ${answer.status}.`);
+      const lengths = JSON.parse(answer.body) as SecretLengths;
+      if (!settled(lengths)) throw new Error(`${url} answered ${JSON.stringify(lengths)}.`);
+      return lengths;
+    },
+    5_000,
+  );
+}
+
 // ---------------------------------------------------------------------------------------------
 // A CLI run stopped part way.
 

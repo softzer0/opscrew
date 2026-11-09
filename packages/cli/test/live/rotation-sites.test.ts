@@ -4,9 +4,10 @@
  * - **a Worker on Cloudflare's hosting**: examples/astro-ssr with Better Auth's secret listed in
  *   its `.env.example`, so OpsCrew makes it. `rotate app` (with `--confirm <app>`, as Better
  *   Auth's users are logged out) stopped while its deploy runs (that deploy's version holds
- *   `BETTER_AUTH_SECRETS`), then `--undo`: the version its deploy uploads with `--secrets-file`
- *   must not keep `BETTER_AUTH_SECRETS`, dropped from the file (T2509). Then the rotation run to
- *   its end, and its record.
+ *   `BETTER_AUTH_SECRETS` set), then `--undo`: the version its deploy uploads with
+ *   `--secrets-file` holds `BETTER_AUTH_SECRETS` empty, as the file writes it (T2534). The test's
+ *   own page `/e2e-secret-lengths` answers both variables' lengths at each step. Then the rotation
+ *   run to its end, and its record.
  * - **GitHub Pages**: examples/hugo-site in the public repository with `SESSION_SECRET` listed:
  *   `rotate app` logs users out, so a script needs `--confirm <app>` beside `--approve`; the
  *   site's GitHub secret is replaced and its deploy follows.
@@ -27,6 +28,7 @@ import {
   rememberPending,
   runUntil,
   scriptedRotation,
+  secretLengths,
   servingSecrets,
   shownRotation,
 } from "./rotation-checks";
@@ -66,10 +68,22 @@ async function exampleWith(example: string, names: readonly string[]): Promise<s
 const WORKER_APP = "astro-ssr";
 const AUTH_SECRET = "BETTER_AUTH_SECRET";
 const AUTH_SECRETS = "BETTER_AUTH_SECRETS";
+/**
+ * The test's page answering the lengths of Better Auth's two variables, never a value. It reads
+ * them by a computed name, so OpsCrew's analysis doesn't take them for variables the app's own
+ * code needs (a plan that names `BETTER_AUTH_SECRETS` makes it the user's, not OpsCrew's).
+ */
+const LENGTHS_PAGE = `import type { APIRoute } from 'astro';
+
+// The OpsCrew live test's page: it answers lengths only, never a value.
+const NAMES = ['${AUTH_SECRET}', '${AUTH_SECRETS}'];
+export const GET: APIRoute = () =>
+  Response.json(Object.fromEntries(NAMES.map((name) => [name, (process.env[name] ?? '').length])));
+`;
 
 describe.skipIf(SKIP.worker !== undefined)(
   SKIP.worker === undefined
-    ? `live rotation, sites: examples/${WORKER_APP} on a Worker, its previous secrets dropped from the secrets file`
+    ? `live rotation, sites: examples/${WORKER_APP} on a Worker, its previous secrets emptied by the undo`
     : `live rotation, sites, Worker (skipped: ${SKIP.worker}; see docs/e2e.md)`,
   () => {
     const settings = siteSettings(serverSettings(ENV), WORKER_APP);
@@ -80,13 +94,16 @@ describe.skipIf(SKIP.worker !== undefined)(
     const workflow = () => workflowOf(plan as DeployPlan);
 
     run.step(
-      `1. examples/${WORKER_APP} with ${AUTH_SECRET} listed: designed, adapted, provisioned and deployed; its version holds ${AUTH_SECRET} alone`,
+      `1. examples/${WORKER_APP} with ${AUTH_SECRET} listed: designed, adapted, provisioned and deployed; its version holds ${AUTH_SECRET} and ${AUTH_SECRETS} empty`,
       minutes(60),
       async () => {
         await run.prepareRepo({
           commit: `e2e: examples/${WORKER_APP} on Cloudflare's hosting, for credential rotation`,
           env: siteEnv(run, settings),
-          files: { ".env.example": await exampleWith(WORKER_APP, [AUTH_SECRET]) },
+          files: {
+            ".env.example": await exampleWith(WORKER_APP, [AUTH_SECRET]),
+            "src/pages/e2e-secret-lengths.ts": LENGTHS_PAGE,
+          },
         });
         await envs.snapshotGithub();
         await run.initFix();
@@ -106,12 +123,12 @@ describe.skipIf(SKIP.worker !== undefined)(
         await run.waitForHealth();
         const secrets = await servingSecrets(run, worker());
         expect(secrets, "the first version's secrets").toContain(AUTH_SECRET);
-        expect(secrets, "the first version's secrets").not.toContain(AUTH_SECRETS);
+        await secretLengths(run, (got) => got[AUTH_SECRET] > 0 && got[AUTH_SECRETS] === 0);
       },
     );
 
     run.step(
-      `2. opscrew rotate app with --confirm <app> (Better Auth's users are logged out), stopped while its deploy runs: that deploy's version holds ${AUTH_SECRETS}, and the rotation stays unfinished`,
+      `2. opscrew rotate app with --confirm <app> (Better Auth's users are logged out), stopped while its deploy runs: that deploy's version holds ${AUTH_SECRETS} set, and the rotation stays unfinished`,
       minutes(40),
       async () => {
         const shown = await shownRotation(run, ["app"]);
@@ -145,15 +162,15 @@ describe.skipIf(SKIP.worker !== undefined)(
         if (problem !== undefined)
           throw new Error(`The rotation's deploy run ${deployed.id}: ${problem}.`);
         expect(await rememberPending(run, envs.paths()), "the unfinished rotation kept").toBe(true);
-        const secrets = await servingSecrets(run, worker());
-        expect(secrets, "the rotation's version's secrets").toEqual(
-          expect.arrayContaining([AUTH_SECRET, AUTH_SECRETS]),
+        expect(await servingSecrets(run, worker()), "the rotation's version's secrets").toContain(
+          AUTH_SECRET,
         );
+        await secretLengths(run, (got) => got[AUTH_SECRETS] > 0);
       },
     );
 
     run.step(
-      `3. opscrew rotate app --undo: its deploy uploads a version with --secrets-file, which must not keep ${AUTH_SECRETS}, dropped from the file (T2509)`,
+      `3. opscrew rotate app --undo: its deploy uploads a version with --secrets-file that holds ${AUTH_SECRETS} empty (T2534)`,
       minutes(40),
       async () => {
         const { done } = await scriptedRotation(run, ["app", "--undo"]);
@@ -162,17 +179,16 @@ describe.skipIf(SKIP.worker !== undefined)(
           `the undo's result:\n${run.tail(done.output)}`,
         ).toBe(true);
         expect(await rememberPending(run, envs.paths()), "an unfinished rotation left").toBe(false);
-        const secrets = await servingSecrets(run, worker());
-        expect(secrets, "the undo's version's secrets").toContain(AUTH_SECRET);
-        expect(secrets, "the undo's version keeps the secret dropped from its file").not.toContain(
-          AUTH_SECRETS,
+        expect(await servingSecrets(run, worker()), "the undo's version's secrets").toContain(
+          AUTH_SECRET,
         );
+        await secretLengths(run, (got) => got[AUTH_SECRET] > 0 && got[AUTH_SECRETS] === 0);
         await run.waitForHealth();
       },
     );
 
     run.step(
-      `4. opscrew rotate app with --confirm <app> to its end: the version holds ${AUTH_SECRET} and ${AUTH_SECRETS}, and the record is merged (US4)`,
+      `4. opscrew rotate app with --confirm <app> to its end: the version holds ${AUTH_SECRET} and ${AUTH_SECRETS} set, and the record is merged (US4)`,
       minutes(40),
       async () => {
         const since = new Date();
@@ -181,9 +197,10 @@ describe.skipIf(SKIP.worker !== undefined)(
           done.output.includes("the site runs on the new values"),
           `the result:\n${run.tail(done.output)}`,
         ).toBe(true);
-        expect(await servingSecrets(run, worker()), "the rotated version's secrets").toEqual(
-          expect.arrayContaining([AUTH_SECRET, AUTH_SECRETS]),
+        expect(await servingSecrets(run, worker()), "the rotated version's secrets").toContain(
+          AUTH_SECRET,
         );
+        await secretLengths(run, (got) => got[AUTH_SECRETS] > 0);
         await mergeRecord(run, envs.paths(), "prod", { [`app:${AUTH_SECRET}`]: 2 }, since);
         await run.waitForHealth();
       },

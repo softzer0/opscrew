@@ -388,16 +388,16 @@ function deployJob(
       true,
     );
   const stored = (name: string) => deploySecretName(plan, siteEnvSecret(name));
-  // The previous values a rotation keeps, left out of the new version while their secret is empty.
+  // The previous values a rotation keeps, always written and empty while their secret is unset or
+  // empty: `--secrets-file` adds to the secrets the last version had, so a value left out (or
+  // `null`, which Wrangler drops) would keep an old one after `rotate --undo`.
   const previous = ssr ? previousValueVariables(plan) : [];
   const own = secrets.map((variable) => variable.name);
   const names = [...own, ...previous];
-  const pairs = (list: readonly string[]) =>
-    `{${list.map((name) => `"${name}": env.${stored(name)}`).join(", ")}}`;
-  const values =
-    previous.length === 0
-      ? pairs(own)
-      : `${pairs(own)} + (${pairs(previous)} | with_entries(select((.value // "") != "")))`;
+  const values = `{${[
+    ...own.map((name) => `"${name}": env.${stored(name)}`),
+    ...previous.map((name) => `"${name}": (env.${stored(name)} // "")`),
+  ].join(", ")}}`;
   const mismatch = fromRun
     ? `The site run $RUN built has the SHA-256 $sha256, not $SHA256, the one \\\`opscrew promote\\\` asked for. Promote again with \\\`${promoteCommand(plan)}\\\`, which reads the build the source environment runs.`
     : "The downloaded site has the SHA-256 $sha256, not $SHA256, the build's. Run the workflow again.";
