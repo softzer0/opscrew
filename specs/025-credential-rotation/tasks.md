@@ -376,6 +376,30 @@ Behaviour, hashes and approval texts stay as they are unless a task says otherwi
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew && pnpm typecheck && pnpm lint`
   - Effort: high
 
+- [ ] T2534 [US4] A Worker's previous values written empty, not left out (T2516's live pass)
+  - Owns: `packages/iac-templates/src/workflow/cloudflare-workers.ts` (+ tests), `packages/cli/test/live/rotation-sites.test.ts` and its helpers in `packages/cli/test/live/rotation-checks.ts`
+  - Accept:
+    - **What the live pass and Wrangler 4.152.0 show:**
+      - `wrangler versions upload --secrets-file` "Applies additively with secrets from previous deployments - omitted secrets will not be deleted" (`keepSecrets: true`).
+      - So a deploy after `rotate app --undo` kept `BETTER_AUTH_SECRETS`, and Better Auth kept the rotated secret as current.
+      - A throwaway Worker confirmed that a version given a secret's empty value replaces the inherited value: the Worker sees it empty.
+      - Better Auth treats an empty `BETTER_AUTH_SECRETS` as unset, and Laravel an empty `APP_PREVIOUS_KEYS`.
+    - **The deploy job's secrets file:**
+      - It always holds each previous-value variable (`previousValueVariables`), empty when its GitHub secret is unset or empty (`// ""`, so jq never writes `null`, which Wrangler drops).
+      - The comment says why.
+      - Nothing else in the job changes.
+    - **The live Worker pass:**
+      - The test's copy of the example gets its own page (`src/pages/e2e-secret-lengths.ts`) that answers each Better Auth variable's length from `process.env`, never a value.
+      - Steps 1, 2 and 3 check the lengths:
+        - `BETTER_AUTH_SECRETS` empty at first;
+        - set while the rotation runs;
+        - empty again after `--undo`.
+      - Step 4 expects `BETTER_AUTH_SECRETS` set.
+      - The version's secret names are no longer asserted on `BETTER_AUTH_SECRETS`.
+  - Depends: none.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=opscrew && pnpm typecheck && pnpm lint`
+  - Effort: medium
+
 - [ ] T2518 The release 0.2.6 (lead): `docs/releasing.md`, with 013's US8 (founder, 2026-11-08). The changelog says that existing deployments recreate MySQL, MariaDB, Valkey, Redis, Dragonfly, Kafka, Redpanda, OpenSearch and Elasticsearch once at their next deploy (their start commands changed, T2503), and that apps on Portainer or Cloudflare's hosting or GitHub Pages whose `APP_KEY` or `BETTER_AUTH_SECRET` OpsCrew generates get `APP_PREVIOUS_KEYS` or `BETTER_AUTH_SECRETS` named in their committed stack template or deploy workflow at their next provision. It stays unset until a rotation keeps an old key there (T2509).
 
 ## Dependencies
