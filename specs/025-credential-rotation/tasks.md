@@ -287,7 +287,7 @@ Behaviour, hashes and approval texts stay as they are unless a task says otherwi
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/connector-ssh-host && pnpm typecheck && pnpm lint`
   - Effort: medium
 
-- [ ] T2528 `rotate.sh` and the hold checks without repeats
+- [x] T2528 `rotate.sh` and the hold checks without repeats
   - Owns: `packages/iac-templates/src/workflow/{rotate,switch,snapshot-script}*.ts`, `packages/iac-templates/src/workflow/index.ts` (`heldCheck` only), `packages/iac-templates/src/index.ts`, their `__snapshots__`
   - Accept:
     - `rotate.ts` imports the catalog's `RotationCommand`, `ConditionalCommand`, `RotationStep` and `RotationMode` instead of copying them.
