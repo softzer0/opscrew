@@ -731,4 +731,14 @@ Horizon, PostgreSQL and Redis.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates && pnpm lint`, then `OPSCREW_DOCKER_TESTS=1 OPSCREW_DOCKER_EXAMPLES=php-plain-mysql pnpm --filter opscrew exec vitest run test/e2e/docker.test.ts`
   - Effort: medium
 
+- [ ] T1331 [US8] A second analyze reads none of OpsCrew's own files (found 2026-11-09 re-analyzing a deployed plain PHP app)
+  - Owns: `packages/detect/src/**` (+ tests, fixtures)
+  - Reads: `files.ts` (`SKIPPED_DIRECTORIES`, `listProjectFiles`), `detect.ts` (the compose and Dockerfile pick), `paths.ts`
+  - Accept:
+    - **Today:** on an app OpsCrew has deployed, `opscrew analyze` reads the root `opscrew/` folder that OpsCrew wrote: `opscrew/check/check.mjs` adds `GITHUB_STEP_SUMMARY` and `RUNNER_TEMP` as the app's environment variables, and `opscrew/runtime/compose.yaml` becomes the app's own Compose file.
+    - **The fix:** detection never reads the repository's root `opscrew/` folder (OpsCrew's architecture, plan, infrastructure, runtime and check), nor OpsCrew's own workflows (`.github/workflows/opscrew-*.yml`) wherever detection reads workflows. A folder named `opscrew` below the root stays an ordinary folder.
+    - **Tests:** a fixture app with OpsCrew's generated files beside it (a `check.mjs` reading runner variables, a runtime `compose.yaml`, an `opscrew-deploy.yml`) gives exactly the facts of the same app without them; a nested `apps/x/opscrew/` folder is still read.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/detect && pnpm lint`
+  - Effort: medium
+
 - [x] T1326 [US8] The release 0.2.6 (lead): `docs/releasing.md`, together with 025 credential rotation (founder, 2026-11-08).
