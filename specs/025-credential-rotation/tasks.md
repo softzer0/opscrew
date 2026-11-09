@@ -200,7 +200,7 @@ secret in any test: `fakeSecret(kind)` and `{{FAKE:<kind>}}` (`@opscrew/core/tes
 
 Behaviour, hashes and approval texts stay as they are unless a task says otherwise. Each task's Verify adds whole-repo `pnpm typecheck`.
 
-- [ ] T2521 Rotation's core: one lifecycle for an unfinished rotation, out of the import cycle
+- [x] T2521 Rotation's core: one lifecycle for an unfinished rotation, out of the import cycle
   - Owns:
     - `packages/agents/src/rotate/{values-pending,values,plan,server,portainer-localhost,portainer,localhost,app-site,app-values,addons-monitoring}.ts` (+ tests)
     - `packages/agents/src/shared/{approvals,deploy-pause,app-env,errors}.ts` (+ tests)
