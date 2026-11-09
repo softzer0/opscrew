@@ -145,7 +145,12 @@ import {
   prepareOwnServer,
   removeOldAccessMode,
 } from "./own";
-import { findSavedPlan, planAndApply, REMOVAL_PLAN_SUFFIX } from "./plan-apply";
+import {
+  findSavedPlan,
+  planAndApply,
+  REMOVAL_PLAN_SUFFIX,
+  ROTATION_PLAN_SUFFIX,
+} from "./plan-apply";
 import { provisionPortainer } from "./portainer-flow";
 import type { RecoveryCopy } from "./publish";
 import {
@@ -384,6 +389,8 @@ async function savedInfrastructureHashes(
     (hash) => !cloudflare.includes(hash.toLowerCase()),
   )) {
     const savedPlan = await findSavedPlan(deps.paths.files.plansDir, hash);
+    // A credential rotation's saved plan is only ever applied by that rotation.
+    if (savedPlan?.planFile.endsWith(ROTATION_PLAN_SUFFIX)) continue;
     if (savedPlan !== undefined) saved.set(hash, savedPlan);
     // A host plan's (a server's or a runner machine's) or the local plan's hash is granted by the
     // approval handler: it never names the infrastructure plan.

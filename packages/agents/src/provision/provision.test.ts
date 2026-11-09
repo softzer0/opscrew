@@ -824,6 +824,33 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     expect(engine.applied[0]?.planFile).toBe(saved?.planFile);
   });
 
+  it("never applies a credential rotation's saved plan, which only that rotation applies", async () => {
+    let approved = "";
+    const { deps, engine, services } = await setup({
+      answer: (request) => request.kind !== "iac-apply" || request.planHash === approved,
+    });
+    const planned = await runProvision(deps, { services, planOnly: true });
+    approved = planned.planHash as string;
+    // That plan, kept where `opscrew rotate` keeps its own.
+    const saved = await findSavedPlan(deps.paths.files.plansDir, approved);
+    const rotation = join(
+      deps.paths.files.plansDir,
+      "2026-11-08T10-00-00-000Z-deploy-key-rotation.tfplan",
+    );
+    await writeFile(rotation, await readFile(saved?.planFile as string));
+    await writeFile(`${rotation}.json`, await readFile(`${saved?.planFile}.json`));
+    await rm(saved?.planFile as string);
+    await rm(`${saved?.planFile}.json`);
+
+    const error = await runProvision(deps, { services, approveHashes: [approved] }).catch(
+      (e: unknown) => e,
+    );
+    // Provision planned afresh, and the new plan's hash is not the one given.
+    expect(error).toMatchObject({ code: "APPROVAL_REFUSED" });
+    expect(engine.calls.filter((call) => call === "plan")).toHaveLength(2);
+    expect(engine.applied).toEqual([]);
+  });
+
   it("stops before doing anything while a move to another provider is in progress", async () => {
     const { deps, engine, handler, services, github, root } = await setup({ plan: movingPlan() });
     const before = await readFile(join(root, "opscrew", "plan.yaml"), "utf8");

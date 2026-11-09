@@ -9,7 +9,12 @@ import type { PhaseDeps } from "../context";
 import { builderBranch } from "../environments/branches";
 import { type CloudflareSetup, setupCloudflare } from "../provision/credentials";
 import { type OwnServerRun, ownEngineEnv, prepareOwnServer } from "../provision/own";
-import { findSavedPlan, planAndApply, REMOVAL_PLAN_SUFFIX } from "../provision/plan-apply";
+import {
+  findSavedPlan,
+  planAndApply,
+  REMOVAL_PLAN_SUFFIX,
+  ROTATION_PLAN_SUFFIX,
+} from "../provision/plan-apply";
 import {
   deploymentFiles,
   deploymentRenderContext,
@@ -142,7 +147,10 @@ export interface TunnelledChangeResult {
   plan?: DeployPlan;
 }
 
-/** The saved infrastructure plan among the `--approve` hashes (never a removal plan). */
+/**
+ * The saved infrastructure plan among the `--approve` hashes (never a removal plan, nor a credential
+ * rotation's).
+ */
 async function savedInfrastructureHash(
   deps: PhaseDeps,
   plan: DeployPlan,
@@ -152,7 +160,10 @@ async function savedInfrastructureHash(
   for (const hash of hashes) {
     if (hash.toLowerCase() === applied) continue;
     const saved = await findSavedPlan(deps.paths.files.plansDir, hash);
-    if (saved !== undefined && !saved.planFile.endsWith(REMOVAL_PLAN_SUFFIX)) return hash;
+    const other = [REMOVAL_PLAN_SUFFIX, ROTATION_PLAN_SUFFIX];
+    if (saved !== undefined && !other.some((suffix) => saved.planFile.endsWith(suffix))) {
+      return hash;
+    }
   }
   return undefined;
 }

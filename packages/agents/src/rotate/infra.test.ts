@@ -1,7 +1,7 @@
 // Feature 025 (T2511): the Cloudflare tokens, the state passphrase and the deploy key's object at
 // the provider, each through an infrastructure plan approved by its hash (US8, FR-2511).
 import { createHash, randomBytes } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
   type ApplyOptions,
@@ -120,6 +120,14 @@ class CryptEngine implements IacEngine {
   readonly envs: Record<string, string | undefined>[] = [];
   statePath: string | undefined;
   #count = 0;
+  /** The state each plan was made from, by the plan's hash: a plan the state outgrew is stale. */
+  readonly #from = new Map<string, string | undefined>();
+
+  private async stateText(): Promise<string | undefined> {
+    return this.statePath === undefined
+      ? undefined
+      : readFile(this.statePath, "utf8").catch(() => undefined);
+  }
 
   constructor(
     private readonly scenario: {
@@ -186,6 +194,7 @@ class CryptEngine implements IacEngine {
     }
     const content = `fake plan ${++this.#count} for ${dir}`;
     await writeFile(planFile, content);
+    this.#from.set(sha256(content), await this.stateText());
     const count = (action: string) => changes.filter((c) => c.action === action).length;
     return {
       engine: this.info,
@@ -215,6 +224,14 @@ class CryptEngine implements IacEngine {
     this.calls.push("apply");
     if (sha256(await readFile(planFile)) !== approval.approvedPlanHash) {
       throw new Error("plan hash mismatch");
+    }
+    // As both engines: a saved plan made from another state is refused, nothing applied.
+    if (this.#from.get(approval.approvedPlanHash as string) !== (await this.stateText())) {
+      return {
+        ok: false,
+        outputs: {},
+        log: "Error: Saved plan is stale\n\nThe given plan file can no longer be applied because the state was changed by another operation after the plan was created.",
+      };
     }
     this.applied.push(approval);
     if (this.scenario.applyLog !== undefined) {
@@ -354,6 +371,17 @@ async function passphraseNow(w: World): Promise<string> {
 
 const nextFile = (w: World) => `${w.deps.paths.files.statePassphrase}.next`;
 
+/** The rotation's saved plans and sidecars in the plans folder. */
+async function savedPlans(w: World): Promise<string[]> {
+  const names = await readdir(w.deps.paths.files.plansDir).catch(() => [] as string[]);
+  return names.filter((name) => name.includes("-rotation.tfplan")).sort();
+}
+
+/** A script's approvals: exactly the plans whose hashes are in `approved` (`--approve`). */
+function byHash(approved: readonly string[]) {
+  return (request: { planHash?: string }) => approved.includes(request.planHash ?? "");
+}
+
 async function recorded(w: World, name: string) {
   const record = await readArtifact("credentials", credentialsRecordFile(w.deps.paths));
   return record.environments.prod?.[name];
@@ -441,19 +469,110 @@ describe("rotateStatePassphrase", () => {
     );
     expect(changed.handler.requests).toEqual([]);
 
+    // Refused in a terminal: the next run asks again with a new plan, so nothing is kept.
     const refused = await world(testPlan({ deployed: true }), new CryptEngine(), [false]);
+    refused.deps.interactive = true;
     const refusal = await failure(
       rotateStatePassphrase(refused.deps, refused.plan, services(refused)),
     );
     expect(refusal.code).toBe("APPROVAL_REFUSED");
+    expect(refusal.hint).toBe("Run `opscrew rotate state-passphrase` again when you are ready.");
     for (const w of [changed, refused]) {
       expect(await passphraseNow(w)).toBe(w.passphrase);
       expect(await exists(nextFile(w))).toBe(false);
+      expect(await savedPlans(w)).toEqual([]);
       expect(w.engine.applied).toEqual([]);
       expect(await readFile(tfstateFile(w.deps.paths), "utf8")).toBe(
         lockedState("opscrew", w.passphrase),
       );
     }
+  });
+
+  it("in a script, keeps the refused plan and the new passphrase, and the next run applies that plan by its hash", async () => {
+    const approved: string[] = [];
+    const w = await world(testPlan({ deployed: true }), new CryptEngine(), byHash(approved));
+    const refused = await failure(rotateStatePassphrase(w.deps, w.plan, services(w)));
+    const hash = w.handler.requests[0]?.planHash as string;
+    expect(refused.code).toBe("APPROVAL_REFUSED");
+    expect(refused.message).toContain(
+      "No state was changed. The new passphrase waits on this computer beside the current one, and until the rotation finishes or is undone, the commands that read the states stop.",
+    );
+    expect(refused.hint).toBe(
+      `To apply this saved plan in a script, run \`opscrew rotate state-passphrase\` again with the flags you gave (each --approve <hash> too) and --approve ${hash} added. To step back instead, run \`opscrew rotate state-passphrase --undo\`.`,
+    );
+    expect(await passphraseNow(w)).toBe(w.passphrase);
+    expect(await readFile(tfstateFile(w.deps.paths), "utf8")).toBe(
+      lockedState("opscrew", w.passphrase),
+    );
+    const kept = (await readFile(nextFile(w), "utf8")).trim();
+    const names = await savedPlans(w);
+    expect(names).toEqual([
+      "2026-11-08T10-00-00-000Z-state-passphrase-infra-rotation.tfplan",
+      "2026-11-08T10-00-00-000Z-state-passphrase-infra-rotation.tfplan.json",
+    ]);
+    const sidecar = await readFile(join(w.deps.paths.files.plansDir, names[1] as string), "utf8");
+    expect(JSON.parse(sidecar)).toMatchObject({ planHash: hash });
+
+    approved.push(hash);
+    const result = await rotateStatePassphrase(w.deps, w.plan, {
+      ...services(w),
+      approveHashes: [hash],
+    });
+    expect(result.hash).toBe(hash);
+    // The saved plan was applied: no second plan.
+    expect(w.engine.calls.filter((call) => call === "plan")).toHaveLength(1);
+    expect(w.engine.applied).toEqual([{ approvedPlanHash: hash, allowDestroy: false }]);
+    expect(await passphraseNow(w)).toBe(kept);
+    expect(await exists(nextFile(w))).toBe(false);
+    expect(await readFile(tfstateFile(w.deps.paths), "utf8")).toBe(
+      lockedState("opscrew_next", kept),
+    );
+    expect(await savedPlans(w)).toEqual([]);
+    for (const value of [w.passphrase, kept]) expect(sidecar).not.toContain(value);
+    expectNoValue(w, [w.passphrase, kept], refused);
+  });
+
+  it("--undo steps back from a script's refused rotation while no state was rewritten", async () => {
+    const w = await world(testPlan({ deployed: true }), new CryptEngine(), () => false);
+    await failure(rotateStatePassphrase(w.deps, w.plan, services(w)));
+    expect(await exists(nextFile(w))).toBe(true);
+    expect(await savedPlans(w)).toHaveLength(2);
+
+    await rotateStatePassphrase(w.deps, w.plan, { ...services(w), undo: true });
+    expect(await exists(nextFile(w))).toBe(false);
+    expect(await savedPlans(w)).toEqual([]);
+    expect(await passphraseNow(w)).toBe(w.passphrase);
+    expect(await readFile(tfstateFile(w.deps.paths), "utf8")).toBe(
+      lockedState("opscrew", w.passphrase),
+    );
+    expect(w.engine.applied).toEqual([]);
+    // The other commands open the state again.
+    await expect(projectEngine(w.deps, w.plan, services(w))).resolves.toBeDefined();
+
+    const none = await failure(
+      rotateStatePassphrase(w.deps, w.plan, { ...services(w), undo: true }),
+    );
+    expect(none.message).toBe(
+      "No rotation of the state passphrase is unfinished in prod, so there is nothing to undo. Nothing was changed.",
+    );
+  });
+
+  it("refuses --undo once a state was rewritten with the new passphrase", async () => {
+    const w = await world(testPlan({ deployed: true }));
+    const next = secret();
+    await writeFile(nextFile(w), `${next}\n`);
+    await writeFile(tfstateFile(w.deps.paths), lockedState("opscrew_next", next));
+    const error = await failure(
+      rotateStatePassphrase(w.deps, w.plan, { ...services(w), undo: true }),
+    );
+    expect(error).toMatchObject({ code: "PHASE_PRECONDITION" });
+    expect(error.message).toBe(
+      "The infrastructure state (.opscrew/tfstate/prod.tfstate) is already encrypted with the new passphrase, and the rotation only goes forward from there, so OpsCrew can't undo it. Nothing was changed.",
+    );
+    expect(error.hint).toBe("Run `opscrew rotate state-passphrase` again to finish it.");
+    expect((await readFile(nextFile(w), "utf8")).trim()).toBe(next);
+    expect(await passphraseNow(w)).toBe(w.passphrase);
+    expectNoValue(w, [w.passphrase, next], error);
   });
 
   it("keeps both passphrases when the apply fails, and finishes when run again", async () => {
@@ -761,6 +880,50 @@ describe("rotateAccessToken", () => {
     expect(error).toMatchObject({ code: "PHASE_PRECONDITION" });
     expect(error.message).toContain("are paused since 2026-11-08T09:00:00Z");
     expect(w.engine.calls).toEqual([]);
+  });
+
+  it("in a script, refuses a saved plan the state outgrew, removes it, and plans again in the next run", async () => {
+    const engine = new CryptEngine({
+      changes: [change(ACCESS, "replace", "cloudflare_zero_trust_access_service_token")],
+      outputs: accessOutputs(),
+    });
+    const approved: string[] = [];
+    const w = await world(ownPlan({ access: "tunnel", deployed: true }), engine, byHash(approved));
+    const refused = await failure(rotateAccessToken(w.deps, w.plan, services(w)));
+    const hash = w.handler.requests[0]?.planHash as string;
+    expect(refused.hint).toBe(
+      `To apply this saved plan in a script, run \`opscrew rotate access-token\` again with the flags you gave (each --approve <hash> too) and --approve ${hash} --confirm shop added.`,
+    );
+    expect(await savedPlans(w)).toHaveLength(2);
+
+    // Another run changed the state after the plan was made.
+    approved.push(hash);
+    await writeFile(
+      tfstateFile(w.deps.paths),
+      lockedState("opscrew", w.passphrase).replace('"serial":3', '"serial":4'),
+    );
+    const stale = await failure(
+      rotateAccessToken(w.deps, w.plan, { ...services(w), approveHashes: [hash] }),
+    );
+    expect(stale.code).toBe("PLAN_HASH_MISMATCH");
+    expect(stale.message).toContain(
+      `The saved plan with the hash ${hash} no longer fits the infrastructure state, which changed after the plan was made, so OpsCrew applied none of it.`,
+    );
+    expect(stale.hint).toContain(
+      `Run \`opscrew rotate access-token\` again without --approve ${hash}: it plans again from the state as it is now, and you approve the new plan's hash.`,
+    );
+    expect(engine.applied).toEqual([]);
+    expect(await savedPlans(w)).toEqual([]);
+
+    // The next run, the stale hash still given, plans again and names the new plan's hash.
+    const again = await failure(
+      rotateAccessToken(w.deps, w.plan, { ...services(w), approveHashes: [hash] }),
+    );
+    expect(again.code).toBe("APPROVAL_REFUSED");
+    const fresh = w.handler.requests.at(-1)?.planHash as string;
+    expect(fresh).not.toBe(hash);
+    expect(again.hint).toContain(`--approve ${fresh} --confirm shop`);
+    expect(engine.calls.filter((call) => call === "plan")).toHaveLength(2);
   });
 });
 
@@ -1152,6 +1315,26 @@ describe("rotateTunnelToken on the user's own server", () => {
   });
 });
 
+/**
+ * A Hetzner app whose deploy key's copy at the provider was planned in a script and refused: its
+ * world, the approvals a later run gives (`approved`), the rotation's input and the plan's hash.
+ */
+async function refusedProviderCopy() {
+  const engine = new CryptEngine({
+    changes: [change("module.server.hcloud_ssh_key.deploy[0]", "replace", "hcloud_ssh_key")],
+  });
+  const approved: string[] = [];
+  const w = await world(testPlan({ deployed: true }), engine, byHash(approved));
+  const input = {
+    publicKey: `ssh-ed25519 ${randomBytes(32).toString("base64")} opscrew-deploy`,
+    again: "opscrew rotate deploy-key",
+    services: { engine: async () => engine },
+  };
+  const refused = await failure(replaceDeployKeyObject(w.deps, w.plan, input));
+  const hash = w.handler.requests[0]?.planHash as string;
+  return { w, engine, approved, input, refused, hash };
+}
+
 describe("replaceDeployKeyObject", () => {
   it("replaces the provider's copy of the deploy key with the new key in its own approved plan", async () => {
     const engine = new CryptEngine({
@@ -1167,6 +1350,110 @@ describe("replaceDeployKeyObject", () => {
     expect(engine.plans[0]?.vars).toEqual({ deploy_ssh_public_key: publicKey });
     expect(w.handler.requests[0]).toMatchObject({ planHash: hash, confirmPhrase: "shop" });
     expect(engine.applied).toEqual([{ approvedPlanHash: hash, allowDestroy: true }]);
+  });
+
+  it("in a script, is refused with the saved plan's hash, then applies that plan in the next run without planning again", async () => {
+    const { w, engine, approved, input, refused, hash } = await refusedProviderCopy();
+    expect(refused.code).toBe("APPROVAL_REFUSED");
+    expect(refused.hint).toBe(
+      `To apply this saved plan in a script, run \`opscrew rotate deploy-key\` again with the flags you gave (each --approve <hash> too) and --approve ${hash} --confirm shop added.`,
+    );
+    expect(await savedPlans(w)).toEqual([
+      "2026-11-08T10-00-00-000Z-deploy-key-rotation.tfplan",
+      "2026-11-08T10-00-00-000Z-deploy-key-rotation.tfplan.json",
+    ]);
+
+    // `--approve <hash> --confirm shop`: another run's hash beside it changes nothing.
+    approved.push(hash);
+    const other = "0".repeat(64);
+    expect(
+      await replaceDeployKeyObject(w.deps, w.plan, { ...input, approveHashes: [other, hash] }),
+    ).toBe(hash);
+    expect(engine.calls.filter((call) => call === "plan")).toHaveLength(1);
+    expect(w.handler.requests[1]).toMatchObject({
+      planHash: hash,
+      allowDestroy: true,
+      confirmPhrase: "shop",
+    });
+    expect(engine.applied).toEqual([{ approvedPlanHash: hash, allowDestroy: true }]);
+    expect(await savedPlans(w)).toEqual([]);
+  });
+
+  it("keeps only the newest saved plan: an older hash makes a new plan", async () => {
+    const { w, engine, input, hash } = await refusedProviderCopy();
+    await failure(replaceDeployKeyObject(w.deps, w.plan, input));
+    const newer = w.handler.requests[1]?.planHash as string;
+    expect(newer).not.toBe(hash);
+    expect(await savedPlans(w)).toHaveLength(2);
+    const sidecar = (await savedPlans(w))[1] as string;
+    const saved = JSON.parse(await readFile(join(w.deps.paths.files.plansDir, sidecar), "utf8"));
+    expect(saved.planHash).toBe(newer);
+    await failure(replaceDeployKeyObject(w.deps, w.plan, { ...input, approveHashes: [hash] }));
+    expect(engine.calls.filter((call) => call === "plan")).toHaveLength(3);
+    expect(engine.applied).toEqual([]);
+  });
+
+  it("refuses a saved plan whose file changed after it was saved", async () => {
+    const { w, engine, input, hash } = await refusedProviderCopy();
+    const [planFile] = await savedPlans(w);
+    await writeFile(join(w.deps.paths.files.plansDir, planFile as string), "another plan");
+    const error = await failure(
+      replaceDeployKeyObject(w.deps, w.plan, { ...input, approveHashes: [hash] }),
+    );
+    expect(error.code).toBe("PLAN_HASH_MISMATCH");
+    expect(error.message).toBe(
+      `The saved plan with the hash ${hash} is missing or changed after it was saved, so OpsCrew will not apply it. Nothing was changed.`,
+    );
+    expect(error.hint).toBe(
+      `Run \`opscrew rotate deploy-key\` again without --approve ${hash}: it plans again, and you approve the new plan's hash.`,
+    );
+    expect(engine.applied).toEqual([]);
+    expect(await savedPlans(w)).toEqual([]);
+  });
+
+  it("refuses a saved plan whose sidecar is damaged", async () => {
+    const { w, engine, input, hash } = await refusedProviderCopy();
+    const sidecar = (await savedPlans(w))[1] as string;
+    await writeFile(
+      join(w.deps.paths.files.plansDir, sidecar),
+      `${JSON.stringify({ planHash: hash })}\n`,
+    );
+    const error = await failure(
+      replaceDeployKeyObject(w.deps, w.plan, { ...input, approveHashes: [hash] }),
+    );
+    expect(error.code).toBe("PLAN_HASH_MISMATCH");
+    expect(error.message).toContain(
+      `The saved plan with the hash ${hash} is incomplete or damaged`,
+    );
+    expect(error.hint).toBe(
+      `Run \`opscrew rotate deploy-key\` again without --approve ${hash}: it plans again, and you approve the new plan's hash.`,
+    );
+    expect(engine.calls.filter((call) => call === "plan")).toHaveLength(1);
+    expect(engine.applied).toEqual([]);
+  });
+
+  it("refuses a saved plan made with the other engine, before anything runs", async () => {
+    const { w, input, hash } = await refusedProviderCopy();
+    const terraform = new CryptEngine();
+    Object.assign(terraform, {
+      info: { name: "terraform", version: "1.9.8", binary: "/fake/terraform" },
+    });
+    const error = await failure(
+      replaceDeployKeyObject(w.deps, w.plan, {
+        ...input,
+        services: { engine: async () => terraform },
+        approveHashes: [hash],
+      }),
+    );
+    expect(error.code).toBe("PLAN_HASH_MISMATCH");
+    expect(error.message).toBe(
+      `The saved plan with the hash ${hash} was made with OpenTofu, but this run uses Terraform, so OpsCrew will not apply it. Nothing was changed.`,
+    );
+    expect(error.hint).toBe(
+      `Run \`opscrew rotate deploy-key\` again with --engine tofu, or without --approve ${hash} to plan again.`,
+    );
+    expect(terraform.calls).toEqual([]);
+    expect(await savedPlans(w)).toHaveLength(2);
   });
 
   it("does nothing on a server the user owns or when the objects hold the new key, and refuses other changes", async () => {

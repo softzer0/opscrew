@@ -93,6 +93,8 @@ export interface SshKeyServices {
   remote?: KeyRemote;
   /** Tests: the IaC engine that replaces the deploy key's copy at the provider. */
   engine?: EngineFactory;
+  /** Every `--approve <hash>`: a saved plan of the provider's copy among them is applied. */
+  approveHashes?: readonly string[];
 }
 
 /**
@@ -578,6 +580,7 @@ export async function rotateSshKey(
         publicKey: stage.current.publicKeyOpenSsh,
         again,
         ...(services.engine !== undefined ? { services: { engine: services.engine } } : {}),
+        ...(services.approveHashes !== undefined ? { approveHashes: services.approveHashes } : {}),
       });
     } catch (error) {
       if (!isUserFacingError(error)) throw error;
@@ -585,7 +588,8 @@ export async function rotateSshKey(
         codeOf(error),
         `${error.message.replace(/\s+$/, "")} The new ${name} is in place on every server and the old one is gone; only the provider's copy for new servers still holds the old one.`,
         {
-          hint: `${error.hint ? `${error.hint} ` : ""}Then run \`${again}\` again to replace it.`,
+          // Its own hint already says how to go on (a refusal names the saved plan's hash).
+          hint: error.hint ? error.hint : `Run \`${again}\` again to replace it.`,
           cause: error,
         },
       );

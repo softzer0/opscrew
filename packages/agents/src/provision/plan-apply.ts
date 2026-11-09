@@ -242,6 +242,12 @@ function cloudflareRefusedHint(permissions: string, command: string): string {
 /** File name ending of a saved plan that removes everything in the state (`destroy: true`). */
 export const REMOVAL_PLAN_SUFFIX = "-removal.tfplan";
 
+/**
+ * File name ending of a credential rotation's saved plan (`opscrew rotate`): only that rotation
+ * applies it, never provision, retarget or a Portainer change.
+ */
+export const ROTATION_PLAN_SUFFIX = "-rotation.tfplan";
+
 export interface PlanAndApplyResult {
   planHash?: string;
   applied: boolean;

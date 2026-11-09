@@ -240,10 +240,10 @@ function checkFlags(
       `Run \`${command}\` without --confirm.`,
     );
   }
-  const undoes = kind === "services" || kind === "grant";
+  const undoes = kind === "services" || kind === "grant" || kind === "state-passphrase";
   if (flags.undo === true && !undoes && kind !== "monitoring" && kind !== "beszel") {
     throw refuse(
-      "--undo goes only with services, app secrets and device logins (grant:<device>/<service>), whose old values OpsCrew keeps until their rotation is done.",
+      "--undo goes only with services, app secrets and device logins (grant:<device>/<service>), whose old values OpsCrew keeps until their rotation is done, and with state-passphrase before any state is rewritten.",
       `Run \`${command}\` without --undo: run again after a failure, it goes on from where it stopped.`,
     );
   }
@@ -643,6 +643,7 @@ async function rotate(
           provision,
           ...(provision.remote === undefined ? {} : { remote: provision.remote }),
           ...(provision.engine === undefined ? {} : { engine: provision.engine }),
+          approveHashes: hashes,
         })
       ).copy;
       break;
@@ -683,7 +684,14 @@ async function rotate(
       break;
     }
     case "access-token":
-      copy = (await rotateAccessToken(deps, plan, { github: github(), ...waits, ...engine })).copy;
+      copy = (
+        await rotateAccessToken(deps, plan, {
+          github: github(),
+          ...waits,
+          ...engine,
+          approveHashes: hashes,
+        })
+      ).copy;
       break;
     case "tunnel-token":
       copy = (
@@ -695,7 +703,13 @@ async function rotate(
       ).copy;
       break;
     case "state-passphrase":
-      copy = (await rotateStatePassphrase(deps, plan, engine)).copy;
+      copy = (
+        await rotateStatePassphrase(deps, plan, {
+          ...engine,
+          approveHashes: hashes,
+          ...(undo ? { undo: true } : {}),
+        })
+      ).copy;
       break;
     case "portainer":
       copy = (
@@ -775,7 +789,7 @@ export function register(program: Command, ctx: CliContext): void {
     )
     .option(
       "--undo",
-      "Put the old values back of a services' or a device login's rotation that stopped before it finished",
+      "Put the old values back of a services' or a device login's rotation that stopped before it finished, or step back from a state-passphrase rotation no state was rewritten by",
     )
     .option(
       "--drop-previous",

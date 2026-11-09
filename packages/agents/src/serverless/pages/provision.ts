@@ -13,7 +13,7 @@ import { deploySetupCheck, provisionCheck, resumeCheck } from "../../check/provi
 import type { PhaseDeps } from "../../context";
 import { missing, setupCloudflare, setupGitHub } from "../../provision/credentials";
 import { deploySetupDependabot } from "../../provision/dependabot";
-import { findSavedPlan, planAndApply } from "../../provision/plan-apply";
+import { findSavedPlan, planAndApply, ROTATION_PLAN_SUFFIX } from "../../provision/plan-apply";
 import { deploymentFiles, deploymentRenderContext } from "../../provision/render";
 import {
   deployBranchFor,
@@ -72,6 +72,8 @@ async function savedRoots(
   for (const hash of hashes) {
     const saved = await findSavedPlan(paths.files.plansDir, hash);
     if (saved === undefined || saved.appliedAt !== undefined) continue;
+    // A credential rotation's saved plan is only ever applied by that rotation.
+    if (saved.planFile.endsWith(ROTATION_PLAN_SUFFIX)) continue;
     if (saved.planFile.endsWith(VERIFICATION_PLAN_SUFFIX)) found.verification ??= hash;
     else found.dns ??= hash;
   }

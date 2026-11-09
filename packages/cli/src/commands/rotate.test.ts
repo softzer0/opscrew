@@ -1,13 +1,16 @@
 // Feature 025 (T2515): `opscrew rotate`, its listing, its flags and the dispatch of each name to
 // its rotation; `opscrew secrets rotate` moved to `opscrew rotate recovery-key`.
+import { randomBytes } from "node:crypto";
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { credentialsRecordFile, portainerPasswordFile, refreshRecoveryCopy } from "@opscrew/agents";
 import {
   createTestPhaseDeps,
   FAKE_SOPS,
+  FakeEngine,
   FakeGitHub,
   FakeSops,
+  ownPlan,
   ScriptedRunner,
   sitePlan,
   testPlan,
@@ -16,9 +19,10 @@ import type {
   ApprovalDecision,
   ApprovalHandler,
   ApprovalRequest,
+  IacRunOptions,
   RemoteExec,
 } from "@opscrew/contracts";
-import { resolveProjectPaths } from "@opscrew/core";
+import { resolveProjectPaths, tfstateFile } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
@@ -142,6 +146,40 @@ async function withCopy(p: DeployProject, sops: FakeSops) {
 }
 
 const HASH = "ab".repeat(32);
+
+/** The GitHub client a key's rotation follows its proof with. */
+type RotateGitHub = NonNullable<CliServices["rotate"]>["github"];
+
+/** The state passphrase and a plain infrastructure state, as provision leaves them here. */
+async function withState(
+  p: DeployProject,
+  passphrase = fakeSecret("generic-password", "cli-rotate-state-file"),
+) {
+  const paths = resolveProjectPaths(p.root, { env: p.env });
+  await mkdir(path.dirname(paths.files.statePassphrase), { recursive: true });
+  await writeFile(paths.files.statePassphrase, `${passphrase}\n`);
+  await mkdir(path.dirname(tfstateFile(paths)), { recursive: true });
+  await writeFile(tfstateFile(paths), `${JSON.stringify({ version: 4, resources: [] })}\n`);
+  return paths;
+}
+
+/**
+ * An engine whose state opens with the current passphrase `current` until a plan rewrote it, and
+ * with the new one alone from then on.
+ */
+class RewritingEngine extends FakeEngine {
+  constructor(private readonly current: string) {
+    super({ changes: [] });
+  }
+  override readonly stateResources = async (
+    _file: string,
+    options?: IacRunOptions,
+  ): Promise<string[]> => {
+    const withCurrent = (options?.env?.TF_ENCRYPTION ?? "").includes(this.current);
+    if (withCurrent !== (this.applied.length === 0)) throw new Error("Failed to decrypt the state");
+    return [];
+  };
+}
 
 describe("opscrew rotate", () => {
   it("lists its names, flags and examples in its help", async () => {
@@ -314,6 +352,165 @@ describe("opscrew rotate", () => {
     }
     expect(asked.map((request) => request.kind)).toEqual([...rotations]);
   });
+
+  it.skipIf(GIT === undefined)(
+    "rotates the state passphrase in a script: refused with its plan's hash, stepped back from with --undo, then a saved plan applied by its hash",
+    async () => {
+      const p = await setup();
+      const sops = new FakeSops();
+      await withCopy(p, sops);
+      const passphrase = fakeSecret("generic-password", "cli-rotate-state");
+      const paths = await withState(p, passphrase);
+      const engine = new RewritingEngine(passphrase);
+      const services = { provision: { github: new FakeGitHub(), engine: async () => engine } };
+
+      // Refused, then stepped back from with --undo: the new passphrase is gone.
+      const next = `${paths.files.statePassphrase}.next`;
+      const stepped = context(p, sops, { approvals: null, services });
+      expect(await run(stepped.ctx, "rotate", "state-passphrase")).toBe(1);
+      expect(stepped.ctx.errors).toContain(
+        "To step back instead, run `opscrew rotate state-passphrase --undo`.",
+      );
+      const undone = context(p, sops, { approvals: null, services });
+      expect(await run(undone.ctx, "rotate", "state-passphrase", "--undo"), undone.ctx.errors).toBe(
+        0,
+      );
+      await expect(stat(next)).rejects.toThrow();
+
+      const first = context(p, sops, { approvals: null, services });
+      expect(await run(first.ctx, "rotate", "state-passphrase")).toBe(1);
+      const hash = /--approve ([0-9a-f]{64}) added/.exec(first.ctx.errors)?.[1] as string;
+      expect(first.ctx.errors).toContain(
+        `To apply this saved plan in a script, run \`opscrew rotate state-passphrase\` again with the flags you gave (each --approve <hash> too) and --approve ${hash} added.`,
+      );
+      expect(await readFile(paths.files.statePassphrase, "utf8")).toBe(`${passphrase}\n`);
+
+      const second = context(p, sops, { approvals: null, services });
+      const code = await run(second.ctx, "rotate", "state-passphrase", "--approve", hash, "--yes");
+      expect(code, second.ctx.errors).toBe(0);
+      // One plan per refused run; the approved run applied the saved one.
+      expect(engine.calls.filter((call) => call === "plan")).toHaveLength(2);
+      expect(engine.applied.map((applied) => applied.approval.approvedPlanHash)).toEqual([hash]);
+      expect((await readFile(paths.files.statePassphrase, "utf8")).trim()).not.toBe(passphrase);
+      expect(`${first.ctx.output}${first.ctx.errors}${second.ctx.output}`).not.toContain(
+        passphrase,
+      );
+    },
+  );
+
+  it.skipIf(GIT === undefined)(
+    "rotates the deploy key on Hetzner in a script: refused with the provider plan's hash, then finished with both hashes and --confirm",
+    async () => {
+      const p = await setup();
+      const sops = new FakeSops();
+      await withCopy(p, sops);
+      const paths = await withState(p);
+      await writeFile(
+        paths.files.deployKeyPub,
+        `ssh-ed25519 ${randomBytes(32).toString("base64")} opscrew-deploy@old\n`,
+      );
+      const engine = new FakeEngine({
+        changes: [
+          {
+            address: "module.server.hcloud_ssh_key.deploy[0]",
+            type: "hcloud_ssh_key",
+            name: "deploy",
+            provider: "registry.opentofu.org/hetznercloud/hcloud",
+            action: "replace",
+          },
+        ],
+      });
+      // The deploy user's shell on the server takes every key script; the deploy run passes.
+      const remote = (host: string): RemoteExec => ({
+        host,
+        run: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+      });
+      const services: CliServices = {
+        provision: { github: new FakeGitHub(), engine: async () => engine, remote },
+        rotate: { github: new SiteGitHub() as unknown as RotateGitHub },
+      };
+      const script = (...args: string[]) => {
+        const { ctx } = context(p, sops, { approvals: null, services });
+        return run(ctx, "rotate", "deploy-key", ...args).then((code) => ({ code, ctx }));
+      };
+
+      // The rotation's own plan names its hash.
+      const start = await script();
+      expect(start.code).toBe(1);
+      const rotation = /--approve ([0-9a-f]{64})/.exec(start.ctx.errors)?.[1] as string;
+
+      // Run 1: the key is replaced on the server; the provider's copy is refused with its hash.
+      const first = await script("--approve", rotation);
+      expect(first.code).toBe(1);
+      const provider = /--approve ([0-9a-f]{64}) --confirm shop added/.exec(
+        first.ctx.errors,
+      )?.[1] as string;
+      expect(provider).not.toBe(rotation);
+      expect(first.ctx.errors).toContain(
+        `To apply this saved plan in a script, run \`opscrew rotate deploy-key\` again with the flags you gave (each --approve <hash> too) and --approve ${provider} --confirm shop added.`,
+      );
+      expect(first.ctx.errors).not.toContain("Then run");
+
+      // Run 2: both hashes and the app's name; the saved plan is applied, none made again.
+      const second = await script(
+        "--approve",
+        rotation,
+        "--approve",
+        provider,
+        "--confirm",
+        "shop",
+        "--yes",
+      );
+      expect(second.code, second.ctx.errors).toBe(0);
+      expect(engine.calls.filter((call) => call === "plan")).toHaveLength(1);
+      expect(engine.applied.map((applied) => applied.approval.approvedPlanHash)).toEqual([
+        provider,
+      ]);
+    },
+  );
+
+  it.skipIf(GIT === undefined)(
+    "replaces the Access token in a script by the saved plan the refused run named",
+    async () => {
+      const p = await setup(ownPlan({ access: "tunnel", deployed: true }));
+      const sops = new FakeSops();
+      await withCopy(p, sops);
+      await withState(p);
+      const engine = new FakeEngine({
+        changes: [
+          {
+            address: "module.access.cloudflare_zero_trust_access_service_token.ssh[0]",
+            type: "cloudflare_zero_trust_access_service_token",
+            name: "ssh",
+            provider: "registry.opentofu.org/cloudflare/cloudflare",
+            action: "replace",
+          },
+        ],
+        outputs: {
+          deploy_service_token_client_id: randomBytes(16).toString("hex"),
+          deploy_service_token_client_secret: randomBytes(32).toString("hex"),
+        },
+      });
+      const services: CliServices = {
+        provision: { github: new FakeGitHub(), engine: async () => engine },
+      };
+      const script = (...args: string[]) => {
+        const { ctx } = context(p, sops, { approvals: null, services });
+        return run(ctx, "rotate", "access-token", ...args).then((code) => ({ code, ctx }));
+      };
+      const first = await script();
+      expect(first.code).toBe(1);
+      const hash = /--approve ([0-9a-f]{64}) --confirm shop added/.exec(
+        first.ctx.errors,
+      )?.[1] as string;
+      expect(hash).toMatch(/^[0-9a-f]{64}$/);
+
+      const second = await script("--approve", hash, "--confirm", "shop", "--yes");
+      expect(second.code, second.ctx.errors).toBe(0);
+      expect(engine.calls.filter((call) => call === "plan")).toHaveLength(1);
+      expect(engine.applied.map((applied) => applied.approval.approvedPlanHash)).toEqual([hash]);
+    },
+  );
 
   it("forgets an add-on's rotation that was never approved with --undo, and refuses otherwise", async () => {
     const p = await setup();

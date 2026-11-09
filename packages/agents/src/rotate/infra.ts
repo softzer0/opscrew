@@ -11,12 +11,14 @@
  *
  * The infrastructure plans go through {@link planRotation} rather than provision's `planAndApply`:
  * a rotation's plan may change only what the rotation names, which is checked before its approval;
- * the passphrase's plan has no changes and must still be applied; the token's state refresh is
- * refresh-only; and `planAndApply`'s refusal offers `--approve <hash>` with the saved plan, which
- * a rotation can't keep (its plan is encrypted under a key not kept yet, or needs a typed name).
+ * the passphrase's plan has no changes and must still be applied; and the token's state refresh is
+ * refresh-only. As provision's, each plan is saved with its sidecar before its approval: a
+ * script's refusal names its hash, and the next run given `--approve <hash>` (with `--confirm
+ * <app>` for a replacement) applies that saved plan instead of planning again, which the engine
+ * refuses once the state changed. A finished rotation removes its saved plans.
  */
 import { randomBytes } from "node:crypto";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { CloudflareClient } from "@opscrew/connector-cloudflare";
 import type { IacEngine, ResourceChange } from "@opscrew/contracts";
@@ -33,6 +35,8 @@ import {
 } from "@opscrew/core";
 import {
   type EnginePreference,
+  engineLabel,
+  hashFile,
   type StateKeyName,
   stateKeyName,
   tofuEncryptionEnv,
@@ -58,7 +62,14 @@ import { commandFlags } from "../environments/choice";
 import { withDeploysPausedUntilDone } from "../move/deploys";
 import { cloudflareTokenMissing, type GitHubSetup } from "../provision/credentials";
 import { ownEngineEnv, ownTarget } from "../provision/own";
-import { describePlan, lastLines, savedPlanOf } from "../provision/plan-apply";
+import {
+  describePlan,
+  findSavedPlan,
+  lastLines,
+  ROTATION_PLAN_SUFFIX,
+  savedPlanOf,
+  writePlanSidecar,
+} from "../provision/plan-apply";
 import { maskSensitivePlanJson } from "../provision/plan-json";
 import { setPortainerOrigin } from "../provision/portainer";
 import { secretsEnvironment } from "../provision/secrets";
@@ -71,6 +82,7 @@ import {
   storageStateFile,
 } from "../provision/storage";
 import type { ProvisionServices, SavedPlan } from "../provision/types";
+import { discardSaved } from "../retarget/plans";
 import { type RefreshRecoveryResult, refreshRecoveryCopy } from "../secrets/copy";
 import { PlanRefusedError } from "../shared/approvals";
 import { deployPauseOf, pinnedText, rotationWindowText } from "../shared/deploy-pause";
@@ -106,6 +118,11 @@ export interface RotationEngineOptions {
   preference?: EnginePreference;
   /** Tests: the engine. */
   services?: { engine?: EngineFactory };
+  /**
+   * Every `--approve <hash>` of the run: a saved plan of this rotation among them (an earlier
+   * run's, refused in a script) is applied instead of planning again.
+   */
+  approveHashes?: readonly string[];
 }
 
 /** A finished rotation. */
@@ -230,8 +247,71 @@ interface RotationPlanInput {
   vars?: Record<string, string>;
   /** True for a change the rotation makes besides its replacements; any other stops the plan. */
   allowed: (change: ResourceChange) => boolean;
+  /** Names the rotation's plan files ({@link rotationPlanSuffix}). */
+  label: string;
+  /** `--approve` hashes: one naming a saved plan of `label` is taken instead of a new plan. */
+  approveHashes?: readonly string[];
   /** `opscrew rotate <name> [flags]`. */
   again: string;
+}
+
+/**
+ * The end of a rotation's plan file's name, `<stamp>-<label>-rotation.tfplan`: no other command's
+ * saved-plan lookup takes it ({@link ROTATION_PLAN_SUFFIX}).
+ */
+function rotationPlanSuffix(label: string): string {
+  return `-${label}${ROTATION_PLAN_SUFFIX}`;
+}
+
+/**
+ * Removes every saved plan of `label` (each plan file and its sidecar), once its rotation applied
+ * one: none of them can be applied any more.
+ */
+async function discardRotationPlans(plansDir: string, label: string): Promise<void> {
+  const suffix = rotationPlanSuffix(label);
+  const names = await readdir(plansDir).catch(() => [] as string[]);
+  for (const name of names) {
+    if (name.endsWith(suffix) || name.endsWith(`${suffix}.json`)) {
+      await rm(join(plansDir, name), { force: true });
+    }
+  }
+}
+
+/**
+ * The saved plan of `input.label` that one of `input.approveHashes` names, if any, once it was
+ * made with this run's engine and its file still has that hash.
+ * @throws OpsCrewError `PLAN_HASH_MISMATCH` when it was made with the other engine, when its file
+ * is missing or changed (the plan is removed), or when its sidecar is damaged.
+ */
+async function approvedRotationPlan(
+  plansDir: string,
+  input: Pick<RotationPlanInput, "engine" | "label" | "approveHashes" | "again">,
+): Promise<SavedPlan | undefined> {
+  for (const hash of input.approveHashes ?? []) {
+    const retry = `Run \`${input.again}\` again without --approve ${hash}: it plans again, and you approve the new plan's hash.`;
+    const saved = await findSavedPlan(plansDir, hash, { hint: retry });
+    if (saved === undefined || !saved.planFile.endsWith(rotationPlanSuffix(input.label))) continue;
+    const engine = input.engine.info.name;
+    if (saved.engine.name !== engine) {
+      throw new OpsCrewError(
+        "PLAN_HASH_MISMATCH",
+        `The saved plan with the hash ${saved.planHash} was made with ${engineLabel(saved.engine.name)}, but this run uses ${engineLabel(engine)}, so OpsCrew will not apply it. Nothing was changed.`,
+        {
+          hint: `Run \`${input.again}\` again with --engine ${saved.engine.name}, or without --approve ${hash} to plan again.`,
+        },
+      );
+    }
+    if ((await hashFile(saved.planFile).catch(() => "")) !== saved.planHash) {
+      await discardSaved(saved.planFile);
+      throw new OpsCrewError(
+        "PLAN_HASH_MISMATCH",
+        `The saved plan with the hash ${saved.planHash} is missing or changed after it was saved, so OpsCrew will not apply it. Nothing was changed.`,
+        { hint: retry },
+      );
+    }
+    return saved;
+  }
+  return undefined;
 }
 
 /** `module.x.y (update)`, for the refusal that lists the other changes. */
@@ -241,11 +321,15 @@ function changeText(change: Pick<ResourceChange, "action" | "address">): string 
 
 /**
  * A root module planned for a rotation (after `init` against its state), its sensitive values
- * masked and its policies checked: stops, its plan file removed, with the next step when a
- * replaced resource is not in the state yet (the engine refuses to plan it), when the plan changes
- * anything the rotation does not (`allowed`) or renames resources, when a refresh-only plan finds a
- * managed resource changed outside OpsCrew, or when a policy blocks it.
- * @throws OpsCrewError `PHASE_PRECONDITION` for those stops; `ENGINE_FAILED` from the engine.
+ * masked and its policies checked, then saved with its sidecar (as provision's plans, masked) for
+ * a script's next run; or, when `input.approveHashes` names a saved plan of the rotation (an
+ * earlier run's, checked like this one before it was saved), that plan, its file's hash checked.
+ * Stops, its plan file removed, with the next step when a replaced resource is not in the state
+ * yet (the engine refuses to plan it), when the plan changes anything the rotation does not
+ * (`allowed`) or renames resources, when a refresh-only plan finds a managed resource changed
+ * outside OpsCrew, or when a policy blocks it.
+ * @throws OpsCrewError `PHASE_PRECONDITION` for those stops; `PLAN_HASH_MISMATCH` for a saved
+ * plan that changed; `ENGINE_FAILED` from the engine.
  */
 async function planRotation(
   deps: PhaseDeps,
@@ -259,10 +343,19 @@ async function planRotation(
   };
   const { plansDir } = deps.paths.files;
   await mkdir(plansDir, { recursive: true });
-  deps.reporter.step(`Planning the rotation's change in ${toPosixRelative(deps.paths.root, dir)}`);
+  const approved = await approvedRotationPlan(plansDir, input);
+  deps.reporter.step(
+    approved === undefined
+      ? `Planning the rotation's change in ${toPosixRelative(deps.paths.root, dir)}`
+      : `Taking the saved plan ${approved.planHash} an earlier run made`,
+  );
   await engine.init(dir, { env, backendConfig: { path: statePath } });
+  // The sidecar's paths pass through the redactor: the root is this run's.
+  if (approved !== undefined) return { ...approved, dir };
+  // A new plan supersedes the earlier ones: an older hash makes a new plan too.
+  await discardRotationPlans(plansDir, input.label);
   const stamp = deps.clock.now().toISOString().replace(/[:.]/g, "-");
-  const planFile = join(plansDir, `${stamp}-rotation.tfplan`);
+  const planFile = join(plansDir, `${stamp}${rotationPlanSuffix(input.label)}`);
   const { root, environment, app } = deps.paths;
   const provision = `opscrew provision${await commandFlags(root, environment, app)}`;
   const replace = input.replace ?? [];
@@ -322,6 +415,7 @@ async function planRotation(
       blocking.map((p) => p.message).join(" "),
     );
   }
+  await writePlanSidecar(deps.redactor, saved);
   return saved;
 }
 
@@ -336,12 +430,15 @@ interface RotationText {
   noun: string;
   /** What a refusal says stays as it was (default: nothing was changed). */
   unchanged?: string;
+  /** A script's refusal also offers `<again> --undo`, which steps back from the rotation. */
+  undo?: true;
   again: string;
 }
 
 /**
  * Asks the approval of `saved`, bound to its hash (`iac-apply`; a replacement needs the app's name
- * typed), and checks it is the one recorded.
+ * typed), and checks it is the one recorded. A script's refusal keeps the saved plan and names its
+ * hash for the next run; a terminal's removes it (the next run asks again with a new plan).
  * @throws PlanRefusedError when it is not given.
  */
 async function approveRotationPlan(
@@ -366,11 +463,15 @@ async function approveRotationPlan(
     ...(confirm !== undefined ? { allowDestroy: true, confirmPhrase: confirm } : {}),
   });
   if (!approval.approved) {
+    if (deps.interactive) await discardSaved(saved.planFile);
+    const confirmFlag = confirm === undefined ? "" : ` --confirm ${confirm}`;
     throw new PlanRefusedError({
       plan: text.noun,
       ...(approval.reason !== undefined ? { reason: approval.reason } : {}),
       unchanged: text.unchanged ?? "Nothing was changed.",
-      hint: `Run \`${text.again}\` again when you are ready${confirm === undefined ? "" : ` (in a terminal: the plan replaces resources, so you type ${confirm} to approve it)`}.`,
+      hint: deps.interactive
+        ? `Run \`${text.again}\` again when you are ready${confirm === undefined ? "" : ` (the plan replaces resources, so you type ${confirm} to approve it)`}.`
+        : `To apply this saved plan in a script, run \`${text.again}\` again with the flags you gave (each --approve <hash> too) and --approve ${saved.planHash}${confirmFlag} added.${text.undo === true ? ` To step back instead, run \`${text.again} --undo\`.` : ""}`,
     });
   }
   await deps.approvals.assertApprovedPlan(saved.planHash, { allowDestroy: saved.hasDestroy });
@@ -378,13 +479,17 @@ async function approveRotationPlan(
 
 /**
  * Applies exactly the approved `saved` (`what` in the audit entry) and returns the root's outputs.
- * @throws OpsCrewError `ENGINE_FAILED` with the redacted log's last lines when the apply fails.
+ * Applied or not, the plan is spent (an apply that failed half-way changed the state): it is
+ * removed, and once applied every other saved plan of `label` too.
+ * @throws OpsCrewError `PLAN_HASH_MISMATCH` when the engine finds the saved plan stale (the state
+ * changed since it was made), `ENGINE_FAILED` with the redacted log's last lines when the apply
+ * fails otherwise.
  */
 async function applyRotationPlan(
   deps: PhaseDeps,
   setup: Pick<ProjectEngine, "engine" | "env">,
   saved: SavedPlan,
-  input: { what: string; again: string },
+  input: { what: string; label: string; again: string },
 ): Promise<Record<string, unknown>> {
   deps.reporter.step("Applying the rotation's infrastructure plan");
   const result = await setup.engine.apply(
@@ -401,11 +506,27 @@ async function applyRotationPlan(
     decision: result.ok ? "approved" : "refused",
     detail: `${input.what}: ${result.ok ? "apply finished" : "apply failed"}`,
   });
-  if (result.ok) return result.outputs;
+  if (result.ok) {
+    await discardRotationPlans(deps.paths.files.plansDir, input.label);
+    return result.outputs;
+  }
+  await discardSaved(saved.planFile);
+  const log = deps.redactor.redact(result.log);
+  if (/Saved plan is stale/i.test(log)) {
+    throw new OpsCrewError(
+      "PLAN_HASH_MISMATCH",
+      `The saved plan with the hash ${saved.planHash} no longer fits the infrastructure state, which changed after the plan was made, so OpsCrew applied none of it.`,
+      {
+        hint: `Run \`${input.again}\` again without --approve ${saved.planHash}: it plans again from the state as it is now, and you approve the new plan's hash.`,
+      },
+    );
+  }
   throw new OpsCrewError(
     "ENGINE_FAILED",
-    `Applying the rotation's plan failed:\n${lastLines(deps.redactor.redact(result.log))}`,
-    { hint: `Fix the cause shown above, then run \`${input.again}\` again; it plans again.` },
+    `Applying the rotation's plan failed:\n${lastLines(log)}`,
+    {
+      hint: `Fix the cause shown above, then run \`${input.again}\` again; it plans again.`,
+    },
   );
 }
 
@@ -521,7 +642,8 @@ function accessSecrets(
  * Rotates the Cloudflare Access service token of `plan`'s environment (`deps.paths`): after the
  * two-computer guard and while nothing else pauses the deploys, an infrastructure plan replacing
  * the token's resource ({@link accessTokenAddress}; with the Access policy that names it, nothing
- * else) shown with its policies and approved by its hash with the app's name typed; then, with the
+ * else) shown with its policies and approved by its hash with the app's name typed (in a script,
+ * an earlier run's saved plan that `services.approveHashes` names); then, with the
  * app's deploys paused (kept paused when a step fails, resumed by the run that finishes), the apply
  * and the deploy secrets that hold the token. Then the rotation is recorded and the recovery copy,
  * which holds the state, refreshed.
@@ -551,6 +673,8 @@ export async function rotateAccessToken(
   const saved = await planRotation(deps, plan, {
     ...setup,
     replace: [address],
+    label: "access-token",
+    ...(services.approveHashes !== undefined ? { approveHashes: services.approveHashes } : {}),
     // The deploy's Access policy names the token by its id, so it is updated in place; its
     // application names the policy, whose id stays. Nothing else follows the replacement.
     allowed: (change) => change.address === ACCESS_POLICY && change.action === "update",
@@ -584,6 +708,7 @@ export async function rotateAccessToken(
       try {
         const outputs = await applyRotationPlan(deps, setup, saved, {
           what: "rotate access-token",
+          label: "access-token",
           again,
         });
         deps.reporter.step("Giving the deploy's GitHub secrets the new Access token");
@@ -809,6 +934,7 @@ export async function rotateTunnelToken(
     const saved = await planRotation(deps, plan, {
       ...setup,
       refreshOnly: true,
+      label: "tunnel-token",
       allowed: () => false,
       again,
     });
@@ -822,7 +948,11 @@ export async function rotateTunnelToken(
       unchanged: "The infrastructure state still holds the old token.",
       again,
     });
-    await applyRotationPlan(deps, setup, saved, { what: "rotate tunnel-token", again });
+    await applyRotationPlan(deps, setup, saved, {
+      what: "rotate tunnel-token",
+      label: "tunnel-token",
+      again,
+    });
     recorded = true;
     deps.reporter.step(`Restarting the connectors of ${which} with the new token`);
     await connectors.restart(rotated);
@@ -875,6 +1005,8 @@ async function stateName(statePath: string): Promise<StateKeyName | undefined> {
 interface PassphraseRoot {
   /** In the approval's words: `the infrastructure state`. */
   noun: string;
+  /** Names its plan files: `state-passphrase-<label>`. */
+  label: string;
   dir: string;
   statePath: string;
   /** The engine's environment for the root, given its `TF_ENCRYPTION`. */
@@ -910,6 +1042,7 @@ async function passphraseRoots(
   if (await held(main)) {
     roots.push({
       noun: "the infrastructure state",
+      label: "infra",
       dir: join(root, plan.infra.dir),
       statePath: main,
       env: async (encryption) => {
@@ -929,6 +1062,7 @@ async function passphraseRoots(
         : await requireStorageKey(deps, plan, {}, { command: again, asks: false });
     roots.push({
       noun: "the app's bucket's state",
+      label: "storage",
       dir: join(root, storageRootDir(plan)),
       statePath: storage,
       env: async (encryption) =>
@@ -945,6 +1079,7 @@ async function passphraseRoots(
         : await requireOffsiteKey(deps, plan, {}, { command: again });
     roots.push({
       noun: "the off-server copies' bucket's state",
+      label: "backups",
       dir: join(root, backupsRootDir(plan)),
       statePath: backups,
       env: async (encryption) =>
@@ -955,6 +1090,7 @@ async function passphraseRoots(
   if (await held(verification)) {
     roots.push({
       noun: "the state of GitHub's verification record",
+      label: "verification",
       dir: join(root, pagesVerificationRootDir(plan)),
       statePath: verification,
       env: async (encryption) => ({ ...deps.env, TF_ENCRYPTION: encryption }),
@@ -964,25 +1100,76 @@ async function passphraseRoots(
 }
 
 /**
+ * `--undo` of an unfinished state-passphrase rotation: once every state still opens with the
+ * current passphrase (each checked before anything is removed), the new passphrase
+ * (`state_passphrase.next`) and the rotation's saved plans are removed, and the other commands
+ * work again. The current passphrase stays as it is.
+ * @throws OpsCrewError `PHASE_PRECONDITION` when no rotation is unfinished, or when a state was
+ * already rewritten with the new passphrase (the rotation only goes forward from there).
+ */
+async function undoStatePassphrase(
+  deps: PhaseDeps,
+  input: {
+    engine: IacEngine;
+    roots: readonly PassphraseRoot[];
+    current: string;
+    kept: string | undefined;
+    again: string;
+  },
+): Promise<void> {
+  const { engine, roots, current, again } = input;
+  const { root, environment } = deps.paths;
+  if (input.kept === undefined) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `No rotation of the state passphrase is unfinished in ${environment}, so there is nothing to undo. Nothing was changed.`,
+    );
+  }
+  for (const each of roots) {
+    const name = (await stateName(each.statePath)) as StateKeyName;
+    if (!(await opensState(deps, engine, each.statePath, current, name))) {
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        `${upperFirst(each.noun)} (${toPosixRelative(root, each.statePath)}) is already encrypted with the new passphrase, and the rotation only goes forward from there, so OpsCrew can't undo it. Nothing was changed.`,
+        { hint: `Run \`${again}\` again to finish it.` },
+      );
+    }
+  }
+  for (const each of roots) {
+    await discardRotationPlans(deps.paths.files.plansDir, `state-passphrase-${each.label}`);
+  }
+  await rm(nextStatePassphraseFile(deps.paths).file, { force: true });
+  deps.reporter.success(
+    `Stepped back from the rotation of the state passphrase of ${environment}: no state was rewritten, the new passphrase and its saved plans are gone, and the current one stays in ${deps.paths.files.statePassphrase}.`,
+  );
+}
+
+/**
  * Rotates the state passphrase of `plan`'s environment (`deps.paths`), with OpenTofu, across every
  * state it encrypts ({@link passphraseRoots}): after the two-computer guard and once every bucket
  * key is at hand, each state that the new passphrase does not open yet gets a plan with the new
  * one and the current one as the fallback (`TF_ENCRYPTION`, under the key name the state has:
  * `stateKeyName`), a plan that must change nothing, shown and approved by its own hash, then
- * applied, which rewrites that state under the new one. The new passphrase is kept on this
- * computer (`state_passphrase.next`, 0600) before the first apply, and replaces the current one
- * only once every state opens with it alone. A run after a failure goes on with it, skipping the
+ * applied, which rewrites that state under the new one; in a script, a plan approved by
+ * `options.approveHashes` is an earlier run's saved one. The new passphrase is kept on this
+ * computer (`state_passphrase.next`, 0600) before the first apply (in a script, before the first
+ * approval: the saved plan is encrypted with it and waits for the next run), and replaces the
+ * current one only once every state opens with it alone. A run after a failure goes on with it, skipping the
  * states already rewritten. Without any state, nothing is encrypted with it yet: the new one
  * replaces it at once. Then the rotation is recorded and the recovery copy, which holds the states
  * and the passphrase, refreshed. Refused, before anything is made, when the plan does not encrypt
- * its state, with Terraform, and when this computer has no passphrase.
+ * its state, with Terraform, and when this computer has no passphrase. With `options.undo`, it
+ * steps back from an unfinished rotation instead ({@link undoStatePassphrase}).
  * @throws OpsCrewError `INVALID_INPUT`, `PHASE_PRECONDITION` for the refusals, `APPROVAL_REFUSED`,
  * `ENGINE_FAILED` when an apply fails or a state does not open with the new passphrase after it.
  */
 export async function rotateStatePassphrase(
   deps: PhaseDeps,
   plan: DeployPlan,
-  options: RotationEngineOptions = {},
+  options: RotationEngineOptions & {
+    /** `--undo`: step back from an unfinished rotation no state was rewritten by. */
+    undo?: true;
+  } = {},
 ): Promise<InfraRotation> {
   const { root, environment, app } = deps.paths;
   const flags = await commandFlags(root, environment, app);
@@ -1022,6 +1209,10 @@ export async function rotateStatePassphrase(
   const roots = await passphraseRoots(deps, plan, engine, again);
   // An unfinished rotation's new passphrase, which some states may already be encrypted with.
   const kept = await readSecretFile(nextStatePassphraseFile(deps.paths));
+  if (options.undo === true) {
+    await undoStatePassphrase(deps, { engine, roots, current, kept, again });
+    return { copy: { changed: false } };
+  }
   const next = kept ?? newStatePassphrase();
   deps.redactor.addLiteral(next, "state-passphrase");
   let hash: string | undefined;
@@ -1035,17 +1226,46 @@ export async function rotateStatePassphrase(
     }
     const record = toPosixRelative(root, credentialsRecordFile(deps.paths));
     const states = listText(roots.map((each) => toPosixRelative(root, each.statePath)));
+    // Kept before anything that stays is encrypted with it, so no state or saved plan ever holds a
+    // key this computer lacks: in a terminal once the first plan is approved; in a script once the
+    // first plan passed its checks, as it waits for the next run's `--approve`.
+    let held = kept !== undefined;
+    const keep = async () => {
+      if (held) return;
+      await keepNextStatePassphrase(deps.paths, next);
+      held = true;
+    };
+    // No state rewritten yet, by this run or an earlier one: `--undo` can still step back.
+    const untouched = (i: number) => i === 0 && pending.length === roots.length;
     for (const [i, { root: each, name }] of pending.entries()) {
       const setup: ProjectEngine = {
         engine,
         env: await each.env(tofuEncryptionEnv(next, { name, previous: current })),
       };
+      const label = `state-passphrase-${each.label}`;
       const saved = await planRotation(deps, plan, {
         ...setup,
         root: { dir: each.dir, statePath: each.statePath },
+        label,
+        ...(options.approveHashes !== undefined ? { approveHashes: options.approveHashes } : {}),
         allowed: () => false,
         again,
       });
+      if (!deps.interactive) await keep();
+      // What a refusal says stays as it was: nothing (default) before the new passphrase is kept.
+      let refusal: Pick<RotationText, "unchanged" | "undo"> = {};
+      if (!untouched(i)) {
+        refusal = {
+          unchanged:
+            "The states rewritten so far are encrypted with the new passphrase, which stays on this computer beside the current one until every state is.",
+        };
+      } else if (held) {
+        refusal = {
+          unchanged:
+            "No state was changed. The new passphrase waits on this computer beside the current one, and until the rotation finishes or is undone, the commands that read the states stop.",
+          undo: true,
+        };
+      }
       const count = pending.length === 1 ? "" : ` (${i + 1} of ${pending.length})`;
       await approveRotationPlan(deps, plan, saved, {
         title: `Rewrite ${each.noun} of ${environment} under a new passphrase${count}`,
@@ -1058,17 +1278,15 @@ export async function rotateStatePassphrase(
           `If a step fails, both passphrases stay on this computer and \`${again}\` goes on from there.`,
         ],
         noun: `plan rewriting ${each.noun} under a new passphrase`,
-        ...(i === 0 && kept === undefined
-          ? {}
-          : {
-              unchanged:
-                "The states rewritten so far are encrypted with the new passphrase, which stays on this computer beside the current one until every state is.",
-            }),
+        ...refusal,
         again,
       });
-      // Kept before anything is encrypted with it: no state ever holds a key this computer lacks.
-      if (kept === undefined && i === 0) await keepNextStatePassphrase(deps.paths, next);
-      await applyRotationPlan(deps, setup, saved, { what: "rotate state-passphrase", again });
+      await keep();
+      await applyRotationPlan(deps, setup, saved, {
+        what: "rotate state-passphrase",
+        label,
+        again,
+      });
       hash = saved.planHash;
     }
     for (const each of roots) {
@@ -1096,7 +1314,8 @@ export async function rotateStatePassphrase(
  * Once a deploy-key rotation's new key proved itself (`rotateSshKey`): the deploy key's objects at
  * the provider (`hcloud_ssh_key.deploy`, `digitalocean_ssh_key.deploy`, which only a server
  * created from then on gets) replaced with the new public half `publicKey`, in a plan of their own
- * approved by its hash with the app's name typed, so the next provision plans no replacement; the
+ * approved by its hash with the app's name typed (in a script, an earlier run's saved plan that
+ * `input.approveHashes` names), so the next provision plans no replacement; the
  * servers keep their keys (`ssh_keys` is in `ignore_changes`). Nothing else may change. Then it
  * says to run `opscrew provision`, which writes the new key into the committed
  * `terraform.tfvars.json` (other plans would put the old one back until then). Returns the
@@ -1126,10 +1345,12 @@ export async function replaceDeployKeyObject(
     ...setup,
     vars: { deploy_ssh_public_key: input.publicKey.trim() },
     allowed: (change) => DEPLOY_KEY_TYPES.has(change.type) && change.action === "replace",
+    label: "deploy-key",
+    ...(input.approveHashes !== undefined ? { approveHashes: input.approveHashes } : {}),
     again,
   });
   if (saved.changes.length === 0) {
-    await rm(saved.planFile, { force: true });
+    await discardSaved(saved.planFile);
     return undefined;
   }
   await approveRotationPlan(deps, plan, saved, {
@@ -1142,7 +1363,11 @@ export async function replaceDeployKeyObject(
     noun: "infrastructure plan of the deploy key's copy at the provider",
     again,
   });
-  await applyRotationPlan(deps, setup, saved, { what: "replace the deploy key's object", again });
+  await applyRotationPlan(deps, setup, saved, {
+    what: "replace the deploy key's object",
+    label: "deploy-key",
+    again,
+  });
   const { root, environment, app } = deps.paths;
   deps.reporter.success(
     `Replaced the deploy key's copy at the provider. Run \`opscrew provision${await commandFlags(root, environment, app)}\` next: it writes the new key into the committed terraform.tfvars.json, and until then OpsCrew's other infrastructure plans of ${environment} would put the old one back, so they stop.`,
