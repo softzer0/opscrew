@@ -168,7 +168,7 @@ secret in any test: `fakeSecret(kind)` and `{{FAKE:<kind>}}` (`@opscrew/core/tes
 
 ## Phase 6: Surfaces
 
-- [ ] T2515 [US2] The CLI, MCP, the plugin and the guide
+- [x] T2515 [US2] The CLI, MCP, the plugin and the guide
   - Owns: `packages/cli/src/commands/rotate*.ts`, `packages/cli/src/commands/secrets.ts`, `packages/cli/src/commands/index.ts`, `packages/agents/src/index.ts` (the rotations' exports), `packages/agents/src/secrets/index.ts` (the `publishRotatedKey` re-export, removed), `packages/mcp-server/src/tools/**`, `plugin/skills/**`, `docs/guide/credential-rotation.md`, `docs/guide/secrets-recovery.md`, `README.md` (its guide list) (+ tests)
   - Depends: T2506–T2514
   - Accept: plan 13; the listing never records a token (`credentialInventory` without `recordTokens`); `github-secrets` joins the kinds `--approve <hash>` grants (`APPROVE_BY_HASH_KINDS`, T2512); the CLI's help and errors in plain English; `--json` for the list; the MCP tool read-only; the guide page with every name, mode, window and consequence, the command-line note of R10, and where the old values live until done; `opscrew secrets rotate` removed (the CLI command and its test, the MCP hint naming it, the `publishRotatedKey` re-export), since `opscrew rotate recovery-key` replaces it (T2511).
