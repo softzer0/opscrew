@@ -330,6 +330,21 @@ Behaviour, hashes and approval texts stay as they are unless a task says otherwi
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew && pnpm typecheck && pnpm lint`
   - Effort: high
 
+- [ ] T2532 [US1] Garage's key after a restore (T2516's live pass)
+  - Owns: `packages/agents/src/snapshot/generations.ts` (Garage's re-login) (+ test), Garage's recipe in `packages/iac-templates/src/catalog/entries.ts` (+ tests, `src/docker/rotation.docker.test.ts`)
+  - Accept:
+    - **The cause:** a restore of a Garage copy from before its key's rotation brings back the old key named "default access key". The restore's start then makes the env's key under the same name, and the re-login's `key rename` by name never matches one key.
+    - **The fix:** after the restore's start, the re-login deletes the restored old key by its ID and keeps the env's key, which the start already allows on the plan's bucket.
+      - The ID is an identifier, not a secret, so it may reach the command line. The secret key never does.
+      - Guarded: it runs again safely.
+      - A rotation's own steps stay as they are.
+    - **Tests:**
+      - the rendered commands;
+      - a Docker test (`OPSCREW_DOCKER_TESTS=1`) of the whole restore case: an old key restored, the start, the re-login, and only the env's key left, which can reach the bucket.
+  - Depends: none. T2525 rebases onto it.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/iac-templates && pnpm typecheck && pnpm lint`
+  - Effort: high
+
 - [ ] T2518 The release 0.2.6 (lead): `docs/releasing.md`, with 013's US8 (founder, 2026-11-08). The changelog says that existing deployments recreate MySQL, MariaDB, Valkey, Redis, Dragonfly, Kafka, Redpanda, OpenSearch and Elasticsearch once at their next deploy (their start commands changed, T2503), and that apps on Portainer or Cloudflare's hosting or GitHub Pages whose `APP_KEY` or `BETTER_AUTH_SECRET` OpsCrew generates get `APP_PREVIOUS_KEYS` or `BETTER_AUTH_SECRETS` named in their committed stack template or deploy workflow at their next provision. It stays unset until a rotation keeps an old key there (T2509).
 
 ## Dependencies
