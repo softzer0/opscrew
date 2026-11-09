@@ -267,8 +267,13 @@ Cloudflare documents a path without that outage ("Rotate a token without service
 - Provider v5: `tunnel_secret` is `Optional`, `Sensitive` and has no plan modifier, so it does not
   force a replacement. OpsCrew doesn't set it in configuration, so changing it through the API leaves
   no drift.
-- Not confirmed (T2516's live pass settles it): the field's description says "locally-managed", but
-  Cloudflare's rotation page applies the same PATCH to token-run tunnels.
+- Confirmed live (2026-11-09, T2516). Cloudflare's rotation page applies the same PATCH to token-run
+  tunnels, although the field's description says "locally-managed". A throwaway token-run tunnel
+  (`config_src: cloudflare`) with a cloudflared connector in Docker showed this:
+  - Its 4 connections stayed up through the PATCH, and the connector kept running.
+  - A new connector with the old token registered no connection.
+  - One with the new token registered 4 at once.
+  - The token from `GET …/token` changed, and the PATCH's answer held the new one.
 
 Decision (lead): `tunnel-token` changes the secret through the Cloudflare connector, under the
 rotation's own plan approved by its hash, with no `-replace` and no typed name. It then reads the
