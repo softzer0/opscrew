@@ -225,7 +225,7 @@ Behaviour, hashes and approval texts stay as they are unless a task says otherwi
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm typecheck && pnpm lint`
   - Effort: xhigh
 
-- [ ] T2522 The other credentials use T2521's helpers
+- [x] T2522 The other credentials use T2521's helpers
   - Owns: `packages/agents/src/rotate/{keys,keys-files,keys-servers,network,addons-portainer,tokens,infra,infra-connectors}.ts` (+ tests)
   - Depends: T2521
   - Accept:
