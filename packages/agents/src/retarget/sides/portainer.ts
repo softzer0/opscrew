@@ -32,29 +32,15 @@ import {
   portainerVersionVolume,
   processServices,
 } from "@opscrew/iac-templates";
-import {
-  type DeployPlan,
-  type PortainerDeployTarget,
-  type Retarget,
-  snapshotOffsiteOf,
-} from "@opscrew/plan-schema";
+import type { DeployPlan, PortainerDeployTarget, Retarget } from "@opscrew/plan-schema";
 import { confirmDeletion } from "../../destroy/deletion";
 import { applyTeardown, approveTeardown, describeTeardown } from "../../destroy/portainer";
 import type { DestroyPreview } from "../../destroy/types";
-import {
-  buildAppEnvironment,
-  providerBucket,
-  requireStorageKey,
-  storageLogin,
-} from "../../provision";
-import { portainerOriginTls } from "../../provision/origin-tls";
 import { ensurePortainerValueKey, requirePortainerToken } from "../../provision/portainer";
-import { preparePortainerStacks } from "../../provision/portainer-flow";
-import { requireNoStackBlockers, requireUsableFacts } from "../../provision/stack-plan";
-import { offsiteSetup } from "../../provision/storage";
+import { portainerInspect, recordedPortainerStacks } from "../../provision/portainer-flow";
+import { requireNoStackBlockers } from "../../provision/stack-plan";
 import type { PortainerServices } from "../../provision/types";
 import {
-  committedStackPins,
   deployBranchOf,
   hidePortainerAddress,
   inspectAudited,
@@ -288,73 +274,20 @@ export function portainerSide(input: PortainerSideInput): MoveSide {
 
   /** The app's stacks as provision sets them up, connected and checked, for this side's plan. */
   async function stacksOf(session: MoveSession) {
-    const { deps, github } = session;
+    const { deps } = session;
     const { plan, target, connection, client, valueKey } = await connect(session);
-    const inspect = async (detail?: string) => {
-      const facts = await inspectAudited(deps, client, {
-        plan,
-        target,
-        step: "Inspecting your Portainer (read-only)",
-        phase: "retarget",
-        ...(detail !== undefined ? { detail } : {}),
-      });
-      requireUsableFacts(facts, target);
-      return facts;
-    };
-    const bucket = providerBucket(plan);
-    let environment: Awaited<ReturnType<typeof buildAppEnvironment>> | undefined;
-    const appEnvironment = async () => {
-      if (environment === undefined) {
-        // The bucket stays where it is: the app keeps its key.
-        const key =
-          bucket === undefined
-            ? undefined
-            : await requireStorageKey(deps, plan, session.services, {
-                command: session.command,
-                already: "Nothing in your Portainer was changed.",
-              });
-        environment = await buildAppEnvironment(deps, plan, session.services, undefined, {
-          portainer: true,
-          ...(key === undefined ? {} : { storage: storageLogin(plan, key, session.cloudflare) }),
-        });
-      }
-      return environment;
-    };
-    // The off-server copy's stack variables, as provision fills them: its bucket and key stay.
-    let offsite: Promise<Record<string, string>> | undefined;
-    const offsiteStack = () => {
-      offsite ??= offsiteSetup(deps, plan, session.services, {
-        key: undefined,
-        cloudflare: session.cloudflare,
-        command: session.command,
-        already: "Nothing in your Portainer was changed.",
-      }).then((setup) => setup.values);
-      return offsite;
-    };
-    const tls = session.site.edge.originTls;
-    const bundle = tls === undefined ? undefined : portainerOriginTls(session.site.values);
-    if (bundle !== undefined) deps.redactor.addLiteral(bundle, "origin-tls");
-    const repository = await github.api.getRepo(github.owner, github.repo);
-    const stacks = preparePortainerStacks(deps, {
+    const inspect = portainerInspect(deps, client, { plan, phase: "retarget" });
+    const stacks = await recordedPortainerStacks(deps, {
       plan,
       phase: "retarget",
       command: session.command,
-      client,
-      connection,
-      valueKey,
-      facts: await inspect(),
-      inspect,
-      github,
-      repositoryPrivate: repository.private,
+      services: session.services,
+      portainer: services,
+      connected: { connection, client, valueKey, inspect, facts: await inspect() },
+      github: session.github,
+      cloudflare: session.cloudflare,
+      site: session.site,
       publicImage: connection.publicImage ?? input.publicImage ?? false,
-      committed: await committedStackPins(deps.paths.root, plan),
-      services,
-      appEnvironment,
-      ...(snapshotOffsiteOf(plan) !== undefined ? { offsite: offsiteStack } : {}),
-      origin: () => ({
-        ...(tls !== undefined ? { tls } : {}),
-        ...(bundle !== undefined ? { bundle } : {}),
-      }),
     });
     return { plan, target, stacks };
   }

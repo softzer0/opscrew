@@ -33,7 +33,7 @@ import {
 import { describe, expect, it } from "vitest";
 import { runDns } from "../dns";
 import { planAndCopyFiles } from "../secrets/__fixtures__/world";
-import { sopsConfigFile } from "../secrets/store";
+import { knownRecipients, sopsConfigFile } from "../secrets/store";
 import {
   type PortainerConnection,
   type PortainerConnectionInput,
@@ -81,6 +81,7 @@ import {
   REPOSITORY_TOKEN_VAR,
   stackPlanFile,
 } from "./portainer";
+import { portainerStacksFor } from "./portainer-flow";
 import { DEPLOY_SETUP_BRANCH } from "./publish";
 import { runProvision } from "./run";
 import { readCloudflareRecord } from "./shared-cloudflare";
@@ -1254,6 +1255,32 @@ describe.skipIf(!findExecutable("git"))("the off-server copy in the user's Porta
       "The stack plan for your Portainer follows once the recovery copy's age key exists",
     );
     expect(s.fake.mutations()).toEqual([]);
+  });
+
+  it("in a rotation before the recovery copy's key exists, stops and makes no key or copy", async () => {
+    const s = await setup({
+      plan: portainerPlan({ web: { mode: "proxy", port: 8080 } }),
+      env: OFFSITE_KEY_ENV,
+    });
+    await s.run();
+    const said = s.deps.reporter.text().length;
+    const rotation = await portainerStacksFor(s.deps, offsite(), s.services, {
+      phase: "provision",
+      command: "opscrew rotate db",
+    });
+    const error = await rotation.stacks.plan(rotation.outputs).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(error).toBeInstanceOf(OpsCrewError);
+    expect((error as OpsCrewError).code).toBe("PHASE_PRECONDITION");
+    expect((error as OpsCrewError).message).toContain(
+      "encrypted to the age key of its recovery copy, and there is none yet",
+    );
+    expect((error as OpsCrewError).hint).toContain("opscrew rotate db");
+    expect(await knownRecipients(s.deps.paths)).toBeUndefined();
+    expect(s.deps.reporter.text().slice(said)).not.toContain("recovery copy");
+    await expect(stat(join(s.root, "opscrew/.sops.yaml"))).rejects.toThrow();
   });
 
   it("sets none of those variables, and asks for no key, without the off-server copy", async () => {

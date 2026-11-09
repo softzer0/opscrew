@@ -29,6 +29,7 @@ import {
   portainerStackTemplatePath,
   portainerStackVolumes,
   portainerTarget,
+  previousValueVariables,
   type RuntimeContext,
   renderPortainerConnectorStack,
   renderUpdaterStack,
@@ -68,6 +69,17 @@ export function committedStackPins(root: string, plan: DeployPlan): Promise<stri
 export function publishedPorts(target: PortainerDeployTarget): number[] {
   if (target.web.mode === "proxy") return [target.web.port];
   return target.web.mode === "caddy" ? [80, 443] : [];
+}
+
+/**
+ * The previous values a rotation kept (`APP_PREVIOUS_KEYS`) that `record` holds (by variable
+ * name), which the app stack's Env then has too.
+ */
+export function heldPreviousValues(
+  plan: DeployPlan,
+  record: Readonly<Record<string, unknown>> | undefined,
+): string[] {
+  return previousValueVariables(plan).filter((name) => record?.[name] !== undefined);
 }
 
 /** OpsCrew's stack of `role` as Portainer reports it, found by the id OpsCrew recorded for it. */

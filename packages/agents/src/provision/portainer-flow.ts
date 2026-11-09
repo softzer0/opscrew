@@ -23,7 +23,6 @@ import {
   portainerStackEnvKeys,
   portainerTarget,
   portainerWebhookHostname,
-  previousValueVariables,
   type RuntimeContext,
   renderBackups,
   renderStorage,
@@ -43,6 +42,7 @@ import {
   committedStackPins,
   deployBranchOf,
   desiredStacks,
+  heldPreviousValues,
   infrastructureOutputs,
   inspectAudited,
   type PlanApproval,
@@ -61,7 +61,9 @@ import { connectorFirst, tunnelChange } from "../shared/tunnel-connections";
 import { portainerAdditionsNote } from "./additions";
 import { caddyRecordNote, deletedRecordHosts, requireCaddyRecords } from "./caddy-records";
 import {
+  type CloudflareSetup,
   cloudflareTokenMissing,
+  type GitHubSetup,
   portainerCloudflare,
   setupCloudflare,
   setupGitHub,
@@ -167,6 +169,9 @@ interface StackValues {
 /** What is done when the deploy secrets cannot be stored: the stacks are already set up. */
 const STACKS_SET_UP =
   "The app's stacks are set up in your Portainer; only the deploy secrets are not stored yet.";
+
+/** Said when a stack plan changes nothing. */
+const ALREADY_SET_UP = "Your Portainer is already set up as planned; nothing in it changes.";
 
 /** Said with the stack plan when this run's Cloudflare apply changed the stack Caddy's origin TLS. */
 const ORIGIN_STACK_NOTE =
@@ -305,16 +310,13 @@ export function preparePortainerStacks(
   const updater = target.redeploy === "updater";
   const imagePrivate = !input.publicImage;
   let { connection, facts } = input;
-  // The previous values a rotation kept (`APP_PREVIOUS_KEYS`) that `env` holds: the Env has them.
-  const held = (env: Readonly<Record<string, string>>) =>
-    previousValueVariables(plan).filter((name) => env[name] !== undefined);
   const desired = (
     fingerprints?: DesiredValueFingerprints,
     env?: StackValues["env"],
   ): DesiredStacks => {
     const tls = input.origin().tls;
     return desiredStacks(plan, {
-      ...(env === undefined ? {} : { previousValues: held(env) }),
+      ...(env === undefined ? {} : { previousValues: heldPreviousValues(plan, env) }),
       connection,
       github: input.github,
       committed: input.committed,
@@ -362,7 +364,7 @@ export function preparePortainerStacks(
     const origin = input.origin();
     const stackKeys = portainerStackEnvKeys(plan, {
       ...(origin.tls !== undefined ? { originTls: origin.tls } : {}),
-      previousValues: held(env.values.app),
+      previousValues: heldPreviousValues(plan, env.values.app),
     });
     const out: Record<string, string> = {};
     for (const key of stackKeys.app) out[key] = env.values.app[key] ?? "";
@@ -460,7 +462,7 @@ export function preparePortainerStacks(
       throw new OpsCrewError("INTERNAL", "Only a stack plan this run planned is applied.");
     }
     if (planned.changes === 0) {
-      deps.reporter.success("Your Portainer is already set up as planned; nothing in it changes.");
+      deps.reporter.success(ALREADY_SET_UP);
       connection = await recordConnection(deps, connection, {
         publicImage: input.publicImage,
         ...(hasAppStack(connection.created) ? { appliedWeb: target.web } : {}),
@@ -531,9 +533,7 @@ export function preparePortainerStacks(
       const { hash } = planned;
       if (planned.changes === 0) {
         if (!planOnly) return applyStep(planned);
-        deps.reporter.success(
-          "Your Portainer is already set up as planned; nothing in it changes.",
-        );
+        deps.reporter.success(ALREADY_SET_UP);
         return { plan: planned.plan, hash, applied: false };
       }
       if (planOnly) {
@@ -564,9 +564,32 @@ export function preparePortainerStacks(
 }
 
 /**
+ * Reads the user's Portainer through `client`, read-only and audited (`detail`: why), stopping on
+ * what blocks the app's stacks.
+ */
+export function portainerInspect(
+  deps: PhaseDeps,
+  client: PortainerClient,
+  input: { plan: DeployPlan; phase: PhaseName },
+): (detail?: string) => Promise<PortainerFacts> {
+  const { plan, phase } = input;
+  const target = portainerTarget(plan.target);
+  return async (detail) => {
+    const facts = await inspectAudited(deps, client, {
+      plan,
+      target,
+      step: "Inspecting your Portainer (read-only)",
+      phase,
+      ...(detail !== undefined ? { detail } : {}),
+    });
+    requireUsableFacts(facts, target);
+    return facts;
+  };
+}
+
+/**
  * The user's Portainer reached with the pinned certificate and `token`, values fingerprinted with
- * the local value key, and read-only inspected; `inspect` reads it again, each reading stopping
- * on what blocks the app's stacks.
+ * the local value key, and read-only inspected; `inspect` reads it again ({@link portainerInspect}).
  */
 async function connectPortainer(
   deps: PhaseDeps,
@@ -579,7 +602,6 @@ async function connectPortainer(
   },
 ) {
   const { plan, connection, token, services, phase } = input;
-  const target = portainerTarget(plan.target);
   const valueKey = await ensurePortainerValueKey(deps, services.randomBytes);
   const client = portainerClientFor(deps, {
     connection,
@@ -587,18 +609,98 @@ async function connectPortainer(
     client: services.client,
     valueKey,
   });
-  const inspect = async (detail?: string): Promise<PortainerFacts> => {
-    const facts = await inspectAudited(deps, client, {
-      plan,
-      target,
-      step: "Inspecting your Portainer (read-only)",
-      phase,
-      ...(detail !== undefined ? { detail } : {}),
-    });
-    requireUsableFacts(facts, target);
-    return facts;
+  const inspect = portainerInspect(deps, client, { plan, phase });
+  return { connection, valueKey, client, inspect, facts: await inspect() };
+}
+
+/** What {@link recordedPortainerStacks} sets the app's stacks up from. */
+export interface RecordedStacksInput {
+  plan: DeployPlan;
+  phase: PhaseName;
+  /** The command a refusal says to run again. */
+  command: string;
+  services: ProvisionServices;
+  portainer: PortainerServices;
+  /** The Portainer reached and inspected ({@link portainerInspect}). */
+  connected: Pick<PortainerStacksInput, "connection" | "client" | "valueKey" | "facts" | "inspect">;
+  github: GitHubSetup;
+  /** The Cloudflare account of an R2 bucket. */
+  cloudflare: Pick<CloudflareSetup, "accountId"> | undefined;
+  /** The recorded edge (`recordedEdge`), whose origin TLS the stack's Caddy serves. */
+  site: Awaited<ReturnType<typeof recordedEdge>>;
+  publicImage: boolean;
+  /** Read by `opscrew rotate`, whose own unfinished rotation does not stop it. */
+  rotating?: true;
+  /** Changes the app's values before any plan binds them: a rotation's new values. */
+  rewrite?: (environment: AppEnvironment) => AppEnvironment;
+}
+
+/**
+ * The app's stacks in the user's Portainer as the last `opscrew provision` set them up, changing
+ * nothing: GitHub's repository, the committed stack template, the app's values (read once, when
+ * needed, the bucket keeping its key), the off-server copy's variables (its bucket and key stay;
+ * with no recovery copy's age key yet it stops, as only provision makes that key), and the stack
+ * Caddy's origin TLS from the recorded edge, registered with the redactor. Used by
+ * {@link portainerStacksFor} (rotate) and retarget's Portainer side. Provision does not call it:
+ * there each of these inputs is made at its own step, between changes (the stack Caddy's origin
+ * TLS after the Cloudflare apply, the bucket's key after its plan, the off-server copy with the
+ * recovery key it makes), so only {@link connectPortainer} and {@link preparePortainerStacks} are
+ * shared.
+ */
+export async function recordedPortainerStacks(
+  deps: PhaseDeps,
+  input: RecordedStacksInput,
+): Promise<PortainerStacks> {
+  const { plan, command, services, github, cloudflare, connected } = input;
+  const already = "Nothing in your Portainer was changed.";
+  const bucket = providerBucket(plan);
+  let environment: AppEnvironment | undefined;
+  const appEnvironment = async () => {
+    if (environment === undefined) {
+      const key =
+        bucket === undefined
+          ? undefined
+          : await requireStorageKey(deps, plan, services, { command, already });
+      const built = await buildAppEnvironment(deps, plan, services, undefined, {
+        portainer: true,
+        ...(input.rotating === undefined ? {} : { rotating: input.rotating }),
+        ...(key === undefined ? {} : { storage: storageLogin(plan, key, cloudflare) }),
+      });
+      environment = input.rewrite?.(built) ?? built;
+    }
+    return environment;
   };
-  return { valueKey, client, inspect, facts: await inspect() };
+  let offsiteValues: Promise<Record<string, string>> | undefined;
+  const offsiteStack = () => {
+    offsiteValues ??= offsiteSetup(deps, plan, services, {
+      key: undefined,
+      cloudflare,
+      command,
+      already,
+    }).then((setup) => setup.values);
+    return offsiteValues;
+  };
+  const tls = input.site.edge.originTls;
+  const bundle = tls === undefined ? undefined : portainerOriginTls(input.site.values);
+  if (bundle !== undefined) deps.redactor.addLiteral(bundle, "origin-tls");
+  const repository = await github.api.getRepo(github.owner, github.repo);
+  return preparePortainerStacks(deps, {
+    plan,
+    phase: input.phase,
+    command,
+    ...connected,
+    github,
+    repositoryPrivate: repository.private,
+    publicImage: input.publicImage,
+    committed: await committedStackPins(deps.paths.root, plan),
+    services: input.portainer,
+    appEnvironment,
+    ...(snapshotOffsiteOf(plan) !== undefined ? { offsite: offsiteStack } : {}),
+    origin: () => ({
+      ...(tls !== undefined ? { tls } : {}),
+      ...(bundle !== undefined ? { bundle } : {}),
+    }),
+  });
 }
 
 /** The app's stacks of {@link portainerStacksFor}, with the outputs their values need. */
@@ -610,18 +712,12 @@ export interface PortainerStacksSetup {
 
 /**
  * For `opscrew rotate` (whose own unfinished rotation does not stop it): the app's stacks in the
- * user's Portainer as the last `opscrew provision` set them up, without
- * changing anything (no Cloudflare, bucket or infrastructure plan): Portainer reached and
- * inspected, GitHub's repository, the committed stack template, the app's values (`rewrite`
- * changes them before any plan binds them: a rotation's new values), the off-server copy's
- * variables, the stack Caddy's origin TLS from the recorded edge, and the tunnels' tokens from the
- * infrastructure state. Every value is registered with the redactor. Provision does not call it:
- * there each of these inputs is made at its own step, between changes (the stack Caddy's origin
- * TLS after the Cloudflare apply, the bucket's key after its plan, the off-server copy with the
- * recovery key it makes), so only {@link connectPortainer} and {@link preparePortainerStacks} are
- * shared.
+ * user's Portainer as the last `opscrew provision` set them up ({@link recordedPortainerStacks}),
+ * without changing anything (no Cloudflare, bucket or infrastructure plan), with the tunnels'
+ * tokens from the infrastructure state. Every value is registered with the redactor.
  * @throws OpsCrewError as provision's preconditions: Portainer's token or connection, GitHub,
- * Cloudflare for an R2 bucket, the storage key, or what blocks the stacks.
+ * Cloudflare for an R2 bucket, the storage key, the recovery copy's age key for the off-server
+ * copy, or what blocks the stacks.
  */
 export async function portainerStacksFor(
   deps: PhaseDeps,
@@ -634,77 +730,33 @@ export async function portainerStacksFor(
     rewrite?: (environment: AppEnvironment) => AppEnvironment;
   },
 ): Promise<PortainerStacksSetup> {
-  const { phase, command } = options;
   const target = portainerTarget(plan.target);
   const connection = await requirePortainerConnection(deps, plan);
   const token = requirePortainerToken(deps);
   const github = await setupGitHub(deps, gitClient(deps), services);
-  const bucket = providerBucket(plan);
-  const offsite = snapshotOffsiteOf(plan);
-  const account =
-    bucket?.provider === "r2" || offsite?.provider === "r2"
+  const cloudflare =
+    providerBucket(plan)?.provider === "r2" || snapshotOffsiteOf(plan)?.provider === "r2"
       ? await setupCloudflare(deps, plan, services)
       : undefined;
-  const { valueKey, client, inspect, facts } = await connectPortainer(deps, {
+  const portainer = services.portainer ?? {};
+  const connected = await connectPortainer(deps, {
     plan,
     connection,
     token,
-    services: services.portainer ?? {},
-    phase,
+    services: portainer,
+    phase: options.phase,
   });
-  const repository = await github.api.getRepo(github.owner, github.repo);
-  const site = await recordedEdge(deps, plan);
-  const tls = site.edge.originTls;
-  const bundle = tls === undefined ? undefined : portainerOriginTls(site.values);
-  if (bundle !== undefined) deps.redactor.addLiteral(bundle, "origin-tls");
-  const already = "Nothing in your Portainer was changed.";
-  let environment: AppEnvironment | undefined;
-  const appEnvironment = async () => {
-    if (environment === undefined) {
-      const key =
-        bucket === undefined
-          ? undefined
-          : await requireStorageKey(deps, plan, services, { command, already });
-      const built = await buildAppEnvironment(deps, plan, services, undefined, {
-        portainer: true,
-        rotating: true,
-        ...(key === undefined ? {} : { storage: storageLogin(plan, key, account) }),
-      });
-      environment = options.rewrite?.(built) ?? built;
-    }
-    return environment;
-  };
-  let offsiteValues: Promise<Record<string, string>> | undefined;
-  const offsiteStack = () => {
-    offsiteValues ??= offsiteSetup(deps, plan, services, {
-      github,
-      key: undefined,
-      cloudflare: account,
-      command,
-      already,
-    }).then((setup) => setup.values);
-    return offsiteValues;
-  };
-  const stacks = preparePortainerStacks(deps, {
+  const stacks = await recordedPortainerStacks(deps, {
+    ...options,
     plan,
-    phase,
-    command,
-    client,
-    connection,
-    valueKey,
-    facts,
-    inspect,
+    services,
+    portainer,
+    connected,
     github,
-    repositoryPrivate: repository.private,
+    cloudflare,
+    site: await recordedEdge(deps, plan),
     publicImage: connection.publicImage ?? false,
-    committed: await committedStackPins(deps.paths.root, plan),
-    services: services.portainer ?? {},
-    appEnvironment,
-    ...(offsite !== undefined ? { offsite: offsiteStack } : {}),
-    origin: () => ({
-      ...(tls !== undefined ? { tls } : {}),
-      ...(bundle !== undefined ? { bundle } : {}),
-    }),
+    rotating: true,
   });
   // The tunnels' tokens, read from the state only when a stack needs one.
   const tokens = target.web.mode === "tunnel" || target.redeploy === "cloudflare";
