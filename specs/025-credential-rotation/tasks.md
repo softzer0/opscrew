@@ -159,7 +159,7 @@ secret in any test: `fakeSecret(kind)` and `{{FAKE:<kind>}}` (`@opscrew/core/tes
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/iac-templates && pnpm lint`
   - Effort: high
 
-- [ ] T2520 [US1] Whole-server restores after a rotation (T2514's review)
+- [x] T2520 [US1] Whole-server restores after a rotation (T2514's review)
   - Owns: `packages/agents/src/snapshot/server*.ts`, the smallest export from `packages/agents/src/rotate/server.ts` (+ tests)
   - Depends: T2514
   - Accept: plan 12. After a whole-server snapshot is restored, OpsCrew reads the restored server's `.snapshots/generations`. For each service behind the record, it runs `rotate.sh` from that generation's values to the current ones (root first for MySQL and MariaDB), approved by the restore's own hash or its own, before deploys resume. A test restores a server image taken before a PostgreSQL rotation and checks that the app logs in with the current password.
