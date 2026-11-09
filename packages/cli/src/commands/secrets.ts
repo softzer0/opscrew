@@ -1,23 +1,19 @@
 import { readFile } from "node:fs/promises";
 import {
   COPY_PATH,
-  publishRotatedKey,
   recoveryStatus,
   recoveryStatusLines,
-  requireGitRepo,
   restoreConflictText,
   restoreRecoveryCopy,
   setRecoveryFolder,
-  setupGitHub,
 } from "@opscrew/agents";
 import { errorText, listText, OpsCrewError, plural } from "@opscrew/core";
-import { readArtifact } from "@opscrew/plan-schema";
 import type { Command } from "commander";
 import type { CliContext } from "../context";
-import { createPhaseDeps, promptsOf, servicesOf } from "../deps";
+import { createPhaseDeps, promptsOf } from "../deps";
 import { type AppEnvFlags, addEnvOption, chooseEnvironment } from "../ui/environment";
 import { cancelled } from "../ui/prompts";
-import { askKeyOut, userPath } from "../ui/recovery";
+import { userPath } from "../ui/recovery";
 
 /**
  * The text of the age key file `keyFile` (`--key-file`, relative to the project directory). Its
@@ -111,58 +107,12 @@ async function restore(ctx: CliContext, flags: RestoreFlags): Promise<void> {
   );
 }
 
-interface RotateFlags extends AppEnvFlags {
-  keyOut?: string;
-  /** `--backup <age1…>`, or false with `--no-backup`. */
-  backup?: string | false;
-}
-
 /**
- * A new key for the copy, written to `--key-out` (asked in a terminal), with the copy and
- * `opscrew/.sops.yaml` proposed in a pull request (`publishRotatedKey`). Without a terminal the
- * push is not approved, so the commit stays local and the run says how to finish.
- */
-async function rotate(ctx: CliContext, flags: RotateFlags): Promise<void> {
-  const { deps, flag } = await environmentDeps(ctx, flags);
-  const keyOut =
-    flags.keyOut !== undefined
-      ? userPath(ctx, flags.keyOut)
-      : ctx.isInteractive
-        ? await askKeyOut(ctx)
-        : undefined;
-  if (keyOut === undefined && ctx.isInteractive) {
-    throw cancelled("the key rotation", `opscrew secrets rotate${flag}`);
-  }
-  if (keyOut === undefined) {
-    throw new OpsCrewError(
-      "INVALID_INPUT",
-      "A new age key needs a file to be written to, and OpsCrew never prints a key.",
-      {
-        hint: `Name a file outside the repository with \`--key-out <path>\`, or run \`opscrew secrets rotate${flag}\` in a terminal, which asks for it.`,
-      },
-    );
-  }
-  const plan = await readArtifact("plan", deps.paths.files.plan);
-  const git = await requireGitRepo(deps);
-  const github = await setupGitHub(deps, git, servicesOf(ctx).provision ?? {});
-  const rotated = await publishRotatedKey(deps, {
-    git,
-    github,
-    plan,
-    keyOut,
-    ...(flags.backup === false ? { backup: null } : {}),
-    ...(typeof flags.backup === "string" ? { backup: flags.backup } : {}),
-  });
-  ctx.stdout(`${rotated.message}\n`);
-  if (rotated.prUrl !== undefined) ctx.stdout(`Pull request: ${rotated.prUrl}\n`);
-}
-
-/**
- * `opscrew secrets status|restore|rotate|folder`: the encrypted recovery copy of what OpsCrew
+ * `opscrew secrets status|restore|folder`: the encrypted recovery copy of what OpsCrew
  * keeps on this computer for the app (generated secrets, the deploy key, the infrastructure state
  * and its records), in `opscrew/secrets.sops.json` and optionally a folder. No subcommand ever
- * prints a key: a new key goes to the file `--key-out` names (asked in a terminal), and a restore
- * reads `--key-file` or a hidden prompt.
+ * prints a key: a restore reads `--key-file` or a hidden prompt. A new key for the copy is
+ * `opscrew rotate recovery-key`.
  */
 export function register(program: Command, ctx: CliContext): void {
   const secrets = program
@@ -194,16 +144,6 @@ export function register(program: Command, ctx: CliContext): void {
     .option("--use-copy", "Where a file on this computer differs, write the copy's version")
     .option("--keep-local", "Where a file on this computer differs, keep it and restore the rest")
     .action((flags: RestoreFlags) => restore(ctx, flags));
-  const rotateCommand = secrets
-    .command("rotate")
-    .description(
-      "Make a new age key, encrypt the copy to it and propose the copy in a pull request; the key goes only to a file",
-    );
-  addEnvOption(rotateCommand)
-    .option("--key-out <path>", "The file to write the new key to, outside the repository")
-    .option("--backup <recipient>", "Replace the backup key with this public key (age1…)")
-    .option("--no-backup", "Drop the backup key")
-    .action((flags: RotateFlags) => rotate(ctx, flags));
   const folderCommand = secrets
     .command("folder")
     .description("Also write the recovery copy to a folder of yours, or stop with --none")

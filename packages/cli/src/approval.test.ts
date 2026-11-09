@@ -66,8 +66,14 @@ describe("NonInteractiveApprovalHandler", () => {
     expect(decision.reason).toMatch(/interactive terminal/);
   });
 
+  it("approves the GitHub secrets of a replaced token by their hash (opscrew rotate <token>)", async () => {
+    const secrets = apply({ kind: "github-secrets", title: "Replace the token's copies" });
+    expect((await handler(HASH).request(secrets)).approved).toBe(true);
+    expect((await handler(OTHER).request(secrets)).approved).toBe(false);
+  });
+
   it("refuses every other kind of request", async () => {
-    for (const kind of ["repo-write", "git-push", "pull-request", "github-secrets"] as const) {
+    for (const kind of ["repo-write", "git-push", "pull-request"] as const) {
       const decision = await handler(HASH).request({ kind, title: "Push", details: "" });
       expect(decision.approved).toBe(false);
       expect(decision.reason).toMatch(/interactive terminal/);

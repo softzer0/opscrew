@@ -16,15 +16,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { withServices } from "../deps";
 import { type DeployProject, DeployRunner, deployProject } from "../ui/__fixtures__/deploy";
 import { inEnvironment, withEnvironments } from "../ui/__fixtures__/environments";
-import {
-  auditText,
-  CANCEL,
-  GIT,
-  git,
-  projectContext,
-  run,
-  ScriptedPrompts,
-} from "../ui/__fixtures__/harness";
+import { GIT, projectContext, run, ScriptedPrompts } from "../ui/__fixtures__/harness";
 
 let project: DeployProject | undefined;
 afterEach(async () => {
@@ -201,88 +193,12 @@ describe.skipIf(GIT === undefined)("opscrew secrets", () => {
     await expect(stat(path.join(home, "deploy_key"))).rejects.toThrow();
   });
 
-  it("rotate writes a new key only to --key-out and proposes the copy in a pull request", async () => {
-    const { project, sops, identity } = await withCopy();
-    await git(project.env, project.root, "add", "opscrew");
-    await git(project.env, project.root, "commit", "-q", "-m", "copy");
-    const keyOut = path.join(project.dir, "new-key.txt");
-    const { ctx, github } = context(project, sops);
-    expect(await run(ctx, "secrets", "rotate", "--key-out", keyOut), ctx.errors).toBe(0);
-
-    const fresh = await identityIn(keyOut);
-    expect(fresh).not.toBe(identity);
-    expect(ctx.output).toContain(`OpsCrew wrote your new age key to ${keyOut}.`);
-    expect(ctx.output).toContain("Older commits of opscrew/secrets.sops.json can still be opened");
-    expect(github.pulls).toEqual([expect.objectContaining({ head: "opscrew/deploy-setup" })]);
-    expect(ctx.output).toContain("Pull request: https://github.com/acme/shop/pull/7");
-    const committed = await git(
-      project.env,
-      project.root,
-      "show",
-      "opscrew/deploy-setup:opscrew/.sops.yaml",
-    );
-    expect(committed).toContain("age1");
-    expect(`${ctx.output}${ctx.errors}`).not.toContain(fresh);
-    const audit = await auditText(project);
-    expect(audit).toContain('"action":"pull-request"');
-    expect(audit).not.toContain(fresh);
-  });
-
-  it("rotate with the push refused keeps the commit local and says how to finish", async () => {
-    const { project, sops } = await withCopy();
-    await git(project.env, project.root, "add", "opscrew");
-    await git(project.env, project.root, "commit", "-q", "-m", "copy");
-    const keyOut = path.join(project.dir, "new-key.txt");
-    const approvals: ApprovalHandler = {
-      request: async (request) => ({
-        approved: request.kind !== "git-push",
-        approver: "test",
-        decidedAt: "2026-10-21T12:00:00.000Z",
-      }),
-    };
-    const { ctx, github } = context(project, sops, { approvals });
-    expect(await run(ctx, "secrets", "rotate", "--key-out", keyOut), ctx.errors).toBe(0);
-    expect(github.pulls).toEqual([]);
-    expect(ctx.errors).toContain(
-      "Not pushed. The commit stays on the local branch opscrew/deploy-setup; push it yourself",
-    );
-    expect(await git(project.env, project.root, "log", "-1", "--format=%s")).toBe(
-      "chore(opscrew): rotate the recovery copy's key for shop",
-    );
-    const fresh = await identityIn(keyOut);
-    expect(`${ctx.output}${ctx.errors}${await auditText(project)}`).not.toContain(fresh);
-  });
-
-  it("rotate asks for the key file in a terminal and refuses a script without --key-out", async () => {
-    const { project, sops } = await withCopy();
-    const script = context(project, sops).ctx;
-    expect(await run(script, "secrets", "rotate")).toBe(2);
-    expect(script.errors).toContain("OpsCrew never prints a key");
-
-    const cancel = context(project, sops, {
-      interactive: true,
-      prompts: new ScriptedPrompts([CANCEL]),
-    }).ctx;
-    expect(await run(cancel, "secrets", "rotate")).toBe(1);
-    expect(cancel.errors).toContain("You cancelled the key rotation, so nothing was written.");
-
-    const keyOut = path.join(project.dir, "asked-key.txt");
-    const prompts = new ScriptedPrompts([keyOut]);
-    const asked = context(project, sops, { interactive: true, prompts }).ctx;
-    expect(await run(asked, "secrets", "rotate", "--no-backup"), asked.errors).toBe(0);
-    expect(prompts.calls[0]?.message).toContain("Where should OpsCrew write your new age key");
-    expect(`${asked.output}${asked.errors}`).not.toContain(await identityIn(keyOut));
-  });
-
   it("names the environment in the commands its hints suggest", async () => {
     const staged = await withEnvironments({ staging: inEnvironment(testPlan(), "staging") });
     try {
       const restore = projectContext(staged);
       expect(await run(restore, "secrets", "restore", "--env", "staging")).toBe(2);
       expect(restore.errors).toContain("`opscrew secrets restore --env staging` in a terminal");
-      const rotate = projectContext(staged);
-      expect(await run(rotate, "secrets", "rotate", "--env", "staging")).toBe(2);
-      expect(rotate.errors).toContain("`opscrew secrets rotate --env staging` in a terminal");
       const folder = projectContext(staged);
       expect(await run(folder, "secrets", "folder", "--env", "staging")).toBe(2);
       expect(folder.errors).toContain("`opscrew secrets folder --env staging --none`");

@@ -170,7 +170,7 @@ export function registerSecretsTools(
       runTool(deps, "opscrew_secrets_rotate", projectDir, async (call) => {
         const { appKey, name, flag } = await toolEnvironment(call.projectDir, app, environment);
         const file = fullPath(keyOut, "keyOut");
-        requireDialogs(server, `npx opscrew secrets rotate${flag} --key-out ${file}`);
+        requireDialogs(server, `npx opscrew rotate recovery-key${flag} --key-out ${file}`);
         const phase = await call.phaseDeps({
           approvalHandler: dialogHandler(server, deps, extra),
           app: appKey,

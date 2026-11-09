@@ -23,6 +23,7 @@ import * as provision from "./provision";
 import * as restore from "./restore";
 import * as retarget from "./retarget";
 import * as rollback from "./rollback";
+import * as rotate from "./rotate";
 import * as runner from "./runner";
 import * as scan from "./scan";
 import * as secrets from "./secrets";
@@ -68,6 +69,7 @@ export const ALL_COMMANDS: readonly CommandModule[] = [
   preview,
   localhost,
   runner,
+  rotate,
   secrets,
   mcp,
 ];

@@ -98,8 +98,8 @@ cost for the user's approval by its hash. From then on every snapshot taken by h
 schedule is encrypted on the server to the recovery copy's age key and uploaded.
 
 - The server holds only the public key; the user's age key file opens the copies. They must keep
-  it, and keep the old one after `npx opscrew secrets rotate`: copies made before stay readable
-  only with it. Never ask for the key or its file's contents in the chat.
+  it, and keep the old one after `npx opscrew rotate recovery-key`: copies made before stay
+  readable only with it. Never ask for the key or its file's contents in the chat.
 - The bucket's access key can also delete. Only at Hetzner is versioning on, keeping what was
   deleted or overwritten for `--days` more.
 - At Hetzner and R2 the bucket's lifecycle rule expires each copy after `--days`. On DigitalOcean

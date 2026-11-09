@@ -274,8 +274,8 @@ The copies are encrypted with [age](https://age-encryption.org) to the age key o
 server on, provision makes that key before it sets the deploy secrets, if there is none yet. The
 backup key, if you added one, doesn't open the copies.
 
-**Keep your old keys.** After `opscrew secrets rotate`, new copies are encrypted to the new key,
-but the copies made before need the old one.
+**Keep your old keys.** After `opscrew rotate recovery-key`, new copies are encrypted to the new
+key, but the copies made before need the old one.
 
 ### Restoring from the copy
 

@@ -25,7 +25,12 @@ import {
   testPlan,
   withLaptop,
 } from "../testing";
-import { type Credential, credentialInventory } from "./inventory";
+import {
+  type Credential,
+  credentialInventory,
+  credentialListLines,
+  listedCredentials,
+} from "./inventory";
 import { credentialsRecordFile } from "./record";
 import { tokenDatesFile } from "./record-tokens";
 
@@ -523,6 +528,43 @@ describe("credentialInventory", () => {
       "cloudflare",
       "github",
       "cloudflare-deploy",
+    ]);
+  });
+});
+
+describe("credentialListLines", () => {
+  const now = new Date("2026-11-09T12:00:00.000Z");
+  const credentials = listedCredentials(
+    [
+      {
+        name: "db",
+        kind: "service",
+        rotation: { mode: "swap", seconds: 30 },
+        changes: "New connections fail for about 30 seconds.",
+        date: { at: "2026-11-01T09:00:00.000Z", source: "rotated" },
+      },
+      { name: "kafka", kind: "service", rotation: { mode: "none" }, changes: "No login." },
+      {
+        name: "github",
+        kind: "user-token",
+        rotation: { mode: "replace" },
+        changes: "You make the new token.",
+        date: { at: "2026-10-01T09:00:00.000Z", source: "first-seen" },
+      },
+    ],
+    [{ name: "github", variable: "GITHUB_TOKEN", expiresAt: "2026-11-30T00:00:00.000Z" }],
+  );
+
+  it("names each credential with how it rotates, its date and age, then the user's tokens", () => {
+    const where = { app: "shop", environment: "staging", flag: " --env staging" };
+    expect(credentialListLines(credentials, { ...where, opscrew: "npx opscrew" }, now)).toEqual([
+      "The credentials OpsCrew made for shop in staging (`npx opscrew rotate <name> --env staging` rotates one):",
+      "- db: a short swap: new connections fail for up to 30 seconds; rotated 2026-11-01, 8 days ago.",
+      "  New connections fail for about 30 seconds.",
+      "- kafka: nothing to rotate. No login.",
+      "",
+      "Your own tokens (make the new one at its provider, set it, then `npx opscrew rotate <name> --env staging`):",
+      "- github (GITHUB_TOKEN): first seen on this computer 2026-10-01, 39 days ago; expires 2026-11-30, in 21 days.",
     ]);
   });
 });

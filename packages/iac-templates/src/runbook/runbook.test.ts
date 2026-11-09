@@ -350,7 +350,7 @@ describe("the runbook's shared rows", () => {
       expect(content).toContain("## The secrets recovery copy");
       expect(content).toContain("opscrew secrets restore --key-file <your age key file>");
       expect(content).toContain("sops decrypt opscrew/secrets.sops.json");
-      expect(content).toContain("opscrew secrets rotate --key-out <file>");
+      expect(content).toContain("opscrew rotate recovery-key --key-out <file>");
     });
   });
 });

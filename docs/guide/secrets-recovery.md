@@ -95,16 +95,18 @@ restores from another copy, such as the folder copy.
 ## A new key
 
 ```bash
-npx opscrew secrets rotate --key-out ~/opscrew-shop-age-key-2.txt
+npx opscrew rotate recovery-key --key-out ~/opscrew-shop-age-key-2.txt
 ```
 
 OpsCrew writes the new key to that file (a terminal asks for the path when you leave out
-`--key-out`), encrypts the copy to it and proposes `opscrew/secrets.sops.json` and
-`opscrew/.sops.yaml` in a pull request. The backup key stays; `--backup <age1…>` replaces it and
-`--no-backup` drops it.
+`--key-out`), encrypts the copy to it and proposes `opscrew/secrets.sops.json`,
+`opscrew/.sops.yaml` and the rotation's date in `opscrew/credentials.yaml` in a pull request. The
+backup key stays; `--backup <age1…>` replaces it and `--no-backup` drops it.
 
 Older commits of the copy can still be opened with the old key. If the old key may have leaked,
-change the secrets themselves too: the generated passwords, the deploy key and the state passphrase.
+change the secrets themselves too: the generated passwords, the deploy key and the state
+passphrase, each with `npx opscrew rotate` (see [Rotating your app's credentials](credential-rotation.md)).
+After every rotation the copy is refreshed in the same pull request.
 
 ## Opening the copy without OpsCrew
 

@@ -46,7 +46,7 @@ async function vpnDeps(ctx: CliContext, flags: VpnFlags, command: string): Promi
 }
 
 /** The device's configuration as a QR code for the WireGuard app on a phone. */
-function printQr(ctx: CliContext, config: string): void {
+export function printQr(ctx: CliContext, config: string): void {
   ctx.stdout(
     [
       "",
@@ -62,7 +62,10 @@ function printQr(ctx: CliContext, config: string): void {
  * The connection details of a grant, shown once: the client's line (it asks for the password),
  * then the password and the URL with it, written unredacted and never logged.
  */
-function printConnection(ctx: CliContext, result: VpnGrantResult): void {
+export function printConnection(
+  ctx: CliContext,
+  result: Pick<VpnGrantResult, "device" | "service" | "access" | "connection">,
+): void {
   const { device, service, access, connection } = result;
   ctx.stdout(
     `\nDevice ${device}'s ${access} login to ${service}, shown only now (with the device's WireGuard tunnel on):\n  ${connection.client}\n`,

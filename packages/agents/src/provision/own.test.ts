@@ -1326,4 +1326,40 @@ describe.skipIf(!findExecutable("git"))("a deploy key's rotation on a server the
     const last = s.host.applies.at(-1)?.plan;
     expect(last?.steps.find((step) => step.id === "app-record")?.params.deployKey).toBe(fresh);
   });
+
+  it("goes through the server's setup host plan by default (ownHostPlans)", async () => {
+    const plan = ownPlan({ proxied: false, deployed: true });
+    const s = await setup({ plan });
+    const old = (await ensureDeployKey(s.deps.paths, s.deps.redactor)).publicKeyOpenSsh;
+    // Provision's setup first: the server holds the old key alone, its host key pinned.
+    const run = await prepareOwnServer(s.deps, {
+      plan,
+      options: { hostKey: ED25519_FINGERPRINT },
+      services: s.services,
+      deployPublicKey: old,
+      deployKeyFile: s.deps.paths.files.deployKey,
+      phase: "provision",
+      command: "opscrew provision",
+    });
+    await applyOwnHostPlan(s.deps, run, {
+      plan,
+      outputs: publicOutputs(),
+      deployPublicKey: old,
+      phase: "provision",
+      command: "opscrew provision",
+    });
+    const before = s.host.applies.length;
+
+    await rotateSshKey(s.deps, plan, "deploy-key", {
+      github: { api: new RotationGitHub(), owner: "acme", repo: "shop", defaultBranch: "main" },
+      provision: s.services,
+    });
+    const fresh = (await readFile(s.deps.paths.files.deployKeyPub, "utf8")).trim();
+    const keys = s.host.applies
+      .slice(before)
+      .map((apply) => apply.plan.steps.find((step) => step.id === "deploy-key")?.params.keys);
+    expect(keys).toEqual([[fresh, old].sort().join("\n"), fresh]);
+    expect(s.host.facts.deployUser?.keys).toEqual([fresh]);
+    expect(kinds(s).filter((kind) => kind === "host-apply").length).toBeGreaterThanOrEqual(3);
+  });
 });

@@ -21,6 +21,7 @@ import { readValidJson } from "../shared/files";
 import { declared } from "../vpn/grants";
 import { readCredentialsRecord, type UserTokenName } from "./record";
 import { tokenFirstSeen, tokenSeenAt } from "./record-tokens";
+import type { TokenExpiry } from "./tokens";
 
 /** What a credential is (spec, Key Entities). */
 export type CredentialKind =
@@ -374,7 +375,7 @@ export async function credentialInventory(
       kind: "cloudflare-token",
       rotation: { mode: "replace" },
       changes:
-        "An approved infrastructure plan replaces the Cloudflare Tunnel's token, and the connector reconnects with the new one in seconds.",
+        "Cloudflare changes the Tunnel's token in place while its connectors stay connected, then each connector restarts with the new one (seconds); runs only in a terminal.",
     });
   }
   if (plan.infra.stateEncryption && (await exists(paths.files.statePassphrase))) {
@@ -489,4 +490,123 @@ function oldest(dates: readonly (CredentialDate | undefined)[]): CredentialDate 
   return (dates as CredentialDate[]).reduce((first, date) =>
     Date.parse(date.at) < Date.parse(first.at) ? date : first,
   );
+}
+
+/** A credential as `opscrew rotate` lists it: a user's token with what its provider says. */
+export type ListedCredential = Credential & Partial<Omit<TokenExpiry, "name" | "firstSeen">>;
+
+/** The credentials of `inventory`, each user token with its expiry from `expiries`. */
+export function listedCredentials(
+  inventory: readonly Credential[],
+  expiries: readonly TokenExpiry[],
+): ListedCredential[] {
+  return inventory.map((credential) => {
+    const expiry = expiries.find((token) => token.name === credential.name);
+    if (expiry === undefined) return credential;
+    const { name: _name, firstSeen: _seen, ...rest } = expiry;
+    return { ...credential, ...rest };
+  });
+}
+
+const DAY_MS = 86_400_000;
+
+/** `2026-10-01, 39 days ago` (or `in 3 days` for a date to come). */
+function dayText(at: string, now: Date): string {
+  const days = Math.round((Date.parse(at) - now.getTime()) / DAY_MS);
+  const when =
+    days === 0
+      ? "today"
+      : days > 0
+        ? `in ${days} day${days === 1 ? "" : "s"}`
+        : `${-days} day${days === -1 ? "" : "s"} ago`;
+  return `${at.slice(0, 10)}, ${when}`;
+}
+
+/** How a credential rotates, in words. */
+function rotationText(rotation: CredentialRotation): string {
+  switch (rotation.mode) {
+    case "seamless":
+      return "seamless: the old and the new value work together while it changes";
+    case "swap":
+      return `a short swap: new connections fail for up to ${rotation.seconds} seconds`;
+    case "restart":
+      return `a restart of the service, about ${rotation.seconds} seconds`;
+    case "logout":
+      return "the app's users are logged out, or its issued tokens stop working";
+    case "devices":
+      return "your devices need their new configuration";
+    case "replace":
+      return "you make the new one";
+    case "none":
+      return "nothing to rotate";
+  }
+}
+
+/** When a credential was made or last rotated, in words. */
+function dateText(date: CredentialDate | undefined, now: Date): string {
+  if (date === undefined) return "date unknown";
+  const day = dayText(date.at, now);
+  switch (date.source) {
+    case "rotated":
+      return `rotated ${day}`;
+    case "made":
+      return `made ${day}`;
+    case "first-deploy":
+      return `since the first deploy, ${day}`;
+    case "first-seen":
+      return `first seen on this computer ${day}`;
+  }
+}
+
+/** What a user's token's provider says of its expiry, in words; empty when it says nothing. */
+function expiryText(credential: ListedCredential, now: Date): string {
+  if (credential.expiresAt !== undefined) {
+    const past = Date.parse(credential.expiresAt) <= now.getTime();
+    return `; ${past ? "expired" : "expires"} ${dayText(credential.expiresAt, now)}`;
+  }
+  if (credential.notRead !== undefined) {
+    return `; its expiry could not be read: ${credential.notRead.replace(/\.$/, "")}`;
+  }
+  return "";
+}
+
+/**
+ * `opscrew rotate`'s listing (and `opscrew_credentials`'s) of `credentials` of `app` in `environment`: what OpsCrew made, each
+ * by the name the command takes with how it rotates, its date and what else changes; then the
+ * user's own tokens with their expiry where the provider gives it. `where.opscrew` is how its
+ * commands start: `opscrew`, or `npx opscrew` for Claude Code.
+ */
+export function credentialListLines(
+  credentials: readonly ListedCredential[],
+  where: { app: string; environment: string; flag: string; opscrew: string },
+  now: Date,
+): string[] {
+  const made = credentials.filter((c) => c.kind !== "user-token");
+  const tokens = credentials.filter((c) => c.kind === "user-token");
+  const lines =
+    made.length === 0
+      ? [
+          `OpsCrew has made no credentials for ${where.app} in ${where.environment} yet: \`${where.opscrew} provision${where.flag}\` makes them.`,
+        ]
+      : [
+          `The credentials OpsCrew made for ${where.app} in ${where.environment} (\`${where.opscrew} rotate <name>${where.flag}\` rotates one):`,
+          ...made.flatMap((c) =>
+            c.rotation.mode === "none"
+              ? [`- ${c.name}: ${rotationText(c.rotation)}. ${c.changes}`]
+              : [
+                  `- ${c.name}: ${rotationText(c.rotation)}; ${dateText(c.date, now)}.`,
+                  `  ${c.changes}`,
+                ],
+          ),
+        ];
+  if (tokens.length === 0) return lines;
+  return [
+    ...lines,
+    "",
+    `Your own tokens (make the new one at its provider, set it, then \`${where.opscrew} rotate <name>${where.flag}\`):`,
+    ...tokens.map(
+      (c) =>
+        `- ${c.name}${c.variable === undefined ? "" : ` (${c.variable})`}: ${dateText(c.date, now)}${expiryText(c, now)}.`,
+    ),
+  ];
 }

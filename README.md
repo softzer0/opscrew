@@ -43,6 +43,7 @@ How it stays secure:
 - [Origin protection](docs/guide/origin-protection.md): only Cloudflare reaches your server.
 - [Certificates and CAA](docs/guide/tls-and-caa.md), and the [deeper checks](docs/guide/deeper-checks.md).
 - [The recovery copy of your secrets](docs/guide/secrets-recovery.md): restore on a new computer with your key.
+- [Rotating your app's credentials](docs/guide/credential-rotation.md): `opscrew rotate` lists every password, key and token OpsCrew made with its age, and replaces one without breaking the app.
 
 What runs next to your app:
 - [Components](docs/guide/components.md): workers, cron jobs, services and storage, each with a memory limit and its share of the price.

@@ -62,4 +62,5 @@ an app yet.
 - [Your production database from your device](database-access.md)
 - [Certificates, CAA records and the minimum TLS version](tls-and-caa.md)
 - [The recovery copy of your app's secrets](secrets-recovery.md)
+- [Rotating your app's credentials](credential-rotation.md)
 - [Deeper security checks](deeper-checks.md)

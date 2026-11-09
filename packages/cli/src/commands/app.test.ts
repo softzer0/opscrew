@@ -164,7 +164,7 @@ describe("--app", () => {
       ["runner", "start"],
       ["secrets", "status"],
       ["secrets", "restore"],
-      ["secrets", "rotate"],
+      ["rotate"],
       ["secrets", "folder"],
       ["env", "add"],
       ["env", "set"],

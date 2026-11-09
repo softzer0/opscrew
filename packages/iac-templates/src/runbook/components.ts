@@ -261,7 +261,7 @@ export function recoverySection(plan: DeployPlan, environments?: readonly string
     "```",
     "",
     `- **Without OpsCrew:** \`SOPS_AGE_KEY_FILE=<your age key file> sops decrypt ${copy}\` prints the files.`,
-    `- **A new key:** \`${opscrew(plan, "secrets rotate", environments)} --key-out <file>\` writes a new key to that file and proposes the copy,`,
+    `- **A new key:** \`${opscrew(plan, "rotate recovery-key", environments)} --key-out <file>\` writes a new key to that file and proposes the copy,`,
     "  encrypted to it, in a pull request. Older commits still open with the old key: if it leaked, change the secrets",
     "  themselves too.",
     "",

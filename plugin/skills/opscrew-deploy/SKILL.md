@@ -181,8 +181,8 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
    Tell the user to move it into their password manager and delete the file. Never read that file,
    and never ask for the key itself. Without `keyOut` no copy is made yet, and the result says so.
    Through the tools, a public repository's copy is never committed: OpsCrew writes only the
-   folder copy, if one is set, and says to run `npx opscrew provision` (or `secrets rotate`) in a
-   terminal, which asks.
+   folder copy, if one is set, and says to run `npx opscrew provision` (or
+   `npx opscrew rotate recovery-key`) in a terminal, which asks.
 
    **Origin protection.** For hostnames behind Cloudflare's proxy, OpsCrew serves a Cloudflare
    origin certificate and requires a client certificate only the user's zone sends, so only

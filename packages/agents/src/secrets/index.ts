@@ -1,6 +1,3 @@
-// `opscrew rotate recovery-key` (025) took over the key's rotation; the CLI's `opscrew secrets
-// rotate` imports it from here until T2515 removes that command.
-export { publishRotatedKey, type RotatedKeyResult } from "../rotate/addons";
 export {
   type RecoveryStatus,
   type RefreshRecoveryOptions,

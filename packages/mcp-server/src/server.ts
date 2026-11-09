@@ -3,6 +3,7 @@ import { type OpscrewMcpDeps, resolveMcpDeps } from "./deps";
 import { registerAddonTools } from "./tools/addons";
 import { registerAdviseTool } from "./tools/advise";
 import { registerAppTools } from "./tools/apps";
+import { registerCredentialsTool } from "./tools/credentials";
 import { registerDeployTools } from "./tools/deploy";
 import { registerDesignTools } from "./tools/design";
 import { registerDetectTool } from "./tools/detect";
@@ -34,7 +35,7 @@ const INSTRUCTIONS = [
   "- Never ask the user to paste tokens, passwords, passphrases, private keys or .env values into the chat. Tokens come only from the environment (the user's Portainer: PORTAINER_API_KEY); a server the user has is reached with a key file or the SSH agent, never a password. Never read Portainer's password file into the chat, nor an age key file.",
   '- The address of a server the user has and of their Portainer stays on their computer: results say "your server" and "your Portainer"; never write the address into a file.',
   "- Never run tofu, terraform, hcloud, doctl, ssh or curl against Portainer yourself.",
-  "- Terminal-only, with no tool on purpose (give the user the command): moving the app elsewhere, `npx opscrew retarget --to <hetzner|digitalocean|own|portainer>` (while a move is in progress, pass on the commands the tools name to continue, finish or abort it); buying a domain, `npx opscrew domain buy <domain> [--registrar <id>]` (it shows the price and asks the user to type the domain; scripts need --confirm and --max-price); connecting a domain they own, `npx opscrew domain connect <domain>`; applying an advise proposal, `npx opscrew advise --apply <id>`; removing the app, `npx opscrew destroy` (deleting the app's data needs `--delete-data` and the app's name typed by the user; `--undo-host` also reverses OpsCrew's changes to a server the user has).",
+  "- Terminal-only, with no tool on purpose (give the user the command): moving the app elsewhere, `npx opscrew retarget --to <hetzner|digitalocean|own|portainer>` (while a move is in progress, pass on the commands the tools name to continue, finish or abort it); buying a domain, `npx opscrew domain buy <domain> [--registrar <id>]` (it shows the price and asks the user to type the domain; scripts need --confirm and --max-price); connecting a domain they own, `npx opscrew domain connect <domain>`; applying an advise proposal, `npx opscrew advise --apply <id>`; removing the app, `npx opscrew destroy` (deleting the app's data needs `--delete-data` and the app's name typed by the user; `--undo-host` also reverses OpsCrew's changes to a server the user has); rotating a credential, `npx opscrew rotate <name>` (the recovery key also by opscrew_secrets_rotate).",
   "- OpsCrew never asks for contact details: registrars use the account's own contact.",
   "- OpsCrew never changes the host of the user's Portainer, its other stacks or Portainer's settings; it backs up only the app's data, by snapshots: a server the user has or a Portainer host is the user's to back up.",
 ].join("\n");
@@ -69,6 +70,7 @@ export function createOpscrewMcpServer(deps: OpscrewMcpDeps): McpServer {
   registerPortainerTools(server, resolved);
   registerAddonTools(server, resolved);
   registerSecretsTools(server, resolved);
+  registerCredentialsTool(server, resolved);
   registerEnvironmentTools(server, resolved);
   registerAppTools(server, resolved);
   registerRunnerHostTools(server, resolved);

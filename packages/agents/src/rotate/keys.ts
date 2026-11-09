@@ -16,15 +16,23 @@ import {
   DEPLOY_SECRETS,
   deploySecretName,
   deploySecretNamesFor,
+  usesTunnel,
 } from "@opscrew/iac-templates";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
+import {
+  applyExtraOwnHostPlan,
+  applyOwnHostPlan,
+  prepareExtraOwnServer,
+  prepareOwnServer,
+} from "../provision/own";
 import { secretsEnvironment } from "../provision/secrets";
+import type { ProvisionServices } from "../provision/types";
 import { type RefreshRecoveryResult, refreshRecoveryCopy } from "../secrets/copy";
 import { PlanRefusedError } from "../shared/approvals";
 import { dispatchAndFollow } from "../shared/deploy-run";
-import type { EngineFactory } from "../shared/engine";
+import { type EngineFactory, infrastructureOutputs } from "../shared/engine";
 import { codeOf } from "../shared/errors";
 import { replaceDeployKeyObject } from "./infra";
 import {
@@ -75,13 +83,60 @@ export interface SshKeyServices {
   github: SshKeyGitHub;
   /**
    * Applies the setup host plan of the user's own server `input.server` (ADR 0011: shown,
-   * approved by its own hash, applied) with exactly these deploy keys of the app.
+   * approved by its own hash, applied) with exactly these deploy keys of the app (default:
+   * {@link ownHostPlans}).
    */
-  ownHostPlan(input: OwnHostPlanInput): Promise<void>;
+  ownHostPlan?(input: OwnHostPlanInput): Promise<void>;
+  /** Tests: the own servers' connection and host adapter for the default `ownHostPlan`. */
+  provision?: ProvisionServices;
   /** Tests: the deploy user's shell at a host with a private key file (default ssh). */
   remote?: KeyRemote;
   /** Tests: the IaC engine that replaces the deploy key's copy at the provider. */
   engine?: EngineFactory;
+}
+
+/**
+ * The setup host plan of a server of `plan` the user owns, with the deploy keys of a rotation
+ * (`command` names it in stops and refusals): connected and inspected as provision does it (the
+ * deploy key in place logs in), then planned with the tunnel's outputs from the state when the
+ * plan uses a tunnel, shown, approved by its hash and applied (`host-apply`).
+ */
+export function ownHostPlans(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  command: string,
+  services: Pick<SshKeyServices, "provision" | "engine">,
+): (input: OwnHostPlanInput) => Promise<void> {
+  const provision = services.provision ?? {};
+  const base = { plan, services: provision, phase: "provision" as const, command };
+  return async ({ server, deployKey, previousDeployKey }) => {
+    const keys = {
+      deployPublicKey: deployKey,
+      ...(previousDeployKey === undefined ? {} : { previousDeployKey }),
+    };
+    const deployKeyFile = deps.paths.files.deployKey;
+    if (server !== APP_SERVER) {
+      const run = await prepareExtraOwnServer(deps, {
+        ...base,
+        name: server,
+        deployPublicKey: deployKey,
+        deployKeyFile,
+      });
+      await applyExtraOwnHostPlan(deps, run, { ...base, ...keys });
+      return;
+    }
+    const run = await prepareOwnServer(deps, {
+      ...base,
+      options: {},
+      deployPublicKey: deployKey,
+      deployKeyFile,
+    });
+    const engine = services.engine ?? provision.engine;
+    const outputs = usesTunnel(plan)
+      ? ((await infrastructureOutputs(deps, plan, engine === undefined ? {} : { engine })) ?? {})
+      : {};
+    await applyOwnHostPlan(deps, run, { ...base, outputs, ...keys });
+  };
 }
 
 /** A finished rotation. */
@@ -436,6 +491,7 @@ export async function rotateSshKey(
   const { root, environment, app } = deps.paths;
   const again = `opscrew rotate ${which}${await commandFlags(root, environment, app)}`;
   requireKey(deps, plan, which, again);
+  const ownHostPlan = services.ownHostPlan ?? ownHostPlans(deps, plan, again, services);
   await assertValuesCurrent(deps);
   const holders = await keyHolders(deps, plan, which);
   if (holders.length === 0) {
@@ -469,7 +525,14 @@ export async function rotateSshKey(
       again,
     );
     try {
-      await addEverywhere(deps, which, { holders, current, next, repository, services });
+      await addEverywhere(deps, which, {
+        holders,
+        current,
+        next,
+        repository,
+        services,
+        ownHostPlan,
+      });
       if (secret !== undefined) {
         await replaceSecret(deps, services.github, secret, next.privateKeyOpenSsh);
       }
@@ -496,7 +559,7 @@ export async function rotateSshKey(
     );
   }
   try {
-    await removeEverywhere(deps, which, { holders, stage, repository, services });
+    await removeEverywhere(deps, which, { holders, stage, repository, services, ownHostPlan });
   } catch (error) {
     if (!isUserFacingError(error)) throw error;
     throw new OpsCrewError(
@@ -546,6 +609,7 @@ async function addEverywhere(
     next: KeyHalves;
     repository: string;
     services: SshKeyServices;
+    ownHostPlan: (input: OwnHostPlanInput) => Promise<void>;
   },
 ): Promise<void> {
   const { current, next, repository, services } = input;
@@ -553,7 +617,7 @@ async function addEverywhere(
   for (const holder of input.holders) {
     deps.reporter.step(`Adding the new ${name} to ${holder.words}`);
     if (holder.via === "host-plan") {
-      await services.ownHostPlan({
+      await input.ownHostPlan({
         server: holder.server,
         deployKey: next.publicKeyOpenSsh,
         previousDeployKey: current.publicKeyOpenSsh,
@@ -576,6 +640,7 @@ async function removeEverywhere(
     stage: Extract<Awaited<ReturnType<typeof keyStage>>, { stage: "remove" }>;
     repository: string;
     services: SshKeyServices;
+    ownHostPlan: (input: OwnHostPlanInput) => Promise<void>;
   },
 ): Promise<void> {
   const { stage, repository, services } = input;
@@ -584,7 +649,7 @@ async function removeEverywhere(
   for (const holder of input.holders) {
     deps.reporter.step(`Removing the old ${name} from ${holder.words}`);
     if (holder.via === "host-plan") {
-      await services.ownHostPlan({ server: holder.server, deployKey: fresh });
+      await input.ownHostPlan({ server: holder.server, deployKey: fresh });
       continue;
     }
     // The deploy key itself connects with its new pair now, which is in place.

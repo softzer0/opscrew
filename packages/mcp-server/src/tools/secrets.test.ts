@@ -223,7 +223,7 @@ describe.skipIf(!findExecutable("git"))("the recovery copy's tools", () => {
     const keyOut = path.join(h.keys, "never.txt");
     const result = await h.call("opscrew_secrets_rotate", { keyOut });
     expect(result.isError).toBe(true);
-    expect(textOf(result)).toContain(`npx opscrew secrets rotate --key-out ${keyOut}`);
+    expect(textOf(result)).toContain(`npx opscrew rotate recovery-key --key-out ${keyOut}`);
     await expect(readFile(keyOut, "utf8")).rejects.toThrow();
   });
 });

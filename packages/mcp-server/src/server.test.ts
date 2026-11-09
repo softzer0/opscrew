@@ -158,6 +158,7 @@ describe("createOpscrewMcpServer", () => {
       "`npx opscrew destroy`",
       "`--delete-data` and the app's name typed by the user",
       "`--undo-host`",
+      "rotating a credential, `npx opscrew rotate <name>` (the recovery key also by opscrew_secrets_rotate)",
       "never asks for contact details",
       "it backs up only the app's data, by snapshots",
       "a Portainer host is the user's to back up",
@@ -165,7 +166,7 @@ describe("createOpscrewMcpServer", () => {
       expect(instructions, rule).toContain(rule);
     }
     // What each tool does is in its description, the details of the flow in the skill.
-    expect(instructions.length).toBeLessThan(2_600);
+    expect(instructions.length).toBeLessThan(2_700);
   });
 
   it("lists the seven planning tools with descriptions, schemas and annotations", async () => {

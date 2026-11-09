@@ -22,6 +22,8 @@ import {
   type RunSecureOptions,
   type RunVerifyOptions,
   type ServerSnapshotServices,
+  type SiteRotationOptions,
+  type SshKeyGitHub,
   type VpnServices,
 } from "@opscrew/agents";
 import type {
@@ -117,6 +119,12 @@ export interface CliServices {
    * `secure --close-public-ssh|--open-public-ssh`, and for the private network in `status`.
    */
   vpn?: VpnServices;
+  /**
+   * GitHub's API for the rotations that start a run and follow it: `rotate deploy-key|check-key|
+   * preview-key` (the new key's proof) and a site's app secrets (its deploy). Default: the client
+   * of the user's GitHub token.
+   */
+  rotate?: { github?: SshKeyGitHub["api"] & SiteRotationOptions["github"]["api"] };
   /**
    * Calls `stop` when the user stops `logs --follow` or `addon open` (default: Ctrl-C and SIGTERM
    * of this process); returns what unsubscribes it.

@@ -24,13 +24,72 @@ export * from "./providers";
 export * from "./provision";
 export * from "./retarget";
 export * from "./rollback";
+// `opscrew rotate` (025): the inventory and every rotation's entry point.
+export { publishRotatedKey, type RotatedKeyResult } from "./rotate/addons";
+export { rotateBeszel } from "./rotate/addons-beszel";
+export {
+  ADDON_ROTATION_HASH,
+  type AddonRotation,
+  type AddonRotationOptions,
+  rotateMonitoring,
+} from "./rotate/addons-monitoring";
+export {
+  type PortainerPasswordOptions,
+  type PortainerPasswordRotation,
+  rotatePortainerPassword,
+} from "./rotate/addons-portainer";
+export {
+  rotateSiteAppSecrets,
+  type SiteRotation,
+  type SiteRotationOptions,
+} from "./rotate/app-site";
+export { dropPreviousNames, isAppName } from "./rotate/app-values";
+export {
+  type AccessTokenServices,
+  type InfraRotation,
+  type RotationEngineOptions,
+  rotateAccessToken,
+  rotateStatePassphrase,
+  rotateTunnelToken,
+  type TunnelTokenServices,
+} from "./rotate/infra";
 export {
   type Credential,
   type CredentialDate,
   type CredentialKind,
   type CredentialRotation,
   credentialInventory,
+  credentialListLines,
+  type ListedCredential,
+  listedCredentials,
 } from "./rotate/inventory";
+export {
+  rotateSshKey,
+  type SshKeyGitHub,
+  type SshKeyName,
+  type SshKeyRotation,
+  type SshKeyServices,
+} from "./rotate/keys";
+export { rotateLocalServices } from "./rotate/localhost";
+export {
+  type DeviceRotation,
+  type NetworkRotation,
+  type NetworkRotationOptions,
+  type RotatedDevice,
+  rotateDevice,
+  rotateNetwork,
+} from "./rotate/network";
+export { type GrantRotation, type GrantRotationOptions, rotateGrant } from "./rotate/network-grant";
+export { type PortainerRotationServices, rotatePortainerServices } from "./rotate/portainer";
+export type { DockerRotation, DockerUndo } from "./rotate/portainer-localhost";
+export { credentialsRecordFile, USER_TOKEN_NAMES, type UserTokenName } from "./rotate/record";
+export {
+  type DeviceLoginRotation,
+  type RotateServicesOptions,
+  rotateDeviceLogin,
+  rotateServices,
+  type ServicesRotation,
+} from "./rotate/server";
 export {
   type ReplacedToken,
   type ReplaceTokenOptions,
@@ -39,6 +98,7 @@ export {
   type TokenExpiry,
   tokenExpiries,
 } from "./rotate/tokens";
+export { dropPendingRotation, readPendingRotation } from "./rotate/values-pending";
 export {
   type AddRunnerHostInput,
   addRunnerHost,
