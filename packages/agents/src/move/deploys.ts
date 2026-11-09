@@ -107,7 +107,7 @@ export async function requireNoOtherPause(
   if (pause.reason === "rotation") {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `The deploys of ${key} are paused since ${pause.since} for ${await rotationWindowText(deps, flags, pause.hash)}, so this rotation can't begin. Nothing was changed.`,
+      `The deploys of ${key} are paused since ${pause.since} for ${await rotationWindowText(deps, flags, pause.hash, pause.restore)}, so this rotation can't begin. Nothing was changed.`,
       { hint: `Finish or undo that rotation first, then run \`${again}\` again.` },
     );
   }

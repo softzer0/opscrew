@@ -12,7 +12,7 @@ import {
   clearDeployPause,
   deployPauseOf,
   pinnedText,
-  rotationWindowText,
+  rotationPauseRefusal,
 } from "../shared/deploy-pause";
 import { dispatchAndFollow } from "../shared/deploy-run";
 import { deploysOnTheirOwn } from "../status/deploys";
@@ -70,11 +70,12 @@ export async function resumeDeploys(run: RollbackRun): Promise<RollbackResult> {
     );
   }
   if (pause?.reason === "rotation") {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      `${environment}'s deploys are paused since ${pause.since} for ${await rotationWindowText(deps, flags, pause.hash)}, not \`${command} --resume\`. ${NOTHING_CHANGED}`,
-      { hint: "Finish or undo the rotation; its end resumes the deploys." },
-    );
+    throw await rotationPauseRefusal(deps, {
+      environment,
+      pause,
+      flags,
+      why: `not \`${command} --resume\`. ${NOTHING_CHANGED}`,
+    });
   }
   const deploySource = plan.environment?.deploySource;
   if (deploy && deploySource?.from === "promote") {

@@ -30,7 +30,7 @@ import {
   type DeployPause,
   deployPauseOf,
   restoreDeployPause,
-  rotationWindowText,
+  rotationPauseRefusal,
   runningDeploy,
   setDeployPause,
   waitForDeploys,
@@ -118,11 +118,13 @@ async function rotationRefusal(
   run: RollbackRun,
   pause: Extract<DeployPause, { reason: "rotation" }>,
 ): Promise<OpsCrewError> {
-  return new OpsCrewError(
-    "PHASE_PRECONDITION",
-    `The deploys of ${run.environment} are paused since ${pause.since} for ${await rotationWindowText(run.deps, run.flags, pause.hash)}, and a rollback must not deploy during the rotation. ${NOTHING_CHANGED}`,
-    { hint: `Finish or undo the rotation first, then run \`${run.command}\` again.` },
-  );
+  return rotationPauseRefusal(run.deps, {
+    environment: run.environment,
+    pause,
+    flags: run.flags,
+    why: `and a rollback must not deploy during the rotation. ${NOTHING_CHANGED}`,
+    command: run.command,
+  });
 }
 
 /**

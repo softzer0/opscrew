@@ -101,7 +101,7 @@ import {
   deployPauseOf,
   pinnedText,
   readableDeployPause,
-  rotationWindowText,
+  rotationPauseRefusal,
 } from "../shared/deploy-pause";
 import { boundHostAdapter, hostPlanFile } from "../shared/host-plan";
 import { connectAndInspectOwnServer } from "../shared/own-server";
@@ -572,11 +572,13 @@ async function provisionFlow(
   // A credential rotation's pause holds the deploys until it ends; a move's window would end it.
   if (paused?.reason === "rotation" && plan.move !== undefined) {
     const flags = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      `The deploys of ${checkEnvironmentKey(plan)} are paused since ${paused.since} for ${await rotationWindowText(deps, flags, paused.hash)}, and ${plan.move.service}'s move needs the app's deploys. Nothing was changed.`,
-      { hint: `Finish or undo the rotation first, then run \`${command}\` again.` },
-    );
+    throw await rotationPauseRefusal(deps, {
+      environment: checkEnvironmentKey(plan),
+      pause: paused,
+      flags,
+      why: `and ${plan.move.service}'s move needs the app's deploys. Nothing was changed.`,
+      command,
+    });
   }
   // The app's bucket at a provider: R2 needs the plan's Cloudflare account, and a Hetzner or
   // Spaces bucket is created with the user's key, so it is needed now (R2's comes after its bucket).

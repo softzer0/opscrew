@@ -2,7 +2,8 @@
  * The deploy pause (features 018, 019): the repository variable `OPSCREW_DEPLOY_PAUSED` holds
  * `{ "<app>/<env>": entry }`, and an environment's deploy workflow skips its deploy job while its
  * key is there. A move's maintenance window pauses the app's deploys (`move`); a credential
- * rotation pauses them until it or its undo is run to its end (`rotation`, feature 025); a rollback
+ * rotation pauses them until it or its undo is run to its end (`rotation`, feature 025; a whole-server
+ * restore's re-rotation too, marked `restore`); a rollback
  * pins the environment to the version it went back to (`rollback`). One entry per environment.
  */
 import { posix } from "node:path";
@@ -25,6 +26,8 @@ export type DeployPause =
       since: string;
       /** The hash of the rotation's plan, which this computer's unfinished rotation names too. */
       hash: string;
+      /** Set when a whole-server restore paused (`opscrew restore --server <server>` ends it). */
+      restore?: { server: string };
     }
   | {
       reason: "rollback";
@@ -44,6 +47,7 @@ export const DeployPauseSchema: z.ZodType<DeployPause> = z.discriminatedUnion("r
     reason: z.literal("rotation"),
     since: z.string(),
     hash: z.string().regex(/^[0-9a-f]{64}$/),
+    restore: z.object({ server: z.string() }).optional(),
   }),
   z.object({
     reason: z.literal("rollback"),
@@ -110,7 +114,13 @@ async function readPauses(
 function stored(entry: DeployPause): DeployPause {
   if (entry.reason === "move") return { reason: "move", since: entry.since };
   if (entry.reason === "rotation") {
-    return { reason: "rotation", since: entry.since, hash: entry.hash };
+    const { since, hash, restore } = entry;
+    return {
+      reason: "rotation",
+      since,
+      hash,
+      ...(restore !== undefined ? { restore: { server: restore.server } } : {}),
+    };
   }
   const { since, image, commit, from } = entry;
   return { reason: "rollback", since, image, commit, ...(from !== undefined ? { from } : {}) };
@@ -158,20 +168,57 @@ async function writePause(
  * rotation's window: `opscrew rotate db cache` or `opscrew rotate db cache --undo` ends it"), by the
  * services of the environment's unfinished rotation on this computer (`deps.paths`; `flags` its
  * commands' flags) when it is the one that paused (`hash`, the pause's) and has begun; otherwise
- * as a rotation begun on another computer.
+ * as a rotation begun on another computer. A whole-server restore's pause (`restore`, the entry's)
+ * is the restore's window, which `opscrew restore --server <server>` ends.
  * @throws OpsCrewError `ARTIFACT_INVALID` when that rotation's file is damaged.
  */
 export async function rotationWindowText(
   deps: Pick<PhaseDeps, "paths" | "redactor">,
   flags: string,
   hash: string,
+  restore?: { server: string },
 ): Promise<string> {
+  if (restore !== undefined) {
+    return `a whole-server restore's window: \`opscrew restore --server ${restore.server}${flags}\` ends it`;
+  }
   const pending = await readPendingRotation(deps);
   if (pending === undefined || pending.hash !== hash || pending.step === "planned") {
     return "a credential rotation's window, begun on another computer: `opscrew rotate` with its services, or with `--undo`, ends it there";
   }
   const rotate = rotateCommand(pending.names, flags);
   return `a credential rotation's window: \`${rotate}\` or \`${rotate} --undo\` ends it`;
+}
+
+/**
+ * The refusal (`PHASE_PRECONDITION`) while a rotation's pause holds `environment`'s deploys:
+ * "The deploys of <environment> are paused since <since> for <{@link rotationWindowText}>, <why>",
+ * `why` ending with what did not change. The hint says to finish it (or undo a rotation), then run
+ * `command` again; without `command`, that its end resumes the deploys.
+ */
+export async function rotationPauseRefusal(
+  deps: Pick<PhaseDeps, "paths" | "redactor">,
+  input: {
+    environment: string;
+    pause: Extract<DeployPause, { reason: "rotation" }>;
+    flags: string;
+    why: string;
+    command?: string;
+  },
+): Promise<OpsCrewError> {
+  const { environment, pause, flags, why, command } = input;
+  const window = await rotationWindowText(deps, flags, pause.hash, pause.restore);
+  const finish =
+    pause.restore !== undefined ? "Let the restore finish" : "Finish or undo the rotation";
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `The deploys of ${environment} are paused since ${pause.since} for ${window}, ${why}`,
+    {
+      hint:
+        command === undefined
+          ? `${finish}; its end resumes the deploys.`
+          : `${finish} first, then run \`${command}\` again.`,
+    },
+  );
 }
 
 /**

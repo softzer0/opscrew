@@ -9,6 +9,8 @@ import {
   deployPauseOf,
   pinnedText,
   restoreDeployPause,
+  rotationPauseRefusal,
+  rotationWindowText,
   runningDeploy,
   setDeployPause,
 } from "./deploy-pause";
@@ -176,6 +178,78 @@ describe("the deploy pause", () => {
       "reason",
       "since",
     ]);
+  });
+});
+
+describe("a rotation's pause in words", () => {
+  const HASH = "ab".repeat(32);
+  const ELSEWHERE =
+    "a credential rotation's window, begun on another computer: `opscrew rotate` with its services, or with `--undo`, ends it there";
+
+  it("a pause no rotation on this computer names is a rotation begun on another computer", async () => {
+    const w = await world();
+    expect(await rotationWindowText(w.deps, " --env prod", HASH)).toBe(ELSEWHERE);
+    const error = await rotationPauseRefusal(w.deps, {
+      environment: "prod",
+      pause: { reason: "rotation", since: SINCE, hash: HASH },
+      flags: " --env prod",
+      why: "and a rollback must not deploy during the rotation. Nothing was changed.",
+      command: "opscrew rollback --env prod",
+    });
+    expect(error).toBeInstanceOf(OpsCrewError);
+    expect(error).toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: `The deploys of prod are paused since ${SINCE} for ${ELSEWHERE}, and a rollback must not deploy during the rotation. Nothing was changed.`,
+      hint: "Finish or undo the rotation first, then run `opscrew rollback --env prod` again.",
+    });
+  });
+
+  it("a whole-server restore's pause is the restore's window, which its command ends", async () => {
+    const w = await world();
+    const restore = { server: "shop-prod-20261108" };
+    const window =
+      "a whole-server restore's window: `opscrew restore --server shop-prod-20261108 --env prod` ends it";
+    expect(await rotationWindowText(w.deps, " --env prod", HASH, restore)).toBe(window);
+    const pause = { reason: "rotation" as const, since: SINCE, hash: HASH, restore };
+    const refusal = (command?: string) =>
+      rotationPauseRefusal(w.deps, {
+        environment: "prod",
+        pause,
+        flags: " --env prod",
+        why: "so it waits. Nothing was changed.",
+        ...(command !== undefined ? { command } : {}),
+      });
+    expect(await refusal("opscrew promote --to prod")).toMatchObject({
+      message: `The deploys of prod are paused since ${SINCE} for ${window}, so it waits. Nothing was changed.`,
+      hint: "Let the restore finish first, then run `opscrew promote --to prod` again.",
+    });
+    expect((await refusal()).hint).toBe("Let the restore finish; its end resumes the deploys.");
+  });
+
+  it("without a command to run again, the hint says the rotation's end resumes the deploys", async () => {
+    const w = await world();
+    const error = await rotationPauseRefusal(w.deps, {
+      environment: "prod",
+      pause: { reason: "rotation", since: SINCE, hash: HASH },
+      flags: "",
+      why: "not `opscrew rollback --resume`. Nothing was changed.",
+    });
+    expect(error.hint).toBe("Finish or undo the rotation; its end resumes the deploys.");
+  });
+
+  it("writes and reads back a restore's mark on a rotation's entry", async () => {
+    const w = await world();
+    const entry: DeployPause = {
+      reason: "rotation",
+      since: SINCE,
+      hash: HASH,
+      restore: { server: "4711" },
+    };
+    await setDeployPause(w.deps, w.github, w.plan, entry);
+    expect(w.variableNow()).toBe(
+      `{"shop/prod":{"reason":"rotation","since":"${SINCE}","hash":"${HASH}","restore":{"server":"4711"}}}`,
+    );
+    expect(await deployPauseOf(w.github, w.plan)).toEqual(entry);
   });
 });
 

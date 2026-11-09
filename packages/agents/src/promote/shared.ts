@@ -8,7 +8,7 @@ import type { PhaseDeps } from "../context";
 import { type DriftReport, runDrift } from "../drift";
 import { missing } from "../provision/credentials";
 import { gitClient, githubClientFromToken, githubCoordinates } from "../shared";
-import { pinnedText, readableDeployPause, rotationWindowText } from "../shared/deploy-pause";
+import { pinnedText, readableDeployPause, rotationPauseRefusal } from "../shared/deploy-pause";
 import type { PromoteGitHubApi, PromoteServices } from "./types";
 
 /** What every refusal of a promotion ends with. */
@@ -226,11 +226,13 @@ export async function requireNotPaused(
     );
   }
   if (pause.reason === "rotation") {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      `The deploys of ${target} are paused since ${pause.since} for ${await rotationWindowText(deps, ` --env ${target}`, pause.hash)}, ${skipped}. ${NOTHING}`,
-      { hint: `Finish or undo the rotation first, then run \`${command}\` again.` },
-    );
+    throw await rotationPauseRefusal(deps, {
+      environment: target,
+      pause,
+      flags: ` --env ${target}`,
+      why: `${skipped}. ${NOTHING}`,
+      command,
+    });
   }
   throw movePaused({
     target,

@@ -259,6 +259,23 @@ describe("the deploys on a server OpsCrew created", () => {
     expect(report.deploys?.paused).toEqual(entry);
   });
 
+  it("paused for a whole-server restore's window, which its restore command ends", async () => {
+    const { deps, plan, github } = await serverWorld();
+    const entry = {
+      reason: "rotation",
+      since: "2026-10-31T09:00:00.000Z",
+      hash: "a".repeat(64),
+      restore: { server: "4711" },
+    };
+    github.variables.set(DEPLOY_PAUSED_VARIABLE, JSON.stringify({ "shop/prod": entry }));
+    const services = { remote: shell(serverOutput(BOTH)).remote, deploys: github };
+    const report = await deployStateReport(deps, plan, { services });
+    expect(report.lines.at(-1)).toBe(
+      "  Paused since 2026-10-31 09:00 UTC for a whole-server restore's window: `opscrew restore --server 4711` ends it.",
+    );
+    expect(report.deploys?.paused).toEqual(entry);
+  });
+
   it("without GitHub: the short digests, why, and the last rollback on this computer, never as the pause", async () => {
     const { deps, plan } = await serverWorld();
     await mkdir(deps.paths.stateDir, { recursive: true });

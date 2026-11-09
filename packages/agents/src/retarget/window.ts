@@ -16,7 +16,7 @@ import { commandFlags } from "../environments/choice";
 import { withDeploysPaused } from "../move/deploys";
 import { pollUntil, readServerAddresses, readValidJson, type ServerAddress } from "../shared";
 import { GeneratedValuesSchema, generatedValuesFile } from "../shared/app-secrets";
-import { deployPauseOf, rotationWindowText } from "../shared/deploy-pause";
+import { deployPauseOf, rotationPauseRefusal } from "../shared/deploy-pause";
 import { codeOf, hintOf } from "../shared/errors";
 import {
   type BucketKeys,
@@ -323,11 +323,13 @@ export async function maintenanceWindow(
   const paused = await deployPauseOf(session.github, plan);
   if (paused?.reason === "rotation") {
     const flags = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      `The deploys of ${checkEnvironmentKey(plan)} are paused since ${paused.since} for ${await rotationWindowText(deps, flags, paused.hash)}, and the maintenance window needs the app's deploys. Nothing was changed; the app on ${oldWords} keeps running.`,
-      { hint: `Finish or undo the rotation first, then run \`${RUN_COMMAND}\` again.` },
-    );
+    throw await rotationPauseRefusal(deps, {
+      environment: checkEnvironmentKey(plan),
+      pause: paused,
+      flags,
+      why: `and the maintenance window needs the app's deploys. Nothing was changed; the app on ${oldWords} keeps running.`,
+      command: RUN_COMMAND,
+    });
   }
   // The database's logins and the buckets' keys, before anything is asked or changed.
   const db = window.postgres;

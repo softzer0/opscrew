@@ -329,7 +329,7 @@ export function register(program: Command, ctx: CliContext): void {
       if (result.kind === "list") {
         const rotation =
           result.paused?.reason === "rotation"
-            ? await rotationWindowText(deps, flag, result.paused.hash)
+            ? await rotationWindowText(deps, flag, result.paused.hash, result.paused.restore)
             : undefined;
         printList(ctx, name, flag, result, rotation);
         return;

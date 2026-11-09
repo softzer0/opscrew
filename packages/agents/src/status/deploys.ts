@@ -395,7 +395,9 @@ async function pauseSection(
   try {
     const paused = await deployPauseOf(github, plan);
     const rotation =
-      paused?.reason === "rotation" ? await rotationWindowText(deps, flag, paused.hash) : undefined;
+      paused?.reason === "rotation"
+        ? await rotationWindowText(deps, flag, paused.hash, paused.restore)
+        : undefined;
     return {
       lines: pauseLines(plan, paused, flag, running, rotation),
       ...(paused !== undefined ? { paused } : {}),
