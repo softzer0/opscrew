@@ -47,6 +47,7 @@ import {
   type RotationPlan,
   rotationHash,
   type ServerRun,
+  type ServiceStep,
   serverRuns,
   serviceSteps,
   startsMatch,
@@ -152,7 +153,7 @@ async function rotateHost(
   deps: PhaseDeps,
   plan: DeployPlan,
   server: string,
-  options: RotateServicesOptions,
+  options: Pick<RotateServicesOptions, "remote">,
 ): Promise<RotateHost> {
   const { docker, login } = await serverShell(
     deps,
@@ -176,7 +177,7 @@ async function rotateHost(
  */
 function hostFailure(
   deps: PhaseDeps,
-  host: RotateHost,
+  host: Pick<RotateHost, "words">,
   result: CommandResult,
   what: string,
   after = "",
@@ -262,12 +263,41 @@ function readStarts(stdout: string): Map<string, { entrypoint?: unknown; command
 }
 
 /**
+ * The services of `services` on `host` that don't run there (`missing`), or run on a start command
+ * other than the catalog's (`outdated`: one from before 025, which keeps no copy of its value in its
+ * container, so a restart would put the old value back), by name; none for one that is current.
+ * Read-only, one command; a failed read ends with `after` (what is true then).
+ * @throws OpsCrewError when the read fails.
+ */
+export async function startStates(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  host: Pick<RotateHost, "words" | "run">,
+  services: readonly PlanService[],
+  after = UNCHANGED,
+): Promise<Map<string, "missing" | "outdated">> {
+  const result = await host.run(startsScript(services.map((s) => s.name)), {
+    timeoutMs: READ_TIMEOUT_MS,
+  });
+  if (result.exitCode !== 0) {
+    throw hostFailure(deps, host, result, "read the services' start commands", after);
+  }
+  const starts = readStarts(result.stdout);
+  const states = new Map<string, "missing" | "outdated">();
+  for (const service of services) {
+    const found = starts.get(service.name);
+    if (found === undefined) states.set(service.name, "missing");
+    else if (!startsMatch(plan, service, found)) states.set(service.name, "outdated");
+  }
+  return states;
+}
+
+/**
  * Refuses, before any change, a rotated service that does not run on its server while the
  * rotation has not `begun` (one that began goes on, and its switch starts the service again;
  * provision refuses while it is unfinished), or one that runs on a start command other than the
- * catalog's (one from before 025, which keeps no copy of its value in its container, so a restart
- * would put the old value back): a deploy first starts it on the new one. Read-only, one command
- * per server.
+ * catalog's ({@link startStates}): a deploy first starts it on the new one. Read-only, one
+ * command per server.
  */
 async function requireCurrentStarts(
   deps: PhaseDeps,
@@ -284,17 +314,11 @@ async function requireCurrentStarts(
     if (services.length === 0) continue;
     const host = hosts.get(run.server) as RotateHost;
     deps.reporter.step(`Reading what runs on ${host.words}`);
-    const result = await host.run(startsScript(services.map((s) => s.name)), {
-      timeoutMs: READ_TIMEOUT_MS,
-    });
-    if (result.exitCode !== 0) {
-      throw hostFailure(deps, host, result, "read the services' start commands", UNCHANGED);
-    }
-    const starts = readStarts(result.stdout);
+    const states = await startStates(deps, plan, host, services);
     for (const service of services) {
       const spec = serviceSpec(service.kind);
-      const found = starts.get(service.name);
-      if (found === undefined) {
+      const state = states.get(service.name);
+      if (state === "missing") {
         if (begun) continue;
         throw new OpsCrewError(
           "PHASE_PRECONDITION",
@@ -304,7 +328,7 @@ async function requireCurrentStarts(
           },
         );
       }
-      if (startsMatch(plan, service, found)) continue;
+      if (state === undefined) continue;
       throw new OpsCrewError(
         "PHASE_PRECONDITION",
         `${service.name} (${spec.title}) on ${host.words} still runs on a start command from before this version of OpsCrew, which keeps no copy of its value in the container: a restart would bring the old value back. Nothing was changed.`,
@@ -560,6 +584,55 @@ function secretValues(
       return [name, files[file] as string];
     }),
   );
+}
+
+/**
+ * `rotate.sh` on `server` alone, for `steps` (each on it) from the old to the new values of
+ * `values`, under the one-time approval of `hash`: on the app's server its whole run (the services,
+ * the env files, the app's switch, then the old values dropped), on an extra server `begin` then
+ * `finish`, as the app runs on the new values already. On the app's server it runs with no step
+ * too: the app's settings then get the new values of `values` (services elsewhere) and the app's
+ * switch. The env files (the app's settings `appEnv` the caller read there, `values`' old ones
+ * swapped for the new) and the values go on stdin. Nothing in GitHub, on this computer or in the record
+ * changes, and the caller holds the deploy pause (T2520: a whole-server restore's services rotated
+ * since its snapshot). `again` is the command the messages name.
+ * @throws OpsCrewError when a run fails, with what it said.
+ */
+export async function rotateOnServer(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  input: {
+    server: string;
+    steps: readonly ServiceStep[];
+    values: RotationValues;
+    hash: string;
+    again: string;
+    /** The app's settings on the app's server, as the caller read them there; never shown. */
+    appEnv: string | undefined;
+  },
+  options: Pick<RotateServicesOptions, "remote">,
+): Promise<void> {
+  const { server, values, hash, again, appEnv } = input;
+  const run = serverRuns(plan, input.steps, server === APP_SERVER).find(
+    (each) => each.server === server,
+  );
+  if (run === undefined) return;
+  const host = await rotateHost(deps, plan, server, options);
+  const app = server === APP_SERVER;
+  const rotation: Rotation = {
+    deps,
+    plan,
+    hash,
+    pending: { ...values, hash, step: "started" },
+    from: "started",
+    runs: [run],
+    hosts: new Map([[server, host]]),
+    envFiles: await envFilesWith(deps, plan, values, appEnv, "new"),
+    again,
+  };
+  if (app) return runScript(rotation, run, "rotate");
+  await runScript(rotation, run, "begin");
+  await runScript(rotation, run, "finish");
 }
 
 /**

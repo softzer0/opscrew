@@ -67,8 +67,11 @@ import { aboutOf, requireSnapshotId, versionLine } from "./store";
 /** How long one machine's restore may take: its copy first, then the restore. */
 const RESTORE_TIMEOUT_MS = 6 * 60 * 60_000;
 
-/** How long giving the restored services their current values may take: a service's recreation. */
-const RELOGIN_TIMEOUT_MS = 10 * 60_000;
+/**
+ * What giving the restored services their current values may take past their boot times
+ * ({@link Relogin.seconds}): a recreation and the waits for their health checks.
+ */
+const RELOGIN_MARGIN_SECONDS = 120;
 
 /**
  * The version that runs on a machine, as `snapshot.sh`'s `snapshot_version` records it:
@@ -378,7 +381,11 @@ async function reloginOn(
   deps.reporter.step(`Giving ${names} ${their} current passwords again ${host.where}`);
   const { command, input } = reloginCommand(relogins);
   const result = await host
-    .run(command, RELOGIN_TIMEOUT_MS, input)
+    .run(
+      command,
+      (relogins.reduce((sum, relogin) => sum + relogin.seconds, 0) + RELOGIN_MARGIN_SECONDS) * 1000,
+      input,
+    )
     .catch(
       (error: unknown): CommandResult => ({ exitCode: 255, stdout: "", stderr: String(error) }),
     );

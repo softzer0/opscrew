@@ -16,16 +16,34 @@ import type {
   ProviderExtras,
   ServerSnapshotApi,
 } from "@opscrew/contracts";
-import { errorText, formatMoney, OpsCrewError, sha256Hex, taxLabel } from "@opscrew/core";
+import {
+  errorText,
+  formatMoney,
+  isUserFacingError,
+  listText,
+  OpsCrewError,
+  sha256Hex,
+  taxLabel,
+} from "@opscrew/core";
+import { DEPLOY_PAUSED_VARIABLE } from "@opscrew/iac-templates";
 import { APP_SERVER, type CloudProvider, isCloudProvider } from "@opscrew/plan-schema";
 import { defaultTcpConnect, formatUtc } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
 import { destroyTexts } from "../destroy/texts";
+import { requireNoOtherPause, withDeploysPausedUntilDone } from "../move/deploys";
 import { NOTHING_CHANGED } from "../promote/shared";
 import { providerProfile, vpsConnector } from "../providers";
 import { missing } from "../provision/credentials";
+import type { GitHubApi } from "../provision/types";
 import { MAINTENANCE_WINDOW_TITLE } from "../retarget/texts";
-import { provisionedElsewhereHint, serverAddress } from "../shared";
+import {
+  gitClient,
+  githubClientFromToken,
+  githubCoordinates,
+  provisionedElsewhereHint,
+  serverAddress,
+} from "../shared";
+import { codeOf } from "../shared/errors";
 import { cloudServerName } from "../shared/servers";
 import { pollUntil } from "../shared/wait";
 import { checkHealth, siteUrl, type VerifyCheckContext } from "../verify/checks";
@@ -38,6 +56,16 @@ import {
   snapshotRun,
   snapshotTarget,
 } from "./run";
+import {
+  plannedRelogin,
+  REBUILT,
+  reloginBinding,
+  reloginRestoredServer,
+  restoredKeyLines,
+  restoredKeys,
+  restoredKeysNote,
+  serverReloginLines,
+} from "./server-relogin";
 import { snapshotIdAt } from "./store";
 import type { SnapshotEntry, SnapshotServices } from "./types";
 
@@ -51,6 +79,11 @@ const HEALTH_INTERVAL_MS = 10_000;
  * the real one.
  */
 export interface ServerSnapshotServices extends SnapshotServices {
+  /**
+   * The repository's deploy runs and deploy pause, which a restore after a rotation holds (default:
+   * a client with the user's token; `null` means no token).
+   */
+  github?: GitHubApi | null;
   /** A provider's prices (default: its connector's catalogue, live with a token). */
   catalog?: (provider: CloudProvider) => ComputeCatalog;
   /** Waits between health checks (default: real time). */
@@ -374,8 +407,11 @@ export async function takeServerSnapshot(
   };
 }
 
-/** The restore's approval text: what is lost, what stays, and the protection's lift. */
-function restoreLines(found: ProviderSnapshot): string[] {
+/**
+ * The restore's approval text: what is lost, what stays, the protection's lift, and `more` (what
+ * follows the rebuild) before the typed name.
+ */
+function restoreLines(found: ProviderSnapshot, more: readonly string[]): string[] {
   const { entry } = found;
   const server = entry.server as NonNullable<SnapshotEntry["server"]>;
   const profile = providerProfile(server.provider);
@@ -390,6 +426,7 @@ function restoreLines(found: ProviderSnapshot): string[] {
       : []),
     `Volumes attached to the ${noun} are not in the snapshot and are not changed.`,
     `The app is offline until the ${noun} has started from the snapshot; OpsCrew then checks that it answers.`,
+    ...more,
     `Typing ${server.name} approves it.`,
   ];
 }
@@ -446,10 +483,16 @@ async function appHealth(
  * snapshot `id` among those OpsCrew took of the app's servers, asks the destroy-grade approval
  * (`allowDestroy`, the server's name typed, `--confirm <name>` in a script; its hash covers the
  * snapshot, the server and the text), rebuilds that server from it in place through its
- * connector, and checks that the app answers, as `opscrew verify` does.
+ * connector, and checks that the app answers, as `opscrew verify` does. When the rotation record
+ * says a service on that server was rotated after the snapshot was taken (025, T2520), the restore
+ * also pauses the app's deploys in GitHub from before the rebuild (refused while another pause
+ * holds them) and, once the server is back, gives each service behind its current values again
+ * ({@link reloginRestoredServer}); a failure from the rebuild on keeps the deploys paused until the
+ * restore is run again to its end.
  * @throws OpsCrewError `INVALID_INPUT` for an id that isn't a provider's, `PHASE_PRECONDITION`
  * for each refusal and an unknown id, `APPROVAL_REFUSED` when the name is not typed,
- * `PROVIDER_ERROR` when the rebuild fails, `COMMAND_FAILED` when the app does not answer after.
+ * `PROVIDER_ERROR` when the rebuild fails, `COMMAND_FAILED` when the app does not answer after,
+ * and the failed step's error of giving the services their current values.
  */
 export async function restoreServerSnapshot(
   deps: PhaseDeps,
@@ -483,7 +526,17 @@ export async function restoreServerSnapshot(
   const server = found.entry.server as NonNullable<SnapshotEntry["server"]>;
   const profile = providerProfile(server.provider);
   const noun = profile.serverNoun;
-  const lines = restoreLines(found);
+  const services = options.services ?? {};
+  const keys = await restoredKeys(run, found.entry);
+  const relogin = await plannedRelogin(run, found.entry, async () => {
+    const api = services.github === undefined ? await githubClientFromToken(deps) : services.github;
+    if (!api) throw new Error("requireNoDeployOrMove checks the GitHub token first.");
+    return { api, ...(await githubCoordinates(gitClient(deps))) };
+  });
+  const lines = restoreLines(found, [
+    ...(relogin === undefined ? [] : serverReloginLines(relogin)),
+    ...restoredKeyLines(keys, flags),
+  ]);
   const hash = sha256Hex(
     JSON.stringify({
       provider: server.provider,
@@ -491,8 +544,13 @@ export async function restoreServerSnapshot(
       name: server.name,
       snapshot: id,
       lines,
+      ...(relogin === undefined ? {} : { relogin: reloginBinding(relogin) }),
     }),
   );
+  const again = `opscrew restore --server ${id}${flags}`;
+  if (relogin !== undefined) {
+    await requireNoOtherPause(deps, relogin.github, run.plan, { own: hash, again, flags });
+  }
   const approval = await deps.approvals.request({
     kind: "remote-exec",
     title: `Rebuild the ${noun} ${server.name} of ${environment} from the snapshot ${id}`,
@@ -506,7 +564,7 @@ export async function restoreServerSnapshot(
       "APPROVAL_REFUSED",
       `The ${noun} ${server.name} was not rebuilt${approval.reason === undefined ? "" : `: ${approval.reason}`}. ${NOTHING_CHANGED}`,
       {
-        hint: `Run \`opscrew restore --server ${id}${flags}\` again and type ${server.name} (in a script: --confirm ${server.name} --approve ${hash}).`,
+        hint: `Run \`${again}\` again and type ${server.name} (in a script: --confirm ${server.name} --approve ${hash}).`,
       },
     );
   }
@@ -519,39 +577,88 @@ export async function restoreServerSnapshot(
       decision: "approved",
       detail: deps.redactor.redact(detail),
     });
-  deps.reporter.step(
-    `Rebuilding the ${noun} ${server.name} from the snapshot ${id} (this can take several minutes)`,
-  );
-  await audit("rebuild server", `${server.name} from snapshot ${id} (${hash})`);
-  try {
-    await found.api.rebuild(server.id, id);
-  } catch (error) {
-    await audit("rebuild failed", `${server.name} from snapshot ${id}: ${errorText(error)}`);
-    throw error;
-  }
-  await audit("server rebuilt", `${server.name} from snapshot ${id}`);
-  const result = { id, where: found.entry.where, server };
-  deps.reporter.step("Checking that the app answers (up to 5 minutes)");
-  const health = await appHealth(run, options.services ?? {});
-  if (health === undefined) {
-    deps.reporter.warn(
-      `Rebuilt the ${noun} ${server.name} from the snapshot ${id}, but OpsCrew does not know the server's address on this computer, so it did not check the app: ${provisionedElsewhereHint(`opscrew verify${flags}`)}.`,
+  const rebuild = async (): Promise<RestoredServer> => {
+    deps.reporter.step(
+      `Rebuilding the ${noun} ${server.name} from the snapshot ${id} (this can take several minutes)`,
     );
-    return { ...result, checked: false };
-  }
-  if (health.status !== "pass") {
-    throw new OpsCrewError(
-      "COMMAND_FAILED",
+    await audit("rebuild server", `${server.name} from snapshot ${id} (${hash})`);
+    try {
+      await found.api.rebuild(server.id, id);
+    } catch (error) {
+      await audit("rebuild failed", `${server.name} from snapshot ${id}: ${errorText(error)}`);
+      throw error;
+    }
+    await audit("server rebuilt", `${server.name} from snapshot ${id}`);
+    const result = { id, where: found.entry.where, server };
+    // The services first: the app may not answer before they take its current values again.
+    const given =
+      relogin === undefined
+        ? []
+        : await reloginRestoredServer(run, relogin, { id, hash, again }, services);
+    deps.reporter.step("Checking that the app answers (up to 5 minutes)");
+    const health = await appHealth(run, services);
+    if (health !== undefined && health.status !== "pass") {
+      throw new OpsCrewError(
+        "COMMAND_FAILED",
+        deps.redactor.redact(
+          `Rebuilt the ${noun} ${server.name} from the snapshot ${id}, but the app did not answer within 5 minutes: ${health.message}`,
+        ),
+        health.remediation === undefined ? {} : { hint: deps.redactor.redact(health.remediation) },
+      );
+    }
+    const note =
+      given.length === 0
+        ? ""
+        : `, gave ${listText(given)} ${given.length === 1 ? "its" : "their"} current values again`;
+    if (health === undefined) {
+      deps.reporter.warn(
+        `Rebuilt the ${noun} ${server.name} from the snapshot ${id}${note}, but OpsCrew does not know the server's address on this computer, so it did not check the app: ${provisionedElsewhereHint(`opscrew verify${flags}`)}.`,
+      );
+      const provision = restoredKeysNote(keys, flags);
+      if (provision !== undefined) deps.reporter.info(provision);
+      return { ...result, checked: false };
+    }
+    deps.reporter.success(
       deps.redactor.redact(
-        `Rebuilt the ${noun} ${server.name} from the snapshot ${id}, but the app did not answer within 5 minutes: ${health.message}`,
+        `Rebuilt the ${noun} ${server.name} of ${environment} from the snapshot ${id}${note}, and the app answers: ${health.message}`,
       ),
-      health.remediation === undefined ? {} : { hint: deps.redactor.redact(health.remediation) },
     );
-  }
-  deps.reporter.success(
-    deps.redactor.redact(
-      `Rebuilt the ${noun} ${server.name} of ${environment} from the snapshot ${id}, and the app answers: ${health.message}`,
-    ),
+    const provision = restoredKeysNote(keys, flags);
+    if (provision !== undefined) deps.reporter.info(provision);
+    return { ...result, checked: true };
+  };
+  if (relogin === undefined) return rebuild();
+  return withDeploysPausedUntilDone(
+    deps,
+    relogin.github,
+    run.plan,
+    {
+      ...(services.sleep === undefined ? {} : { sleep: services.sleep }),
+      ...(services.now === undefined ? {} : { now: services.now }),
+    },
+    { command: again, hash, restore: { server: id } },
+    () =>
+      rebuild().catch((error: unknown) => {
+        throw keptPaused(error, again);
+      }),
   );
-  return { ...result, checked: true };
+}
+
+/**
+ * `error` of a restore after a rotation, once the rebuild began: the app's deploys stay paused (a
+ * deploy would give the app values the restored data does not accept yet) until the restore is run
+ * again to its end.
+ */
+function keptPaused(error: unknown, again: string): unknown {
+  if (!isUserFacingError(error)) return error;
+  // A message from before the rebuild's point of view (the app's settings, rotate.sh's input).
+  const said = error.message.replace(/\s+$/, "").replace(/ ?Nothing was changed\.$/, ` ${REBUILT}`);
+  return new OpsCrewError(
+    codeOf(error),
+    `${said} The app's deploys stay paused (${DEPLOY_PAUSED_VARIABLE}) until \`${again}\` runs to its end: a deploy would give the app current values that the restored data does not accept yet.`,
+    {
+      hint: `${error.hint ?? "Fix what it names."} Then run \`${again}\` again: it rebuilds the server from the snapshot again and gives the services their current values.`,
+      cause: error,
+    },
+  );
 }

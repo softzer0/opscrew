@@ -134,6 +134,8 @@ function services(
 ): ServerSnapshotServices {
   return {
     ...world.services,
+    // The world's GitHub answers its deploy runs only: no test here restores after a rotation.
+    github: world.services.github as ServerSnapshotServices["github"],
     serverSnapshots: () => api,
     catalog: fakeCatalog,
     sleep: async () => {},

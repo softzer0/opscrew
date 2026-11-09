@@ -58,20 +58,21 @@ export async function withDeploysPaused<T>(
  * them only once `window` succeeds: a failed one keeps them paused, so no deploy runs on a change
  * made half way, until the rotation or its undo is run to its end (`command` goes on). When a
  * deploy still runs and `window` never starts, the deploys are paused as they were before (an
- * earlier run's pause stays).
+ * earlier run's pause stays). A whole-server restore's rotation marks its entry with `restore`.
  */
 export async function withDeploysPausedUntilDone<T>(
   deps: Deps,
   github: GitHub,
   plan: DeployPlan,
   services: Pick<ProvisionServices, "sleep" | "now">,
-  rotation: { command: string; hash: string },
+  rotation: { command: string; hash: string; restore?: { server: string } },
   window: () => Promise<T>,
 ): Promise<T> {
   const before = await setDeployPause(deps, github, plan, {
     reason: "rotation",
     since: deps.clock.now().toISOString(),
     hash: rotation.hash,
+    ...(rotation.restore === undefined ? {} : { restore: rotation.restore }),
   });
   try {
     await waitForDeploys(deps, github, plan, services, {

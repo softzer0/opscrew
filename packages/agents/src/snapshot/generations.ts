@@ -90,13 +90,21 @@ function aheadHint(flags: string): string {
 }
 
 /**
- * Stops when the copy of `service` records a later generation than the record ({@link aheadReason}).
+ * Stops when the copy of `service` records a later generation than the record ({@link aheadReason}),
+ * the message ending with `after` (what is true then; nothing changed by default).
  * @throws OpsCrewError `PHASE_PRECONDITION`.
  */
-function requireNotAhead(service: string, id: string, from: number, to: number, flags: string) {
+export function requireNotAhead(
+  service: string,
+  id: string,
+  from: number,
+  to: number,
+  flags: string,
+  after = NOTHING_CHANGED,
+) {
   const reason = aheadReason(service, id, from, to);
   if (reason === undefined) return;
-  throw new OpsCrewError("PHASE_PRECONDITION", `${reason} ${NOTHING_CHANGED}`, {
+  throw new OpsCrewError("PHASE_PRECONDITION", `${reason} ${after}`, {
     hint: aheadHint(flags),
   });
 }
@@ -106,7 +114,7 @@ function requireNotAhead(service: string, id: string, from: number, to: number, 
  * without the generated values); not `strict`, `undefined` when they are missing or damaged.
  * @throws OpsCrewError `ARTIFACT_INVALID` when they are damaged and `strict`.
  */
-async function keptHistory(
+export async function keptHistory(
   deps: Pick<PhaseDeps, "paths" | "redactor">,
   strict: boolean,
 ): Promise<History | undefined> {
@@ -154,9 +162,21 @@ const BOOT_MARGIN_SECONDS = 30;
  * and its checks' 6 tries 10 seconds apart (how the stack renders every catalog check), and a
  * margin.
  */
-function bootSeconds(plan: DeployPlan, service: PlanService): number {
+export function bootSeconds(plan: DeployPlan, service: PlanService): number {
   const check = serviceSpec(service.kind).healthcheck({ plan, service, secretRef: () => "" });
   return (check.startSeconds ?? 0) + 6 * 10 + BOOT_MARGIN_SECONDS;
+}
+
+/**
+ * `steps` with the root password's first, each service's others in their order: the others log in
+ * as root (MySQL, MariaDB), with the root password of the restored data.
+ */
+export function rootFirst(steps: readonly ServiceStep[]): ServiceStep[] {
+  return [...steps].sort(
+    (a, b) =>
+      Number(b.rotation.secrets.includes("root-password")) -
+      Number(a.rotation.secrets.includes("root-password")),
+  );
 }
 
 /**
@@ -195,14 +215,8 @@ export async function restoreRelogins(
     const service = plan.services.find((each) => each.name === name);
     if (service === undefined) throw new Error(`The plan has no service ${name}.`);
     const then = history[name]?.[String(from)];
-    // The root password's step first: the others log in as root (MySQL, MariaDB).
-    const steps = serviceSteps(plan, [service])
+    const steps = rootFirst(serviceSteps(plan, [service]))
       .filter((step) => step.rotation.mode !== "restart")
-      .sort(
-        (a, b) =>
-          Number(b.rotation.secrets.includes("root-password")) -
-          Number(a.rotation.secrets.includes("root-password")),
-      )
       .map((step) => {
         // Garage's key: its key ID, which names it; its secret key never leaves this computer.
         const secret = isGarageKey(step) ? "key-id" : step.rotation.secrets[0];
