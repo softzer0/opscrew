@@ -181,7 +181,7 @@ secret in any test: `fakeSecret(kind)` and `{{FAKE:<kind>}}` (`@opscrew/core/tes
 
 ## Phase 7: Finish (lead)
 
-- [ ] T2516 Live (lead): plan 14's passes; results on `docs/e2e-coverage.md`. These are things the reviews could check only offline. Each needs a real run:
+- [x] T2516 Live (lead): plan 14's passes; results on `docs/e2e-coverage.md`. These are things the reviews could check only offline. Each needs a real run:
   - Cloudflare: the Tunnel secret's PATCH on a token-run tunnel, with running connectors staying connected (R11, T2511).
   - A Worker version uploaded with `--secrets-file` doesn't keep a secret dropped from the file (T2509).
   - Portainer passes a stack's Env to a key the compose file names bare (T2509).
