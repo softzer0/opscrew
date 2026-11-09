@@ -243,7 +243,7 @@ Behaviour, hashes and approval texts stay as they are unless a task says otherwi
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm typecheck && pnpm lint`
   - Effort: medium
 
-- [ ] T2524 One helper for the app's stacks as provision last set them up
+- [x] T2524 One helper for the app's stacks as provision last set them up
   - Owns: `packages/agents/src/provision/portainer-flow.ts`, `packages/agents/src/retarget/sides/portainer.ts`, `packages/agents/src/shared/portainer-stacks.ts`, `packages/agents/src/drift/portainer.ts` (+ tests)
   - Accept:
     - `recordedPortainerStacks` is shared by `portainerStacksFor` and retarget's `stacksOf`, and retarget reuses `connectPortainer`'s inspect. `portainerStacksFor`'s signature stays as it is.
