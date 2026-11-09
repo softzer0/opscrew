@@ -149,7 +149,7 @@ secret in any test: `fakeSecret(kind)` and `{{FAKE:<kind>}}` (`@opscrew/core/tes
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/iac-templates && pnpm lint`
   - Effort: medium
 
-- [ ] T2514 [P] [US1] Restores after a rotation
+- [x] T2514 [P] [US1] Restores after a rotation
   - Owns: `packages/agents/src/snapshot/**`, `packages/agents/src/rollback/database*.ts`, `packages/iac-templates/src/workflow/snapshots.ts` (the `about.json` generation only) (+ tests)
   - Depends: T2503, T2506
   - Accept: plan 12, after T2514's review:
@@ -192,7 +192,7 @@ secret in any test: `fakeSecret(kind)` and `{{FAKE:<kind>}}` (`@opscrew/core/tes
     - real curl reads the config;
     - config sync updates the agent's token;
     - the hub reads `id_ed25519` at each start.
-  - Garage's key re-login after a restore (T2514).
+  - Garage's key re-login after a restore: the restore's start makes the env's key first, and a `finish` whose `when` fails while Garage boots is skipped silently (T2514).
   - Better Auth with both `BETTER_AUTH_SECRET` and `BETTER_AUTH_SECRETS` set (T2509).
 - [ ] T2517 Simplify (lead): a review of the feature's diff for reuse and simplicity, then its tasks.
 - [ ] T2518 The release 0.2.6 (lead): `docs/releasing.md`, with 013's US8 (founder, 2026-11-08). The changelog says that existing deployments recreate MySQL, MariaDB, Valkey, Redis, Dragonfly, Kafka, Redpanda, OpenSearch and Elasticsearch once at their next deploy (their start commands changed, T2503), and that apps on Portainer or Cloudflare's hosting or GitHub Pages whose `APP_KEY` or `BETTER_AUTH_SECRET` OpsCrew generates get `APP_PREVIOUS_KEYS` or `BETTER_AUTH_SECRETS` named in their committed stack template or deploy workflow at their next provision. It stays unset until a rotation keeps an old key there (T2509).
