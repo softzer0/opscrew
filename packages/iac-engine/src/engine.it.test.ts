@@ -186,6 +186,50 @@ for (const name of ["tofu", "terraform"] as const satisfies readonly IacEngineNa
     );
 
     it(
+      "a saved plan applies with the root's terraform.tfvars.json it was made from, not past a -var that differs",
+      async () => {
+        const root = await mkdtemp(path.join(tmpdir(), `opscrew-it-${name}-tfvars-`));
+        try {
+          await writeFile(path.join(root, "main.tf"), MODULE);
+          await writeFile(path.join(root, "terraform.tfvars.json"), '{ "label": "one" }\n');
+          await engine.init(root);
+          const created = await engine.plan(root, "create.tfplan");
+          expect(
+            (await engine.apply(root, created.planFile, { approvedPlanHash: created.planHash })).ok,
+          ).toBe(true);
+
+          // Planned with -var over the file's value: OpenTofu reads the file again at the apply
+          // and refuses the difference; Terraform applies the plan's value.
+          const overridden = await engine.plan(root, "var.tfplan", { vars: { label: "two" } });
+          const withVar = await engine.apply(root, overridden.planFile, {
+            approvedPlanHash: overridden.planHash,
+            allowDestroy: true,
+          });
+          if (name === "tofu") {
+            expect(withVar.ok).toBe(false);
+            expect(withVar.log).toContain("Mismatch between input and plan variable value");
+            expect(await engine.output(root)).toEqual({ a: "alpha-one" });
+          } else {
+            expect(withVar.ok, withVar.log).toBe(true);
+          }
+
+          // The value written into the file first: plan and apply see the same one.
+          await writeFile(path.join(root, "terraform.tfvars.json"), '{ "label": "three" }\n');
+          const written = await engine.plan(root, "file.tfplan");
+          const applied = await engine.apply(root, written.planFile, {
+            approvedPlanHash: written.planHash,
+            allowDestroy: true,
+          });
+          expect(applied.ok, applied.log).toBe(true);
+          expect(applied.outputs).toEqual({ a: "alpha-three" });
+        } finally {
+          await rm(root, { recursive: true, force: true });
+        }
+      },
+      TIMEOUT,
+    );
+
+    it(
       "reports validation diagnostics with file and line",
       async () => {
         const bad = await mkdtemp(path.join(tmpdir(), `opscrew-it-${name}-bad-`));

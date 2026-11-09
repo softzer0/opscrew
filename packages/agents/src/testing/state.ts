@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { IacEngine, IacRunOptions } from "@opscrew/contracts";
 
 /** A plain state file (format 4) with these resources and an output that depends on none. */
@@ -89,4 +90,37 @@ export function withStateList<T extends IacEngine>(
     return listed;
   };
   return Object.assign(engine, { stateResources, stateCalls });
+}
+
+/** The root's `terraform.tfvars.json` in `dir`, or nothing without one. */
+async function tfvarsIn(dir: string): Promise<Record<string, unknown>> {
+  const text = await readFile(join(dir, "terraform.tfvars.json"), "utf8").catch(() => undefined);
+  return text === undefined ? {} : (JSON.parse(text) as Record<string, unknown>);
+}
+
+/**
+ * The input variables each saved plan was made with, as OpenTofu (1.8 and later) checks them when
+ * it applies one: the root's `terraform.tfvars.json` at the plan, with `-var` values over it. An
+ * apply whose root's file now holds another value for one of them is refused, with its message.
+ */
+export class PlanVariables {
+  readonly #saved = new Map<string, Record<string, unknown>>();
+
+  /** Records the variables of the plan `planHash` made in `dir` with `vars` (`-var`). */
+  async record(dir: string, planHash: string, vars: Record<string, string> = {}): Promise<void> {
+    this.#saved.set(planHash, { ...(await tfvarsIn(dir)), ...vars });
+  }
+
+  /** OpenTofu's refusal of the apply of `planHash` in `dir`, when the file differs from the plan. */
+  async mismatch(dir: string, planHash: string): Promise<string | undefined> {
+    const saved = this.#saved.get(planHash);
+    if (saved === undefined) return undefined;
+    const current = await tfvarsIn(dir);
+    const name = Object.keys(current).find(
+      (key) => key in saved && JSON.stringify(current[key]) !== JSON.stringify(saved[key]),
+    );
+    return name === undefined
+      ? undefined
+      : `Error: Mismatch between input and plan variable value\n\nValue saved in the plan file for variable "${name}" is different from the one\ngiven to the current command.`;
+  }
 }

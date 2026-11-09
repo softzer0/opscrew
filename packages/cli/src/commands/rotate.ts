@@ -348,8 +348,9 @@ async function repositoryOf(
 
 /**
  * Proposes what a finished rotation changed in the repository: the record of the rotation, the
- * plan (a rotation of the network's keys changes its public keys) and the recovery copy, in the
- * deploy pull request. Without a repository, the copy's files are written here and the user is
+ * plan (a rotation of the network's keys changes its public keys), the root's
+ * `terraform.tfvars.json` (a deploy key's rotation writes its new public half there) and the
+ * recovery copy, in the deploy pull request. Without a repository, the copy's files are written here and the user is
  * told to commit them.
  */
 async function publish(
@@ -380,14 +381,16 @@ async function publish(
     }
     return;
   }
+  const plan = await readArtifact("plan", deps.paths.files.plan);
+  const tfvars = join(root, plan.infra.dir, "terraform.tfvars.json");
   const paths: string[] = [];
-  for (const file of [deps.paths.files.plan, record]) {
+  for (const file of [deps.paths.files.plan, record, tfvars]) {
     if (await exists(file)) paths.push(toPosixRelative(root, file));
   }
   const published = await publishDeploySetup(deps, {
     git: repository.git,
     github: repository.github,
-    plan: await readArtifact("plan", deps.paths.files.plan),
+    plan,
     paths,
     push: true,
     branch: repository.branch,

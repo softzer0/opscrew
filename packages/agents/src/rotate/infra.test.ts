@@ -34,6 +34,7 @@ import {
   createTestPhaseDeps,
   freshFacts,
   ownPlan,
+  PlanVariables,
   PORTAINER_HOST,
   PORTAINER_URL,
   portainerPlan,
@@ -124,6 +125,8 @@ class CryptEngine implements IacEngine {
   #count = 0;
   /** The state each plan was made from, by the plan's hash: a plan the state outgrew is stale. */
   readonly #from = new Map<string, string | undefined>();
+  /** As OpenTofu: an apply sees the root's terraform.tfvars.json again, which the plan must match. */
+  readonly #variables = new PlanVariables();
 
   private async stateText(): Promise<string | undefined> {
     return this.statePath === undefined
@@ -197,6 +200,7 @@ class CryptEngine implements IacEngine {
     const content = `fake plan ${++this.#count} for ${dir}`;
     await writeFile(planFile, content);
     this.#from.set(sha256(content), await this.stateText());
+    await this.#variables.record(dir, sha256(content), options.vars);
     const count = (action: string) => changes.filter((c) => c.action === action).length;
     return {
       engine: this.info,
@@ -218,7 +222,7 @@ class CryptEngine implements IacEngine {
   }
 
   async apply(
-    _dir: string,
+    dir: string,
     planFile: string,
     approval: IacApproval,
     options: IacRunOptions = {},
@@ -228,13 +232,15 @@ class CryptEngine implements IacEngine {
       throw new Error("plan hash mismatch");
     }
     // As both engines: a saved plan made from another state is refused, nothing applied.
-    if (this.#from.get(approval.approvedPlanHash as string) !== (await this.stateText())) {
+    if (this.#from.get(approval.approvedPlanHash) !== (await this.stateText())) {
       return {
         ok: false,
         outputs: {},
         log: "Error: Saved plan is stale\n\nThe given plan file can no longer be applied because the state was changed by another operation after the plan was created.",
       };
     }
+    const mismatch = await this.#variables.mismatch(dir, approval.approvedPlanHash);
+    if (mismatch !== undefined) return { ok: false, outputs: {}, log: mismatch };
     this.applied.push(approval);
     if (this.scenario.applyLog !== undefined) {
       return { ok: false, outputs: {}, log: this.scenario.applyLog };
@@ -1317,6 +1323,18 @@ describe("rotateTunnelToken on the user's own server", () => {
   });
 });
 
+/** The root's committed terraform.tfvars.json, as provision renders it, with the old deploy key. */
+async function withTfvars(w: World): Promise<string> {
+  const file = join(w.deps.paths.root, w.plan.infra.dir, "terraform.tfvars.json");
+  const old = `ssh-ed25519 ${randomBytes(32).toString("base64")} opscrew-deploy`;
+  await mkdir(dirname(file), { recursive: true });
+  await writeFile(
+    file,
+    `${JSON.stringify({ app_name: "shop", deploy_ssh_public_key: old }, null, 2)}\n`,
+  );
+  return file;
+}
+
 /**
  * A Hetzner app whose deploy key's copy at the provider was planned in a script and refused: its
  * world, the approvals a later run gives (`approved`), the rotation's input and the plan's hash.
@@ -1327,6 +1345,7 @@ async function refusedProviderCopy() {
   });
   const approved: string[] = [];
   const w = await world(testPlan({ deployed: true }), engine, byHash(approved));
+  const tfvars = await withTfvars(w);
   const input = {
     publicKey: `ssh-ed25519 ${randomBytes(32).toString("base64")} opscrew-deploy`,
     again: "opscrew rotate deploy-key",
@@ -1334,7 +1353,7 @@ async function refusedProviderCopy() {
   };
   const refused = await failure(replaceDeployKeyObject(w.deps, w.plan, input));
   const hash = w.handler.requests[0]?.planHash as string;
-  return { w, engine, approved, input, refused, hash };
+  return { w, engine, approved, input, refused, hash, tfvars };
 }
 
 describe("replaceDeployKeyObject", () => {
@@ -1343,20 +1362,30 @@ describe("replaceDeployKeyObject", () => {
       changes: [change("module.server.hcloud_ssh_key.deploy[0]", "replace", "hcloud_ssh_key")],
     });
     const w = await world(testPlan({ deployed: true }), engine);
+    const tfvars = await withTfvars(w);
     const publicKey = `ssh-ed25519 ${randomBytes(32).toString("base64")} opscrew-deploy`;
     const hash = await replaceDeployKeyObject(w.deps, w.plan, {
       publicKey: `${publicKey}\n`,
       again: "opscrew rotate deploy-key",
       services: { engine: async () => engine },
     });
-    expect(engine.plans[0]?.vars).toEqual({ deploy_ssh_public_key: publicKey });
+    // The new key is in the root's committed tfvars, which plan and apply both read: no -var.
+    expect(JSON.parse(await readFile(tfvars, "utf8"))).toEqual({
+      app_name: "shop",
+      deploy_ssh_public_key: publicKey,
+    });
+    expect(engine.plans[0]?.vars).toBeUndefined();
+    expect(w.deps.reporter.text()).toContain("Replaced the deploy key's copy at the provider.");
+    expect(w.deps.reporter.text()).not.toContain("opscrew provision");
     expect(w.handler.requests[0]).toMatchObject({ planHash: hash, confirmPhrase: "shop" });
     expect(engine.applied).toEqual([{ approvedPlanHash: hash, allowDestroy: true }]);
   });
 
   it("in a script, is refused with the saved plan's hash, then applies that plan in the next run without planning again", async () => {
-    const { w, engine, approved, input, refused, hash } = await refusedProviderCopy();
+    const { w, engine, approved, input, refused, hash, tfvars } = await refusedProviderCopy();
     expect(refused.code).toBe("APPROVAL_REFUSED");
+    // The refused run left the new key in the root's tfvars: the next run plans the same.
+    expect(JSON.parse(await readFile(tfvars, "utf8")).deploy_ssh_public_key).toBe(input.publicKey);
     expect(refused.hint).toBe(
       `To apply this saved plan in a script, run \`opscrew rotate deploy-key\` again with the flags you gave (each --approve <hash> too) and --approve ${hash} --confirm shop added.`,
     );
@@ -1473,6 +1502,7 @@ describe("replaceDeployKeyObject", () => {
     expect(own.engine.calls).toEqual([]);
 
     const current = await world(testPlan({ deployed: true }));
+    await withTfvars(current);
     expect(
       await replaceDeployKeyObject(current.deps, current.plan, {
         ...input,
@@ -1488,10 +1518,28 @@ describe("replaceDeployKeyObject", () => {
       ],
     });
     const w = await world(testPlan({ deployed: true }), other);
+    await withTfvars(w);
     const error = await failure(
       replaceDeployKeyObject(w.deps, w.plan, { ...input, services: { engine: async () => other } }),
     );
     expect(error.message).toContain("module.server.hcloud_server.this (replace)");
     expect(other.applied).toEqual([]);
+
+    // Without the root's committed variables: provision writes them first.
+    const bare = await world(testPlan({ deployed: true }));
+    const missing = await failure(
+      replaceDeployKeyObject(bare.deps, bare.plan, {
+        ...input,
+        services: { engine: async () => bare.engine },
+      }),
+    );
+    expect(missing).toMatchObject({ code: "PHASE_PRECONDITION" });
+    expect(missing.message).toBe(
+      `${bare.plan.infra.dir}/terraform.tfvars.json is missing or holds no deploy key, so OpsCrew can't plan the deploy key's copy at the provider.`,
+    );
+    expect(missing.hint).toBe(
+      "Run `opscrew provision`, which writes it, then run `opscrew rotate deploy-key` again.",
+    );
+    expect(bare.engine.calls).not.toContain("plan");
   });
 });

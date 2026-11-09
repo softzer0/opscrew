@@ -439,10 +439,18 @@ describe("opscrew rotate", () => {
       const sops = new FakeSops();
       await withCopy(p, sops);
       const paths = await withState(p);
+      const old = `ssh-ed25519 ${randomBytes(32).toString("base64")} opscrew-deploy@old`;
+      await writeFile(paths.files.deployKeyPub, `${old}\n`);
+      // The root's variables provision committed, with the old key.
+      const plan = testPlan({ deployed: true, userSecret: false });
+      const tfvars = `${plan.infra.dir}/terraform.tfvars.json`;
+      await mkdir(path.join(p.root, plan.infra.dir), { recursive: true });
       await writeFile(
-        paths.files.deployKeyPub,
-        `ssh-ed25519 ${randomBytes(32).toString("base64")} opscrew-deploy@old\n`,
+        path.join(p.root, tfvars),
+        `${JSON.stringify({ app_name: "shop", deploy_ssh_public_key: old }, null, 2)}\n`,
       );
+      await git(p.env, p.root, "add", tfvars);
+      await git(p.env, p.root, "commit", "-q", "-m", "infra");
       const engine = new FakeEngine({
         changes: [
           {
@@ -500,6 +508,15 @@ describe("opscrew rotate", () => {
       expect(engine.applied.map((applied) => applied.approval.approvedPlanHash)).toEqual([
         provider,
       ]);
+      // The new key is in the root's variables, committed with the rotation's record.
+      const fresh = (await readFile(paths.files.deployKeyPub, "utf8")).trim();
+      expect(fresh).not.toBe(old);
+      const committed = await git(p.env, p.root, "show", `HEAD:${tfvars}`);
+      expect(JSON.parse(committed)).toEqual({ app_name: "shop", deploy_ssh_public_key: fresh });
+      const changed = await git(p.env, p.root, "show", "--name-only", "--format=", "HEAD");
+      const record = path.relative(p.root, credentialsRecordFile(paths)).replaceAll("\\", "/");
+      expect(changed.split("\n")).toEqual(expect.arrayContaining([tfvars, record]));
+      expect(second.ctx.output).not.toContain("Run `opscrew provision");
     },
   );
 

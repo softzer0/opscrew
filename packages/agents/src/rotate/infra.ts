@@ -31,6 +31,7 @@ import {
   tfstateFile,
   toPosixRelative,
   upperFirst,
+  writeFileAtomic,
 } from "@opscrew/core";
 import {
   type EnginePreference,
@@ -242,8 +243,6 @@ interface RotationPlanInput {
   replace?: readonly string[];
   /** Only refresh the state (`-refresh-only`). */
   refreshOnly?: true;
-  /** Input variables that differ from `terraform.tfvars.json` (no secret). */
-  vars?: Record<string, string>;
   /** True for a change the rotation makes besides its replacements; any other stops the plan. */
   allowed: (change: ResourceChange) => boolean;
   /** Names the rotation's plan files ({@link rotationPlanSuffix}). */
@@ -362,7 +361,6 @@ async function planRotation(
   try {
     summary = await engine.plan(dir, planFile, {
       env,
-      ...(input.vars !== undefined ? { vars: input.vars } : {}),
       ...(replace.length > 0 ? { replace } : {}),
       ...(input.refreshOnly === true ? { refreshOnly: true } : {}),
     });
@@ -1229,9 +1227,10 @@ export async function rotateStatePassphrase(
  * created from then on gets) replaced with the new public half `publicKey`, in a plan of their own
  * approved by its hash with the app's name typed (in a script, an earlier run's saved plan that
  * `input.approveHashes` names), so the next provision plans no replacement; the
- * servers keep their keys (`ssh_keys` is in `ignore_changes`). Nothing else may change. Then it
- * says to run `opscrew provision`, which writes the new key into the committed
- * `terraform.tfvars.json` (other plans would put the old one back until then). Returns the
+ * servers keep their keys (`ssh_keys` is in `ignore_changes`). Nothing else may change. The new
+ * key goes into the root's committed `terraform.tfvars.json` first ({@link writeDeployKeyTfvars}),
+ * which the plan and its apply read; a refused run leaves it there and the next plans the same,
+ * and the rotation's pull request commits it. Returns the
  * plan's hash; `undefined` when the environment has no server OpsCrew created, when its state is
  * not on this computer (the next provision there replaces them), or when the objects already hold
  * the new key.
@@ -1254,9 +1253,9 @@ export async function replaceDeployKeyObject(
   if ((!cloud && !extra) || !(await hasState(deps.paths))) return undefined;
   const { again } = input;
   const setup = await rotationEngine(deps, plan, input, again);
+  await writeDeployKeyTfvars(deps, plan, input.publicKey.trim(), again);
   const saved = await planRotation(deps, plan, {
     ...setup,
-    vars: { deploy_ssh_public_key: input.publicKey.trim() },
     allowed: (change) => DEPLOY_KEY_TYPES.has(change.type) && change.action === "replace",
     label: "deploy-key",
     ...(input.approveHashes !== undefined ? { approveHashes: input.approveHashes } : {}),
@@ -1281,9 +1280,38 @@ export async function replaceDeployKeyObject(
     label: "deploy-key",
     again,
   });
-  const { root, environment, app } = deps.paths;
-  deps.reporter.success(
-    `Replaced the deploy key's copy at the provider. Run \`opscrew provision${await commandFlags(root, environment, app)}\` next: it writes the new key into the committed terraform.tfvars.json, and until then OpsCrew's other infrastructure plans of ${environment} would put the old one back, so they stop.`,
-  );
+  deps.reporter.success("Replaced the deploy key's copy at the provider.");
   return saved.planHash;
+}
+
+/** The root's committed variables, with the deploy key's public half among them. */
+const DeployKeyTfvarsSchema = z.looseObject({ deploy_ssh_public_key: z.string() });
+
+/**
+ * Writes `publicKey` into the root's committed `terraform.tfvars.json`, as provision renders it:
+ * OpenTofu reads that file at a saved plan's apply too and refuses a plan made with another value,
+ * so the plan takes the key from the file rather than from `-var`. The rotation's pull request
+ * commits it.
+ * @throws OpsCrewError `PHASE_PRECONDITION` when the file is missing or holds no deploy key.
+ */
+async function writeDeployKeyTfvars(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  publicKey: string,
+  again: string,
+): Promise<void> {
+  const { root, environment, app } = deps.paths;
+  const file = join(root, plan.infra.dir, "terraform.tfvars.json");
+  const tfvars = await readValidJson(file, DeployKeyTfvarsSchema);
+  if (tfvars === undefined) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `${toPosixRelative(root, file)} is missing or holds no deploy key, so OpsCrew can't plan the deploy key's copy at the provider.`,
+      {
+        hint: `Run \`opscrew provision${await commandFlags(root, environment, app)}\`, which writes it, then run \`${again}\` again.`,
+      },
+    );
+  }
+  const next = { ...tfvars, deploy_ssh_public_key: publicKey };
+  await writeFileAtomic(file, `${JSON.stringify(next, null, 2)}\n`);
 }

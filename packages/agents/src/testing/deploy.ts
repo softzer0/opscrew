@@ -45,7 +45,7 @@ import { selfHostedServices } from "../design/sizing";
 import type { CloudflareApi, GitHubApi } from "../provision/types";
 import { hasDeployment, updateServerAddresses } from "../shared";
 import { ScriptedRunner } from "./deps";
-import { noProviderSchemas, plainStateResources } from "./state";
+import { noProviderSchemas, PlanVariables, plainStateResources } from "./state";
 
 export const CF_V4 = ["173.245.48.0/20", "103.21.244.0/22"];
 export const CF_V6 = ["2400:cb00::/32"];
@@ -447,6 +447,8 @@ export class FakeEngine implements IacEngine {
   readonly applied: { planFile: string; approval: IacApproval }[] = [];
   initOptions: IacInitOptions | undefined;
   #counter = 0;
+  /** As OpenTofu: an apply sees the root's terraform.tfvars.json again, which the plan must match. */
+  readonly #variables = new PlanVariables();
 
   constructor(readonly scenario: FakeEngineScenario = {}) {}
 
@@ -472,10 +474,15 @@ export class FakeEngine implements IacEngine {
     return { valid: true, diagnostics: [] };
   }
 
-  async plan(dir: string, planFile: string): Promise<PlanSummary> {
+  async plan(
+    dir: string,
+    planFile: string,
+    options: Parameters<IacEngine["plan"]>[2] = {},
+  ): Promise<PlanSummary> {
     this.calls.push("plan");
     const content = `fake plan ${++this.#counter} for ${dir}`;
     await writeFile(planFile, content);
+    await this.#variables.record(dir, sha256(content), options.vars);
     const changes = this.scenario.changes ?? CREATE;
     const count = (action: string) => changes.filter((c) => c.action === action).length;
     return {
@@ -497,11 +504,13 @@ export class FakeEngine implements IacEngine {
     };
   }
 
-  async apply(_dir: string, planFile: string, approval: IacApproval): Promise<IacApplyResult> {
+  async apply(dir: string, planFile: string, approval: IacApproval): Promise<IacApplyResult> {
     this.calls.push("apply");
     if (sha256(await readFile(planFile)) !== approval.approvedPlanHash) {
       throw new Error("plan hash mismatch");
     }
+    const mismatch = await this.#variables.mismatch(dir, approval.approvedPlanHash);
+    if (mismatch !== undefined) return { ok: false, outputs: {}, log: mismatch };
     this.applied.push({ planFile, approval });
     return this.scenario.applyOk === false
       ? {

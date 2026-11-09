@@ -1,7 +1,7 @@
 // Feature 025 (T2508): the SSH keys, replaced add-first, proven, then removed (FR-2506).
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { checkKeyLine, previewKeyLine } from "@opscrew/connector-ssh-host";
 import type { CommandResult, IacEngine, RemoteExec } from "@opscrew/contracts";
 import { exists, OpsCrewError, resolveProjectPaths, tfstateFile } from "@opscrew/core";
@@ -355,6 +355,13 @@ describe("rotateSshKey: the deploy key", () => {
     await ensureStatePassphrase(w.deps.paths);
     await mkdir(w.deps.paths.files.tfstateDir, { recursive: true });
     await writeFile(tfstateFile(w.deps.paths), plainState([]));
+    // The root's committed variables, where the new key goes before the plan.
+    const tfvars = join(w.deps.paths.root, w.plan.infra.dir, "terraform.tfvars.json");
+    await mkdir(dirname(tfvars), { recursive: true });
+    await writeFile(
+      tfvars,
+      `${JSON.stringify({ deploy_ssh_public_key: w.old.publicKeyOpenSsh })}\n`,
+    );
     let keysAtApply: string[] = [];
     const apply = engine.apply.bind(engine);
     engine.apply = async (...args) => {
@@ -368,6 +375,9 @@ describe("rotateSshKey: the deploy key", () => {
     // Only once the new key proved itself and the old one left the servers.
     expect(keysAtApply).toEqual([await deployKeyNow(w)]);
     expect(engine.applied).toHaveLength(1);
+    expect(JSON.parse(await readFile(tfvars, "utf8"))).toEqual({
+      deploy_ssh_public_key: await deployKeyNow(w),
+    });
   });
 
   it("goes through the host plan on the user's own server: both keys, then the new one only", async () => {
