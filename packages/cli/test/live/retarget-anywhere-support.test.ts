@@ -261,6 +261,20 @@ describe("serverCandidates", () => {
       "cax11",
     ]);
   });
+
+  it("leaves out the types with less memory than asked", () => {
+    const small: HetznerServerType = {
+      name: "cx12",
+      architecture: "x86",
+      memory: 1,
+      prices: [price("nbg1", "0.0040")],
+    };
+    const all = [...types, small];
+    expect(serverCandidates(all, ["nbg1"]).map((c) => c.serverType)).toEqual(["cx12", "cx23"]);
+    expect(serverCandidates(all, ["nbg1"], undefined, "x86", 2).map((c) => c.serverType)).toEqual([
+      "cx23",
+    ]);
+  });
 });
 
 function price(location: string, gross: string) {

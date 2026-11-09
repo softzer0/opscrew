@@ -856,6 +856,7 @@ export class LiveRun {
   async createServer(
     firewall?: readonly FirewallRule[],
     architecture?: "x86" | "arm",
+    minMemoryGb?: number,
   ): Promise<string> {
     const { settings } = this.options;
     this.hetznerTouched = true;
@@ -867,6 +868,7 @@ export class LiveRun {
       locations: this.locations(),
       ...(settings.serverType === undefined ? {} : { forcedType: settings.serverType }),
       ...(architecture === undefined ? {} : { architecture }),
+      ...(minMemoryGb === undefined ? {} : { minMemoryGb }),
       ...(firewall === undefined ? {} : { firewall }),
       ids: this.hetznerIds,
       log: this.log,

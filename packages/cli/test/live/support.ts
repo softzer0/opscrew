@@ -367,12 +367,15 @@ export function serverCandidates(
   locations: readonly string[],
   forced?: string,
   architecture: "x86" | "arm" = "x86",
+  /** The least memory in GB a type has; the cheapest types may have too little for an app. */
+  minMemoryGb = 0,
 ): ServerCandidate[] {
   const candidates: (ServerCandidate & { rank: number })[] = [];
   for (const type of types) {
     if (type.architecture !== architecture) continue;
     if (type.deprecated === true || (type.deprecation ?? null) !== null) continue;
     if (forced !== undefined && type.name !== forced) continue;
+    if (type.memory < minMemoryGb) continue;
     for (const price of type.prices) {
       const rank = locations.indexOf(price.location);
       const hourlyGross = Number(price.price_hourly.gross);

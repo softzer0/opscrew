@@ -148,6 +148,8 @@ export async function createThrowawayServer(options: {
   locations: readonly string[];
   forcedType?: string;
   architecture?: "x86" | "arm";
+  /** The least memory in GB the server needs. */
+  minMemoryGb?: number;
   firewall?: readonly FirewallRule[];
   ids: HetznerIds;
   log: (message: string) => void;
@@ -188,6 +190,7 @@ export async function createThrowawayServer(options: {
     options.locations,
     options.forcedType,
     architecture,
+    options.minMemoryGb,
   ).slice(0, 8);
   if (candidates.length === 0) {
     throw new Error(

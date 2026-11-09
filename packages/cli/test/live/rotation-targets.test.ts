@@ -75,9 +75,20 @@ import {
 } from "./rotation-support";
 
 const ENV = process.env;
-// The cheapest type has about 1 GB, too little for the app with PostgreSQL on your own server.
-const SETTINGS = { ...serverSettings(ENV, "OPSCREW_E2E_ROTATION_SERVER_TYPE") };
-SETTINGS.serverType ??= "cx23";
+const SETTINGS = serverSettings(ENV, "OPSCREW_E2E_ROTATION_SERVER_TYPE");
+/** The app with PostgreSQL on your own server needs more than the cheapest type's 1 GB. */
+const OWN_MEMORY_GB = 2;
+
+/**
+ * The plan keeps off-server snapshot copies, which need the recovery copy's age key: a script names
+ * the key's file, and a public repository gets no committed copy in a script, so a folder takes it.
+ */
+async function keepRecoveryKey(run: LiveRun): Promise<void> {
+  const copies = join(run.work, "copies");
+  await mkdir(copies, { recursive: true });
+  await run.opscrewOk("secrets", "folder", copies);
+  run.provisionFlags = ["--key-out", join(run.work, "age-key.txt")];
+}
 const PASSES = ["own", "tunnel", "portainer"] as const satisfies readonly RotationPass[];
 const SKIP = Object.fromEntries(PASSES.map((pass) => [pass, passSkip(ENV, pass)])) as Record<
   (typeof PASSES)[number],
@@ -195,7 +206,7 @@ describe.skipIf(SKIP.own !== undefined)(
           env: { CLOUDFLARE_API_TOKEN: SETTINGS.cloudflareToken },
         });
         await envs.snapshotGithub();
-        hostKey = await run.createServer();
+        hostKey = await run.createServer(undefined, undefined, OWN_MEMORY_GB);
       },
     );
 
@@ -210,6 +221,7 @@ describe.skipIf(SKIP.own !== undefined)(
         await run.opscrewOk("design", "--host-key", hostKey);
         project = composeProjectOf(await run.readPlan());
         await run.snapshotCloudflare(() => [run.appHost, `www.${run.appHost}`]);
+        await keepRecoveryKey(run);
         await run.adaptAndMerge();
         await run.provisionUntilDone("your own server");
         await run.rememberSecretFile(run.paths().files.deployKey, "deploy-private-key");
@@ -349,7 +361,7 @@ describe.skipIf(SKIP.tunnel !== undefined)(
           env: { CLOUDFLARE_API_TOKEN: SETTINGS.cloudflareToken },
         });
         await envs.snapshotGithub();
-        hostKey = await run.createServer();
+        hostKey = await run.createServer(undefined, undefined, OWN_MEMORY_GB);
       },
     );
 
@@ -365,6 +377,7 @@ describe.skipIf(SKIP.tunnel !== undefined)(
           `www.${run.appHost}`,
           `ssh-${run.app()}.${zone.name}`,
         ]);
+        await keepRecoveryKey(run);
         await run.adaptAndMerge();
         await run.provisionUntilDone("tunnel mode");
         await run.rememberSecretFile(run.paths().files.deployKey, "deploy-private-key");
@@ -607,12 +620,7 @@ describe.skipIf(SKIP.portainer !== undefined)(
         ).toBe(true);
         project = composeProjectOf(plan);
         await run.snapshotCloudflare(() => [run.appHost, `www.${run.appHost}`]);
-        // The plan keeps off-server snapshot copies, which need the recovery copy's age key; a
-        // script names the key's file, and a public repository gets no committed copy in a script.
-        const copies = join(run.work, "copies");
-        await mkdir(copies, { recursive: true });
-        await run.opscrewOk("secrets", "folder", copies);
-        run.provisionFlags = ["--key-out", join(run.work, "age-key.txt")];
+        await keepRecoveryKey(run);
         await run.adaptAndMerge();
         await run.provisionUntilDone("the app in your Portainer");
         await run.rememberGeneratedValues();
