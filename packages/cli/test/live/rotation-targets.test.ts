@@ -80,15 +80,19 @@ const SETTINGS = serverSettings(ENV, "OPSCREW_E2E_ROTATION_SERVER_TYPE");
 const OWN_MEMORY_GB = 2;
 
 /**
- * The plan keeps off-server snapshot copies, which need the recovery copy's age key: a script names
- * the key's file, and a public repository gets no committed copy in a script, so a folder takes it.
+ * These passes test rotation, not off-server copies, whose R2 bucket needs a key only the user can
+ * make in Cloudflare's dashboard: they turn them off. The recovery copy still needs its age key:
+ * a script names the key's file, and a public repository gets no committed copy in a script, so a
+ * folder takes it.
  */
 async function keepRecoveryKey(run: LiveRun): Promise<void> {
+  await run.opscrewOk("snapshot", "offsite", "off");
   const copies = join(run.work, "copies");
   await mkdir(copies, { recursive: true });
   await run.opscrewOk("secrets", "folder", copies);
   run.provisionFlags = ["--key-out", join(run.work, "age-key.txt")];
 }
+
 const PASSES = ["own", "tunnel", "portainer"] as const satisfies readonly RotationPass[];
 const SKIP = Object.fromEntries(PASSES.map((pass) => [pass, passSkip(ENV, pass)])) as Record<
   (typeof PASSES)[number],
