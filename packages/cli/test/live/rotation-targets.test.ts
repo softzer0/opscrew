@@ -178,7 +178,11 @@ describe.skipIf(SKIP.own !== undefined)(
     const site = () => `https://${run.appHost}`;
     const health = async () => run.healthUrl();
     const secret = async (service: string) =>
-      generatedSecret(await generatedValuesOf(run.paths()), ["services", service, "password"]);
+      generatedSecret(
+        await generatedValuesOf(run.paths()),
+        // PostgreSQL's password (db) is kept as dbPassword, the others under services.
+        service === "db" ? ["dbPassword"] : ["services", service, "password"],
+      );
 
     run.step(
       "1. a throwaway Hetzner server with its own SSH key, outside OpsCrew",
@@ -514,7 +518,7 @@ describe.skipIf(SKIP.portainer !== undefined)(
     const values = async () => {
       const json = await generatedValuesOf(run.paths());
       return {
-        db: generatedSecret(json, ["services", "db", "password"]),
+        db: generatedSecret(json, ["dbPassword"]), // PostgreSQL's is kept as dbPassword
         cache: generatedSecret(json, ["services", "cache", "password"]),
         auth: generatedSecret(json, ["env", "BETTER_AUTH_SECRET"]),
       };

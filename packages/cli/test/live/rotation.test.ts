@@ -181,7 +181,7 @@ describe.skipIf(SKIP.services !== undefined)(
     async function passwords(): Promise<Passwords> {
       const json = await generatedValuesOf(envs.paths(STAGING));
       return {
-        db: generatedSecret(json, ["services", "db", "password"]),
+        db: generatedSecret(json, ["dbPassword"]), // PostgreSQL's is kept as dbPassword
         mysql: generatedSecret(json, ["services", "mysql", "password"]),
         mysqlRoot: generatedSecret(json, ["services", "mysql", "root-password"]),
         queue: generatedSecret(json, ["services", "queue", "password"]),
@@ -826,7 +826,11 @@ describe.skipIf(SKIP.restore !== undefined)(
     const login = () => deployLogin(run, envs);
     const site = () => `https://${run.appHost}`;
     const secret = async (service: string, name = "password") =>
-      generatedSecret(await generatedValuesOf(envs.paths()), ["services", service, name]);
+      generatedSecret(
+        await generatedValuesOf(envs.paths()),
+        // PostgreSQL's password (db) is kept as dbPassword, the others under services.
+        service === "db" ? ["dbPassword"] : ["services", service, name],
+      );
 
     run.step(
       `1. examples/${RESTORE_APP} with its bucket in Garage and RabbitMQ${wholeServer ? " and PostgreSQL" : ""} added: provision, the first deploy, a file written through the app`,
