@@ -194,7 +194,129 @@ secret in any test: `fakeSecret(kind)` and `{{FAKE:<kind>}}` (`@opscrew/core/tes
     - the hub reads `id_ed25519` at each start.
   - Garage's key re-login after a restore: the restore's start makes the env's key first, and a `finish` whose `when` fails while Garage boots is skipped silently (T2514).
   - Better Auth with both `BETTER_AUTH_SECRET` and `BETTER_AUTH_SECRETS` set (T2509).
-- [ ] T2517 Simplify (lead): a review of the feature's diff for reuse and simplicity, then its tasks.
+- [ ] T2517 Simplify (lead): a review of the feature's diff for reuse and simplicity, then its tasks. Three read-only reviews of `339f69b2..main` (013's US8 and 025) gave T2521–T2530. The guide's corrections the lead makes directly. One schedule shared by `rotate.sh` and the Docker path was left out: the two differ on purpose, and the risk is high for little gain.
+
+## Phase 8: Simplify (T2517's tasks)
+
+Behaviour, hashes and approval texts stay as they are unless a task says otherwise. Each task's Verify adds whole-repo `pnpm typecheck`.
+
+- [ ] T2521 Rotation's core: one lifecycle for an unfinished rotation, out of the import cycle
+  - Owns:
+    - `packages/agents/src/rotate/{values-pending,values,plan,server,portainer-localhost,portainer,localhost,app-site,app-values,addons-monitoring}.ts` (+ tests)
+    - `packages/agents/src/shared/{approvals,deploy-pause,app-env,errors}.ts` (+ tests)
+    - `packages/agents/src/move/{deploys,app-env}.ts` (+ tests)
+    - `packages/agents/src/provision/secrets.ts` (+ test)
+    - `packages/agents/src/rollback/database.ts` (the re-export only)
+  - Accept:
+    - **The cycle:** `APPROVAL_SECONDS` lives in `shared/approvals.ts` (`rollback/database.ts` re-exports it), so `rotate/plan.ts` leaves the cycle.
+    - **Shared from `values-pending.ts`:** the unfinished-rotation refusal, the same-names test, forgetting a planned rotation, nothing-to-undo (`PHASE_PRECONDITION` everywhere), the began-elsewhere text, `ADDON_ROTATION_HASH` and `TARGET_WORDS`.
+    - **Recording:** `completePendingRotation` records the rotation itself.
+    - **Approvals:** one `requestApproval` in `shared/approvals.ts` serves the services paths. `approveRotation` takes the hash it binds.
+    - **GitHub secrets:** `deploySecretPlace` and `setSecretAt` in `provision/secrets.ts`, used by `server.ts` and `move/app-env.ts`.
+    - **Other shared helpers:**
+      - one `requireNoOtherPause` in `move/deploys.ts`;
+      - `newSecretValue` shared;
+      - `serviceFingerprints` and `pairFingerprint`;
+      - `continued()` in `shared/errors.ts`;
+      - the small trims (`upperFirst`, one `SWITCH_SECONDS`, required `check`/`locked`, one app-env-with-one-side helper, `startsMatch`).
+    - **Two behaviour fixes:**
+      - Portainer and this computer refuse a service that isn't running before the approval, as servers do;
+      - the rotation's stack apply asserts the bound approval in the store.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm typecheck && pnpm lint`
+  - Effort: xhigh
+
+- [ ] T2522 The other credentials use T2521's helpers
+  - Owns: `packages/agents/src/rotate/{keys,keys-files,keys-servers,network,addons-portainer,tokens,infra,infra-connectors}.ts` (+ tests)
+  - Depends: T2521
+  - Accept:
+    - `requestApproval`, `setSecretAt` (keys' own `SecretPlace` and `secretPlace` go), `requireNoOtherPause` (infra) and `continued()` in these files.
+    - Remove the unused `portainerPasswordScript` and `KeyStage`.
+    - The type-only cycle `infra.ts` ↔ `infra-connectors.ts` goes.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm typecheck && pnpm lint`
+  - Effort: high
+
+- [ ] T2523 The credential list takes each service's mode from the catalog
+  - Owns: `packages/agents/src/rotate/inventory.ts` (+ test)
+  - Accept:
+    - `SERVICE_ROTATION` and its TODO go. The mode is the costliest of `serviceSpec(kind).rotation`'s secrets, so NATS and ClickHouse read as a short swap, as the guide and the approval say.
+    - The `recordTokens` option no production caller passes goes. Its tests call `tokenFirstSeen`.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm typecheck && pnpm lint`
+  - Effort: medium
+
+- [ ] T2524 One helper for the app's stacks as provision last set them up
+  - Owns: `packages/agents/src/provision/portainer-flow.ts`, `packages/agents/src/retarget/sides/portainer.ts`, `packages/agents/src/shared/portainer-stacks.ts`, `packages/agents/src/drift/portainer.ts` (+ tests)
+  - Accept:
+    - `recordedPortainerStacks` is shared by `portainerStacksFor` and retarget's `stacksOf`, and retarget reuses `connectPortainer`'s inspect. `portainerStacksFor`'s signature stays as it is.
+    - It passes no `github` to `offsiteSetup`, so a rotation never makes the recovery copy's first key. It stops as retarget does.
+    - One constant for "already set up as planned", and one `heldPreviousValues`.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm typecheck && pnpm lint`
+  - Effort: high
+
+- [ ] T2525 Snapshot restores without repeats
+  - Owns: `packages/agents/src/snapshot/{restore,generations,list}.ts` (+ tests)
+  - Depends: T2520
+  - Accept:
+    - `restore.ts`: one audited remote run (`auditOn`) and one `unanswered`.
+    - `generations.ts`: one loop for `restoreRelogins` and `rotatedLogins`, `requireNotAhead` inlined, one record-entry reader, and `holdsLogins` private.
+    - `list.ts`: the second `copies` check goes.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm typecheck && pnpm lint`
+  - Effort: medium
+
+- [ ] T2526 One refusal for a rotation's deploy pause
+  - Owns: `packages/agents/src/shared/deploy-pause.ts` (the new helper), `packages/agents/src/provision/run.ts`, `packages/agents/src/retarget/window.ts`, `packages/agents/src/promote/shared.ts`, `packages/agents/src/rollback/{server,resume}.ts` (+ tests)
+  - Depends: T2521
+  - Accept: `rotationPauseRefusal` beside `rotationWindowText`, used by every refusal. The messages stay byte for byte as they are.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm typecheck && pnpm lint`
+  - Effort: medium
+
+- [ ] T2527 Small repeats and the analyze cycle
+  - Owns:
+    - `packages/agents/src/shared/engine.ts`, `packages/agents/src/provision/{storage,monitoring,publish}.ts`, `packages/agents/src/destroy/deletion.ts`, `packages/agents/src/environments/shared-parts.ts`, `packages/agents/src/design/{run,builder}.ts`, `packages/agents/src/addons/run.ts`
+    - `packages/agents/src/analyze/{summary,names}.ts` (`names.ts` is new)
+    - `packages/connectors/ssh-host/src/plan.ts`
+    - (+ tests)
+  - Accept:
+    - The bucket state paths sit beside `pagesVerificationStateFile`, and `storage.ts` re-exports them.
+    - `destroy/deletion.ts` uses the shared `lastLines`.
+    - `sharedStorage(own, source)`.
+    - One monitoring new-password condition.
+    - `addonFiles(plan, kind, facts)`.
+    - One constant for publish's repeated warning.
+    - `planTunnelToken` builds on `tunnelConnectorStep`.
+    - `FRAMEWORK_NAMES` and `frameworkName` move to a leaf `analyze/names.ts`, which ends the `summary.ts` ↔ `builder.ts` cycle.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/connector-ssh-host && pnpm typecheck && pnpm lint`
+  - Effort: medium
+
+- [ ] T2528 `rotate.sh` and the hold checks without repeats
+  - Owns: `packages/iac-templates/src/workflow/{rotate,switch,snapshot-script}*.ts`, `packages/iac-templates/src/workflow/index.ts` (`heldCheck` only), `packages/iac-templates/src/index.ts`, their `__snapshots__`
+  - Accept:
+    - `rotate.ts` imports the catalog's `RotationCommand`, `ConditionalCommand`, `RotationStep` and `RotationMode` instead of copying them.
+    - One `heldStop(plan, prefix, end)` in `switch.ts`, used by `heldRefusal` and both places in `rotate.ts`. `rotationHeldStop` loses its `variable` parameter.
+    - One constant for the repeated "new values" refusal.
+    - The unused root exports (`ConditionalCommand`, `GrantRotation`, `RotationMode`, `ServiceRotation`, `rotateEnvFiles`) go.
+    - Optional: the rotation-stop line becomes one shell function in `snapshot.sh`.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/agents && pnpm typecheck && pnpm lint`
+  - Effort: high
+
+- [ ] T2529 The CLI's rotate and approvals without repeats
+  - Owns: `packages/cli/src/approval*.ts`, `packages/cli/src/commands/{rotate,restore}*.ts`
+  - Accept:
+    - **One helper:** `rotationApprovals` and `restoreApprovals` share a `showInScript` option, or one helper, in `approval.ts`. `ScriptedRotationApproval`'s narrow `--yes` stays as it is.
+    - **`rotate.ts` builds once:** it builds `remote`, `sleep` and `now` once, and passes `provision` in.
+    - **Help text:** the `--undo` help and the `checkFlags` error mention forgetting an add-on rotation that was never approved.
+  - Verify: `pnpm turbo run typecheck test --filter=opscrew && pnpm typecheck && pnpm lint`
+  - Effort: medium
+
+- [ ] T2530 The catalog's recipe pieces
+  - Owns: `packages/iac-templates/src/catalog/entries.ts`
+  - Accept:
+    - New `dual()` beside `swap()` and `restart()`.
+    - New `rootBegin(client, change)` for MySQL and MariaDB, and a local `mysqlRoot(...)`.
+    - `newFile` takes a writer, and NATS and ClickHouse use it.
+    - The rendered commands stay byte for byte as they are: `rotation.test.ts` passes unchanged.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates && pnpm typecheck && pnpm lint`
+  - Effort: medium
+
 - [ ] T2518 The release 0.2.6 (lead): `docs/releasing.md`, with 013's US8 (founder, 2026-11-08). The changelog says that existing deployments recreate MySQL, MariaDB, Valkey, Redis, Dragonfly, Kafka, Redpanda, OpenSearch and Elasticsearch once at their next deploy (their start commands changed, T2503), and that apps on Portainer or Cloudflare's hosting or GitHub Pages whose `APP_KEY` or `BETTER_AUTH_SECRET` OpsCrew generates get `APP_PREVIOUS_KEYS` or `BETTER_AUTH_SECRETS` named in their committed stack template or deploy workflow at their next provision. It stays unset until a rotation keeps an old key there (T2509).
 
 ## Dependencies
