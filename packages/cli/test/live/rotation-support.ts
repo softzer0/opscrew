@@ -699,5 +699,7 @@ if (phase === "old") {
   const fresh = await auth.api.getSession({ headers: new Headers({ cookie: cookieOf(signed.headers) }) });
   console.log(fresh?.session ? "${BETTER_AUTH_MARKERS.newOk}" : "new session: failed");
 }
+// Better Auth may keep a timer alive (a live run hung here for 10 minutes): the check is done.
+process.exit(0);
 `;
 }
