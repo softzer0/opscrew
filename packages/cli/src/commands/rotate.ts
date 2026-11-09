@@ -16,9 +16,11 @@ import {
   isAppName,
   listedCredentials,
   type PhaseDeps,
+  type ProvisionServices,
   publishDeploySetup,
   publishRotatedKey,
   type RefreshRecoveryResult,
+  type RotateServicesOptions,
   readPendingRotation,
   replaceToken,
   requireGitRepo,
@@ -54,7 +56,7 @@ import {
 } from "@opscrew/core";
 import { type DeployPlan, onOneServer, readArtifact } from "@opscrew/plan-schema";
 import type { Command } from "commander";
-import { checkConfirmName, FlagConfirmation, formatRequest, hashListed } from "../approval";
+import { checkConfirmName, FlagConfirmation, hashListed } from "../approval";
 import type { CliContext } from "../context";
 import { createPhaseDeps, servicesOf } from "../deps";
 import { quietReporter } from "../reporter";
@@ -240,10 +242,10 @@ function checkFlags(
       `Run \`${command}\` without --confirm.`,
     );
   }
-  const undoes = kind === "services" || kind === "grant" || kind === "state-passphrase";
-  if (flags.undo === true && !undoes && kind !== "monitoring" && kind !== "beszel") {
+  const undoes = ["services", "grant", "state-passphrase", "monitoring", "beszel"].includes(kind);
+  if (flags.undo === true && !undoes) {
     throw refuse(
-      "--undo goes only with services, app secrets and device logins (grant:<device>/<service>), whose old values OpsCrew keeps until their rotation is done, and with state-passphrase before any state is rewritten.",
+      "--undo goes only with services, app secrets and device logins (grant:<device>/<service>), whose old values OpsCrew keeps until their rotation is done, with state-passphrase before any state is rewritten, and with monitoring and beszel to forget a rotation that was never approved.",
       `Run \`${command}\` without --undo: run again after a failure, it goes on from where it stopped.`,
     );
   }
@@ -291,15 +293,16 @@ const PUBLISH_KINDS: readonly ApprovalRequest["kind"][] = ["git-push", "pull-req
  * The approvals of a rotation's run: every plan by its hash (a script's `--approve`), never by a
  * flag alone; `--yes` approves only pushing the record and opening its pull request. A plan that
  * loses something (a replaced resource, users logged out) also needs the app's name typed: in a
- * script `--confirm <app>` with `--approve`, the request shown first.
+ * script `--confirm <app>` with `--approve`, the request shown first. A script shows every
+ * request it refuses, with its plan's lines and hash.
  */
 export function rotationApprovals(
   ctx: CliContext,
   options: { hashes: readonly string[]; confirm: string | undefined; yes: boolean },
 ): (base: ApprovalHandler, clock: Clock) => ApprovalHandler {
   const { hashes, confirm, yes } = options;
-  return (base, clock) => {
-    const gate = new FlagConfirmation(
+  return (base, clock) =>
+    new FlagConfirmation(
       new ScriptedRotationApproval(base, {
         hashes,
         yes,
@@ -315,16 +318,9 @@ export function rotationApprovals(
         interactive: ctx.isInteractive,
         print: ctx.stdout,
         clock,
+        showInScript: true,
       },
     );
-    if (ctx.isInteractive) return gate;
-    return {
-      request: (request) => {
-        if (request.allowDestroy === true) ctx.stdout(formatRequest(request));
-        return gate.request(request);
-      },
-    };
-  };
 }
 
 /** The repository a rotation records itself in: its clone, GitHub and the deploy branch. */
@@ -485,19 +481,22 @@ async function rotateServicesOf(
   deps: PhaseDeps,
   plan: DeployPlan,
   names: readonly string[],
-  undo: boolean,
-  github: () => GitHubSetup,
+  options: {
+    undo: boolean;
+    github: () => GitHubSetup;
+    provision: ProvisionServices;
+    /** The servers' shell and the waits for a running deploy. */
+    servers: Pick<RotateServicesOptions, "remote" | "sleep" | "now">;
+  },
 ): Promise<RefreshRecoveryResult | undefined> {
-  const provision = servicesOf(ctx).provision ?? {};
+  const { undo, github, provision, servers } = options;
   const provider = plan.target.provider;
   if (onOneServer(provider)) {
     return (
       await rotateServices(deps, plan, names, {
         github: github(),
         ...(undo ? { undo: true } : {}),
-        ...(provision.remote === undefined ? {} : { remote: provision.remote }),
-        ...(provision.sleep === undefined ? {} : { sleep: provision.sleep }),
-        ...(provision.now === undefined ? {} : { now: provision.now }),
+        ...servers,
       })
     ).copy;
   }
@@ -618,6 +617,7 @@ async function rotate(
     }
     return repository.github;
   };
+  const remote = provision.remote === undefined ? {} : { remote: provision.remote };
   const waits = {
     ...(provision.sleep === undefined ? {} : { sleep: provision.sleep }),
     ...(provision.now === undefined ? {} : { now: provision.now }),
@@ -631,8 +631,7 @@ async function rotate(
         deps,
         plan,
         flags.dropPrevious === true ? await dropPreviousNames(deps, plan) : request.names,
-        undo,
-        github,
+        { undo, github, provision, servers: { ...remote, ...waits } },
       );
       break;
     case "key":
@@ -641,7 +640,7 @@ async function rotate(
           // The proof dispatches a deploy (or a check run) and follows it.
           github: { ...github(), api: services.rotate?.github ?? (await followingApi(deps)) },
           provision,
-          ...(provision.remote === undefined ? {} : { remote: provision.remote }),
+          ...remote,
           ...(provision.engine === undefined ? {} : { engine: provision.engine }),
           approveHashes: hashes,
         })
@@ -673,7 +672,7 @@ async function rotate(
         servers: {
           github: github(),
           ...(undo ? { undo: true } : {}),
-          ...(provision.remote === undefined ? {} : { remote: provision.remote }),
+          ...remote,
           ...waits,
         },
       });
@@ -712,13 +711,7 @@ async function rotate(
       ).copy;
       break;
     case "portainer":
-      copy = (
-        await rotatePortainerPassword(
-          deps,
-          plan,
-          provision.remote === undefined ? {} : { remote: provision.remote },
-        )
-      ).copy;
+      copy = (await rotatePortainerPassword(deps, plan, remote)).copy;
       break;
     case "monitoring":
       copy = (await rotateMonitoring(deps, plan, { services: provision })).copy;
@@ -789,7 +782,7 @@ export function register(program: Command, ctx: CliContext): void {
     )
     .option(
       "--undo",
-      "Put the old values back of a services' or a device login's rotation that stopped before it finished, or step back from a state-passphrase rotation no state was rewritten by",
+      "Put the old values back of a services' or a device login's rotation that stopped before it finished, step back from a state-passphrase rotation no state was rewritten by, or forget a monitoring or beszel rotation that was never approved",
     )
     .option(
       "--drop-previous",

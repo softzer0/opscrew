@@ -24,6 +24,7 @@ import type {
 } from "@opscrew/contracts";
 import { resolveProjectPaths, tfstateFile } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
+import { serviceSpec } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import type { CliServices } from "../deps";
@@ -352,6 +353,39 @@ describe("opscrew rotate", () => {
     }
     expect(asked.map((request) => request.kind)).toEqual([...rotations]);
   });
+
+  it.skipIf(GIT === undefined)(
+    "shows a refused plan's lines in a script, also of a rotation that loses nothing",
+    async () => {
+      const plan = testPlan({ deployed: true, userSecret: false });
+      const p = await setup(plan);
+      // The app's server runs db on the catalog's start command and has the app's settings.
+      const db = plan.services.find((service) => service.name === "db");
+      if (db === undefined) throw new Error("testPlan has no db");
+      const spec = serviceSpec(db.kind);
+      const start = { plan, service: db, secretRef: () => "" };
+      const starts = [
+        `entrypoint db ${JSON.stringify(spec.entrypoint?.(start) ?? ["docker-entrypoint.sh"])}`,
+        `cmd db ${JSON.stringify(spec.command?.(start) ?? [db.kind])}`,
+      ].join("\n");
+      const remote = (host: string): RemoteExec => ({
+        host,
+        run: async (command) => ({
+          exitCode: 0,
+          stdout: command.includes("for s in db") ? `${starts}\n` : "",
+          stderr: "",
+        }),
+      });
+      const services: CliServices = { provision: { github: new FakeGitHub(), remote } };
+      const { ctx } = context(p, new FakeSops(), { approvals: null, services });
+      expect(await run(ctx, "rotate", "db")).toBe(1);
+      expect(ctx.errors).toMatch(/--approve [0-9a-f]{64}/);
+      // The window line comes before the refusal's hint.
+      expect(ctx.output).toContain("a short swap: new connections the running app opens to");
+      expect(ctx.output).toMatch(/Rotation hash: [0-9a-f]{64}/);
+      expect(`${ctx.output}${ctx.errors}`).not.toContain(DB_PASSWORD);
+    },
+  );
 
   it.skipIf(GIT === undefined)(
     "rotates the state passphrase in a script: refused with its plan's hash, stepped back from with --undo, then a saved plan applied by its hash",

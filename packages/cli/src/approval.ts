@@ -362,6 +362,11 @@ export interface FlagConfirmationOptions {
   /** Where approved requests are shown (`ctx.stdout`, which redacts). */
   print: (text: string) => void;
   clock: Clock;
+  /**
+   * In a script, show each request (its plan's lines and hash): one that deletes something before
+   * it is decided, any other when it is refused.
+   */
+  showInScript?: boolean;
 }
 
 /**
@@ -381,6 +386,16 @@ export class FlagConfirmation implements ApprovalHandler {
   ) {}
 
   async request(request: ApprovalRequest): Promise<ApprovalDecision> {
+    const { interactive, showInScript, print } = this.options;
+    if (interactive || showInScript !== true) return this.decide(request);
+    const shownFirst = request.allowDestroy === true;
+    if (shownFirst) print(formatRequest(request));
+    const decision = await this.decide(request);
+    if (!shownFirst && !decision.approved) print(formatRequest(request));
+    return decision;
+  }
+
+  private async decide(request: ApprovalRequest): Promise<ApprovalDecision> {
     const { kinds, what, names, hashes, interactive, print, clock } = this.options;
     const unbound = request.planHash === undefined;
     const phrase = request.confirmPhrase;

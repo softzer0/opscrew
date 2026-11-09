@@ -2,7 +2,7 @@ import { restoreServerSnapshot, restoreSnapshot } from "@opscrew/agents";
 import type { ApprovalHandler, Clock } from "@opscrew/contracts";
 import { isPlanHash, OpsCrewError } from "@opscrew/core";
 import { type Command, Option } from "commander";
-import { FlagConfirmation, formatRequest } from "../approval";
+import { FlagConfirmation } from "../approval";
 import type { CliContext } from "../context";
 import { createPhaseDeps, servicesOf } from "../deps";
 import { type AppEnvFlags, addEnvOption, chooseEnvironment, givenFlags } from "../ui/environment";
@@ -78,15 +78,16 @@ function checkFlags(flags: RestoreFlags, id: string, given: string): string | un
 /**
  * The run's approvals: a restore loses data, so it is destroy-grade. In a terminal the name is
  * typed; in a script `--confirm <name>` approves it only with `--approve` and its hash, and the
- * request (what is lost, and its hash) is shown first. `--yes` never approves it.
+ * request (what is lost, and its hash) is shown first, as is any request refused. `--yes` never
+ * approves it.
  */
 function restoreApprovals(
   ctx: CliContext,
   confirm: string | undefined,
   approve: string | undefined,
 ): (base: ApprovalHandler, clock: Clock) => ApprovalHandler {
-  return (base, clock) => {
-    const gate = new FlagConfirmation(base, {
+  return (base, clock) =>
+    new FlagConfirmation(base, {
       kinds: ["remote-exec"],
       what: "a restore",
       names: confirm === undefined ? [] : [confirm],
@@ -94,15 +95,8 @@ function restoreApprovals(
       interactive: ctx.isInteractive,
       print: ctx.stdout,
       clock,
+      showInScript: true,
     });
-    if (ctx.isInteractive) return gate;
-    return {
-      request: (request) => {
-        if (request.allowDestroy === true) ctx.stdout(formatRequest(request));
-        return gate.request(request);
-      },
-    };
-  };
 }
 
 /** The command's line in `opscrew --help`, and the first line of its own help. */
