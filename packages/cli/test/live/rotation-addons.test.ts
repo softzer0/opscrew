@@ -92,10 +92,14 @@ describe.skipIf(SKIP !== undefined)(
       return member.address;
     }
 
-    /** Beszel's dashboard password on this computer (`beszel_secrets.json`), its values remembered. */
+    /**
+     * Beszel's dashboard password on this computer (`beszel_secrets.json`), its secret values
+     * remembered: not the hub's public key, which its host plan holds.
+     */
     async function beszelPassword(): Promise<string> {
       const json: unknown = JSON.parse(await readFile(envs.paths().files.beszelSecrets, "utf8"));
-      for (const value of jsonStrings(json)) run.scrubber.add(value, "beszel-secret");
+      const { hubPublicKey: _public, ...secrets } = json as Record<string, unknown>;
+      for (const value of jsonStrings(secrets)) run.scrubber.add(value, "beszel-secret");
       return generatedSecret(json, ["password"]);
     }
 
