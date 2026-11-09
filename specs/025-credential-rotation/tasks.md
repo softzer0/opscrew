@@ -194,7 +194,7 @@ secret in any test: `fakeSecret(kind)` and `{{FAKE:<kind>}}` (`@opscrew/core/tes
     - the hub reads `id_ed25519` at each start.
   - Garage's key re-login after a restore: the restore's start makes the env's key first, and a `finish` whose `when` fails while Garage boots is skipped silently (T2514).
   - Better Auth with both `BETTER_AUTH_SECRET` and `BETTER_AUTH_SECRETS` set (T2509).
-- [ ] T2517 Simplify (lead): a review of the feature's diff for reuse and simplicity, then its tasks. Three read-only reviews of `339f69b2..main` (013's US8 and 025) gave T2521–T2530. The guide's corrections the lead makes directly. One schedule shared by `rotate.sh` and the Docker path was left out: the two differ on purpose, and the risk is high for little gain.
+- [x] T2517 Simplify (lead): a review of the feature's diff for reuse and simplicity, then its tasks. Three read-only reviews of `339f69b2..main` (013's US8 and 025) gave T2521–T2530. The guide's corrections the lead makes directly. One schedule shared by `rotate.sh` and the Docker path was left out: the two differ on purpose, and the risk is high for little gain.
 
 ## Phase 8: Simplify (T2517's tasks)
 
@@ -252,7 +252,7 @@ Behaviour, hashes and approval texts stay as they are unless a task says otherwi
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm typecheck && pnpm lint`
   - Effort: high
 
-- [ ] T2525 Snapshot restores without repeats
+- [x] T2525 Snapshot restores without repeats
   - Owns: `packages/agents/src/snapshot/{restore,generations,list}.ts` (+ tests)
   - Depends: T2520
   - Accept:
