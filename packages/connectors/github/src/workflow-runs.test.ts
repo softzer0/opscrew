@@ -363,6 +363,43 @@ describe("waitForWorkflowRun", () => {
     expect(clock.sleeps).toEqual([5000, 5000]);
   });
 
+  it("reads a run again while GitHub answers a server error, then follows it", async () => {
+    const clock = fakeClock();
+    const { fetch, calls } = fakeFetch({
+      "GET /repos/acme/shop/actions/runs/42": [
+        { status: 500, body: { message: "Server Error" } },
+        { status: 504, body: { message: "Gateway Timeout" } },
+        { body: run(42, "completed", "success", "2026-10-13T10:00:01Z") },
+      ],
+    });
+    const result = await client(fetch, clock).waitForWorkflowRun("acme", "shop", {
+      workflowFile: FILE,
+      ref: "main",
+      runId: 42,
+      pollMs: 5000,
+    });
+    expect(result).toMatchObject({ id: 42, status: "completed", conclusion: "success" });
+    expect(calls).toHaveLength(3);
+  });
+
+  it("refuses a run GitHub answers server errors for over five minutes, with GitHub's answer", async () => {
+    const clock = fakeClock();
+    const { fetch } = fakeFetch({
+      "GET /repos/acme/shop/actions/runs/42": [{ status: 503, body: { message: "Unavailable" } }],
+    });
+    const error = await client(fetch, clock)
+      .waitForWorkflowRun("acme", "shop", {
+        workflowFile: FILE,
+        ref: "main",
+        runId: 42,
+        pollMs: 5000,
+      })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(OpsCrewError);
+    expect((error as Error).message).toContain("read workflow run 42");
+    expect(clock.sleeps.reduce((a, b) => a + b, 0)).toBe(300_000);
+  });
+
   it("refuses a run GitHub still answers 404 for after a minute, with GitHub's refusal", async () => {
     const clock = fakeClock();
     const { fetch } = fakeFetch({

@@ -672,6 +672,13 @@ const DEFAULT_RUN_POLL_MS = 5_000;
  * right after the dispatch that returned its id (seen live on 2026-11-06).
  */
 const RUN_MISSING_GRACE_MS = 60_000;
+/**
+ * How long a workflow run GitHub answers a server error for is read again before the error counts.
+ * GitHub answered 500 and 504 for minutes during an incident (2026-11-09), while the run went on.
+ */
+const RUN_UNAVAILABLE_GRACE_MS = 300_000;
+/** The answers of a GitHub that can't serve the request for now. */
+const SERVER_ERRORS: readonly number[] = [500, 502, 503, 504];
 
 const SECRET_NAME = /^[A-Z_][A-Z0-9_]*$/;
 
@@ -1751,15 +1758,17 @@ export class GitHubClient {
     owner: string,
     repo: string,
     runId: number,
-  ): Promise<WorkflowRun | undefined> {
+  ): Promise<WorkflowRun | "missing" | "unavailable"> {
     const what = `read workflow run ${runId}`;
     const { status, json } = await this.#request(
       "GET",
       `/repos/${owner}/${repo}/actions/runs/${runId}`,
       what,
-      { ok: [404] },
+      { ok: [404, ...SERVER_ERRORS] },
     );
-    return status === 404 ? undefined : toWorkflowRun(this.#parse(RunSchema, json, what));
+    if (status === 404) return "missing";
+    if (SERVER_ERRORS.includes(status)) return "unavailable";
+    return toWorkflowRun(this.#parse(RunSchema, json, what));
   }
 
   /** Where a workflow run came from; `undefined` when GitHub has no such run (404). */
@@ -1899,18 +1908,29 @@ export class GitHubClient {
     let waited = false;
     // Since when GitHub answers 404 for the run, while it does.
     let missingSince: number | undefined;
+    // Since when GitHub answers a server error for the run, while it does.
+    let unavailableSince: number | undefined;
     for (;;) {
       const found = await this.#runOrMissing(owner, repo, options.runId);
-      if (found === undefined) {
+      if (found === "missing") {
         missingSince ??= this.#now();
         if (this.#now() - missingSince < RUN_MISSING_GRACE_MS) {
           await this.#sleep(pollMs);
           continue;
         }
       }
+      if (found === "unavailable") {
+        unavailableSince ??= this.#now();
+        if (this.#now() - unavailableSince < RUN_UNAVAILABLE_GRACE_MS) {
+          await this.#sleep(pollMs);
+          continue;
+        }
+      }
       missingSince = undefined;
-      // Still missing after the grace: the plain read throws GitHub's own refusal.
-      const run = found ?? (await this.getWorkflowRun(owner, repo, options.runId));
+      unavailableSince = undefined;
+      // Still missing or unavailable after the grace: the plain read throws GitHub's own answer.
+      const run =
+        typeof found === "object" ? found : await this.getWorkflowRun(owner, repo, options.runId);
       if (run.status === "completed") {
         return {
           id: run.id,
