@@ -400,7 +400,7 @@ Behaviour, hashes and approval texts stay as they are unless a task says otherwi
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=opscrew && pnpm typecheck && pnpm lint`
   - Effort: medium
 
-- [ ] T2518 The release 0.2.6 (lead): `docs/releasing.md`, with 013's US8 (founder, 2026-11-08). The changelog says that existing deployments recreate MySQL, MariaDB, Valkey, Redis, Dragonfly, Kafka, Redpanda, OpenSearch and Elasticsearch once at their next deploy (their start commands changed, T2503), and that apps on Portainer or Cloudflare's hosting or GitHub Pages whose `APP_KEY` or `BETTER_AUTH_SECRET` OpsCrew generates get `APP_PREVIOUS_KEYS` or `BETTER_AUTH_SECRETS` named in their committed stack template or deploy workflow at their next provision. It stays unset until a rotation keeps an old key there (T2509).
+- [x] T2518 The release 0.2.6 (lead): `docs/releasing.md`, with 013's US8 (founder, 2026-11-08). The changelog says that existing deployments recreate MySQL, MariaDB, Valkey, Redis, Dragonfly, Kafka, Redpanda, OpenSearch and Elasticsearch once at their next deploy (their start commands changed, T2503), and that apps on Portainer or Cloudflare's hosting or GitHub Pages whose `APP_KEY` or `BETTER_AUTH_SECRET` OpsCrew generates get `APP_PREVIOUS_KEYS` or `BETTER_AUTH_SECRETS` named in their committed stack template or deploy workflow at their next provision. It stays unset until a rotation keeps an old key there (T2509).
 
 ## Dependencies
 
