@@ -128,7 +128,9 @@ keys, then one with the new key alone, each shown and approved by its hash.
 
 On a cloud server, `deploy-key` ends with an infrastructure plan that replaces the provider's copy
 of the key, which only servers created from then on get. It replaces a resource, so you type the
-app's name; in a script, give `--confirm <app>` with `--approve <hash>`.
+app's name. In a script, the refused run saves that plan and prints its hash. Run the same command
+again with that hash added to its `--approve` hashes and `--confirm <app>`, and it applies the
+saved plan. The Access token and the state passphrase work the same way.
 
 The preview key is in the recovery copy too.
 
@@ -157,6 +159,12 @@ clear the terminal once it is scanned. See [Your devices on the private network]
 state it encrypts with the old passphrase as the fallback, then writes it with the new one, in one
 approved apply per state. Nothing in the cloud changes. The new passphrase replaces the old one
 once every state opens with it alone.
+
+In a script, each state's plan is saved when its approval is refused, and the next run applies it
+when you add its hash: `--approve <hash>`. Until then the new passphrase waits on this computer,
+and the commands that read the states stop. Run the rotation again with the hash to go on, or
+`npx opscrew rotate state-passphrase --undo` to step back. The undo works only while no state has
+been written with the new passphrase yet.
 
 ### Add-ons
 
@@ -201,7 +209,8 @@ this computer:
 
 - run the same command again, and it goes on from where it stopped;
 - or, for services, app secrets and device logins, add `--undo` to put the old values back. That
-  works until the old values begin to be dropped; from then on the rotation only goes forward.
+  works until the old values begin to be dropped; from then on the rotation only goes forward. The
+  state passphrase's `--undo` works until the first state is written with the new one.
 
 The app's deploys stay paused (or held, on this computer) until the rotation or its undo is run
 to its end. While a rotation holds the app, a snapshot you take is refused and a scheduled one is
