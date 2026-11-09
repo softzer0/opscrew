@@ -235,7 +235,7 @@ Behaviour, hashes and approval texts stay as they are unless a task says otherwi
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm typecheck && pnpm lint`
   - Effort: high
 
-- [ ] T2523 The credential list takes each service's mode from the catalog
+- [x] T2523 The credential list takes each service's mode from the catalog
   - Owns: `packages/agents/src/rotate/inventory.ts` (+ test)
   - Accept:
     - `SERVICE_ROTATION` and its TODO go. The mode is the costliest of `serviceSpec(kind).rotation`'s secrets, so NATS and ClickHouse read as a short swap, as the guide and the approval say.
