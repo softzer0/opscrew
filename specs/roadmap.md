@@ -5,11 +5,9 @@ feature gets its own `specs/NNN-name/` folder when it starts, and its section he
 there. The lead keeps this file current. Research for a feature goes in that feature's
 `research.md`, never only in an agent's memory, so every session on every machine has it.
 
-Done: 000–024. [024 snapshots and restores as commands](024-snapshots-and-restores/) passed
-every live pass on its final code by 2026-11-08 and shipped as 0.2.5 that day.
-Being built first: plain PHP apps, a follow-up to 013 (US8, the founder's request of
-2026-11-08). Then 025 credential rotation (the founder's go-ahead, 2026-11-08, the night 0.2.5
-shipped; its research is done). Both ship together in one release, 0.2.6 (founder, 2026-11-08).
+Done: 000–025. Plain PHP apps (013's US8) and
+[025 credential rotation](025-credential-rotation/) shipped together as 0.2.6 on 2026-11-09.
+Next: 026, once the founder gives the go-ahead.
 
 ## 019 Rollback
 
