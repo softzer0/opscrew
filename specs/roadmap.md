@@ -301,12 +301,14 @@ never through `cntb` (constitution IV).
   provider-neutral flow skills; one MCP server serves the tools of whichever provider packages are
   installed. One ADR covers both.
 
-## 027 Shared hosting: cPanel, Plesk, DirectAdmin and SFTP
+## 027 Shared hosting (cPanel, Plesk, DirectAdmin, SFTP) and LiteSpeed
 
 The founder placed cPanel, Plesk, DirectAdmin and SFTP before AWS, as one feature, on 2026-11-07,
 because most shared hosting providers run one of these three panels. Many apps live on hosting the
 user already pays for: a control panel, no root, no Docker.
-WordPress, Laravel, static sites and small Node.js apps are typical.
+WordPress, Laravel, static sites and small Node.js apps are typical. LiteSpeed joined later
+(founder, 2026-11-10 and 2026-11-11): on hosting accounts it serves, and as a third proxy on
+servers.
 
 - **A new kind of target, a hosting account.** There is no server to harden and no containers.
   - **What fits:**
@@ -327,6 +329,30 @@ WordPress, Laravel, static sites and small Node.js apps are typical.
   server's host plans do (ADR 0011).
 - **SFTP** is the plainest target, any host with SFTP: a built static site or a PHP app uploaded.
   There is no panel API, so databases and domains stay the user's, and the plan names them.
+- **LiteSpeed** (founder, 2026-11-10): many shared hosts run LiteSpeed Web Server in place of
+  Apache under the same panels; the founder's cPanel test account does. OpsCrew finds out which
+  of the two serves the account and says so in the plan.
+  - The `.htaccess` rules OpsCrew writes (HTTPS forced, the web root, secrets out of reach) work
+    on both.
+  - Each deploy and rollback empties LiteSpeed's page cache (LSCache, which the LiteSpeed Cache
+    plugin for WordPress uses), so no visitor gets a page from the old release.
+  - PHP serves the new release as soon as the switch happens, even where LiteSpeed's PHP
+    processes keep running across it.
+- **OpenLiteSpeed as a third proxy on servers** (founder, 2026-11-11), next to Caddy and nginx in
+  `target.edge`, from LiteSpeed's official Docker image. It is the free, open-source edition;
+  LiteSpeed Enterprise is paid.
+  - It is mainly for PHP and WordPress apps: its page cache keeps the pages the app marks
+    cacheable, and each deploy and rollback empties it.
+  - Visitors get the same protections as from Caddy and nginx: TLS 1.2 and 1.3 only, the same
+    security headers, WebSockets and long requests, and a refusal for hostnames the server does
+    not serve. Its admin console stays off.
+  - Certificates: origin certificates behind Cloudflare's proxy, and for DNS-only hostnames its
+    own, renewed without dropping connections.
+  - Its own additions file, checked by OpsCrew's rules and by the proxy's own configuration check
+    before any change.
+  - Everything the proxy choice reaches follows: one proxy per server and the switch between
+    proxies, previews, localhost, retarget, status, `secure` and own-server inspection. A
+    Portainer stack keeps Caddy.
 - **Deploys** come from GitHub Actions into release folders with an atomic switch, so a rollback
   switches back. The token or key is a deploy secret.
 - **Security:**
@@ -340,13 +366,25 @@ WordPress, Laravel, static sites and small Node.js apps are typical.
   - on the founder's cPanel account (`OPSCREW_E2E_CPANEL_*` in `.env.e2e`), whose test objects are
     all named `e2e-…` (founder, 2026-11-07: fine on that account; the token doesn't expire);
   - SFTP on the same account when it has SSH access;
+  - LiteSpeed on the same account (it answers with `Server: LiteSpeed`, checked 2026-11-10);
+    Apache with fakes until an account served by Apache exists;
+  - OpenLiteSpeed on a server as nginx's pass did: the first certificate and a renewal under
+    load, an addition, the cache emptied by a deploy, origin TLS behind Cloudflare, two apps on
+    one edge, and a switch to Caddy and back;
   - Plesk and DirectAdmin with fakes, as DigitalOcean is today, since there are no test accounts
     yet. Their live passes follow once an account exists.
 - **Research first:**
   - cPanel's UAPI: tokens, Domains, Mysql, SSL, Cron, the application manager and VersionControl;
   - Plesk's REST API and DirectAdmin's API for the same operations;
   - their limits;
-  - how the CloudLinux selectors are driven through the API.
+  - how the CloudLinux selectors are driven through the API;
+  - LiteSpeed: which `.htaccess` directives it honours, how a deploy empties LSCache without
+    root, how to make its PHP processes load the new release, and how it runs the selectors'
+    Node.js and Python apps;
+  - OpenLiteSpeed: WebSockets through its proxy, a configuration check like `nginx -t`, a reload
+    without dropping connections, turning its admin console off, its own certificates (ACME),
+    whether its cache keeps pages from any app behind it or only from apps that send LiteSpeed's
+    cache headers, and the image's versions and licence.
 - **Built in, or a plugin:** decided in its plan, on 026's plugin system.
 
 ## 028 AWS
