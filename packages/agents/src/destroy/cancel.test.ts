@@ -267,6 +267,9 @@ describe.skipIf(!findExecutable("git"))("runDestroy where the provider cancels t
     expect(details).toContain("bills it until then");
     expect(details).toContain("Its disk and its DigitalOcean snapshots go when the term ends");
     expect(details).toContain("Snapshot: none; DigitalOcean snapshots go with the Droplet.");
+    // It stays billed until its term ends: no saving is shown.
+    expect(details).toContain("Nothing is saved on the Droplet shop until its term ends.");
+    expect(destroy?.costDelta).toBeUndefined();
 
     // After the apply: the end date, shown, in what remains, and audited with the shutdown.
     const ended = `The DigitalOcean Droplet shop is cancelled: its contract ends on 11 December 2026, and DigitalOcean bills it until then. Its disk goes then; until then you can start it again in ${CONSOLE}.`;
@@ -525,6 +528,11 @@ describe.skipIf(!findExecutable("git"))(
         "First OpsCrew shuts the Droplet shop-data (id 3164444) down through DigitalOcean's API; this plan's deletion of it is DigitalOcean's cancel.",
       );
       expect(destroy?.details).not.toContain("shuts the server shop ");
+      // The cancelled server stays billed until its term ends: no saving is shown.
+      expect(destroy?.details).toContain(
+        "Nothing is saved on the Droplet shop-data until its term ends.",
+      );
+      expect(destroy?.costDelta).toBeUndefined();
       expect(result.remaining).toContain(ENDED_DATA);
       expect(providerCalls(s.deps)).toEqual([
         ["power off", "digitalocean server 3164444", "shut shop-data down before its cancellation"],

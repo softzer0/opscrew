@@ -1,6 +1,15 @@
 import type { Money, VpsProviderId } from "@opscrew/contracts";
 import { OpsCrewError, plural } from "@opscrew/core";
 import type { MoveLayoutName, ServerModule } from "@opscrew/iac-templates";
+import {
+  type CancelledServer,
+  cancelDates,
+  cancelFailedHint,
+  cancelledIn,
+  cancelNotes,
+  shutDown,
+  shutdownLines,
+} from "../destroy/cancel";
 import { type ModulePrefix, planHeading, unprotectPlanProblems } from "../destroy/checks";
 import {
   assertDeletionPlan,
@@ -8,12 +17,13 @@ import {
   type DeletionSession,
   deletionSession,
   previewDeletion,
+  type ServerApiInput,
 } from "../destroy/deletion";
 import { type DestroyTexts, destroyTexts } from "../destroy/texts";
 import { describeChanges, nothingDeletedHint, planStop, refusalReason } from "../shared";
 import { protectionVariable } from "./layouts";
 import type { MoveAction } from "./pending";
-import { deletionStep } from "./plans";
+import { type DeletionPlan, deletionStep } from "./plans";
 import { layoutOf, type MoveSession, recordApply, useLayout } from "./session";
 import { pendingStop } from "./steps";
 import { ABORT_COMMAND, FINISH_COMMAND, providerWords } from "./texts";
@@ -61,6 +71,14 @@ export interface MoveRemoval {
   texts: DestroyTexts;
   /** The flags a scripted run repeats with each `--approve <hash>`. */
   flags: readonly string[];
+}
+
+/**
+ * What the provider cancelling the move's server means (`cancelNotes`): its own resources go at
+ * once, while the app's DNS records follow the app to the other server.
+ */
+export function moveCancelNotes(servers: readonly CancelledServer[], app: string): string[] {
+  return cancelNotes(servers, app, "its other resources (such as its firewall and SSH key)");
 }
 
 /** The removal of the `which` server on `provider`. */
@@ -186,7 +204,11 @@ export async function liftMoveProtection(
  * Deletes the server: a plan of the root without its module, bounded to the confirmed `preview`
  * and server, approved by its hash with `allowDestroy` and the typed app name (`iac-apply`).
  * `notes` go into the approval between the changes and the hash; `note` follows "Nothing was
- * deleted." in every stop. Returns a stop for a non-interactive run.
+ * deleted." in every stop. Where the provider cancels the server instead (`cancel`, from
+ * `cancelledServers`), the approval says so, the server is shut down through `cancel.input` after
+ * the approval and before the apply, and its end date is read back (and audited) after it. Returns
+ * a stop for a non-interactive run, else those end dates in words (none when nothing was
+ * cancelled).
  */
 export async function removeMoveServer(
   removal: MoveRemoval,
@@ -195,13 +217,19 @@ export async function removeMoveServer(
     notes: readonly string[];
     note: string;
     costDelta?: Money;
+    cancel?: { servers: readonly CancelledServer[]; input: ServerApiInput };
   },
-): Promise<RetargetResult | undefined> {
+): Promise<{ stop: RetargetResult } | { cancelled: string[] }> {
   const { session, which, words, del, flags } = removal;
   const { deps } = session;
   const side = SIDES[which];
   const app = del.app;
   const command = del.command;
+  const { cancel } = input;
+  // The servers whose deletion in `plan` is their provider's cancel.
+  const cancelling = (plan: DeletionPlan) => cancelledIn(cancel?.servers ?? [], plan.changes);
+  // Those the approved plan cancels, shut down before its apply.
+  let cancelled: CancelledServer[] = [];
   deps.reporter.step(`Planning the removal of the ${which} ${words.noun}`);
   const removed = await deletionStep(session, del, {
     action: side.remove.action,
@@ -220,20 +248,29 @@ export async function removeMoveServer(
           hint: `Run \`${command}\` again to see the current list and confirm it.`,
         },
       ),
-    request: (plan) => ({
-      kind: "iac-apply",
-      title: `Delete the ${which} ${words.noun} ${app} on ${words.name} (${plural(plan.changes.length, "resource")} to delete)`,
-      details: [
-        planHeading(plan),
-        ...describeChanges(plan.changes),
-        ...input.notes,
-        `Plan hash: ${plan.planHash}`,
-      ].join("\n"),
-      planHash: plan.planHash,
-      allowDestroy: true,
-      confirmPhrase: app,
-      ...(input.costDelta !== undefined ? { costDelta: input.costDelta } : {}),
-    }),
+    request: (plan) => {
+      const servers = cancelling(plan);
+      const count = plural(plan.changes.length, "resource");
+      return {
+        kind: "iac-apply",
+        title:
+          servers.length > 0
+            ? `Cancel the ${which} ${words.noun} ${app} on ${words.name} and delete its other resources (${count} in the plan)`
+            : `Delete the ${which} ${words.noun} ${app} on ${words.name} (${count} to delete)`,
+        details: [
+          planHeading(plan),
+          ...describeChanges(plan.changes),
+          ...shutdownLines(servers, app),
+          ...moveCancelNotes(servers, app),
+          ...input.notes,
+          `Plan hash: ${plan.planHash}`,
+        ].join("\n"),
+        planHash: plan.planHash,
+        allowDestroy: true,
+        confirmPhrase: app,
+        ...(input.costDelta !== undefined ? { costDelta: input.costDelta } : {}),
+      };
+    },
     refused: (approval, planHash) =>
       new OpsCrewError(
         "APPROVAL_REFUSED",
@@ -243,15 +280,34 @@ export async function removeMoveServer(
         },
       ),
     allowDestroy: true,
-    what: `deleting the ${which} server`,
-    hint: `Fix the cause shown above, then run \`${command}\` again; it continues with what is left.`,
+    what: cancel
+      ? `cancelling the ${which} server and deleting the rest`
+      : `deleting the ${which} server`,
+    hint: cancel
+      ? cancelFailedHint(cancel.servers, app, command)
+      : `Fix the cause shown above, then run \`${command}\` again; it continues with what is left.`,
+    ...(cancel
+      ? {
+          beforeApply: async (plan: DeletionPlan) => {
+            cancelled = cancelling(plan);
+            await shutDown(del, cancelled, cancel.input);
+          },
+        }
+      : {}),
   });
-  if (removed.kind === "pending") return pendingStop(session, removed.planHash, flags);
-  if (removed.kind === "applied") {
-    await recordApply(session, removed);
-    deps.reporter.success(
-      `Deleted the ${which} ${words.noun} (${plural(input.preview.changes.length, "resource")}).`,
-    );
+  if (removed.kind === "pending") return { stop: pendingStop(session, removed.planHash, flags) };
+  if (removed.kind !== "applied") return { cancelled: [] };
+  await recordApply(session, removed);
+  const resources = plural(input.preview.changes.length, "resource");
+  if (cancel === undefined || cancelled.length === 0) {
+    deps.reporter.success(`Deleted the ${which} ${words.noun} (${resources}).`);
+    return { cancelled: [] };
   }
-  return undefined;
+  deps.reporter.success(
+    `Cancelled the ${which} ${words.noun} and deleted the rest (${resources}).`,
+  );
+  // When the cancelled server's contract ends, as its provider answers it (audited).
+  const dates = await cancelDates(del, cancelled, cancel.input);
+  for (const line of dates) deps.reporter.info(line);
+  return { cancelled: dates };
 }

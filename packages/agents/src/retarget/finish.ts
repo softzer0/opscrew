@@ -15,6 +15,7 @@ import {
   removeSnapshotRecord,
 } from "../destroy/deletion";
 import { deleteDeployBranch } from "../destroy/portainer";
+import { cancelTerm } from "../destroy/texts";
 import { commandFlags } from "../environments/choice";
 import { publishDeploySetup } from "../provision";
 import { previousBucketKeyFile } from "../provision/storage";
@@ -62,20 +63,28 @@ async function takenSnapshot(session: MoveSession): Promise<string | undefined> 
  * cloud server (a snapshot first when wanted), only the app on the user's own server (a teardown
  * host plan), only the app's stacks and volumes in their Portainer. Never the user's server,
  * Portainer or its environment (SC-2304). Without a `confirm` hook nothing is confirmed, so nothing
- * is deleted. Returns a script's stop, else the snapshot a cloud side kept.
+ * is deleted. Returns a script's stop, else the snapshot a cloud side kept and, where the provider
+ * cancelled the old server at the end of its term, when its contract ends (`cancelled`).
  */
 export async function removeOldSide(
   session: MoveSession,
   options: Pick<FinishRetargetOptions, "snapshot" | "confirm">,
-): Promise<{ stop: RetargetResult } | { snapshotId: string | undefined }> {
-  const side = moveSide(
-    session,
-    "old",
-    options.snapshot !== undefined ? { snapshot: options.snapshot } : {},
-  );
+): Promise<
+  { stop: RetargetResult } | { snapshotId: string | undefined; cancelled?: readonly string[] }
+> {
+  let cancelled: readonly string[] = [];
+  const side = moveSide(session, "old", {
+    ...(options.snapshot !== undefined ? { snapshot: options.snapshot } : {}),
+    onCancelled: (lines) => {
+      cancelled = lines;
+    },
+  });
   const stop = await side.remove(session, options.confirm ?? (async () => false));
   if (stop !== undefined) return { stop };
-  return { snapshotId: side.kind === "cloud" ? await takenSnapshot(session) : undefined };
+  return {
+    snapshotId: side.kind === "cloud" ? await takenSnapshot(session) : undefined,
+    ...(cancelled.length > 0 ? { cancelled } : {}),
+  };
 }
 
 /**
@@ -125,9 +134,9 @@ async function finish(
   // 1. The old side's removal, after the typed name.
   const removed = await removeOldSide(session, options);
   if ("stop" in removed) return removed.stop;
-  const { snapshotId } = removed;
+  const { snapshotId, cancelled = [] } = removed;
   const gone = cloud
-    ? `${old} is deleted`
+    ? `${old} is ${cancelTerm(from.provider) === undefined ? "deleted" : "cancelled"}`
     : `the app is removed from ${from.provider === "own" ? old : "your Portainer"}`;
 
   // 1b. The bucket the move took along: the one being left, after its own typed name (FR-2311).
@@ -178,6 +187,8 @@ async function finish(
     const { provider, backups } = previousTarget(move);
     remaining.unshift(...remainingAfterDeletion({ provider, app, snapshotId, backups }));
   }
+  // The cancelled old server, billed until its contract ends.
+  remaining.unshift(...cancelled);
   await auditStep(
     session,
     "finished",

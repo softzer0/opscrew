@@ -22,8 +22,14 @@ import { type DeletionScope, failureReason, type ServerApiInput, serverApi } fro
 import type { ServerSnapshot } from "./servers";
 import { cancelTerm, destroyTexts, snapshotsOutlive } from "./texts";
 
+/**
+ * What cancelling a server needs of it: its provider, its module's address prefix, its ids as the
+ * state records them and, for an extra server, its name at the provider.
+ */
+export type CancelledServer = Pick<ServerSnapshot, "provider" | "module" | "ids" | "name">;
+
 /** The server's name at its provider: an extra server's `<app>-<name>`, else the app's name. */
-function nameOf(server: ServerSnapshot, app: string): string {
+function nameOf(server: CancelledServer, app: string): string {
   return server.name ?? app;
 }
 
@@ -33,8 +39,8 @@ function serversText(noun: string, names: readonly string[]): string {
 }
 
 /** `servers` grouped by provider, in order of first appearance. */
-function byProvider(servers: readonly ServerSnapshot[]): [CloudProvider, ServerSnapshot[]][] {
-  const groups = new Map<CloudProvider, ServerSnapshot[]>();
+function byProvider<S extends CancelledServer>(servers: readonly S[]): [CloudProvider, S[]][] {
+  const groups = new Map<CloudProvider, S[]>();
   for (const server of servers) {
     groups.set(server.provider, [...(groups.get(server.provider) ?? []), server]);
   }
@@ -42,15 +48,17 @@ function byProvider(servers: readonly ServerSnapshot[]): [CloudProvider, ServerS
 }
 
 /** The servers the teardown deletes (`inState`) at a provider that cancels them instead. */
-export function cancelledServers(snapshots: readonly ServerSnapshot[]): ServerSnapshot[] {
+export function cancelledServers<S extends CancelledServer & Pick<ServerSnapshot, "inState">>(
+  snapshots: readonly S[],
+): S[] {
   return snapshots.filter((s) => s.inState && cancelTerm(s.provider) !== undefined);
 }
 
 /** Those of `servers` whose cancel `changes` (a destroy plan's) still holds. */
-export function cancelledIn(
-  servers: readonly ServerSnapshot[],
+export function cancelledIn<S extends CancelledServer>(
+  servers: readonly S[],
   changes: readonly ResourceChange[],
-): ServerSnapshot[] {
+): S[] {
   return servers.filter((server) =>
     deletesServer(
       changes.filter((change) => change.address.startsWith(server.module)),
@@ -60,7 +68,7 @@ export function cancelledIn(
 }
 
 /** `the Droplet shop` and `the Contabo server shop-data`, for titles and steps. */
-export function cancelledText(servers: readonly ServerSnapshot[], app: string): string {
+export function cancelledText(servers: readonly CancelledServer[], app: string): string {
   return listText(
     byProvider(servers).map(([provider, group]) =>
       serversText(
@@ -75,9 +83,14 @@ export function cancelledText(servers: readonly ServerSnapshot[], app: string): 
  * What the teardown does to the servers the provider cancels, said before the typed names and in
  * the destroy plan's approval, per provider: billed to the end of the term (at least its minimum),
  * shut down now with the app's other resources deleted at once, and their disks (and, unless they
- * outlive them, their provider snapshots) gone when the term ends.
+ * outlive them, their provider snapshots) gone when the term ends. `others` words what else goes
+ * at once (a move names the server's own resources: its DNS records follow the app).
  */
-export function cancelNotes(servers: readonly ServerSnapshot[], app: string): string[] {
+export function cancelNotes(
+  servers: readonly CancelledServer[],
+  app: string,
+  others = "the app's other resources (such as its DNS records, firewall and SSH key)",
+): string[] {
   return byProvider(servers).flatMap(([provider, group]) => {
     const texts = destroyTexts(provider);
     const { company, noun } = texts;
@@ -94,14 +107,14 @@ export function cancelNotes(servers: readonly ServerSnapshot[], app: string): st
     );
     return [
       `${company} does not delete ${which} at once: it ends ${its} contract at the end of ${its} current term (${plural(cancelTerm(provider) ?? 1, "month")} at least) and bills ${them} until then.`,
-      `OpsCrew shuts ${them} down now and deletes the app's other resources (such as its DNS records, firewall and SSH key) at once.`,
+      `OpsCrew shuts ${them} down now and deletes ${others} at once.`,
       `${gone}; until then you can start ${them} again in ${texts.console}.`,
     ];
   });
 }
 
 /** The approval's lines for the shutdowns that come before the destroy plan's apply. */
-export function shutdownLines(servers: readonly ServerSnapshot[], app: string): string[] {
+export function shutdownLines(servers: readonly CancelledServer[], app: string): string[] {
   return servers.map((server) => {
     const { company, noun } = destroyTexts(server.provider);
     return `First OpsCrew shuts the ${noun} ${nameOf(server, app)} (id ${server.ids.join(", ")}) down through ${company}'s API; this plan's deletion of it is ${company}'s cancel.`;
@@ -147,7 +160,7 @@ export function dataSnapshotOffer(
 /** An audit entry of a provider call on `server`'s id `id`. */
 function audit(
   scope: DeletionScope,
-  server: ServerSnapshot,
+  server: CancelledServer,
   id: string,
   action: string,
   detail: string,
@@ -170,7 +183,7 @@ function audit(
  */
 export async function shutDown(
   scope: DeletionScope,
-  servers: readonly ServerSnapshot[],
+  servers: readonly CancelledServer[],
   input: ServerApiInput,
 ): Promise<void> {
   const { deps } = scope;
@@ -220,7 +233,7 @@ function dayText(value: string): string {
  */
 export async function cancelDates(
   scope: DeletionScope,
-  servers: readonly ServerSnapshot[],
+  servers: readonly CancelledServer[],
   input: ServerApiInput,
 ): Promise<string[]> {
   const { deps, app } = scope;
@@ -274,7 +287,7 @@ export async function cancelDates(
  * the log above shows. The servers were shut down before the apply.
  */
 export function cancelFailedHint(
-  servers: readonly ServerSnapshot[],
+  servers: readonly CancelledServer[],
   app: string,
   command: string,
 ): string {

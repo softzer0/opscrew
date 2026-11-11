@@ -66,6 +66,12 @@ export function snapshotsOutlive(provider: CloudProvider): boolean {
   return cloudProvider(provider).offering.serverSnapshotsOutliveServer;
 }
 
+/** Why `--snapshot` takes none where `provider`'s snapshots go with the server (`snapshotsOutlive`). */
+export function noProviderSnapshot(provider: CloudProvider): string {
+  const { company, noun } = destroyTexts(provider);
+  return `No ${company} snapshot: ${company} deletes a ${noun}'s snapshots with the ${noun}, so one would not keep its data.`;
+}
+
 /**
  * What goes when a cancelled server's term ends, for the typed questions: its disk, and its
  * provider snapshots unless they outlive it (`snapshotsOutlive`).

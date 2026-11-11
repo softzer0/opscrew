@@ -42,7 +42,7 @@ import {
   warnUnusedApproval,
   writeFinalFiles,
 } from "./session";
-import { cloudProviders, moveSide, placeWords, sideWords } from "./sides";
+import { cloudProviders, type MoveSideOptions, moveSide, placeWords, sideWords } from "./sides";
 import { abortSiteMove } from "./site-end";
 import { deployFilesChanged, pendingStop, proposeDeployFiles, storeDeploySecrets } from "./steps";
 import { dnsSwitchPlan } from "./switch";
@@ -97,18 +97,24 @@ async function previousCost(
  * stacks and volumes in their Portainer. Never the user's server, Portainer or its environment
  * (SC-2304). The typed name commits to the abort, so `retarget.abort` is recorded as soon as it is
  * confirmed, before the side changes anything; without a `confirm` hook nothing is confirmed, so
- * nothing is deleted. Returns a script's stop.
+ * nothing is deleted. Where the provider cancelled a cloud server at the end of its term,
+ * `onCancelled` receives when its contract ends. Returns a script's stop.
  */
 export async function removeNewSide(
   session: MoveSession,
-  options: Pick<AbortRetargetOptions, "confirm">,
+  options: Pick<AbortRetargetOptions, "confirm"> & Pick<MoveSideOptions, "onCancelled">,
 ): Promise<RetargetResult | undefined> {
   const confirm = async (preview: DestroyPreview) => {
     const confirmed = (await options.confirm?.(preview)) === true;
     if (confirmed) await recordAbort(session);
     return confirmed;
   };
-  return moveSide(session, "new").remove(session, confirm);
+  const side = moveSide(
+    session,
+    "new",
+    options.onCancelled !== undefined ? { onCancelled: options.onCancelled } : {},
+  );
+  return side.remove(session, confirm);
 }
 
 /** Progress of an abort: nothing done (no record yet), new side removed, secrets restored. */
@@ -296,6 +302,8 @@ async function abort(session: MoveSession, options: AbortRetargetOptions): Promi
   const to = session.plan.target;
   // Both buckets' keys when the move takes the bucket along, before anything is changed.
   const keys = await movingBucketKeys(session);
+  // When the new server's contract ends, where its provider cancels it at the end of its term.
+  let cancelled: readonly string[] = [];
 
   // 1. DNS back to the old side, then the new side (it can only exist once the rename was
   // recorded).
@@ -309,7 +317,12 @@ async function abort(session: MoveSession, options: AbortRetargetOptions): Promi
     const dnsStop = await pointDnsBack(session, flags);
     if (dnsStop !== undefined) return dnsStop;
     if (move.step !== "started") {
-      const stop = await removeNewSide(session, options);
+      const stop = await removeNewSide(session, {
+        ...options,
+        onCancelled: (lines) => {
+          cancelled = lines;
+        },
+      });
       if (stop !== undefined) return stop;
     }
     await forgetHostKeys(deps, [session.servers.next?.ipv4, session.servers.next?.ipv6]);
@@ -393,6 +406,8 @@ async function abort(session: MoveSession, options: AbortRetargetOptions): Promi
         ? [`${app} stays on ${place}; pushes to ${restored.cicd.branch} deploy there again.`]
         : [files]),
       `To move later, run \`${RUN_COMMAND} --to ${to.provider}\` again.`,
+      // The cancelled new server, billed until its contract ends.
+      ...cancelled,
     ],
   };
 }

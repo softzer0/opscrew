@@ -126,6 +126,7 @@ import {
   type DestroyTexts,
   destroyConfirmPrompt,
   destroyTexts,
+  noProviderSnapshot,
   snapshotsOutlive,
 } from "./texts";
 import type { DestroyOptions, DestroyResult } from "./types";
@@ -302,12 +303,22 @@ async function destroyInfrastructure(
             ]
           : []),
         ...checkPauseNote(plan),
+        // A cancelled server stays billed, so the teardown saves nothing on it before its term ends.
+        ...(cancel
+          ? [
+              `Nothing is saved on ${cancel.text} until ${cancel.servers.length === 1 ? "its term ends" : "their terms end"}.`,
+            ]
+          : []),
         `Plan hash: ${summary.planHash}`,
       ].join("\n"),
       planHash: summary.planHash,
       allowDestroy: true,
       confirmPhrase: name,
-      costDelta: { amount: -plan.cost.monthly.amount, currency: plan.cost.monthly.currency },
+      ...(cancel
+        ? {}
+        : {
+            costDelta: { amount: -plan.cost.monthly.amount, currency: plan.cost.monthly.currency },
+          }),
     });
     if (!approval.approved) {
       throw new OpsCrewError(
@@ -767,10 +778,7 @@ async function destroyDeployment(
   const unkept = snapshots.filter((s) => s.inState && !snapshotsOutlive(s.provider));
   if (options.snapshot === true) {
     for (const cloud of new Set(unkept.map((s) => s.provider))) {
-      const { company, noun } = destroyTexts(cloud);
-      deps.reporter.info(
-        `No ${company} snapshot: ${company} deletes a ${noun}'s snapshots with the ${noun}, so one would not keep its data.`,
-      );
+      deps.reporter.info(noProviderSnapshot(cloud));
     }
   }
   const withData = unkept.filter((s) => s.data.serverData);

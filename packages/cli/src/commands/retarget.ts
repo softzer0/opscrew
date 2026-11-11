@@ -458,11 +458,13 @@ async function runCommand(
         clock,
       }),
   });
-  const confirm = async (preview: { name: string }) => {
+  const confirm = async (preview: { name: string; confirmPrompt?: string }) => {
     if (scripted) return typed.includes(preview.name);
+    // A provider that cancels the old server instead of deleting it says so (`confirmPrompt`).
     const answer = await askTypedName(
       prompts,
-      `Type ${preview.name} to delete everything listed above (anything else cancels)`,
+      preview.confirmPrompt ??
+        `Type ${preview.name} to delete everything listed above (anything else cancels)`,
       preview.name,
     );
     if (answer !== undefined) typed.push(answer);
