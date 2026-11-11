@@ -199,7 +199,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew && pnpm lint`
   - Effort: high
 
-- [ ] T2625 [US4] Provision removes a server at a provider that cancels
+- [x] T2625 [US4] Provision removes a server at a provider that cancels
   - Owns: `packages/agents/src/provision/**`
   - Reads: plan 4.1; T2610's `packages/agents/src/destroy/cancel.ts`
   - Depends: T2610, T2612
