@@ -1,6 +1,12 @@
-import type { PolicyResult, Severity } from "@opscrew/contracts";
+import type {
+  PlannedFirewallRule,
+  PolicyResult,
+  ProviderSecOps,
+  Severity,
+} from "@opscrew/contracts";
 import { isRecord } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
+import { CLOUD_PROVIDERS } from "@opscrew/providers";
 
 /** One managed resource from an engine plan, with known values and unknown-at-plan-time markers. */
 export interface PlannedResource {
@@ -21,9 +27,7 @@ const PUBLIC_UDP_PORTS = new Set(["443"]);
  * for a server the user owns (or a Portainer target, which has no server).
  */
 function planWantsBackups(target: { provider: string; backups?: boolean }): boolean {
-  return (
-    (target.provider === "hetzner" || target.provider === "digitalocean") && target.backups === true
-  );
+  return CLOUD_PROVIDERS.some((p) => p.id === target.provider) && target.backups === true;
 }
 
 /**
@@ -79,18 +83,6 @@ function isSet(resource: PlannedResource, attribute: string): boolean {
   return unknown === true || (Array.isArray(unknown) && unknown.length > 0);
 }
 
-interface FirewallRule {
-  direction?: string;
-  protocol?: string;
-  port?: string | null;
-  source_ips?: string[];
-}
-
-function firewallRules(resource: PlannedResource): FirewallRule[] {
-  const rules = resource.values.rule;
-  return Array.isArray(rules) ? rules.filter(isRecord).map((r) => r as FirewallRule) : [];
-}
-
 function result(
   policyId: string,
   title: string,
@@ -102,74 +94,12 @@ function result(
   return { policyId, title, severity, passed, message, ...(resource ? { resource } : {}) };
 }
 
-/** Resource address without `count`/`for_each` keys: `module.a[0].x.y["k"]` becomes `module.a.x.y`. */
-function configAddress(address: string): string {
-  return address.replace(/\[[^\]]*\]/g, "");
-}
-
-/**
- * Droplet addresses (without instance keys) that each `digitalocean_firewall` references in its
- * `droplet_ids` expression, read from the plan's `configuration` section. Droplet ids are unknown
- * before apply, so these references are the only way to see the attachment on a first plan.
- */
-function firewallDropletReferences(planJson: unknown): Map<string, Set<string>> {
-  const out = new Map<string, Set<string>>();
-  const walk = (module: unknown, prefix: string) => {
-    if (!isRecord(module)) return;
-    for (const resource of Array.isArray(module.resources) ? module.resources : []) {
-      if (!isRecord(resource) || resource.type !== "digitalocean_firewall") continue;
-      if (typeof resource.address !== "string") continue;
-      const expressions = isRecord(resource.expressions) ? resource.expressions : {};
-      const dropletIds = isRecord(expressions.droplet_ids) ? expressions.droplet_ids : {};
-      const references = Array.isArray(dropletIds.references) ? dropletIds.references : [];
-      const droplets = new Set<string>();
-      for (const reference of references) {
-        if (typeof reference !== "string") continue;
-        const target = configAddress(reference).replace(/\.id$/, "");
-        if (/^digitalocean_droplet\.[^.]+$/.test(target)) droplets.add(`${prefix}${target}`);
-      }
-      out.set(`${prefix}${resource.address}`, droplets);
-    }
-    const calls = isRecord(module.module_calls) ? module.module_calls : {};
-    for (const [name, call] of Object.entries(calls)) {
-      if (isRecord(call)) walk(call.module, `${prefix}module.${name}.`);
-    }
-  };
-  if (isRecord(planJson) && isRecord(planJson.configuration)) {
-    walk(planJson.configuration.root_module, "");
-  }
-  return out;
-}
-
-interface DigitalOceanInboundRule {
-  protocol?: string;
-  port_range?: string | null;
-  source_addresses?: string[];
-}
-
-/** `inbound_rule` blocks of a `digitalocean_firewall`, in the Hetzner rule shape. */
-function digitalOceanInboundRules(resource: PlannedResource): FirewallRule[] {
-  const rules = resource.values.inbound_rule;
-  if (!Array.isArray(rules)) return [];
-  return rules.filter(isRecord).map((raw) => {
-    const rule = raw as DigitalOceanInboundRule;
-    const range = rule.port_range ?? "";
-    return {
-      direction: "in",
-      protocol: rule.protocol ?? "",
-      // DigitalOcean writes "all" (or "0", or nothing) for every port; all mean "any".
-      port: range === "all" || range === "0" ? "" : range,
-      source_ips: rule.source_addresses ?? [],
-    };
-  });
-}
-
 /**
  * Ports open to the whole internet: ones that must never be public, web ports, SSH and the private
  * network's WireGuard ports (`wireguard`, the UDP ports the plan's network members listen on).
  */
 function openPorts(
-  rules: FirewallRule[],
+  rules: PlannedFirewallRule[],
   wireguard: ReadonlySet<string> = new Set(),
 ): { admin: string[]; web: string[]; ssh: boolean; wireguard: string[] } {
   const admin: string[] = [];
@@ -200,7 +130,7 @@ function openPorts(
 /** SSH (port 22) may be open to the whole internet only when the plan allows it. */
 function sshPolicyResult(
   firewall: PlannedResource,
-  rules: FirewallRule[],
+  rules: PlannedFirewallRule[],
   deployPlan: DeployPlan,
 ): PolicyResult {
   const planned = deployPlan.security.sshAllowedCidrs.some((cidr) => OPEN_TO_ALL.has(cidr));
@@ -222,7 +152,7 @@ function sshPolicyResult(
 /** `no-open-admin-ports` and, behind Cloudflare, `origin-cloudflare-only` for one firewall. */
 function openPortResults(
   firewall: PlannedResource,
-  rules: FirewallRule[],
+  rules: PlannedFirewallRule[],
   proxiedBehindCloudflare: boolean,
   deployPlan: DeployPlan,
 ): PolicyResult[] {
@@ -264,67 +194,21 @@ function openPortResults(
 }
 
 /** What differs between the providers whose servers the policies check. */
-interface ProviderChecks {
+interface ProviderChecks extends ProviderSecOps {
   /** Resource types of the server and of its cloud firewall. */
   server: string;
   firewall: string;
-  /** "server" or "Droplet". */
-  noun: string;
-  /** The firewall's inbound rules in the Hetzner shape. */
-  rules(firewall: PlannedResource): FirewallRule[];
-  /** True when one of `firewalls` is attached to `server`. */
-  attached(server: PlannedResource, firewalls: PlannedResource[], planJson: unknown): boolean;
-  /** Messages of `firewall-attached`, `ssh-keys-set` and `backups-for-critical-data`. */
-  attachedText: string;
-  unattachedText: string;
-  keylessText: string;
-  backupsText: string;
   /** Whether the server has delete and rebuild protection to check. */
   deleteProtection: boolean;
 }
 
-/** Hetzner first, then DigitalOcean: the order the results are reported in. */
-const PROVIDERS: readonly ProviderChecks[] = [
-  {
-    server: "hcloud_server",
-    firewall: "hcloud_firewall",
-    noun: "server",
-    rules: firewallRules,
-    attached: (server) => isSet(server, "firewall_ids"),
-    attachedText: "The server is attached to a Hetzner Cloud firewall.",
-    unattachedText:
-      "The server has no firewall attached, so every port is reachable from the internet. Attach the OpsCrew firewall.",
-    keylessText:
-      "The server has no SSH key; Hetzner would create a root password. Add the deploy key.",
-    backupsText: "Hetzner automated backups are enabled as the plan requires.",
-    deleteProtection: true,
-  },
-  {
-    server: "digitalocean_droplet",
-    firewall: "digitalocean_firewall",
-    noun: "Droplet",
-    rules: digitalOceanInboundRules,
-    attached: (droplet, firewalls, planJson) => {
-      const id = droplet.values.id;
-      const target = configAddress(droplet.address);
-      const references = firewallDropletReferences(planJson);
-      return firewalls.some((firewall) => {
-        const ids = firewall.values.droplet_ids;
-        if (id !== undefined && id !== null && id !== "" && Array.isArray(ids)) {
-          if (ids.some((value) => String(value) === String(id))) return true;
-        }
-        return references.get(configAddress(firewall.address))?.has(target) ?? false;
-      });
-    },
-    attachedText: "The Droplet is attached to a DigitalOcean Cloud Firewall.",
-    unattachedText:
-      "No firewall lists this Droplet, so every port is reachable from the internet. Attach the OpsCrew firewall.",
-    keylessText:
-      "The Droplet has no SSH key; DigitalOcean would email a root password. Add the deploy key.",
-    backupsText: "DigitalOcean automated backups are enabled as the plan requires.",
-    deleteProtection: false,
-  },
-];
+/** The registry's providers, in its order: the order the results are reported in. */
+const PROVIDERS: readonly ProviderChecks[] = CLOUD_PROVIDERS.map((provider) => ({
+  ...provider.texts.secops,
+  server: provider.terraform.serverResourceType,
+  firewall: provider.terraform.firewallResourceType,
+  deleteProtection: provider.offering.deleteProtection,
+}));
 
 /** The server and firewall policies of one provider (spec 004 plan "Security checks"). */
 function providerPolicies(

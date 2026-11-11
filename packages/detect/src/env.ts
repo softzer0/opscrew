@@ -2,6 +2,7 @@
  * Environment-variable reference extraction and classification. Only variable names are ever
  * collected; values (including those in `.env.example`) are never kept.
  */
+import { CLOUD_PROVIDERS } from "@opscrew/providers";
 import { basenameRel } from "./paths";
 
 /** Prefixes that bundlers inline into client-side code. */
@@ -69,10 +70,9 @@ const SECRET_KEY_PROVIDERS = new Set([
   "AWS",
   "GITHUB",
   "GITLAB",
-  "HCLOUD",
-  "HETZNER",
+  // The cloud server providers' prefixes, from their definitions (ADR 0029).
+  ...CLOUD_PROVIDERS.flatMap((provider) => provider.credentials.envPrefixes),
   "CLOUDFLARE",
-  "DIGITALOCEAN",
   "VERCEL",
   "NETLIFY",
   // Messaging and email

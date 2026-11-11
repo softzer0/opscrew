@@ -1,5 +1,6 @@
 import type { Finding, ScanContext, Scanner, Severity } from "@opscrew/contracts";
 import { maskSecret, shannonEntropy, TOKEN_PATTERNS } from "@opscrew/core";
+import { CLOUD_PROVIDERS } from "@opscrew/providers";
 import { createFinding } from "../scan/finding";
 import {
   BINARY_EXTENSION,
@@ -137,16 +138,6 @@ const TOKEN_RULES: readonly TokenRule[] = [
     description: "A connection URL in this file contains a password.",
   },
   {
-    id: "hcloud-token",
-    title: "Hetzner Cloud API token",
-    severity: "critical",
-    pattern:
-      /(?:hcloud|hetzner)[A-Za-z0-9_]{0,40}token["']?\s*(?::=|=>|[=:])\s*["']?([A-Za-z0-9]{64})(?![A-Za-z0-9])/gi,
-    group: 1,
-    description:
-      "A Hetzner Cloud API token is written in this file. It can create, change and delete servers in your Hetzner project.",
-  },
-  {
     id: "cloudflare-api-token",
     title: "Cloudflare API token",
     severity: "critical",
@@ -156,14 +147,8 @@ const TOKEN_RULES: readonly TokenRule[] = [
     description:
       "A Cloudflare API token is written in this file. Depending on its scope it can change your DNS, TLS and firewall settings.",
   },
-  {
-    id: "digitalocean-token",
-    title: "DigitalOcean API token",
-    severity: "critical",
-    pattern: TOKEN_PATTERNS["digitalocean-token"],
-    description:
-      "A DigitalOcean API token is written in this file. Depending on its scopes it can create, change and delete Droplets, firewalls and other resources in your DigitalOcean team.",
-  },
+  // The cloud server providers' token formats, from their definitions (ADR 0029).
+  ...CLOUD_PROVIDERS.flatMap((provider) => provider.credentials.tokenRules),
 ];
 
 /** Names that suggest the assigned value is a secret. */
@@ -459,7 +444,7 @@ const READ_CONCURRENCY = 16;
 
 /**
  * Built-in secret scanner (`opscrew-secrets`): FR-007 token families (GitHub, Anthropic, OpenAI,
- * AWS, Stripe, Slack, Google, labelled Hetzner and Cloudflare tokens, DigitalOcean tokens, URL passwords), generic
+ * AWS, Stripe, Slack, Google, labelled Cloudflare tokens, the cloud server providers' tokens, URL passwords), generic
  * high-entropy values assigned to secret-like names, PEM private keys and key stores, and dotenv
  * files with values (git-tracked → critical `secrets/committed-env`; present but not ignored → high
  * `secrets/env-not-ignored`). JWTs and `sb_secret_` keys are left to the Supabase scanner, which
