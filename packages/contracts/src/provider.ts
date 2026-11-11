@@ -285,7 +285,10 @@ export interface ProviderTexts {
   init: {
     /** How to create the credentials, naming the page and the variables. */
     fix: string;
-    /** For a provider whose API can't list a token's scopes: the scopes OpsCrew needs ("" for none). */
+    /**
+     * For a provider whose API can't list a token's scopes: the scopes OpsCrew needs, appended to
+     * `fix` as it is, so it starts with a space ("" for none).
+     */
     scopeNote: string;
   };
   runbook: ProviderRunbookTexts;
