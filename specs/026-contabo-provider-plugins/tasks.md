@@ -209,7 +209,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm lint`
   - Effort: high
 
-- [ ] T2626 [US4] Advise compares providers on the same basis
+- [x] T2626 [US4] Advise compares providers on the same basis
   - Owns: `packages/agents/src/advise/**`, `docs/guide/advise.md`
   - Reads: T2616's report and review; `packages/agents/src/design/cost.ts` (`offerTerms`, `pricedOffer`)
   - Depends: T2616
