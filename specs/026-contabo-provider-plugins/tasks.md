@@ -223,7 +223,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm lint`
   - Effort: high
 
-- [ ] T2627 [US1] [US4] Provision and the runbook for providers with terms
+- [x] T2627 [US1] [US4] Provision and the runbook for providers with terms
   - Owns: `packages/agents/src/{provision,init,destroy/deletion.ts,snapshot/provider.ts,providers}/**`, `packages/iac-templates/src/runbook/**`, `packages/iac-templates/src/infra/infra.test.ts`
   - Depends: T2616
   - Accept:
