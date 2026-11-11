@@ -282,25 +282,21 @@ profile, prices and IaC module, through `vpsConnector` and `providerProfile`.
 login and quirks. OpsCrew calls the API through its own typed connector and the IaC engine,
 never through `cntb` (constitution IV).
 
-**It opens with the provider plugin system** (founder, 2026-10-16; moved here from AWS on
-2026-11-06, built before the Contabo part):
-- Each provider becomes its own package (`@opscrew/provider-aws`: connector, profile, interview,
-  design options, IaC modules, templates and its own Claude Code skills), loaded through a
-  versioned contract and installed when first needed (`opscrew plugin add aws`, or offered by the
-  interview), so the core CLI stays small.
-- The safety gate stays in core: plugins only produce plans; hash-bound approval, policy, apply
-  through the IaC engine and redaction are core's (constitution I and IV).
-- Only official `@opscrew/*` packages at first, pinned and checked with npm provenance;
-  third-party plugins later, behind an explicit opt-in.
-- Hetzner, DigitalOcean, own server and Portainer move behind the same contract but stay built in,
-  in the `opscrew` npm package and the `opscrew@opscrew` Claude Code plugin; one can move out
-  later if it grows.
-- Contabo is built in, like Hetzner and DigitalOcean, as an everyday VPS provider. AWS (028)
-  ships as the first separately installed plugin, then Azure and Google Cloud.
-- The Claude Code side follows the same split: one provider = one npm package plus one Claude
-  Code plugin `opscrew-<provider>@opscrew`, released together; the core plugin keeps only the
-  provider-neutral flow skills; one MCP server serves the tools of whichever provider packages are
-  installed. One ADR covers both.
+**It opens with the contract for cloud server providers** (founder, 2026-10-16, moved here from
+AWS on 2026-11-06; its scope set from the research on 2026-11-11,
+[R5](026-contabo-provider-plugins/research.md#r5-the-founders-decisions-2026-11-11)):
+- Everything about one cloud server provider lives in one place, behind a versioned contract of
+  plain data and functions that a separate package could implement later: its connector, prices,
+  profile, Terraform module, firewall checks, token rules, interview option and docs.
+- Hetzner and DigitalOcean move into it; Contabo is the first provider written for it, built in
+  like them.
+- Own server and Portainer stay as they are: they are kinds of target with flows of their own,
+  not providers.
+- Installing provider packages comes with AWS (028), designed around its first real user.
+
+**Live tests:** one live pass at the end on one Cloud VPS 4, on an account the founder opens. A
+destroy only cancels a Contabo server at the end of its term (at least a month), so the founder
+is asked before any rerun that needs another server.
 
 ## 027 Shared hosting (cPanel, Plesk, DirectAdmin, SFTP) and LiteSpeed
 
@@ -386,7 +382,7 @@ servers.
     without dropping connections, turning its admin console off, its own certificates (ACME),
     whether its cache keeps pages from any app behind it or only from apps that send LiteSpeed's
     cache headers, and the image's versions and licence.
-- **Built in, or a plugin:** decided in its plan, on 026's plugin system.
+- **Built in**, like the other targets: installing provider packages comes with AWS (028).
 
 ## 028 AWS
 
@@ -461,8 +457,25 @@ services, each one explained, priced at design and changeable:
 - Azure and Google Cloud follow the same pattern with Azure Monitor and Google Cloud Monitoring
   and Logging.
 
-**Builds on 026's provider plugin system:** AWS ships as the first separately installed plugin
-(`@opscrew/provider-aws`, `opscrew plugin add aws`), then Azure and Google Cloud.
+**Opens with installing provider packages** (moved here from 026 on 2026-11-11, founder; 026's
+research R3 and R4): AWS ships as the first separately installed package
+(`@opscrew/provider-aws`, `opscrew plugin add aws`, or offered by the interview), then Azure and
+Google Cloud. The contract for such packages is shaped by AWS, which is not a VPS; 026's contract
+for cloud server providers is where it starts.
+- The safety gate stays in core: packages only produce plans; hash-bound approval, policy, apply
+  through the IaC engine and redaction are core's (constitution I and IV).
+- Only official `@opscrew/*` packages at first, pinned to an exact version, installed with npm
+  and no install scripts into OpsCrew's own folder (as the Claude Agent SDK is), and checked
+  against npm's provenance: built by OpsCrew's repository and release workflow from a tag.
+  Third-party packages later, behind an explicit opt-in.
+- Only plain data and functions cross into a package; the core validates everything it returns.
+- The Claude Code side follows the same split: one provider = one npm package plus one Claude
+  Code plugin `opscrew-<provider>@opscrew` that depends on the core plugin, released together;
+  the core plugin keeps the provider-neutral skills and the one MCP server. Research first: a
+  spike that a skill in one plugin can call the core plugin's MCP tools (not documented).
+  One ADR covers both.
+- Each package released adds one npm approval for the founder (staged publishing approves one
+  package at a time).
 
 **Testing (founder, 2026-10-18):** the **floci** AWS emulator (https://github.com/floci-io/floci;
 MIT; one Docker image, `floci/floci`, on port 4566; Terraform and OpenTofu through the standard
