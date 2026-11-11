@@ -199,9 +199,9 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Effort: medium
 
 - [ ] T2618 [P] [US6] The plugin skills and the MCP text
-  - Owns: `plugin/skills/**`, `plugin/README.md`, `packages/mcp-server/src/tools/*.ts` (text only)
+  - Owns: `plugin/skills/**`, `plugin/README.md`, `packages/mcp-server/src/tools/*.ts` (text only), `packages/cli/src/commands/retarget.ts` (help text only)
   - Depends: T2616
-  - Accept: `opscrew-deploy` and `opscrew-snapshots` say what differs on Contabo; the MCP tool descriptions that list providers include it; `node plugin/validate.mjs` passes.
+  - Accept: `opscrew-deploy` and `opscrew-snapshots` say what differs on Contabo; the MCP tool descriptions that list providers include it; where a text names a provider's credential variable (the deploy tools, `retarget`'s help), a provider whose `credentials.mode` is `all` has every variable named, and retarget's hand-wrapped help stays wrapped; `node plugin/validate.mjs` passes.
   - Verify: `node plugin/validate.mjs && pnpm turbo run typecheck test --filter=@opscrew/mcp-server && pnpm lint`
   - Effort: medium
 
