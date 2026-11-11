@@ -36,6 +36,7 @@ import {
   type Requirements,
   readArtifact,
 } from "@opscrew/plan-schema";
+import { CLOUD_PROVIDERS } from "@opscrew/providers";
 import { z } from "zod";
 import type { ResolvedMcpDeps } from "../deps";
 import { type CallExtra, clientSupportsElicitation, elicitOptions } from "./elicitation";
@@ -112,8 +113,7 @@ const AnswerValueSchema = z.union([
 ]);
 
 const ANSWER_HELP: Record<string, string> = {
-  provider:
-    'Where the app runs: "hetzner" (Hetzner Cloud), "digitalocean" (DigitalOcean), "own" (a server the user already has; then also answer the server.* questions), "portainer" (a Portainer the user already runs; then also answer the portainer.* questions), "localhost" (the user\'s computer, for an environment beside prod such as dev, through opscrew_env_add), and for a site that needs no server, only where the question offers them: "cloudflare-workers" (Cloudflare\'s hosting, static or server-rendered) or "github-pages" (GitHub Pages, static only). Both need the domain\'s DNS on Cloudflare.',
+  provider: `Where the app runs: ${CLOUD_PROVIDERS.map((p) => `"${p.id}" (${p.displayName}), `).join("")}"own" (a server the user already has; then also answer the server.* questions), "portainer" (a Portainer the user already runs; then also answer the portainer.* questions), "localhost" (the user's computer, for an environment beside prod such as dev, through opscrew_env_add), and for a site that needs no server, only where the question offers them: "cloudflare-workers" (Cloudflare's hosting, static or server-rendered) or "github-pages" (GitHub Pages, static only). Both need the domain's DNS on Cloudflare.`,
   expectedMonthlyUsers: "One of <1k, 1k-10k, 10k-100k, >100k.",
   budgetMonthly:
     'Monthly hosting budget, for example "10 EUR", "$20" or { amount: 10, currency: "EUR" }.',
@@ -271,8 +271,7 @@ export function registerInterviewTools(
     "opscrew_interview_questions",
     {
       title: "Interview questions",
-      description:
-        "List the deployment questions OpsCrew needs answered for this project (which app to deploy when the repository has several, where it runs (Hetzner Cloud, DigitalOcean, a server the user already has, with its SSH follow-up questions, or a Portainer the user already runs, with its follow-up questions; for a site that needs no server also Cloudflare's hosting or GitHub Pages, where they fit), expected users, monthly budget, region, acceptable downtime, data criticality, domain, DNS, image signing, deploy tags, and the app's components: each hosted service to keep or run on the server, and each worker's command when no convention gives it). Questions that can be inferred from the code are left out; previous answers are pre-filled as defaults. Ask the user each question, then call opscrew_save_requirements with the answers keyed by answer id. Writes nothing.",
+      description: `List the deployment questions OpsCrew needs answered for this project (which app to deploy when the repository has several, where it runs (${CLOUD_PROVIDERS.map((p) => `${p.displayName}, `).join("")}a server the user already has, with its SSH follow-up questions, or a Portainer the user already runs, with its follow-up questions; for a site that needs no server also Cloudflare's hosting or GitHub Pages, where they fit), expected users, monthly budget, region, acceptable downtime, data criticality, domain, DNS, image signing, deploy tags, and the app's components: each hosted service to keep or run on the server, and each worker's command when no convention gives it). Questions that can be inferred from the code are left out; previous answers are pre-filled as defaults. Ask the user each question, then call opscrew_save_requirements with the answers keyed by answer id. Writes nothing.`,
       inputSchema: { ...projectDirInput, ...appInput },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },

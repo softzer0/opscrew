@@ -16,6 +16,7 @@ import { exists, toPosixRelative, upperFirst } from "@opscrew/core";
 import {
   type DeployPlan,
   type DeployTarget,
+  isCloudProvider,
   isServerlessProvider,
   type Retarget,
   readArtifact,
@@ -50,9 +51,6 @@ function nextStep(
   return `Apply the pending code changes from ${input.planFile} (opscrew-adapt skill), then provision with \`npx opscrew provision${input.flag}\` in a terminal.`;
 }
 
-const isCloud = (target: Pick<DeployTarget, "provider">) =>
-  target.provider === "hetzner" || target.provider === "digitalocean";
-
 /**
  * Which servers a move keeps billed. Only servers OpsCrew created at a cloud provider are: never
  * the user's own server or Portainer. A new cloud server is billed once it exists (from `created`)
@@ -61,12 +59,12 @@ const isCloud = (target: Pick<DeployTarget, "provider">) =>
 function billing(move: Retarget, to: DeployTarget): string {
   const removed = move.abort !== undefined && move.abort.step !== "started";
   const notYet = move.step === "started" || move.step === "renamed";
-  if (!isCloud(to)) {
-    return isCloud(move.from.target)
+  if (!isCloudProvider(to.provider)) {
+    return isCloudProvider(move.from.target.provider)
       ? `The move adds no server cost: only ${sideWords(move.from.target, "old")} is billed, as before.`
       : "The move adds no server cost.";
   }
-  if (!isCloud(move.from.target)) {
+  if (!isCloudProvider(move.from.target.provider)) {
     if (removed) return "The new server was deleted by the abort; the move costs nothing any more.";
     if (notYet) return "The new server is not created yet; the move costs nothing yet.";
     return `${upperFirst(sideWords(to, "new"))} is billed from now on; ${sideWords(move.from.target, "old")} costs nothing extra.`;

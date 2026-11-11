@@ -12,6 +12,7 @@ import {
   takeSnapshot,
 } from "@opscrew/agents";
 import { isUserFacingError, OpsCrewError } from "@opscrew/core";
+import { CLOUD_PROVIDERS } from "@opscrew/providers";
 import { Argument, type Command, InvalidArgumentError, Option } from "commander";
 import { checkConfirmName, FlagConfirmation, withAllowDowntime } from "../approval";
 import type { CliContext } from "../context";
@@ -188,7 +189,7 @@ export function register(program: Command, ctx: CliContext): void {
     )
     .option(
       "--server",
-      "A snapshot of the whole server at its provider (Hetzner, DigitalOcean), taken while it runs",
+      `A snapshot of the whole server at its provider (${CLOUD_PROVIDERS.map((provider) => provider.name).join(", ")}), taken while it runs`,
     )
     .option("--stop", "With --server: shut the server down for the snapshot, then start it again")
     .option("--server-name <name>", "With --server: one of the app's extra servers, by its name");

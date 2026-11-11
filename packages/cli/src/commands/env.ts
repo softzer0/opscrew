@@ -11,6 +11,7 @@ import {
 } from "@opscrew/agents";
 import { listText, OpsCrewError } from "@opscrew/core";
 import { type DeployPlan, DeployProviderSchema } from "@opscrew/plan-schema";
+import { CLOUD_PROVIDERS } from "@opscrew/providers";
 import { type Command, Option } from "commander";
 import type { CliContext } from "../context";
 import { createPhaseDeps, promptsOf, servicesOf } from "../deps";
@@ -368,7 +369,7 @@ export function register(program: Command, ctx: CliContext): void {
     )
     .option(
       "--previews",
-      "A preview environment: one preview of the app per pull request, built and deployed by GitHub Actions on a server of its own (--target hetzner, digitalocean or own; default prod's provider) or, with --share-server, another environment's",
+      `A preview environment: one preview of the app per pull request, built and deployed by GitHub Actions on a server of its own (--target ${CLOUD_PROVIDERS.map((provider) => provider.id).join(", ")} or own; default prod's provider) or, with --share-server, another environment's`,
     )
     .option("--cap <n>", "With --previews: how many previews run at once, 1 to 20 (default 3)")
     .option(

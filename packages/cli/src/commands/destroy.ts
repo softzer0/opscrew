@@ -233,7 +233,7 @@ export async function runDestroyCommand(
   let typed: string | undefined;
   // An extra server whose name a script did not give.
   let unconfirmed: string | undefined;
-  let provider = "hetzner" as DeployPlan["target"]["provider"];
+  let provider: DeployPlan["target"]["provider"] | undefined;
   let flag = "";
   const scriptHint = () =>
     unconfirmed === undefined

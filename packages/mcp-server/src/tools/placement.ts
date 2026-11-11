@@ -1,10 +1,12 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { placementEstimate, resolveCatalog } from "@opscrew/agents";
 import type { ComputeCatalog } from "@opscrew/contracts";
-import { formatMoney, OpsCrewError } from "@opscrew/core";
-import { readArtifact } from "@opscrew/plan-schema";
+import { formatMoney, listText, OpsCrewError, orText } from "@opscrew/core";
+import { readArtifact, VpsProviderSchema } from "@opscrew/plan-schema";
+import { CLOUD_PROVIDERS, cloudProvider } from "@opscrew/providers";
 import { z } from "zod";
 import type { ResolvedMcpDeps } from "../deps";
+import { CLOUD_IDS } from "../providers";
 import { appInput, environmentInput, projectDirInput, runTool, toolEnvironment } from "./shared";
 
 /** Test-only collaborators for `opscrew_placement_estimate` (production reads the provider's prices). */
@@ -36,16 +38,16 @@ export function registerPlacementTool(
         ...environmentInput,
         service: z.string().min(1).describe("The service's name in opscrew/plan.yaml, e.g. db."),
         provider: z
-          .enum(["hetzner", "digitalocean", "own"])
+          .enum(VpsProviderSchema.options)
           .describe(
-            "Where the server would be: a new Hetzner or DigitalOcean server, or the user's own.",
+            `Where the server would be: a new ${orText(CLOUD_PROVIDERS.map((p) => p.name))} server, or the user's own.`,
           ),
         location: z
           .string()
           .min(1)
           .optional()
           .describe(
-            "A new cloud server's location (e.g. fsn1, nbg1, hel1 at Hetzner; fra1, ams3 at DigitalOcean). Required for hetzner and digitalocean.",
+            `A new cloud server's location (e.g. fsn1, nbg1, hel1 at Hetzner; fra1, ams3 at DigitalOcean). Required for ${listText(CLOUD_IDS)}.`,
           ),
         serverType: z
           .string()
@@ -65,7 +67,7 @@ export function registerPlacementTool(
         if (provider !== "own" && location === undefined) {
           throw new OpsCrewError(
             "INVALID_INPUT",
-            `A new ${provider === "hetzner" ? "Hetzner" : "DigitalOcean"} server needs its location for the estimate.`,
+            `A new ${cloudProvider(provider).name} server needs its location for the estimate.`,
             {
               hint: "Pass location, for example the app's own server's location for the shortest hop.",
             },

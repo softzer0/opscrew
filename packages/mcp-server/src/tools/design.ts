@@ -17,11 +17,13 @@ import {
   runDesign,
 } from "@opscrew/agents";
 import type { ApprovalHandler } from "@opscrew/contracts";
-import { formatMoney, OpsCrewError, taxLabel, toPosixRelative } from "@opscrew/core";
+import { formatMoney, OpsCrewError, orText, taxLabel, toPosixRelative } from "@opscrew/core";
 import { detectProject } from "@opscrew/detect";
 import { type DesignOption, isServerlessProvider, readArtifact } from "@opscrew/plan-schema";
+import { CLOUD_PROVIDERS } from "@opscrew/providers";
 import { z } from "zod";
 import { CollectingReporter, type ResolvedMcpDeps } from "../deps";
+import { CLOUD_NAMES } from "../providers";
 import {
   type CallExtra,
   clientSupportsElicitation,
@@ -252,8 +254,7 @@ export function registerDesignTools(
     "opscrew_design_options",
     {
       title: "Deployment options",
-      description:
-        "Offer 2–3 concrete deployment options on the cloud provider chosen in the interview (Hetzner Cloud or DigitalOcean) for this app and the saved requirements, each with monthly cost and breakdown, whether it fits the budget and its trade-offs; exactly one is recommended. Prices read from the provider's API (with HCLOUD_TOKEN or DIGITALOCEAN_TOKEN set) are live; rates the API does not return (DigitalOcean's backup percentage) are labelled with their published date; without a token the prices come from a dated price list labelled as an estimate. For a server the user already has, it connects over SSH, inspects the server read-only (the first time the user confirms its SSH host key in a dialog) and offers that server as the one option, without a price, warning when it is smaller than the app needs. For a Portainer the user already runs it offers one option, the app's stacks in the environment the user picked, without a price or sizes (OpsCrew does not size or change the host). For a site on Cloudflare's hosting or GitHub Pages it offers that one option, with the price and limits of the provider's published plans, or says why the target does not fit the app. Needs opscrew_save_requirements first. Writes nothing; call opscrew_select_design with the option the user chooses.",
+      description: `Offer 2–3 concrete deployment options on the cloud provider chosen in the interview (${CLOUD_NAMES}) for this app and the saved requirements, each with monthly cost and breakdown, whether it fits the budget and its trade-offs; exactly one is recommended. Prices read from the provider's API (with ${orText(CLOUD_PROVIDERS.flatMap((p) => p.texts.design.livePricesVar ?? []))} set) are live; rates the API does not return (DigitalOcean's backup percentage) are labelled with their published date; without a token the prices come from a dated price list labelled as an estimate. For a server the user already has, it connects over SSH, inspects the server read-only (the first time the user confirms its SSH host key in a dialog) and offers that server as the one option, without a price, warning when it is smaller than the app needs. For a Portainer the user already runs it offers one option, the app's stacks in the environment the user picked, without a price or sizes (OpsCrew does not size or change the host). For a site on Cloudflare's hosting or GitHub Pages it offers that one option, with the price and limits of the provider's published plans, or says why the target does not fit the app. Needs opscrew_save_requirements first. Writes nothing; call opscrew_select_design with the option the user chooses.`,
       inputSchema: { ...projectDirInput, ...appInput, ...environmentInput },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },

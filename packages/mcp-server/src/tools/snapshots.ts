@@ -1,6 +1,8 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { listSnapshots, type SnapshotServices, snapshotListLines } from "@opscrew/agents";
+import { orText } from "@opscrew/core";
 import { readArtifact } from "@opscrew/plan-schema";
+import { CLOUD_PROVIDERS } from "@opscrew/providers";
 import type { ResolvedMcpDeps } from "../deps";
 import { refuseUnconfirmedOwnServer } from "./elicitation";
 import { appInput, environmentInput, projectDirInput, runTool, toolEnvironment } from "./shared";
@@ -21,8 +23,7 @@ export function registerSnapshotsTool(
     "opscrew_snapshots",
     {
       title: "List the snapshots",
-      description:
-        "List an environment's snapshots of its data, newest first, read where they are: on the app's servers (each part on the server that holds it), on this computer, in the user's Portainer, and the whole-server snapshots at Hetzner or DigitalOcean. Each has its id, kind (by hand, before a release, scheduled, whole server), time, the version that ran, size, its services (copied, left out or failed), where it is, and whether its encrypted copy off the server exists. Reads read-only and changes nothing; never a dumped value, password or address. Taking, restoring and deleting a snapshot, and turning the schedule or the off-server copy on or off, stay in the user's terminal because they ask for approval: `npx opscrew snapshot`, `npx opscrew restore <id>`, `npx opscrew snapshot delete <id>`, `npx opscrew snapshot schedule on|off`, `npx opscrew snapshot offsite on|off`.",
+      description: `List an environment's snapshots of its data, newest first, read where they are: on the app's servers (each part on the server that holds it), on this computer, in the user's Portainer, and the whole-server snapshots at ${orText(CLOUD_PROVIDERS.map((p) => p.name))}. Each has its id, kind (by hand, before a release, scheduled, whole server), time, the version that ran, size, its services (copied, left out or failed), where it is, and whether its encrypted copy off the server exists. Reads read-only and changes nothing; never a dumped value, password or address. Taking, restoring and deleting a snapshot, and turning the schedule or the off-server copy on or off, stay in the user's terminal because they ask for approval: \`npx opscrew snapshot\`, \`npx opscrew restore <id>\`, \`npx opscrew snapshot delete <id>\`, \`npx opscrew snapshot schedule on|off\`, \`npx opscrew snapshot offsite on|off\`.`,
       inputSchema: { ...projectDirInput, ...appInput, ...environmentInput },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },

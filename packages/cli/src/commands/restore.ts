@@ -1,6 +1,7 @@
 import { restoreServerSnapshot, restoreSnapshot } from "@opscrew/agents";
 import type { ApprovalHandler, Clock } from "@opscrew/contracts";
 import { isPlanHash, OpsCrewError } from "@opscrew/core";
+import { CLOUD_PROVIDERS } from "@opscrew/providers";
 import { type Command, Option } from "commander";
 import { FlagConfirmation } from "../approval";
 import type { CliContext } from "../context";
@@ -146,7 +147,7 @@ export function register(program: Command, ctx: CliContext): void {
     )
     .option(
       "--server",
-      "Rebuild the server from this whole-server snapshot at its provider (Hetzner, DigitalOcean)",
+      `Rebuild the server from this whole-server snapshot at its provider (${CLOUD_PROVIDERS.map((provider) => provider.name).join(", ")})`,
     )
     .option(
       "--confirm <name>",

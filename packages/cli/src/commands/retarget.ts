@@ -20,10 +20,12 @@ import {
 import {
   CloudProviderSchema,
   type DeployPlan,
+  isCloudProvider,
   readArtifact,
   type ServerlessProvider,
   ServerlessProviderSchema,
 } from "@opscrew/plan-schema";
+import { CLOUD_PROVIDERS } from "@opscrew/providers";
 import { type Command, Option } from "commander";
 import { askTypedName, formatRequest, hashListed, withAllowDowntime } from "../approval";
 import type { CliContext } from "../context";
@@ -215,24 +217,27 @@ export function flagProblems(flags: RetargetFlags): string[] {
 /** Where a move can go: a server target, or a site host for a site. */
 type RetargetTo = NonNullable<RetargetFlags["to"]>;
 
-const SERVERS: RetargetTo[] = ["hetzner", "digitalocean", "own", "portainer"];
+/** The cloud providers' ids, from the registry. */
+const CLOUDS: readonly RetargetTo[] = CLOUD_PROVIDERS.map((p) => p.id).filter(isCloudProvider);
+
+const SERVERS: readonly RetargetTo[] = [...CLOUDS, "own", "portainer"];
 
 /**
  * The given flags that only some targets use: the own server's and Portainer's answers, the
  * bucket's (between cloud providers), GitHub Pages' verification, and a server move's maintenance
  * window, its option and its data (a site's move has none).
  */
-function sideFlags(flags: RetargetFlags): { name: string; targets: RetargetTo[] }[] {
-  const all: [given: boolean, name: string, targets: RetargetTo[]][] = [
+function sideFlags(flags: RetargetFlags): { name: string; targets: readonly RetargetTo[] }[] {
+  const all: [given: boolean, name: string, targets: readonly RetargetTo[]][] = [
     [flags.answers !== undefined, "--answers", ["own", "portainer"]],
     [flags.hostKey !== undefined, "--host-key", ["own"]],
     [flags.passwordLogins !== undefined, "--password-logins", ["own"]],
     [flags.portainerAddress !== undefined, "--portainer-address", ["portainer"]],
     [flags.portainerCert !== undefined, "--portainer-cert", ["portainer"]],
     [flags.publicImage === true, "--public-image", ["portainer"]],
-    [flags.keepBucket === true, "--keep-bucket", ["hetzner", "digitalocean"]],
+    [flags.keepBucket === true, "--keep-bucket", CLOUDS],
     [flags.pagesVerification !== undefined, "--pages-verification", ["github-pages"]],
-    [flags.option !== undefined, "--option", ["hetzner", "digitalocean"]],
+    [flags.option !== undefined, "--option", CLOUDS],
     [flags.empty !== undefined, "--empty", SERVERS],
     [flags.allowDowntime === true, "--allow-downtime", SERVERS],
   ];
@@ -579,7 +584,7 @@ export function register(program: Command, ctx: CliContext): void {
         "  mount, unless you start it empty), switches DNS and keeps the old side (with its app",
         "  stopped) until you finish the move. Your own server and your Portainer are never",
         "  deleted: finishing removes only the app from them. The cloud providers' API tokens",
-        "  (HCLOUD_TOKEN, DIGITALOCEAN_TOKEN), PORTAINER_API_KEY for Portainer and your GitHub",
+        `  (${CLOUD_PROVIDERS.map((provider) => provider.credentials.envVars[0]).join(", ")}), PORTAINER_API_KEY for Portainer and your GitHub`,
         "  access are needed for the sides involved. A bucket at the provider being left moves to",
         "  the new provider's object storage (--keep-bucket leaves it). A site moves between",
         "  Cloudflare's hosting and GitHub Pages, with no maintenance window.",
