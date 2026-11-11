@@ -1,46 +1,12 @@
 import { listText } from "@opscrew/core";
 import type { CloudProvider } from "@opscrew/plan-schema";
+import { cloudProvider } from "@opscrew/providers";
 
 /**
  * Where a server is, for the delay estimate: a cloud location, or a server the user owns, whose
  * location OpsCrew does not know.
  */
 export type ServerPlace = { provider: "own" } | { provider: CloudProvider; location: string };
-
-/**
- * Latitude and longitude (degrees) of each location the providers offer: Hetzner's data centres
- * and DigitalOcean's regions, by the city they are in.
- */
-const LOCATIONS: Readonly<
-  Record<CloudProvider, Readonly<Record<string, readonly [number, number]>>>
-> = {
-  hetzner: {
-    fsn1: [50.4779, 12.3713],
-    nbg1: [49.4521, 11.0767],
-    hel1: [60.1699, 24.9384],
-    ash: [39.0438, -77.4874],
-    hil: [45.5229, -122.9898],
-    sin: [1.3521, 103.8198],
-  },
-  digitalocean: {
-    nyc1: [40.7128, -74.006],
-    nyc2: [40.7128, -74.006],
-    nyc3: [40.7128, -74.006],
-    sfo2: [37.7749, -122.4194],
-    sfo3: [37.7749, -122.4194],
-    tor1: [43.6532, -79.3832],
-    atl1: [33.749, -84.388],
-    ric1: [37.5407, -77.436],
-    mkc1: [39.0997, -94.5786],
-    mem1: [35.1495, -90.049],
-    ams3: [52.3676, 4.9041],
-    lon1: [51.5074, -0.1278],
-    fra1: [50.1109, 8.6821],
-    sgp1: [1.3521, 103.8198],
-    blr1: [12.9716, 77.5946],
-    syd1: [-33.8688, 151.2093],
-  },
-};
 
 /** Above this estimated round trip (ms), a page making many queries in a row slows noticeably. */
 export const DELAY_WARNING_MS = 5;
@@ -59,7 +25,9 @@ const EARTH_RADIUS_KM = 6371;
 
 /** A cloud place's coordinates, when OpsCrew knows them. */
 function coordinates(place: ServerPlace): readonly [number, number] | undefined {
-  return place.provider === "own" ? undefined : LOCATIONS[place.provider][place.location];
+  return place.provider === "own"
+    ? undefined
+    : cloudProvider(place.provider).regions.coordinates[place.location];
 }
 
 /** The great-circle distance between two points (haversine), in km. */

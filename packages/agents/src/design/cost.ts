@@ -1,5 +1,5 @@
 import type { ComputeOffer, Currency, Money, ProviderExtras } from "@opscrew/contracts";
-import { type CostEstimate, CostEstimateSchema } from "@opscrew/plan-schema";
+import { type CostEstimate, CostEstimateSchema, isCloudProvider } from "@opscrew/plan-schema";
 import { designWording } from "./wording";
 
 /** Fixed approximate exchange rate used for budget comparisons: 1 EUR = 1.10 USD. */
@@ -62,10 +62,9 @@ function nonLiveRates(
   options: { backups: boolean },
 ): NonLiveRates {
   if (offer.source !== "live") return {};
-  const name =
-    offer.provider === "hetzner" || offer.provider === "digitalocean"
-      ? designWording(offer.provider).name
-      : offer.provider;
+  const name = isCloudProvider(offer.provider)
+    ? designWording(offer.provider).name
+    : offer.provider;
   const date = extras.asOf.slice(0, 10);
   const published: RateSource = {
     rate: `${name}'s published rate as of ${date}`,

@@ -1,7 +1,7 @@
 import type { VpsConnector, VpsProviderId } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
-import { digitaloceanConnector } from "@opscrew/provider-digitalocean";
-import { hetznerConnector } from "@opscrew/provider-hetzner";
+import { isCloudProvider } from "@opscrew/plan-schema";
+import { cloudProvider } from "@opscrew/providers";
 import type { PhaseDeps } from "../context";
 import { type OwnServerFacts, type OwnServerLogin, ownServerConnector } from "./own";
 
@@ -34,24 +34,19 @@ export function vpsConnector(
     version: deps.version,
     ...waits,
   };
-  switch (id) {
-    case "hetzner":
-      return hetznerConnector(common);
-    case "digitalocean":
-      return digitaloceanConnector(common);
-    case "own":
-      return ownServerConnector({
-        ...(ownServer !== undefined ? { facts: ownServer } : {}),
-        ...(ownLogin !== undefined ? { login: ownLogin } : {}),
-        ...(waits.now !== undefined ? { now: waits.now } : {}),
-      });
-    default:
-      throw new OpsCrewError(
-        "INVALID_INPUT",
-        `OpsCrew does not know the server provider "${String(id satisfies never)}".`,
-        {
-          hint: "Use hetzner, digitalocean or own as the provider in opscrew/requirements.yaml and opscrew/plan.yaml.",
-        },
-      );
+  if (id === "own") {
+    return ownServerConnector({
+      ...(ownServer !== undefined ? { facts: ownServer } : {}),
+      ...(ownLogin !== undefined ? { login: ownLogin } : {}),
+      ...(waits.now !== undefined ? { now: waits.now } : {}),
+    });
   }
+  if (isCloudProvider(id)) return cloudProvider(id).connector(common);
+  throw new OpsCrewError(
+    "INVALID_INPUT",
+    `OpsCrew does not know the server provider "${String(id satisfies never)}".`,
+    {
+      hint: "Use hetzner, digitalocean or own as the provider in opscrew/requirements.yaml and opscrew/plan.yaml.",
+    },
+  );
 }

@@ -10,6 +10,7 @@ import {
 import { z } from "zod";
 import { providerProfile } from "../providers";
 import { readValidJson } from "../shared/files";
+import { isCloudTarget } from "../shared/vps-target";
 
 /** Where a server runs and of what type. */
 export interface ServerSize {
@@ -57,7 +58,7 @@ export function applied(previous: DeployPlan | undefined): previous is DeployPla
 function cloudServerOf(plan: DeployPlan, provider: DeployProvider): ServerSize | undefined {
   const { target } = plan;
   if (target.provider !== provider) return undefined;
-  if (target.provider !== "hetzner" && target.provider !== "digitalocean") return undefined;
+  if (!isCloudTarget(target)) return undefined;
   return { location: target.location, serverType: target.serverType };
 }
 
@@ -81,7 +82,7 @@ export function appServerChange(
   plan: Pick<DeployPlan, "target">,
 ): ServerChange | undefined {
   const after = plan.target;
-  if (after.provider !== "hetzner" && after.provider !== "digitalocean") return undefined;
+  if (!isCloudTarget(after)) return undefined;
   if (!deployed(previous)) return undefined;
   const before = cloudServerOf(previous, after.provider);
   return before === undefined ? undefined : changeOf(before, after);

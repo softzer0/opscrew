@@ -9,7 +9,12 @@ import {
   type Redactor,
   readTextIfExists,
 } from "@opscrew/core";
-import { APP_SERVER, type DeployPlan, readOptionalArtifact } from "@opscrew/plan-schema";
+import {
+  APP_SERVER,
+  type DeployPlan,
+  isCloudProvider,
+  readOptionalArtifact,
+} from "@opscrew/plan-schema";
 import { z } from "zod";
 import { hasPublicAddress } from "../network/endpoints";
 import { portainerCloudflare } from "../provision/credentials";
@@ -210,7 +215,7 @@ export async function serverLogin(
       }
       return ownLogin(deps, record.own);
     }
-    if (provider !== "hetzner" && provider !== "digitalocean") {
+    if (!isCloudProvider(provider)) {
       throw new OpsCrewError(
         "PHASE_PRECONDITION",
         `The app's target (${provider}) has no server for OpsCrew to log in to.`,

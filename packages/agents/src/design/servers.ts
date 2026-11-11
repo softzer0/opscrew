@@ -12,6 +12,7 @@ import {
 } from "@opscrew/plan-schema";
 import { providerProfile } from "../providers";
 import { type MemoryLimit, memoryHeadroom, SYSTEM_RESERVE_MB } from "../shared/memory";
+import { isCloudTarget } from "../shared/vps-target";
 import {
   convertMoney,
   EXCHANGE_RATE_NOTE,
@@ -157,7 +158,7 @@ export interface CloudServerInput {
  */
 export async function designCloudServer(input: CloudServerInput): Promise<DesignedCloudServer> {
   const { name, target = {}, services, app, addons = [] } = input;
-  const appCloud = app.provider === "hetzner" || app.provider === "digitalocean" ? app : undefined;
+  const appCloud = isCloudTarget(app) ? app : undefined;
   const provider = target.provider ?? appCloud?.provider;
   const location =
     target.location ??

@@ -16,12 +16,7 @@ import {
   type GitHubClient,
   parseGitHubRepo,
 } from "@opscrew/connector-github";
-import type {
-  CredentialCheck,
-  CredentialRequirement,
-  RegistrarAccountCheck,
-  VpsProviderId,
-} from "@opscrew/contracts";
+import type { CredentialCheck, RegistrarAccountCheck, VpsProviderId } from "@opscrew/contracts";
 import {
   errorMessage,
   errorText,
@@ -42,6 +37,7 @@ import {
   type ServerlessProvider,
   snapshotOffsiteOf,
 } from "@opscrew/plan-schema";
+import { cloudProvider } from "@opscrew/providers";
 import type { PhaseDeps } from "../context";
 import { PAGES_NOT_ALLOWED } from "../design/serverless";
 import {
@@ -655,23 +651,6 @@ function tokenVarOf(env: Record<string, string | undefined>, profile: ProviderPr
   return profile.tokenVars.find((name) => hasEnv(env, name));
 }
 
-/** How to create the provider's token, naming the page, the variable and the scopes. */
-function providerFix(profile: ProviderProfile, requirement: CredentialRequirement): string {
-  if (profile.id === "hetzner") {
-    return `Create a Read & Write API token in the Hetzner Cloud Console (${requirement.createUrl} → your project → Security → API tokens) and set it as HCLOUD_TOKEN.`;
-  }
-  return `Create a personal access token with custom scopes at ${requirement.createUrl}, select these scopes (${requirement.scopes.join(", ")}), and set ${profile.tokenVars[0]} to it.`;
-}
-
-/**
- * For providers whose API cannot list a token's scopes (DigitalOcean), the scopes OpsCrew needs,
- * so the user can compare them with the token's.
- */
-function scopeNote(profile: ProviderProfile, requirement: CredentialRequirement): string {
-  if (profile.id === "hetzner") return "";
-  return ` ${profile.displayName} cannot report which scopes a token has, so make sure it has these (${requirement.scopes.join(", ")}).`;
-}
-
 const DOCKER_INSTALL =
   "Install Docker Desktop (Windows, macOS), Docker Engine (Linux) or Colima (macOS) and start it.";
 
@@ -706,7 +685,7 @@ async function checkProviderToken(
     }
     const fixes = VPS_PROVIDERS.map((id) => {
       const profile = providerProfile(id);
-      return `For ${profile.displayName}, ${lowerFirst(providerFix(profile, vpsConnector(id, deps).credentials))}`;
+      return `For ${profile.displayName}, ${lowerFirst(cloudProvider(id).texts.init.fix)}`;
     });
     const docker = which("docker");
     return {
@@ -742,8 +721,9 @@ async function checkProviderToken(
 
   const profile = providerProfile(provider);
   const connector = vpsConnector(provider, deps);
-  const requirement = connector.credentials;
-  const fix = providerFix(profile, requirement);
+  // How to create the token, and for a provider whose API can't list a token's scopes, the ones
+  // OpsCrew needs (appended as it is: it starts with a space, or is empty).
+  const { fix, scopeNote } = cloudProvider(provider).texts.init;
   const envVar = tokenVarOf(env, profile);
   const unchosen = choice.source === "token" ? ` No provider is chosen yet. ${ONLY_ONE}` : "";
   if (envVar === undefined) {
@@ -758,13 +738,13 @@ async function checkProviderToken(
     return {
       status: "fail",
       message: `${profile.tokenVars[0]} is not set${why}.`,
-      fix: `${fix}${scopeNote(profile, requirement)}`,
+      fix: `${fix}${scopeNote}`,
     };
   }
   if (offline) {
     return {
       status: "pass",
-      message: `${envVar} is set (${OFFLINE_NOTE}).${scopeNote(profile, requirement)}${unchosen}`,
+      message: `${envVar} is set (${OFFLINE_NOTE}).${scopeNote}${unchosen}`,
     };
   }
   const result = await connector.verifyCredentials();
@@ -773,7 +753,7 @@ async function checkProviderToken(
     const detail = /\bworks\.$/.test(result.message) ? "" : ` ${result.message}`;
     return {
       status: "pass",
-      message: `${envVar} works${identity}.${detail}${scopeNote(profile, requirement)}${unchosen}`,
+      message: `${envVar} works${identity}.${detail}${scopeNote}${unchosen}`,
     };
   }
   if (result.identity !== undefined) {

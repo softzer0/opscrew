@@ -17,7 +17,7 @@ import type {
   UserScale,
 } from "@opscrew/plan-schema";
 import { serviceOf } from "@opscrew/plan-schema";
-import { providerProfile } from "../providers";
+import { DEFAULT_CLOUD_PROVIDER, providerProfile } from "../providers";
 import { appMemoryMb, type MemoryLimit, memoryHeadroom, SYSTEM_RESERVE_MB } from "../shared/memory";
 import { type Components, designComponents } from "./components";
 
@@ -27,10 +27,13 @@ export function usableOffer(offer: ComputeOffer): boolean {
 }
 
 /**
- * A provider's locations for a region, in order of preference (Hetzner by default); none for a
- * server the user owns.
+ * A provider's locations for a region, in order of preference (the default cloud provider's when
+ * none is given); none for a server the user owns.
  */
-export function regionLocations(region: Region, provider: VpsProviderId = "hetzner"): string[] {
+export function regionLocations(
+  region: Region,
+  provider: VpsProviderId = DEFAULT_CLOUD_PROVIDER,
+): string[] {
   return [...providerProfile(provider).regionLocations[region]];
 }
 

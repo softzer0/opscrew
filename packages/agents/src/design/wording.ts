@@ -1,4 +1,5 @@
 import type { VpsProviderId } from "@opscrew/contracts";
+import { cloudProvider } from "@opscrew/providers";
 import { type ProviderProfile, providerProfile } from "../providers";
 
 /** How the design phase names a provider, its servers and its token in user-facing text. */
@@ -14,20 +15,25 @@ export interface DesignWording {
   tokenVar: string;
 }
 
-const TEXT: Readonly<
-  Record<VpsProviderId, Pick<DesignWording, "name" | "summaryNoun" | "titleSuffix">>
-> = {
-  hetzner: { name: "Hetzner", summaryNoun: "server", titleSuffix: "" },
-  digitalocean: {
-    name: "DigitalOcean",
-    summaryNoun: "DigitalOcean Droplet",
-    titleSuffix: " on DigitalOcean",
-  },
-  own: { name: "your own server", summaryNoun: "server", titleSuffix: "" },
-};
+/** What live prices need when no variable turns them on. */
+const NO_TOKEN_VAR = "the API token";
 
-/** Design wording for a provider, including a server the user owns (which has no token). */
+/**
+ * Design wording for a provider, including a server the user owns (which has no token); a cloud
+ * provider's comes from its definition.
+ */
 export function designWording(provider: VpsProviderId): DesignWording {
   const profile = providerProfile(provider);
-  return { profile, ...TEXT[provider], tokenVar: profile.tokenVars[0] ?? "the API token" };
+  if (provider === "own") {
+    return {
+      profile,
+      name: "your own server",
+      summaryNoun: "server",
+      titleSuffix: "",
+      tokenVar: NO_TOKEN_VAR,
+    };
+  }
+  const { name, texts } = cloudProvider(provider);
+  const { summaryNoun, titleSuffix, livePricesVar } = texts.design;
+  return { profile, name, summaryNoun, titleSuffix, tokenVar: livePricesVar ?? NO_TOKEN_VAR };
 }

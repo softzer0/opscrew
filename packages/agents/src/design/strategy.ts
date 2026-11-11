@@ -1,4 +1,5 @@
 import { type DeployPlan, type DesignOption, isServerlessProvider } from "@opscrew/plan-schema";
+import { isCloudTarget } from "../shared/vps-target";
 
 /** FR-1217: what a redeploy in the user's Portainer does. */
 export const PORTAINER_RECREATE_NOTE =
@@ -53,9 +54,7 @@ type PlanDeploy = Pick<DeployPlan, "target" | "deploy" | "storage">;
 
 /** The server a plan runs on: the provider, and a cloud server's type. */
 function serverOf({ target }: PlanDeploy): string {
-  return target.provider === "hetzner" || target.provider === "digitalocean"
-    ? `${target.provider}/${target.serverType}`
-    : target.provider;
+  return isCloudTarget(target) ? `${target.provider}/${target.serverType}` : target.provider;
 }
 
 /** The user's snapshot settings of `deploy` (`snapshots`, `keepSnapshots`), those that are set. */

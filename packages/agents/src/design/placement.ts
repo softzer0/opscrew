@@ -10,6 +10,7 @@ import {
   type DeployTarget,
   type DesignOption,
   type ExtraServer,
+  isCloudProvider,
   type Move,
   monitoringOf,
   type PlanService,
@@ -29,6 +30,7 @@ import { planFile } from "../runners/words";
 import { reasonOf } from "../shared/errors";
 import { monitoringLimits } from "../shared/memory";
 import { serverRemote, serverWords } from "../shared/server-address";
+import { isCloudTarget } from "../shared/vps-target";
 import { memoryText, serverMemoryText } from "./components";
 import { convertMoney, EXCHANGE_RATE_NOTE } from "./cost";
 import { type HopDelay, hopDelay, type ServerPlace } from "./delay";
@@ -54,7 +56,7 @@ import {
 
 /** Where a server is, for the delay estimate. */
 function placeOf(target: DeployTarget | ExtraServer["target"]): ServerPlace {
-  return target.provider === "hetzner" || target.provider === "digitalocean"
+  return isCloudTarget(target)
     ? { provider: target.provider, location: target.location }
     : { provider: "own" };
 }
@@ -282,10 +284,7 @@ function serverLines(
   designed: readonly DesignedServer[],
 ): string[] {
   const { target, cost } = input.chosen;
-  const provider =
-    target.provider === "hetzner" || target.provider === "digitalocean"
-      ? target.provider
-      : undefined;
+  const provider = isCloudProvider(target.provider) ? target.provider : undefined;
   const cloud = provider !== undefined;
   const app: DesignedServer = {
     server: {

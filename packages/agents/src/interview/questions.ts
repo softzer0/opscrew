@@ -11,9 +11,10 @@ import {
   type ServerlessProvider,
   type ServiceKind,
 } from "@opscrew/plan-schema";
+import { CLOUD_PROVIDERS } from "@opscrew/providers";
 import { frameworkName } from "../analyze/summary";
 import { hostedKinds } from "../design/components";
-import { providerProfile } from "../providers";
+import { DEFAULT_CLOUD_PROVIDER, providerProfile } from "../providers";
 import { withDefault } from "./follow-ups";
 
 /** Answers keyed by question id (requirements field). Values come from a prompt or a YAML file. */
@@ -81,7 +82,7 @@ export function defaultProvider(
 ): DeployProvider {
   const before = previous?.provider;
   const offered = !isServerlessProvider(before) || (context.serverless ?? []).includes(before);
-  return (offered ? before : undefined) ?? context.inferredProvider ?? "hetzner";
+  return (offered ? before : undefined) ?? context.inferredProvider ?? DEFAULT_CLOUD_PROVIDER;
 }
 
 /**
@@ -183,16 +184,11 @@ export function buildQuestions(
       prompt: "Where should OpsCrew run your app?",
       kind: "single-select",
       options: [
-        {
-          value: "hetzner",
-          label: "Hetzner Cloud",
-          hint: "lowest prices; servers in Germany, Finland, the US and Singapore",
-        },
-        {
-          value: "digitalocean",
-          label: "DigitalOcean",
-          hint: "use your DigitalOcean account; data centres in Germany, the Netherlands, the US and Singapore; prices in USD",
-        },
+        ...CLOUD_PROVIDERS.map(({ id, texts }) => ({
+          value: id,
+          label: texts.interview.label,
+          hint: texts.interview.hint,
+        })),
         ...(context.serverless ?? []).map((id) => ({
           value: id,
           label: providerProfile(id).displayName,

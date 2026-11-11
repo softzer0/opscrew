@@ -3,13 +3,17 @@ import { OpsCrewError } from "@opscrew/core";
 import { wrongTarget } from "@opscrew/iac-templates";
 import {
   type CloudProvider,
+  CloudProviderSchema,
   type DeployPlan,
   type DeployProvider,
   onOneServer,
   type Region,
+  RegionSchema,
   type Requirements,
   type ServerlessProvider,
 } from "@opscrew/plan-schema";
+import { CLOUD_PROVIDERS, cloudProvider } from "@opscrew/providers";
+import { z } from "zod";
 
 /** What the phases need to know about a VPS provider, so none of them imports its connector. */
 export interface ProviderProfile {
@@ -66,89 +70,37 @@ export interface ProviderProfile {
   mirroredAttributes: Readonly<Record<string, readonly string[]>>;
 }
 
-const HETZNER: ProviderProfile = {
-  id: "hetzner",
-  displayName: "Hetzner Cloud",
-  serverNoun: "server",
-  tokenVars: ["HCLOUD_TOKEN"],
-  tokenUrl: "https://console.hetzner.cloud/",
-  consoleUrl: "https://console.hetzner.cloud/",
-  accountUrl: "https://console.hetzner.cloud/",
-  serverResourceType: "hcloud_server",
-  firewallResourceType: "hcloud_firewall",
-  deleteProtection: true,
-  defaultImage: "ubuntu-24.04",
-  currency: "EUR",
-  backupPercent: 20,
-  backupsOutliveServer: false,
-  providerBackups: true,
-  regionLocations: {
-    "eu-central": ["nbg1", "fsn1"],
-    "eu-north": ["hel1"],
-    "us-east": ["ash"],
-    "us-west": ["hil"],
-    "ap-southeast": ["sin"],
-  },
-  locationNames: {
-    nbg1: "Nuremberg",
-    fsn1: "Falkenstein",
-    hel1: "Helsinki",
-    ash: "Ashburn",
-    hil: "Hillsboro",
-    sin: "Singapore",
-  },
-  regionNotes: {},
-  unavailable:
-    /resource_unavailable|out of stock|unsupported location|error during placement|(?<!service )unavailable/i,
-  serverLimit: /resource_limit_exceeded|server limit/i,
-  mirroredAttributes: { hcloud_firewall: ["apply_to"] },
-};
+/** A definition's locations per region, read with OpsCrew's regions (ADR 0029). */
+const RegionLocationsSchema = z.record(RegionSchema, z.array(z.string()));
 
-const DIGITALOCEAN: ProviderProfile = {
-  id: "digitalocean",
-  displayName: "DigitalOcean",
-  serverNoun: "Droplet",
-  tokenVars: ["DIGITALOCEAN_TOKEN", "DIGITALOCEAN_ACCESS_TOKEN"],
-  tokenUrl: "https://cloud.digitalocean.com/account/api/tokens",
-  consoleUrl: "https://cloud.digitalocean.com/",
-  accountUrl: "https://cloud.digitalocean.com/account",
-  serverResourceType: "digitalocean_droplet",
-  firewallResourceType: "digitalocean_firewall",
-  deleteProtection: false,
-  defaultImage: "ubuntu-24-04-x64",
-  currency: "USD",
-  backupPercent: 30,
-  backupsOutliveServer: true,
-  providerBackups: true,
-  regionLocations: {
-    "eu-central": ["fra1", "ams3"],
-    "eu-north": ["ams3"],
-    "us-east": ["nyc3", "nyc1", "atl1"],
-    "us-west": ["sfo3"],
-    "ap-southeast": ["sgp1"],
-  },
-  locationNames: {
-    fra1: "Frankfurt",
-    ams3: "Amsterdam",
-    lon1: "London",
-    nyc1: "New York",
-    nyc3: "New York",
-    atl1: "Atlanta",
-    sfo3: "San Francisco",
-    tor1: "Toronto",
-    sgp1: "Singapore",
-    blr1: "Bangalore",
-    syd1: "Sydney",
-  },
-  regionNotes: {
-    "eu-north":
-      "DigitalOcean has no data centre in northern Europe, so OpsCrew uses Amsterdam, the closest one.",
-  },
-  unavailable:
-    /(size|image|region) is not available|not available in (this|the selected) region|(?<!service (temporarily )?)unavailable|out of stock/i,
-  serverLimit: /droplet limit|droplet quota|exceed(s|ed)? (your|the) droplet/i,
-  mirroredAttributes: {},
-};
+/** A cloud provider's profile, read from its definition in the registry (ADR 0029). */
+function cloudProfile(id: CloudProvider): ProviderProfile {
+  const definition = cloudProvider(id);
+  const { credentials, regions, offering, terraform } = definition;
+  return {
+    id,
+    displayName: definition.displayName,
+    serverNoun: definition.serverNoun,
+    tokenVars: credentials.envVars,
+    tokenUrl: credentials.createUrl,
+    consoleUrl: definition.consoleUrl,
+    accountUrl: definition.accountUrl,
+    serverResourceType: terraform.serverResourceType,
+    firewallResourceType: terraform.firewallResourceType,
+    deleteProtection: offering.deleteProtection,
+    defaultImage: offering.defaultImage,
+    currency: offering.currency,
+    backupPercent: offering.backupPercent,
+    backupsOutliveServer: offering.backupsOutliveServer,
+    providerBackups: offering.providerBackups,
+    regionLocations: RegionLocationsSchema.parse(regions.locations),
+    locationNames: regions.locationNames,
+    regionNotes: regions.notes,
+    unavailable: offering.unavailable,
+    serverLimit: offering.serverLimit,
+    mirroredAttributes: terraform.mirroredAttributes,
+  };
+}
 
 const NO_REGIONS: Readonly<Record<Region, readonly string[]>> = {
   "eu-central": [],
@@ -320,17 +272,21 @@ const GITHUB_PAGES: GithubPagesProfile = {
   },
 };
 
-const PROFILES: Readonly<Record<VpsProviderId, ProviderProfile>> = {
-  hetzner: HETZNER,
-  digitalocean: DIGITALOCEAN,
-  own: OWN,
-};
-
 /**
- * Every cloud provider OpsCrew creates servers on (with an API token), Hetzner first. A server the
- * user already owns (`own`) is not one of them.
+ * Every cloud provider OpsCrew creates servers on (with an API token), in the registry's order,
+ * Hetzner first. A server the user already owns (`own`) is not one of them.
  */
-export const VPS_PROVIDERS: readonly CloudProvider[] = ["hetzner", "digitalocean"];
+export const VPS_PROVIDERS: readonly CloudProvider[] = CLOUD_PROVIDERS.map(({ id }) =>
+  CloudProviderSchema.parse(id),
+);
+
+/** The cloud provider when nothing names one (no answer, no token): the registry's first. */
+export const DEFAULT_CLOUD_PROVIDER: CloudProvider = CloudProviderSchema.parse(VPS_PROVIDERS[0]);
+
+const PROFILES: ReadonlyMap<VpsProviderId, ProviderProfile> = new Map([
+  ...VPS_PROVIDERS.map((id) => [id, cloudProfile(id)] as const),
+  ["own", OWN] as const,
+]);
 
 /**
  * The provider's profile, including `own` ("Your own server"), `portainer` ("My existing
@@ -358,7 +314,7 @@ export function providerProfile(
   if (id === "localhost") return LOCALHOST;
   if (id === "cloudflare-workers") return CLOUDFLARE_HOSTING;
   if (id === "github-pages") return GITHUB_PAGES;
-  const profile = PROFILES[id];
+  const profile = PROFILES.get(id);
   if (profile === undefined) {
     throw new OpsCrewError("INVALID_INPUT", `OpsCrew does not know the server provider "${id}".`, {
       hint: "Use hetzner, digitalocean, own or portainer as the provider in opscrew/requirements.yaml and opscrew/plan.yaml.",

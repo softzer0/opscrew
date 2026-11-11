@@ -75,6 +75,7 @@ import type { LocalhostServices } from "../localhost/services";
 import type { NetworkHostFacts } from "../network";
 import { sharedPreviewsLimit } from "../previews/host";
 import {
+  DEFAULT_CLOUD_PROVIDER,
   type OwnServerFacts,
   planProvider,
   providerProfile,
@@ -1625,7 +1626,7 @@ function providerSwitchBlock(
   hasServer: boolean,
 ): { message: string; hint: string } | undefined {
   const current = liveProvider(previous, stateExists);
-  const requested: DeployProvider = requirements.provider ?? "hetzner";
+  const requested: DeployProvider = requirements.provider ?? DEFAULT_CLOUD_PROVIDER;
   if (current === undefined || requested === current) return undefined;
   const from = providerName(current);
   const to = providerName(requested);
@@ -1704,7 +1705,7 @@ function requireSameProvider(
  * or GitHub Pages.
  */
 function requirePlacementTarget(edits: PlacementEdits, requirements: Requirements): void {
-  const provider: DeployProvider = requirements.provider ?? "hetzner";
+  const provider: DeployProvider = requirements.provider ?? DEFAULT_CLOUD_PROVIDER;
   if (!hasPlacement(edits) || onOneServer(provider)) return;
   throw new OpsCrewError(
     "PHASE_PRECONDITION",
