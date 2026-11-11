@@ -284,15 +284,28 @@ describe("servers revert and power", () => {
         status: 201,
         body: { data: [{ instanceId: 101, action: "shutdown" }], _links: {} },
       },
-      "GET /v1/compute/instances/101": [instance(101, "running"), instance(101, "stopped")],
+      "GET /v1/compute/instances/101": [
+        instance(101, "running"),
+        instance(101, "running"),
+        instance(101, "stopped"),
+      ],
     });
     await api.powerOff("101");
     expect(calls()).toEqual([
+      "GET /v1/compute/instances/101",
       "POST /v1/compute/instances/101/actions/shutdown",
       "GET /v1/compute/instances/101",
       "GET /v1/compute/instances/101",
     ]);
     expect(time.waits).toEqual([5000]);
+  });
+
+  it("does nothing for an instance that is already stopped", async () => {
+    const { api, calls } = setup({
+      "GET /v1/compute/instances/101": instance(101, "stopped"),
+    });
+    await api.powerOff("101");
+    expect(calls()).toEqual(["GET /v1/compute/instances/101"]);
   });
 
   it("gives up after five minutes when the instance does not stop, naming its status", async () => {

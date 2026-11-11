@@ -102,6 +102,8 @@ export function contaboServerApi(client: ContaboClient): ServerSnapshotApi {
 
     async powerOff(serverId: string): Promise<void> {
       const id = instanceId(serverId);
+      // Already off (a destroy run again after a shutdown): Contabo would refuse the action.
+      if ((await client.getInstance(id)).status === "stopped") return;
       // A graceful shutdown (ACPI); Contabo's `stop` would cut the power, which OpsCrew never does.
       await client.instanceAction(id, "shutdown");
       await client.waitForStatus(id, "stopped", { timeoutMs: SHUTDOWN_TIMEOUT_MS });
