@@ -32,7 +32,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
 
 ## Phase 2: Wave 1 (parallel)
 
-- [ ] T2602 [P] [US5] The registry `@opscrew/providers`
+- [x] T2602 [P] [US5] The registry `@opscrew/providers`
   - Owns: `packages/providers/registry/src/**`
   - Reads: plan 1–2; `packages/contracts/src/provider.ts`; `packages/plan-schema/src/enums.ts`
   - Depends: T2601, T2603, T2604 (it imports their definitions)
