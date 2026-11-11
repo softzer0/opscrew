@@ -23,9 +23,8 @@ import {
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import {
-  providerCredentials,
+  credentialsNotSet,
   providerProfile,
-  tokenNotSet,
   type VpsConnectorOptions,
   vpsConnector,
 } from "../providers";
@@ -468,7 +467,7 @@ export function serverApi(scope: ServerScope, input: ServerApiInput): ServerSnap
     throw new OpsCrewError(
       "CREDENTIALS_MISSING",
       profile.tokenMode === "all"
-        ? `${texts.displayName} needs all of ${listText(profile.tokenVars)}: ${tokenNotSet(providerCredentials(profile, deps.env).missing)}.`
+        ? `${credentialsNotSet(profile, deps.env)}.`
         : `No ${texts.displayName} token found: set ${profile.tokenVars.join(" or ")}.`,
       { hint: texts.tokenHint(scope.command) },
     );

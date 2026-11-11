@@ -103,15 +103,18 @@ describe("opscrew init with credentials as a set", () => {
     expect(partial.message).toContain(
       "HCLOUD_TOKEN for Hetzner Cloud, SET_PASS for DigitalOcean or CNTB_OAUTH2_CLIENT_ID, CNTB_OAUTH2_CLIENT_SECRET, CNTB_OAUTH2_USER and CNTB_OAUTH2_PASS for Contabo",
     );
+    expect(partial.fix).toContain("For a cloud provider, set one provider's token or credentials.");
 
     const whole = await providerCheck(ALL, { offline: true });
     expect(whole.title).toBe("DigitalOcean credentials");
     expect(whole.status).toBe("pass");
-    expect(whole.message).toContain("No provider is chosen yet.");
+    expect(whole.message).toContain(
+      "No provider is chosen yet. OpsCrew needs only one cloud provider's credentials;",
+    );
 
     const both = await providerCheck({ ...ALL, HCLOUD_TOKEN: "h" }, { offline: true });
     expect(both.message).toContain(
-      "HCLOUD_TOKEN for Hetzner Cloud and SET_ID, SET_SECRET, SET_USER and SET_PASS for DigitalOcean are both set.",
+      "The credentials of Hetzner Cloud (HCLOUD_TOKEN) and DigitalOcean (SET_ID, SET_SECRET, SET_USER and SET_PASS) are all set. OpsCrew needs only one cloud provider's credentials; `opscrew interview` asks where to run the app. OpsCrew uses and checks only the chosen provider's credentials.",
     );
   });
 });

@@ -5,7 +5,7 @@ import {
 } from "@opscrew/connector-cloudflare";
 import { type GitClient, githubConnector } from "@opscrew/connector-github";
 import type { CredentialRequirement, VpsProviderId } from "@opscrew/contracts";
-import { listText, OpsCrewError } from "@opscrew/core";
+import { OpsCrewError } from "@opscrew/core";
 import {
   managesPortainerRecords,
   portainerHostname,
@@ -17,8 +17,8 @@ import { type DeployPlan, snapshotOffsiteOf } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { cloudflareTokenHint } from "../domain/common";
 import {
+  credentialsNotSet,
   type ProviderProfile,
-  providerCredentials,
   providerProfile,
   vpsConnector,
 } from "../providers";
@@ -86,12 +86,9 @@ function incomplete(
   requirement: CredentialRequirement,
   env: PhaseDeps["env"],
 ): OpsCrewError {
-  const { missing: unset } = providerCredentials(profile, env);
-  return new OpsCrewError(
-    "CREDENTIALS_MISSING",
-    `${profile.displayName} needs all of ${listText(profile.tokenVars)}: ${listText(unset)} ${unset.length === 1 ? "is" : "are"} not set.`,
-    { hint: `${requirement.description} Create them at ${requirement.createUrl}` },
-  );
+  return new OpsCrewError("CREDENTIALS_MISSING", `${credentialsNotSet(profile, env)}.`, {
+    hint: `${requirement.description} Create them at ${requirement.createUrl}`,
+  });
 }
 
 /** What a token needs, in words: `the Read & Write permission` or `these scopes (…, …)`. */

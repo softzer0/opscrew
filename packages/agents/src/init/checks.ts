@@ -658,6 +658,10 @@ const DOCKER_INSTALL =
 const ONLY_ONE =
   "OpsCrew needs only one cloud provider token; `opscrew interview` asks where to run the app.";
 
+/** {@link ONLY_ONE} where a provider whose credentials are a set is involved. */
+const ONLY_ONE_SET =
+  "OpsCrew needs only one cloud provider's credentials; `opscrew interview` asks where to run the app.";
+
 /**
  * The cloud provider token check: the chosen provider's token (verified online unless `offline`;
  * the other provider's token is never checked), or before a choice either token. A server the
@@ -682,14 +686,12 @@ async function checkProviderToken(
       return set === undefined ? [] : [{ profile, set }];
     });
     if (withToken.length > 1) {
-      // One variable each reads as a plain list; a set of credentials is named with its provider.
-      const tokens = withToken.every(({ set }) => set.length === 1)
-        ? withToken.flatMap(({ set }) => set)
-        : withToken.map(({ profile, set }) => `${listText(set)} for ${profile.displayName}`);
-      return {
-        status: "pass",
-        message: `${listText(tokens)} are ${withToken.length === 2 ? "both" : "all"} set. ${ONLY_ONE} OpsCrew uses and checks only the chosen provider's token.`,
-      };
+      // One variable each reads as a plain list; with a set of credentials, each provider is named
+      // with its variables.
+      const message = withToken.every(({ set }) => set.length === 1)
+        ? `${listText(withToken.flatMap(({ set }) => set))} are ${withToken.length === 2 ? "both" : "all"} set. ${ONLY_ONE} OpsCrew uses and checks only the chosen provider's token.`
+        : `The credentials of ${listText(withToken.map(({ profile, set }) => `${profile.displayName} (${listText(set)})`))} are all set. ${ONLY_ONE_SET} OpsCrew uses and checks only the chosen provider's credentials.`;
+      return { status: "pass", message };
     }
     const fixes = VPS_PROVIDERS.map((id) => {
       const profile = providerProfile(id);
@@ -699,7 +701,7 @@ async function checkProviderToken(
     return {
       status: "warn",
       message: `No cloud provider token is set (${orText(VPS_PROVIDERS.map((id) => `${listText(providerCredentials(providerProfile(id), env).missing)} for ${providerProfile(id).displayName}`))}). OpsCrew can deploy to this computer (localhost; ${docker === undefined ? "Docker is not installed" : `Docker found at ${docker}`}), to a server you already have, or to a cloud provider with its token.`,
-      fix: `Choose where in \`opscrew interview\`. This computer and a server you already have need no token${docker === undefined ? `; this computer needs Docker: ${DOCKER_INSTALL}` : "."} For a cloud provider, set one token. ${fixes.join(" ")}`,
+      fix: `Choose where in \`opscrew interview\`. This computer and a server you already have need no token${docker === undefined ? `; this computer needs Docker: ${DOCKER_INSTALL}` : "."} For a cloud provider, set ${VPS_PROVIDERS.some((id) => providerProfile(id).tokenMode === "all") ? "one provider's token or credentials" : "one token"}. ${fixes.join(" ")}`,
     };
   }
   if (provider === "own") return checkOwnServerLogin(deps, choice);
@@ -735,7 +737,10 @@ async function checkProviderToken(
   // Its token, or every credential of a set: until all are set, the missing ones are named and
   // nothing is called.
   const { set, missing } = providerCredentials(profile, env);
-  const unchosen = choice.source === "token" ? ` No provider is chosen yet. ${ONLY_ONE}` : "";
+  const unchosen =
+    choice.source === "token"
+      ? ` No provider is chosen yet. ${profile.tokenMode === "all" ? ONLY_ONE_SET : ONLY_ONE}`
+      : "";
   if (set === undefined) {
     const others = VPS_PROVIDERS.filter((id) => id !== provider).flatMap(
       (id) => providerCredentials(providerProfile(id), env).set ?? [],

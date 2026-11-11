@@ -419,6 +419,17 @@ export function tokenNotSet(missing: readonly string[]): string {
 }
 
 /**
+ * What a provider whose credentials are a set (`tokenMode: all`) lacks: `Contabo needs all of A,
+ * B, C and D: B and C are not set`.
+ */
+export function credentialsNotSet(
+  profile: Pick<ProviderProfile, "displayName" | "tokenVars" | "tokenMode">,
+  env: Readonly<Record<string, string | undefined>>,
+): string {
+  return `${profile.displayName} needs all of ${listText(profile.tokenVars)}: ${tokenNotSet(providerCredentials(profile, env).missing)}`;
+}
+
+/**
  * The provider whose credentials are set, when exactly one provider has them: its token, or every
  * credential of a provider that needs a set of them.
  */

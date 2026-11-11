@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { NodeCommandRunner } from "@opscrew/core";
+import { listText, NodeCommandRunner } from "@opscrew/core";
 import { checkDialect, detectEngines } from "@opscrew/iac-engine";
 import { type CloudProvider, type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { CLOUD_PROVIDERS } from "@opscrew/providers";
@@ -271,14 +271,14 @@ describe("generated modules", () => {
   });
 });
 
-// Downloads the hcloud, digitalocean and cloudflare providers from the registry, so it only runs
-// with OPSCREW_IT=1. Binaries come from OPSCREW_TOFU_BIN / OPSCREW_TERRAFORM_BIN or PATH. Covers
-// the plain root modules and every move layout in both directions.
+// Downloads the cloud providers' Terraform providers and cloudflare from the registry, so it only
+// runs with OPSCREW_IT=1. Binaries come from OPSCREW_TOFU_BIN / OPSCREW_TERRAFORM_BIN or PATH.
+// Covers the plain root modules and every move layout in both directions.
 const runIt = process.env.OPSCREW_IT === "1";
 const detected = runIt ? await detectEngines() : [];
 if (!runIt) {
   console.warn(
-    "[iac-templates] skipping HCL validation: set OPSCREW_IT=1 (it downloads the hcloud, digitalocean and cloudflare providers).",
+    `[iac-templates] skipping HCL validation: set OPSCREW_IT=1 (it downloads the ${listText([...CLOUD_PROVIDERS.map((p) => p.terraform.provider.name), "cloudflare"])} providers).`,
   );
 }
 const NETWORK_ERROR =

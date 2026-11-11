@@ -167,8 +167,10 @@ export function renderRunbook(plan: DeployPlan, ctx: RunbookContext): RenderedFi
           : [
               `${provider.name} has no automated server backups OpsCrew turns on; OpsCrew's own snapshots of the data take their place:`,
               `\`${snapshot}\` takes one, \`${opscrew(plan, "snapshot schedule on", environments)}\` takes them on a schedule, and`,
-              `\`${opscrew(plan, "snapshot offsite on --to <provider>", environments)}\` keeps an encrypted copy of each off the server;`,
-              `\`${opscrew(plan, "restore <id>", environments)}\` puts one back. You can also make your own backups:`,
+              `\`${opscrew(plan, "snapshot offsite on --to <provider>", environments)}\` keeps an encrypted copy of each off the server; both take`,
+              `effect with the next \`${provision}\`. \`${opscrew(plan, "restore <id>", environments)}\` puts one back, and`,
+              `\`${opscrew(plan, "restore <id> --from offsite --key-file <path>", environments)}\` puts one back from the off-server copy.`,
+              "You can also make your own backups:",
             ]),
       "",
       ...DATABASE_DUMP,
@@ -179,7 +181,15 @@ export function renderRunbook(plan: DeployPlan, ctx: RunbookContext): RenderedFi
     ...checkSection(plan, environments),
     ...addonSections(plan, ctx),
     ...settingsSection(plan, environments, [
-      `- **Server size, location, domain:** run \`${opscrew(plan, "design", environments)}\` and \`${provision}\`. OpsCrew shows the plan and the cost`,
+      ...(provider.offering.resize
+        ? [
+            `- **Server size, location, domain:** run \`${opscrew(plan, "design", environments)}\` and \`${provision}\`. OpsCrew shows the plan and the cost`,
+          ]
+        : [
+            `- **Server size:** ${provider.name} can't change a ${provider.serverNoun}'s size in place. \`${opscrew(plan, "design", environments)}\` names the two ways to`,
+            `  another size: a move to another provider (\`${opscrew(plan, "retarget", environments)}\`), or a new ${provider.serverNoun} with the data put back from a snapshot.`,
+            `- **Location, domain:** run \`${opscrew(plan, "design", environments)}\` and \`${provision}\`. OpsCrew shows the plan and the cost`,
+          ]),
       "  change and applies nothing without your approval. Destroying or replacing the server always needs a typed confirmation.",
     ]),
     ...recoverySection(plan, environments),

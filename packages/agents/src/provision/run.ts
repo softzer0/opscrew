@@ -123,7 +123,7 @@ import {
 import { checkProvider, setupCloudflare, setupGitHub } from "./credentials";
 import { deploySetupDependabot } from "./dependabot";
 import { requireNoSmallerDisk } from "./disk-guard";
-import { requireNoMoveInProgress } from "./guard";
+import { requireNoMoveInProgress, requireProviderBackups } from "./guard";
 import { monitoringHostPlans } from "./monitoring";
 import {
   deployRenewedCertificate,
@@ -527,6 +527,8 @@ async function provisionFlow(
   }
   // A live service placed on another server moves only as design plans it, with its data.
   requireDesignedPlacement(plan, command);
+  // Never the provider's backups where it offers none through OpsCrew (its snapshots cover the data).
+  requireProviderBackups(plan, rerun);
   // An extra own server is taken off only while public SSH reaches it.
   await requirePublicSshForRemoval(deps, plan, command);
   // A preview environment (ADR 0026): its env templates, and its own values from `.env.<env>`,

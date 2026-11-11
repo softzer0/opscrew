@@ -143,7 +143,7 @@ describe.skipIf(!SH_AVAILABLE)("opscrew snapshot list on servers", () => {
       { services: { ...world.services, serverSnapshots: () => undefined } },
     );
     expect(world.deps.reporter.text()).toContain(
-      "warn: The whole-server snapshots at Contabo are not listed: set all of CNTB_OAUTH2_CLIENT_ID, CNTB_OAUTH2_CLIENT_SECRET, CNTB_OAUTH2_USER and CNTB_OAUTH2_PASS to list them (CNTB_OAUTH2_CLIENT_SECRET and CNTB_OAUTH2_PASS are not set).",
+      "warn: The whole-server snapshots at Contabo are not listed, since Contabo needs all of CNTB_OAUTH2_CLIENT_ID, CNTB_OAUTH2_CLIENT_SECRET, CNTB_OAUTH2_USER and CNTB_OAUTH2_PASS: CNTB_OAUTH2_CLIENT_SECRET and CNTB_OAUTH2_PASS are not set.",
     );
   });
 
