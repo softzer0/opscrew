@@ -65,7 +65,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
 
 ## Phase 3: Wave 2, the consumers read the registry (parallel)
 
-- [ ] T2605 [P] [US3] iac-templates
+- [x] T2605 [P] [US3] iac-templates
   - Owns: `packages/iac-templates/**`
   - Reads: plan 2–3
   - Depends: T2602, T2603, T2604
