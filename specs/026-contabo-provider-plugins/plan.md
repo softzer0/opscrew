@@ -111,7 +111,7 @@ adds `contabo` to them with plan-schema's enums in wave 4.
 - `packages/providers/contabo`: `@opscrew/provider-contabo`.
 - `packages/providers/registry`: `@opscrew/providers`.
   - `CLOUD_PROVIDERS`, the definitions in order: Hetzner, DigitalOcean, Contabo.
-  - `cloudProvider(id)`, `isCloudProvider(id)`.
+  - `cloudProvider(id)` (plan-schema's `isCloudProvider` stays the type guard).
   - Every definition is validated at load (zod: shape, `contractVersion`, region keys), with a
     plain error naming the provider and the part.
   - A conformance test that runs for every built-in definition. It lives in the registry, since a

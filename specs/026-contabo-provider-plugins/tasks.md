@@ -37,7 +37,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Reads: plan 1–2; `packages/contracts/src/provider.ts`; `packages/plan-schema/src/enums.ts`
   - Depends: T2601, T2603, T2604 (it imports their definitions)
   - Accept:
-    - `CLOUD_PROVIDERS` (Hetzner, then DigitalOcean), `cloudProvider(id)` (throws a plain `INVALID_INPUT` error naming the known ids), `isCloudProvider(id)`.
+    - `CLOUD_PROVIDERS` (Hetzner, then DigitalOcean), `cloudProvider(id)` (throws a plain `INVALID_INPUT` error naming the known ids). plan-schema's `isCloudProvider` stays the type guard; the equality test below keeps the two id lists equal.
     - Every definition is validated at load with zod: `contractVersion` 1, every required part present, region keys within `RegionSchema`, locations named, every region mapped, module files non-empty and without `cloud-init.yaml.tftpl`. A bad definition fails with the provider's id and the part.
     - A conformance test in the registry runs for every entry of `CLOUD_PROVIDERS`: the validation plus behavioural checks (`moduleArguments` for the app's server, an extra server and a prefix; `connector` with no credentials is `configured: false`; every token rule matches a `fakeSecret`-built sample). It lives in the registry because a provider package can't depend on the registry, which depends on it.
     - A test that `CLOUD_PROVIDERS`' ids equal `CloudProviderSchema`'s options.
