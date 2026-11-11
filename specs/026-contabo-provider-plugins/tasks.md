@@ -185,8 +185,8 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Verify: `PATH="$PWD/.tools/bin:$PATH" pnpm turbo run typecheck test --filter=@opscrew/provider-contabo && pnpm lint`
   - Effort: high
 
-- [ ] T2616 Contabo joins the ids and the registry (lead)
-  - Accept: `contabo` in `ProviderId`, `VpsProviderId`, plan-schema's provider enums and generated schemas, and `CLOUD_PROVIDERS`; `pnpm check` green, any exhaustive switch left over fixed; every message that still names the cloud providers in its text is built from the registry with `orText`/`listText` (T2606's list: `providers/profiles.ts`' two hints, `vpsConnector`'s default hint, `design/servers.ts`, `design/own-servers.ts`, `shared/server-record.ts`, and any other a grep for `Hetzner Cloud or DigitalOcean` and `hetzner, digitalocean` finds); `runners/cloud.ts`' "the other provider" names the others (`orText`) once there are three. For a provider with `offering.providerBackups: false`: the runbook (`iac-templates/src/runbook/index.ts`) never offers to turn its backups on and points to OpsCrew's data snapshots instead, and provision refuses a plan whose cloud target has `backups: true` with the reason (T2611's report). For credentials as a set: `plan-apply.ts`' refused-apply hint, `credentials.ts`' wrong-credentials hint and init's "X and Y are both set" word a set of variables properly (T2612's report), and so do `destroy/deletion.ts`' and `snapshot/provider.ts`' "set A or B" and `mcp-server/tools/design.ts`' check of a partly set group; `opscrew destroy` removes the takeover marker (`.opscrew/<env>/apply-started.json`).
+- [x] T2616 Contabo joins the ids and the registry (lead)
+  - Accept: `contabo` in `ProviderId`, `VpsProviderId`, plan-schema's provider enums and generated schemas, and `CLOUD_PROVIDERS`; `pnpm check` green, any exhaustive switch left over fixed; every message that still names the cloud providers in its text is built from the registry with `orText`/`listText` (T2606's list: `providers/profiles.ts`' two hints, `vpsConnector`'s default hint, `design/servers.ts`, `design/own-servers.ts`, `shared/server-record.ts`, and any other a grep for `Hetzner Cloud or DigitalOcean` and `hetzner, digitalocean` finds); `runners/cloud.ts`' "the other provider" names the others (`orText`) once there are three. For a provider with `offering.providerBackups: false`: the runbook (`iac-templates/src/runbook/index.ts`) never offers to turn its backups on and points to OpsCrew's data snapshots instead (provision's refusal of `backups: true` moved to T2627, T2611's report). For credentials as a set: `plan-apply.ts`' refused-apply hint, `credentials.ts`' wrong-credentials hint and init's "X and Y are both set" word a set of variables properly (T2612's report), and so do `destroy/deletion.ts`' and `snapshot/provider.ts`' "set A or B" and `mcp-server/tools/design.ts`' check of a partly set group; `opscrew destroy` removes the takeover marker (`.opscrew/<env>/apply-started.json`).
   - Effort: lead
 
 - [x] T2624 [US2] [US4] A move off a provider that cancels
@@ -217,16 +217,20 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
     - advise's move to another provider compares prices on the same VAT basis (both with or both without, as the user's currency shows elsewhere), with or without the provider's backups alike, and names each side's price date.
     - A proposal to move to a provider with terms states the trade-offs plainly: the one-time setup fee, the minimum term and that a removal ends only at the end of it, no size change in place, no automatic backups from the provider (OpsCrew's data snapshots instead).
     - It is proposed only when the saving is real on that basis; a Hetzner app no longer gets a move to Contabo by an unequal comparison.
-    - Hetzner 's and DigitalOcean's proposals to each other are unchanged.
+    - Hetzner's and DigitalOcean's proposals to each other are unchanged; one run-level test still yields no proposal for a healthy app (T2616's review N3).
+    - T2616's review lists the eight unequal points (VAT, backups, setup fee, terms, price dates, included extras, "the same server", currency): each is either made equal or said plainly.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm lint`
   - Effort: high
 
 - [ ] T2627 [US1] [US4] Provision and the runbook for providers with terms
-  - Owns: `packages/agents/src/provision/**`, `packages/iac-templates/src/runbook/**`
+  - Owns: `packages/agents/src/{provision,init,destroy/deletion.ts,snapshot/provider.ts,providers}/**`, `packages/iac-templates/src/runbook/**`, `packages/iac-templates/src/infra/infra.test.ts`
   - Depends: T2616
   - Accept:
     - provision refuses a plan whose cloud target has `backups: true` at a provider with `offering.providerBackups: false`, with the reason and what to do.
-    - `provision/credentials.ts` names missing credentials with `tokenNotSet` from `../providers`.
+    - One helper names a set's missing credentials ("X needs all of A, B, C and D: … not set"), in `agents/src/providers/profiles.ts`, used by `provision/credentials.ts`, `destroy/deletion.ts` and `snapshot/provider.ts`.
+    - Init's message when several providers have credentials names each provider with its variables in brackets; its fix and pass texts fit a set of four (T2616's review N2).
+    - The runbook's backups text for such a provider says `opscrew provision` follows `snapshot schedule on` and `snapshot offsite on`, and that a restore from the off-server copy takes `--from offsite --key-file <path>` (T2616's review N1).
+    - `iac-templates/src/infra/infra.test.ts`' skip message names the cloud providers from the registry (N4).
     - The runbook's "Server size: run `opscrew design`" bullet, for a provider with `offering.resize: false`, names the two ways design names (T2611's `resizeWaysText`), or points to them.
     - Hetzner and DigitalOcean unchanged.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/iac-templates && pnpm lint`
