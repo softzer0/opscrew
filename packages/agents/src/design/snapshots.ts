@@ -1,16 +1,43 @@
 /**
- * Design's snapshots (FR-2410, 024 plan.md 8.): on the user's own server or their Portainer, where
- * no provider backs the data up, design proposes scheduled snapshots with the encrypted copy off
- * the server when the interview says the data matters, as it turns on a cloud provider's backups.
+ * Design's snapshots (FR-2410, 024 plan.md 8.): on the user's own server, their Portainer or a
+ * cloud provider that offers no automated backups through OpsCrew, where no provider backs the data
+ * up, design proposes scheduled snapshots with the encrypted copy off the server when the interview
+ * says the data matters, as it turns on a cloud provider's backups.
  */
-import { type DeployPlan, isServerlessTarget, type Requirements } from "@opscrew/plan-schema";
+import {
+  type CloudProvider,
+  type DeployPlan,
+  type DeployProvider,
+  isCloudProvider,
+  isServerlessTarget,
+  type Requirements,
+} from "@opscrew/plan-schema";
+import { providerProfile } from "../providers";
 import { dataServers } from "../snapshot/hosts";
 import { backupsBucketName, offsitePriceText, offsiteText } from "../snapshot/offsite";
 import { scheduleText } from "../snapshot/schedule";
 
-/** True on the targets where design proposes snapshots: the user's own server or Portainer. */
+/**
+ * True where no provider backs the app's data up, so OpsCrew's snapshots are proposed for it: the
+ * user's own server, Portainer, and a cloud provider without automated backups through OpsCrew
+ * (`offering.providerBackups` false).
+ */
+export function noProviderBackups(provider: DeployProvider): boolean {
+  return (
+    provider === "own" ||
+    provider === "portainer" ||
+    (isCloudProvider(provider) && !providerProfile(provider).providerBackups)
+  );
+}
+
+/** What design says of a cloud provider that offers no automated backups through OpsCrew. */
+export function noProviderBackupsText(provider: CloudProvider): string {
+  return `${providerProfile(provider).displayName} offers no automatic backups through OpsCrew: OpsCrew's own snapshots of the app's data (\`opscrew snapshot\`) cover it instead.`;
+}
+
+/** True on the targets where design proposes snapshots ({@link noProviderBackups}). */
 function ownsData(plan: Pick<DeployPlan, "target">): boolean {
-  return plan.target.provider === "own" || plan.target.provider === "portainer";
+  return noProviderBackups(plan.target.provider);
 }
 
 /**

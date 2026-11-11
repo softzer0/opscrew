@@ -16,14 +16,22 @@ import { type MemoryLimit, memoryHeadroom, SYSTEM_RESERVE_MB } from "../shared/m
 import {
   convertMoney,
   EXCHANGE_RATE_NOTE,
+  offerTerms,
   pricedOffer,
   priceLabel,
   roundCents,
   USD_PER_EUR,
 } from "./cost";
 import type { EditedServer } from "./placement-edits";
-import { keptTypeText, type ServerSize } from "./server-changes";
+import {
+  keptTypeText,
+  noResizeText,
+  resizesInPlace,
+  resizeWaysText,
+  type ServerSize,
+} from "./server-changes";
 import { regionLocations, usableOffer } from "./sizing";
+import { noProviderBackupsText } from "./snapshots";
 import { designWording } from "./wording";
 
 /** An extra server's target as the user wrote it, for a server OpsCrew creates. */
@@ -39,6 +47,8 @@ export interface DesignedServer {
   memoryGb: number;
   /** A server OpsCrew creates: its monthly price, in its provider's currency. */
   cost?: CostEstimate;
+  /** A server OpsCrew creates: what it means besides its monthly price (`offerTerms`). */
+  terms?: string[];
   /** A server the user owns: its operating system, as inspection read it. */
   os?: string;
   /** Plain warnings: little memory left free, or too little for its services. */
@@ -210,17 +220,40 @@ export async function designCloudServer(input: CloudServerInput): Promise<Design
       },
     );
   }
-  // A deployed server keeps its type rather than get a smaller disk, which neither provider can do.
+  // A deployed server keeps its type rather than get a smaller disk, which no provider can do, and
+  // on a provider that can't change a server's size in place, rather than get any other type.
   const { deployed } = input;
   const current =
     deployed?.location === location
       ? offers.find((o) => o.id === deployed.serverType && o.location === location)
       : undefined;
-  const kept = current !== undefined && planned.diskGb < current.diskGb ? current : undefined;
+  const fixed = current !== undefined && !resizesInPlace(provider);
+  if (fixed && serverType !== undefined && serverType !== current.id) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `Server ${name} is a ${current.id}, and opscrew/plan.yaml names ${serverType} for it (servers[].target.serverType), but ${noResizeText(provider)}. plan.yaml was not changed.`,
+      {
+        hint: `Set servers[].target.serverType back to ${current.id} for server ${name} and run \`opscrew design\` again. ${resizeWaysText(provider)}.`,
+      },
+    );
+  }
+  const kept =
+    current !== undefined && (fixed ? planned.id !== current.id : planned.diskGb < current.diskGb)
+      ? current
+      : undefined;
   const offer = kept ?? planned;
   // The smallest type that holds them, when it is another.
   const instead = sized === undefined || sized.id === offer.id ? "" : `, such as ${sized.id},`;
   if (offer.memoryGb * 1024 < need.memoryMb || offer.vcpus < need.vcpus) {
+    if (fixed) {
+      throw new OpsCrewError(
+        "INVALID_INPUT",
+        `Server ${name} is a ${offer.id} (${offer.vcpus} vCPU, ${offer.memoryGb} GB memory, ${offer.diskGb} GB disk), but ${placed} on it need ${needs} with the system's share, and ${noResizeText(provider)}. plan.yaml was not changed.`,
+        {
+          hint: `${resizeWaysText(provider)}. Or lower its services' memory limits in opscrew/plan.yaml and run \`opscrew design\` again.`,
+        },
+      );
+    }
     if (kept !== undefined) {
       const larger = await sizeExtraServer(catalog, location, services, kept.diskGb, addons);
       const { profile } = wording;
@@ -250,13 +283,26 @@ export async function designCloudServer(input: CloudServerInput): Promise<Design
         ]
       : []),
   ];
-  const backups = target.backups ?? input.backups;
+  // Never the provider's backups where it offers none through OpsCrew (its snapshots cover the data).
+  const { providerBackups } = providerProfile(provider);
+  if (!providerBackups && target.backups === true) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `Server ${name} has automated backups on (servers[].target.backups), but ${noProviderBackupsText(provider)} plan.yaml was not changed.`,
+      {
+        hint: `Remove servers[].target.backups for server ${name}, then run \`opscrew design\` again.`,
+      },
+    );
+  }
+  const backups = providerBackups && (target.backups ?? input.backups);
   const extras = await catalog.extras(location);
   const { cost } = pricedOffer(offer, extras, {
     backups,
     backupPercent: providerProfile(provider).backupPercent,
   });
+  const terms = offerTerms(offer, extras);
   return {
+    ...(terms.length === 0 ? {} : { terms }),
     server: {
       name,
       target: {
@@ -301,7 +347,7 @@ export function serverLine(server: DesignedServer): string {
     server.cost === undefined
       ? ""
       : `, ${formatMoney(server.cost.monthly)}/month (${priceLabel(server.cost)})`;
-  return `Server ${name}: ${what}${price}.`;
+  return [`Server ${name}: ${what}${price}.`, ...(server.terms ?? [])].join(" ");
 }
 
 /**

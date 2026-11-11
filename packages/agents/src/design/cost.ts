@@ -1,5 +1,7 @@
 import type { ComputeOffer, Currency, Money, ProviderExtras } from "@opscrew/contracts";
+import { formatMoney, plural, taxLabel } from "@opscrew/core";
 import { type CostEstimate, CostEstimateSchema, isCloudProvider } from "@opscrew/plan-schema";
+import { cloudProvider } from "@opscrew/providers";
 import { designWording } from "./wording";
 
 /** Fixed approximate exchange rate used for budget comparisons: 1 EUR = 1.10 USD. */
@@ -89,8 +91,38 @@ function nonLiveRates(
 }
 
 /**
+ * What running `offer` means besides its monthly price, as sentences: its one-time setup fee
+ * (never part of the monthly price), the minimum term of a provider whose removal ends the contract
+ * only at the end of its term, and whole-server snapshots included in the price up to the offer's
+ * count. Empty when none applies (Hetzner, DigitalOcean).
+ */
+export function offerTerms(offer: ComputeOffer, extras: ProviderExtras): string[] {
+  const terms: string[] = [];
+  if (offer.setupFee !== undefined) {
+    terms.push(
+      `Plus a one-time setup fee of ${formatMoney(offer.setupFee)} (${taxLabel(offer.setupFee.currency, offer.pricesIncludeVat)}) when the server is created, not part of the monthly price.`,
+    );
+  }
+  const removal = isCloudProvider(offer.provider)
+    ? cloudProvider(offer.provider).offering.removal
+    : undefined;
+  if (removal?.kind === "cancel-at-term-end") {
+    terms.push(
+      `The contract runs at least ${plural(removal.minimumTermMonths, "month")}; a removal ends it at the end of the term.`,
+    );
+  }
+  if (extras.snapshotsIncluded === true && offer.includedSnapshots !== undefined) {
+    terms.push(
+      `Whole-server snapshots are included in the price, up to ${offer.includedSnapshots}.`,
+    );
+  }
+  return terms;
+}
+
+/**
  * Monthly cost of running `offer`: server + primary IPv4 (only when the provider prices it
- * separately) + automated backups (percentage of the server price) when `backups` is on. The
+ * separately) + automated backups (percentage of the server price) when `backups` is on, never at
+ * a provider that offers none through OpsCrew (`offering.providerBackups` false). The
  * backup percentage comes from `extras`, else `options.backupPercent` (the provider profile's),
  * else 20. Each line is rounded to cents and the total is their sum, in the offer's currency.
  *
@@ -111,8 +143,11 @@ export function costFor(
 export function pricedOffer(
   offer: ComputeOffer,
   extras: ProviderExtras,
-  options: { backups: boolean; backupPercent?: number },
+  priced: { backups: boolean; backupPercent?: number },
 ): { cost: CostEstimate; rates: NonLiveRates } {
+  const offered =
+    !isCloudProvider(offer.provider) || cloudProvider(offer.provider).offering.providerBackups;
+  const options = { ...priced, backups: priced.backups && offered };
   const currency = offer.monthly.currency;
   const server = roundCents(offer.monthly.amount);
   const breakdown: CostEstimate["breakdown"] = [

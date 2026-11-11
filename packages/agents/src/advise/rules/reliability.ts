@@ -6,8 +6,10 @@
  */
 import { listText, plural } from "@opscrew/core";
 import { isServerlessProvider, snapshotOffsiteOf, snapshotScheduleOf } from "@opscrew/plan-schema";
+import { noProviderBackups } from "../../design/snapshots";
 import { storagePrice } from "../../design/storage";
 import { logParts } from "../../logs/parts";
+import { providerProfile } from "../../providers";
 import { dataServers } from "../../snapshot/hosts";
 import { type Proposal, type Readings, THRESHOLDS } from "../types";
 import {
@@ -46,42 +48,46 @@ export function reliabilityRules(readings: Readings): Proposal[] {
 }
 
 /**
- * Each server without automated backups while the interview says the data is important, priced
- * without and with them when the prices list its type.
+ * Each server without automated backups, at a provider that offers them through OpsCrew, while the
+ * interview says the data is important, priced without and with them when the prices list its type.
  */
 function backupProposals(readings: Readings): Proposal[] {
   const criticality = readings.requirements?.dataCriticality;
   if (criticality !== "important" && criticality !== "critical") return [];
-  return cloudServers(readings)
-    .filter((server) => !server.backups)
-    .map((server): Proposal => {
-      const { name, provider } = server;
-      const price = isPriced(server)
-        ? priceChange(
-            serverCost(provider, server.prices.offer, server.prices.list, false),
-            serverCost(provider, server.prices.offer, server.prices.list, true),
-          )
-        : undefined;
-      return {
-        id: `reliability.${name}.backups`,
-        category: "reliability",
-        urgency: "when-convenient",
-        server: name,
-        title: `Turn on automated backups for server ${name}`,
-        reasons: [
-          {
-            text: `The interview says the app's data is ${criticality}, and server ${name} has no automated backups: a broken disk or a wrong command would lose it`,
-            basis: PLAN,
-          },
-        ],
-        ...(price === undefined ? {} : { price }),
-        apply: { kind: "plan", change: { kind: "backups", server: name, enabled: true } },
-      };
-    });
+  return (
+    cloudServers(readings)
+      // A provider without automated backups through OpsCrew gets the snapshot proposals instead.
+      .filter((server) => !server.backups && providerProfile(server.provider).providerBackups)
+      .map((server): Proposal => {
+        const { name, provider } = server;
+        const price = isPriced(server)
+          ? priceChange(
+              serverCost(provider, server.prices.offer, server.prices.list, false),
+              serverCost(provider, server.prices.offer, server.prices.list, true),
+            )
+          : undefined;
+        return {
+          id: `reliability.${name}.backups`,
+          category: "reliability",
+          urgency: "when-convenient",
+          server: name,
+          title: `Turn on automated backups for server ${name}`,
+          reasons: [
+            {
+              text: `The interview says the app's data is ${criticality}, and server ${name} has no automated backups: a broken disk or a wrong command would lose it`,
+              basis: PLAN,
+            },
+          ],
+          ...(price === undefined ? {} : { price }),
+          apply: { kind: "plan", change: { kind: "backups", server: name, enabled: true } },
+        };
+      })
+  );
 }
 
 /**
- * On an own server or Portainer whose data matters (no provider backs it up there), with data to
+ * Where no provider backs the data up (`noProviderBackups`: an own server, Portainer, or a cloud
+ * provider without automated backups through OpsCrew) and it matters, with data to
  * snapshot and outside a preview environment: the scheduled snapshots when they are off, and the
  * encrypted copy off the server when it is off, on Cloudflare R2 (priced as provision shows it)
  * when the domain is there, else at Hetzner or DigitalOcean in a region the user picks.
@@ -90,7 +96,7 @@ function snapshotProposals({ plan, requirements, flags }: Readings): Proposal[] 
   const criticality = requirements?.dataCriticality;
   if (criticality !== "important" && criticality !== "critical") return [];
   const portainer = plan.target.provider === "portainer";
-  if (!portainer && plan.target.provider !== "own") return [];
+  if (!noProviderBackups(plan.target.provider)) return [];
   if (plan.environment?.previews !== undefined || dataServers(plan).length === 0) return [];
   const where = portainer ? "the Portainer host" : "your server";
   const data = `The interview says the app's data is ${criticality}`;

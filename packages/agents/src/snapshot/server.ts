@@ -23,11 +23,13 @@ import {
   listText,
   OpsCrewError,
   orText,
+  plural,
   sha256Hex,
   taxLabel,
 } from "@opscrew/core";
 import { DEPLOY_PAUSED_VARIABLE } from "@opscrew/iac-templates";
 import { APP_SERVER, type CloudProvider, isCloudProvider } from "@opscrew/plan-schema";
+import { cloudProvider } from "@opscrew/providers";
 import { defaultTcpConnect, formatUtc } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
 import { destroyTexts } from "../destroy/texts";
@@ -67,7 +69,7 @@ import {
   restoredKeysNote,
   serverReloginLines,
 } from "./server-relogin";
-import { snapshotIdAt } from "./store";
+import { SERVER_SNAPSHOT_ID, snapshotIdAt } from "./store";
 import type { SnapshotEntry, SnapshotServices } from "./types";
 
 /** How long the app may take to answer after a rebuild, and how often it is asked. */
@@ -224,23 +226,70 @@ function priceText(price: Money): string {
     : formatMoney(price);
 }
 
-/** The provider's snapshot rate and the server's disk size, from its price catalogue. */
+/**
+ * The provider's snapshot rate, the server's disk size and the snapshots its price includes (where
+ * the provider includes them), from its price catalogue.
+ */
 async function prices(
   deps: PhaseDeps,
   services: ServerSnapshotServices,
   { provider, target }: FoundServer,
-): Promise<{ extras: ProviderExtras; diskGb?: number }> {
+): Promise<{ extras: ProviderExtras; diskGb?: number; includedSnapshots?: number }> {
   const catalog = services.catalog?.(provider) ?? vpsConnector(provider, deps).catalog();
   const offer = (await catalog.listOffers(target.location)).find(
     (candidate) => candidate.id === target.serverType,
   );
   const extras = await catalog.extras(target.location);
-  return { extras, ...(offer === undefined ? {} : { diskGb: offer.diskGb }) };
+  return {
+    extras,
+    ...(offer === undefined ? {} : { diskGb: offer.diskGb }),
+    ...(offer?.includedSnapshots === undefined
+      ? {}
+      : { includedSnapshots: offer.includedSnapshots }),
+  };
+}
+
+/**
+ * Refuses (`PHASE_PRECONDITION`) a snapshot of `found`'s server at a provider whose snapshots are
+ * included in the price up to the offer's count (`snapshots.kind: "included"`) when it already has
+ * that many, naming the oldest to delete; snapshots taken by hand count too, though OpsCrew lists
+ * only its own.
+ */
+async function requireSnapshotRoom(
+  run: SnapshotRun,
+  { provider, api, server }: FoundServer,
+  included: number | undefined,
+): Promise<void> {
+  if (cloudProvider(provider).offering.snapshots.kind !== "included" || included === undefined) {
+    return;
+  }
+  const taken = await api.listSnapshots(server.id);
+  const [oldest] = [...taken].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+  if (taken.length < included || oldest === undefined) return;
+  const { displayName } = providerProfile(provider);
+  const { noun, console: where } = destroyTexts(provider);
+  throw new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `The ${noun} ${server.name} already has ${plural(taken.length, "snapshot")} at ${displayName}, as many as its price includes (${included}). ${NOTHING_TAKEN}`,
+    {
+      hint: `Delete the oldest, ${oldest.id} taken ${formatUtc(oldest.createdAt)}, with \`opscrew snapshot delete ${oldest.id}${run.flags}\`, then try again. Snapshots taken by hand in ${where} count too.`,
+    },
+  );
 }
 
 /** The summary's price line before the snapshot: at most the server's whole disk. */
-function priceLine(provider: CloudProvider, extras: ProviderExtras, diskGb?: number): string {
+function priceLine(
+  provider: CloudProvider,
+  extras: ProviderExtras,
+  diskGb?: number,
+  includedSnapshots?: number,
+): string {
   const { noun } = destroyTexts(provider);
+  if (extras.snapshotsIncluded === true) {
+    return includedSnapshots === undefined
+      ? `It is included in the ${noun}'s price, up to the number its plan includes.`
+      : `It is included in the ${noun}'s price, up to ${plural(includedSnapshots, "snapshot")}.`;
+  }
   const rate = extras.snapshotPerGbMonth;
   if (rate === undefined) return `It is ${destroyTexts(provider).snapshotBilled}.`;
   const tax = taxLabel(rate.currency, extras.pricesIncludeVat);
@@ -363,13 +412,14 @@ export async function takeServerSnapshot(
   await requireNoDeployOrMove(run, "take a snapshot of a server");
   const profile = providerProfile(provider);
   const { noun, console: where } = destroyTexts(provider);
-  const { extras, diskGb } = await prices(deps, options.services ?? {}, found);
+  const { extras, diskGb, includedSnapshots } = await prices(deps, options.services ?? {}, found);
+  await requireSnapshotRoom(run, found, includedSnapshots);
   const lines = [
     `A snapshot of the whole ${noun} ${server.name} of ${environment} at ${profile.displayName}:`,
     stop
       ? `- The ${noun} is shut down for it and started again after: the app is offline meanwhile, usually a few minutes (up to 5 minutes to shut down cleanly, then as long as the snapshot takes).`
       : `- It is taken while the ${noun} runs. A live snapshot may not be consistent: data being written at that moment can be incomplete in it. \`opscrew snapshot --server --stop${flags}\` shuts the ${noun} down for it instead.`,
-    `- ${priceLine(provider, extras, diskGb)}`,
+    `- ${priceLine(provider, extras, diskGb, includedSnapshots)}`,
     `- It holds the ${noun}'s own disk only: volumes attached to it at ${profile.displayName} are not included.`,
     `- It stays at ${profile.displayName} until you delete it (\`opscrew snapshot delete <id>${flags}\`).`,
   ];
@@ -391,11 +441,13 @@ export async function takeServerSnapshot(
   const rate = extras.snapshotPerGbMonth;
   const monthly = sizeGb === undefined || rate === undefined ? undefined : priceOf(sizeGb, rate);
   const billed =
-    sizeGb === undefined
-      ? `${profile.displayName} does not report its size yet; \`opscrew snapshot list${flags}\` shows it later`
-      : monthly === undefined
-        ? `${sizeGb} GB, ${destroyTexts(provider).snapshotBilled}`
-        : `${sizeGb} GB, ${priceText(monthly)} a month ${taxLabel(monthly.currency, extras.pricesIncludeVat)}`;
+    extras.snapshotsIncluded === true
+      ? `included in the ${noun}'s price`
+      : sizeGb === undefined
+        ? `${profile.displayName} does not report its size yet; \`opscrew snapshot list${flags}\` shows it later`
+        : monthly === undefined
+          ? `${sizeGb} GB, ${destroyTexts(provider).snapshotBilled}`
+          : `${sizeGb} GB, ${priceText(monthly)} a month ${taxLabel(monthly.currency, extras.pricesIncludeVat)}`;
   deps.reporter.success(
     `Took the snapshot ${id} of the ${noun} ${server.name} of ${environment} at ${profile.displayName} (${billed}). Delete it in ${where} or with \`opscrew snapshot delete ${id}${flags}\` when you no longer need it.`,
   );
@@ -410,15 +462,37 @@ export async function takeServerSnapshot(
 
 /**
  * The restore's approval text: what is lost, what stays, the protection's lift, and `more` (what
- * follows the rebuild) before the typed name.
+ * follows the rebuild) before the typed name. At a provider whose snapshots are included in the
+ * price (`snapshots.kind: "included"`), it says first that the rebuild deletes the snapshots of the
+ * server taken after this one (`snapshots`: those OpsCrew lists, of every server).
  */
-function restoreLines(found: ProviderSnapshot, more: readonly string[]): string[] {
+function restoreLines(
+  found: ProviderSnapshot,
+  snapshots: readonly ProviderSnapshot[],
+  more: readonly string[],
+): string[] {
   const { entry } = found;
   const server = entry.server as NonNullable<SnapshotEntry["server"]>;
   const profile = providerProfile(server.provider);
   const noun = profile.serverNoun;
+  const newer =
+    cloudProvider(server.provider).offering.snapshots.kind === "included"
+      ? snapshots
+          .map((other) => other.entry)
+          .filter(
+            (other) =>
+              other.server?.provider === server.provider &&
+              other.server.id === server.id &&
+              Date.parse(other.taken) > Date.parse(entry.taken),
+          )
+      : [];
   return [
     `The snapshot ${entry.id} of the ${noun} ${server.name}, taken ${formatUtc(entry.taken)}, ${entry.where}.`,
+    ...(newer.length === 0
+      ? []
+      : [
+          `It is not the newest: ${profile.displayName} deletes the ${noun}'s snapshots taken after it when it rebuilds from it, ${listText(newer.map((other) => other.id))} and any taken by hand.`,
+        ]),
     `${profile.displayName} rebuilds the ${noun} from it in place: its disk is replaced by the snapshot's, so everything written on it since, the app's data, version and settings included, is lost for good. Its addresses and firewall stay.`,
     ...(profile.deleteProtection
       ? [
@@ -500,10 +574,10 @@ export async function restoreServerSnapshot(
   id: string,
   options: RestoreServerOptions = {},
 ): Promise<RestoredServer> {
-  if (!/^\d+$/.test(id)) {
+  if (!SERVER_SNAPSHOT_ID.test(id)) {
     throw new OpsCrewError(
       "INVALID_INPUT",
-      `${id} is no whole-server snapshot's id: the providers' ids are numbers. ${NOTHING_CHANGED}`,
+      `${id} is no whole-server snapshot's id: a provider's id is a number, or two parts of letters and digits around one colon. ${NOTHING_CHANGED}`,
       { hint: "`opscrew snapshot list` shows each snapshot's id and kind." },
     );
   }
@@ -514,7 +588,8 @@ export async function restoreServerSnapshot(
   const tokenless = providers.find((provider) => serverApi(run, provider) === undefined);
   if (tokenless !== undefined) throw noToken(run, tokenless);
   await requireNoDeployOrMove(run, "restore a server from a snapshot");
-  const found = (await providerSnapshots(run)).find((candidate) => candidate.entry.id === id);
+  const snapshots = await providerSnapshots(run);
+  const found = snapshots.find((candidate) => candidate.entry.id === id);
   if (found === undefined) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
@@ -534,7 +609,7 @@ export async function restoreServerSnapshot(
     if (!api) throw new Error("requireNoDeployOrMove checks the GitHub token first.");
     return { api, ...(await githubCoordinates(gitClient(deps))) };
   });
-  const lines = restoreLines(found, [
+  const lines = restoreLines(found, snapshots, [
     ...(relogin === undefined ? [] : serverReloginLines(relogin)),
     ...restoredKeyLines(keys, flags),
   ]);

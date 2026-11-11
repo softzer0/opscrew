@@ -12,15 +12,28 @@ import type { SnapshotKind } from "./types";
 export const SNAPSHOT_ID = /^[0-9A-Za-z]+$/;
 
 /**
- * Stops (`INVALID_INPUT`) when `id` is no snapshot's id ({@link SNAPSHOT_ID}).
+ * A whole-server snapshot's id at its provider: a number (Hetzner, DigitalOcean), or two parts of
+ * letters and digits around one colon (`<instance>:<snapshot>`, Contabo's).
+ */
+export const SERVER_SNAPSHOT_ID = /^(?:\d+|[0-9A-Za-z]+:[0-9A-Za-z]+)$/;
+
+/**
+ * Stops (`INVALID_INPUT`) when `id` is no data snapshot's id ({@link SNAPSHOT_ID}) and, with
+ * `server`, no whole-server snapshot's either ({@link SERVER_SNAPSHOT_ID}).
  * @throws OpsCrewError `INVALID_INPUT`.
  */
-export function requireSnapshotId(id: string): void {
-  if (SNAPSHOT_ID.test(id)) return;
+export function requireSnapshotId(id: string, options: { server?: boolean } = {}): void {
+  if (SNAPSHOT_ID.test(id) || (options.server === true && SERVER_SNAPSHOT_ID.test(id))) return;
+  const rule =
+    options.server === true
+      ? "an id has only letters and digits, or two such parts around one colon for a whole-server snapshot"
+      : "an id has only letters and digits";
   throw new OpsCrewError(
     "INVALID_INPUT",
-    `${id} is no snapshot's id: an id has only letters and digits. ${NOTHING_CHANGED}`,
-    { hint: "`opscrew snapshot list` shows each snapshot's id." },
+    `${id} is no snapshot's id: ${rule}. ${NOTHING_CHANGED}`,
+    {
+      hint: "`opscrew snapshot list` shows each snapshot's id.",
+    },
   );
 }
 

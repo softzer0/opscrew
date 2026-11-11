@@ -16,6 +16,7 @@ import {
 } from "@opscrew/plan-schema";
 import { cloudProvider } from "@opscrew/providers";
 import { convertMoney, costFor } from "../../design/cost";
+import { noResizeText, resizesInPlace, resizeWaysText } from "../../design/server-changes";
 import { providerProfile } from "../../providers";
 import type { ResourceReading } from "../../status";
 import {
@@ -156,10 +157,13 @@ export function priceChange(before: CostEstimate, after: CostEstimate): Proposal
   };
 }
 
-/** What changing `server`'s type to `offer` does to the app and the disk (research R5, S1). */
+/**
+ * What changing `server`'s type to `offer` does to the app and the disk (research R5, S1), at a
+ * provider that changes a server's size in place.
+ */
 function typeChangeReasons(server: PricedServer, offer: ComputeOffer): Reason[] {
   const { displayName, texts } = cloudProvider(server.provider);
-  // Present for every provider that resizes in place, the only ones with a type change.
+  // Present for every provider that resizes in place.
   const offline = texts.resizeOffline;
   const from = server.prices.offer.diskGb;
   const disk =
@@ -174,7 +178,9 @@ function typeChangeReasons(server: PricedServer, offer: ComputeOffer): Reason[] 
 
 /**
  * The proposal to change `server`'s type to `offer` in the plan, with `reasons` and what the
- * change does, priced before and after (that server's price only).
+ * change does, priced before and after (that server's price only). At a provider that can't change
+ * a server's size in place, the plan is not changed: the proposal says why and names the two ways,
+ * by hand (`resizeWaysText`).
  */
 export function typeChange(
   server: PricedServer,
@@ -182,15 +188,26 @@ export function typeChange(
   fields: Pick<Proposal, "id" | "category" | "urgency" | "reasons">,
 ): Proposal {
   const { name, provider, backups, prices } = server;
+  const price = priceChange(
+    serverCost(provider, prices.offer, prices.list, backups),
+    serverCost(provider, offer, prices.list, backups),
+  );
+  if (!resizesInPlace(provider)) {
+    return {
+      ...fields,
+      server: name,
+      title: `Move server ${name} to a new ${offerText(offer)}`,
+      reasons: [...fields.reasons, { text: noResizeText(provider), basis: PLAN }],
+      price,
+      apply: { kind: "manual", text: resizeWaysText(provider) },
+    };
+  }
   return {
     ...fields,
     server: name,
     title: `Move server ${name} to ${offerText(offer)}`,
     reasons: [...fields.reasons, ...typeChangeReasons(server, offer)],
-    price: priceChange(
-      serverCost(provider, prices.offer, prices.list, backups),
-      serverCost(provider, offer, prices.list, backups),
-    ),
+    price,
     apply: { kind: "plan", change: { kind: "server-type", server: name, serverType: offer.id } },
   };
 }

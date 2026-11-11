@@ -22,7 +22,7 @@ import {
   type RestoreServices,
 } from "./restore-offsite";
 import { requireNoDeployOrMove, type SnapshotRun, snapshotRun, snapshotTarget } from "./run";
-import { KIND_WORDS, requireSnapshotId, SERVER_SNAPSHOTS } from "./store";
+import { KIND_WORDS, requireSnapshotId, SERVER_SNAPSHOTS, SNAPSHOT_ID } from "./store";
 import type { DeletedSnapshot, SnapshotCommandOptions, SnapshotEntry } from "./types";
 
 /** The exit code of a deletion whose snapshot folder went meanwhile. */
@@ -95,7 +95,8 @@ async function deleteAtProvider(found: ProviderSnapshot): Promise<DeletedSnapsho
  * move runs; otherwise finds `id` among its data snapshots, then its providers' whole-server ones,
  * and, with the off-server copy on, in its bucket, and deletes it after the destroy-grade approval.
  * Every machine that holds a part loses it, and the bucket its copy.
- * @throws OpsCrewError `INVALID_INPUT` for an id that isn't letters and digits,
+ * @throws OpsCrewError `INVALID_INPUT` for an id that isn't letters and digits (or a whole-server
+ * snapshot's two such parts around one colon),
  * `PHASE_PRECONDITION` for each refusal and an unknown id, `CREDENTIALS_MISSING` without the
  * bucket's key, `APPROVAL_REFUSED` when the id is not typed, `COMMAND_FAILED` and
  * `PROVIDER_ERROR` when a deletion fails.
@@ -105,26 +106,28 @@ export async function deleteSnapshot(
   id: string,
   options: DeleteSnapshotOptions = {},
 ): Promise<DeletedSnapshot> {
-  requireSnapshotId(id);
+  requireSnapshotId(id, { server: true });
+  // An id with a colon is only a whole-server snapshot's: no machine or bucket holds it.
+  const data = SNAPSHOT_ID.test(id);
   const run = await snapshotRun(deps, options.services);
   const { environment, flags } = run;
   const target = snapshotTarget(run);
   await requireNoDeployOrMove(run, "delete a snapshot");
-  const listings = await dataListings(run);
+  const listings = data ? await dataListings(run) : [];
   const holders = listings.filter((place) => place.listing.abouts.some((about) => about.id === id));
-  const data = mergeListings(holders).find((entry) => entry.id === id);
+  const held = mergeListings(holders).find((entry) => entry.id === id);
   const provider =
-    data === undefined && target === "servers"
+    held === undefined && target === "servers"
       ? (await providerSnapshots(run)).find((found) => found.entry.id === id)
       : undefined;
   // The copy in the off-server bucket: its key is needed before anything is approved. A snapshot
   // before a release is never copied off the server.
   const bucket: OffsiteBucket | undefined =
-    provider === undefined && data?.kind !== "release"
+    data && provider === undefined && held?.kind !== "release"
       ? await offsiteBucket(run, options.services ?? {}, `opscrew snapshot delete ${id}${flags}`)
       : undefined;
   const inBucket = bucket !== undefined && (await bucketObjects(run, bucket, id)).length > 0;
-  const entry = data ?? provider?.entry;
+  const entry = held ?? provider?.entry;
   if (entry === undefined && !inBucket) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",

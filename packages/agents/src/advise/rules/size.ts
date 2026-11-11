@@ -442,7 +442,8 @@ function serverRules(readings: Readings, server: SizedServer): Proposal[] {
   const filling = diskFilling(name, figures);
   const larger = largerRule(readings.flags, server, limits, filling);
   const proposals = [...limits.proposals, ...(larger === undefined ? [] : [larger])];
-  if (filling !== undefined && larger?.apply.kind !== "plan") {
+  // Unless a larger type holds the disk too: only a type change has a price.
+  if (filling !== undefined && larger?.price === undefined) {
     proposals.push(diskRule(name, figures, filling, priced));
   }
   if (proposals.length === 0 && priced !== undefined && figures.history !== undefined) {

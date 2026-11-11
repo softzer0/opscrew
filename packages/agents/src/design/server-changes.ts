@@ -1,15 +1,19 @@
 import { join } from "node:path";
 import type { VpsProviderId } from "@opscrew/contracts";
+import { orText } from "@opscrew/core";
 import { extraServerVariables } from "@opscrew/iac-templates";
 import {
   APP_SERVER,
+  type CloudProvider,
   type DeployPlan,
   type DeployProvider,
   type ExtraServer,
+  isCloudProvider,
   isCloudTarget,
 } from "@opscrew/plan-schema";
+import { cloudProvider } from "@opscrew/providers";
 import { z } from "zod";
-import { providerProfile } from "../providers";
+import { providerProfile, VPS_PROVIDERS } from "../providers";
 import { readValidJson } from "../shared/files";
 
 /** Where a server runs and of what type. */
@@ -148,9 +152,49 @@ export function extraServerChangeWarning(name: string, change: ServerChange): st
 }
 
 /**
- * Why design keeps a deployed server's type instead of a smaller one it could use, whose disk is
- * smaller: neither provider can make a server's disk smaller. `Server app could use cx23 now, but
- * OpsCrew keeps cx33: Hetzner Cloud can't make a server's disk smaller.`
+ * True when a server of `provider` changes its size in place (`offering.resize`); false for a
+ * provider that can't, where a size change is a move to a new server, and for a server the user
+ * owns.
+ */
+export function resizesInPlace(provider: VpsProviderId): boolean {
+  return isCloudProvider(provider) && cloudProvider(provider).offering.resize;
+}
+
+/**
+ * Why a size change is refused on a provider that can't change a server's size in place:
+ * `Contabo can't change a server's size in place`.
+ */
+export function noResizeText(provider: VpsProviderId): string {
+  const { displayName, serverNoun: noun } = providerProfile(provider);
+  return `${displayName} can't change a ${noun}'s size in place`;
+}
+
+/**
+ * The two ways to another size on a provider that can't change a server's size in place, as a
+ * sentence without its closing full stop: a move to another cloud provider with `opscrew
+ * retarget`, with a short maintenance window for the data (it doesn't move within one provider),
+ * or a new server at the same provider with downtime, through a data snapshot with its off-server
+ * copy, `opscrew destroy`, `opscrew design` and `opscrew provision`, and a restore from that copy.
+ * The old server is billed to the end of its term where the provider cancels at the end of the
+ * term.
+ */
+export function resizeWaysText(provider: CloudProvider): string {
+  const { displayName, serverNoun: noun } = providerProfile(provider);
+  const others = VPS_PROVIDERS.filter((id) => id !== provider);
+  const moves = orText(others.map((id) => `\`opscrew retarget --to ${id}\``));
+  const elsewhere = orText(others.map((id) => providerProfile(id).displayName));
+  const billed =
+    cloudProvider(provider).offering.removal.kind === "cancel-at-term-end"
+      ? ` (${displayName} bills it to the end of its term)`
+      : "";
+  return `There are two ways to another size: ${moves} moves the app to ${elsewhere} with a short maintenance window for its data; or, at ${displayName} with downtime, take a snapshot of the app's data with its encrypted copy off the ${noun} (\`opscrew snapshot\`, after \`opscrew snapshot offsite on --to <provider>\` and \`opscrew provision\` if the copy is off), remove the ${noun} with \`opscrew destroy\`${billed}, run \`opscrew design\` and \`opscrew provision\` with the new size, then put the data back from that copy with \`opscrew restore <id> --from offsite --key-file <path>\``;
+}
+
+/**
+ * Why design keeps a deployed server's type instead of a smaller one it could use: its disk is
+ * smaller, which no provider can do (`Server app could use cx23 now, but OpsCrew keeps cx33:
+ * Hetzner Cloud can't make a server's disk smaller.`), or the provider can't change a server's
+ * size in place at all ({@link noResizeText}).
  */
 export function keptTypeText(
   name: string,
@@ -159,7 +203,10 @@ export function keptTypeText(
   kept: string,
 ): string {
   const profile = providerProfile(provider);
-  return `Server ${name} could use ${smaller} now, but OpsCrew keeps ${kept}: ${profile.displayName} can't make a ${profile.serverNoun}'s disk smaller.`;
+  const why = resizesInPlace(provider)
+    ? `${profile.displayName} can't make a ${profile.serverNoun}'s disk smaller`
+    : noResizeText(provider);
+  return `Server ${name} could use ${smaller} now, but OpsCrew keeps ${kept}: ${why}.`;
 }
 
 /** The servers the next provision replaces: the app's (`app`) and the extra ones by name. */

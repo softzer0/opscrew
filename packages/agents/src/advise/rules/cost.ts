@@ -10,7 +10,7 @@ import {
   isServerlessProvider,
   type Region,
 } from "@opscrew/plan-schema";
-import { convertMoney, EXCHANGE_RATE_NOTE, roundCents } from "../../design/cost";
+import { convertMoney, EXCHANGE_RATE_NOTE, offerTerms, roundCents } from "../../design/cost";
 import { cheapestServerOffer } from "../../design/servers";
 import { designWording } from "../../design/wording";
 import { providerProfile, VPS_PROVIDERS } from "../../providers";
@@ -76,7 +76,14 @@ function cheapestAt(readings: Readings, app: PricedServer, other: CloudProvider,
       const offer = cheapestServerOffer(offers, list.location, sizeOf(current), current.diskGb);
       return offer === undefined
         ? []
-        : [{ other, offer, cost: serverCost(other, offer, list, app.backups) }];
+        : [
+            {
+              other,
+              offer,
+              extras: list.extras,
+              cost: serverCost(other, offer, list, app.backups),
+            },
+          ];
     })
     .sort(
       (a, b) =>
@@ -120,6 +127,10 @@ function otherProvider(readings: Readings, app: PricedServer | undefined): Propo
           basis: PLAN,
         },
         ...(before.monthly.currency === best.cost.monthly.currency ? [] : [EXCHANGE_RATE]),
+        ...offerTerms(best.offer, best.extras).map((term) => ({
+          text: withoutStop(term),
+          basis: PLAN,
+        })),
         {
           text: `\`${command}\` moves the app with a short maintenance window: it creates the new server, copies the data and switches the domain, and \`--finish\` deletes the old server`,
           basis: PLAN,
@@ -215,12 +226,9 @@ function overBudget(
 export function costRules(readings: Readings): Proposal[] {
   if (isServerlessProvider(readings.plan.target.provider)) return [];
   const size = sizeRules(readings);
+  // The size rules price only a change of type (`typeChange`), also one by a move to a new server.
   const resized = new Set(
-    size.flatMap((p) =>
-      p.apply.kind === "plan" && p.apply.change.kind === "server-type"
-        ? [p.apply.change.server]
-        : [],
-    ),
+    size.flatMap((p) => (p.price !== undefined && p.server !== undefined ? [p.server] : [])),
   );
   const servers = cloudServers(readings);
   const priced = servers.filter(isPriced);

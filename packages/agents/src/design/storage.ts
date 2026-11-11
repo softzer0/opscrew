@@ -13,14 +13,16 @@ import {
   serviceSpec,
   sqliteVolumeOwner,
 } from "@opscrew/iac-templates";
-import type {
-  DeployPlan,
-  DeployProvider,
-  ProjectFacts,
-  Requirements,
-  UserScale,
+import {
+  type CloudProvider,
+  type DeployPlan,
+  type DeployProvider,
+  isCloudProvider,
+  type ProjectFacts,
+  type Requirements,
+  type UserScale,
 } from "@opscrew/plan-schema";
-import { providerProfile } from "../providers";
+import { DEFAULT_CLOUD_PROVIDER, providerProfile } from "../providers";
 import { convertMoney } from "./cost";
 
 /** The object storage a plan uses: a provider's bucket, or Garage on the user's server. */
@@ -101,17 +103,24 @@ export const HETZNER_STORAGE_LOCATIONS: readonly string[] = ["fsn1", "nbg1", "he
 /** Droplet locations whose Spaces region has another name. */
 const SPACES_REGION: Readonly<Record<string, string>> = { nyc1: "nyc3" };
 
+/** A cloud provider that sells the buckets OpsCrew uses (plan 3: bucket providers stay apart). */
+type BucketCloud = Extract<StorageProvider, CloudProvider>;
+
+/** True for a cloud provider that sells the buckets OpsCrew uses: Hetzner and DigitalOcean. */
+function sellsBuckets(provider: DeployProvider): provider is BucketCloud {
+  return provider === "hetzner" || provider === "digitalocean";
+}
+
 /**
  * The region of `provider`'s object storage at its server location `location`: the location
  * itself at Hetzner where it has object storage (else undefined), the Spaces region at
  * DigitalOcean.
  */
-export function storageRegionAt(
-  provider: "hetzner" | "digitalocean",
-  location: string,
-): string | undefined {
-  if (provider === "digitalocean") return SPACES_REGION[location] ?? location;
-  return HETZNER_STORAGE_LOCATIONS.includes(location) ? location : undefined;
+export function storageRegionAt(provider: BucketCloud, location: string): string | undefined {
+  if (provider === "hetzner") {
+    return HETZNER_STORAGE_LOCATIONS.includes(location) ? location : undefined;
+  }
+  return SPACES_REGION[location] ?? location;
 }
 
 /** One priced object storage choice. */
@@ -136,19 +145,22 @@ export function storagePrice(
 /**
  * The object storage options for where the app runs, priced for `expected` and cheapest first
  * (FR-1316): Garage on the app's server on every target (opt-in on a cloud server), the cloud
- * provider's own storage where its location has it, and Cloudflare R2 when the domain is on
- * Cloudflare (it needs OpsCrew's Cloudflare token and account). Ties keep that order.
+ * provider's own storage where it sells one and its location has it, and Cloudflare R2 when the
+ * domain is on Cloudflare (it needs OpsCrew's Cloudflare token and account). Ties keep that order.
  */
 export function storageOffers(
   requirements: Pick<Requirements, "provider" | "region" | "dnsProvider" | "domain">,
   expected: ObjectStorage["expected"],
 ): StorageOffer[] {
-  const provider: DeployProvider = requirements.provider ?? "hetzner";
-  const cloud = provider === "hetzner" || provider === "digitalocean";
+  const provider: DeployProvider = requirements.provider ?? DEFAULT_CLOUD_PROVIDER;
   const offers: Omit<StorageOffer, "price">[] = [
-    { provider: "garage", region: "garage", ...(cloud ? { optIn: true as const } : {}) },
+    {
+      provider: "garage",
+      region: "garage",
+      ...(isCloudProvider(provider) ? { optIn: true as const } : {}),
+    },
   ];
-  if (cloud && requirements.region !== undefined) {
+  if (sellsBuckets(provider) && requirements.region !== undefined) {
     const locations = providerProfile(provider).regionLocations[requirements.region];
     const location = locations
       .map((l) => storageRegionAt(provider, l))

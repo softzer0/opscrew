@@ -2027,7 +2027,10 @@ export async function resolveCatalog(
     return {
       catalog: fallback.catalog,
       isStatic: true,
-      warning: `${wording.tokenVar} is not set, so prices come from ${fallback.dated} and are estimates; ${wording.profile.serverNoun} availability is not checked. Set ${wording.tokenVar} for live prices.`,
+      warning:
+        wording.tokenVar === undefined
+          ? `${wording.name} has no price API, so prices come from ${fallback.dated} and are estimates; ${wording.profile.serverNoun} availability is not checked.`
+          : `${wording.tokenVar} is not set, so prices come from ${fallback.dated} and are estimates; ${wording.profile.serverNoun} availability is not checked. Set ${wording.tokenVar} for live prices.`,
     };
   }
   const check = await connector.verifyCredentials();

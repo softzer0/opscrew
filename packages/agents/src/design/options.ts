@@ -9,26 +9,35 @@ import { formatMoney, OpsCrewError } from "@opscrew/core";
 import { EDGE_PROXIES, type EdgeProxy } from "@opscrew/iac-templates";
 import {
   APP_SERVER,
+  type CloudProvider,
   type CostEstimate,
   type DesignOption,
   DesignOptionListSchema,
+  isCloudProvider,
   type MonitoringSettings,
   type ProjectFacts,
   type Requirements,
   serviceOf,
 } from "@opscrew/plan-schema";
-import { requestedProvider, requestedRegion } from "../providers";
+import { providerProfile, requestedProvider, requestedRegion } from "../providers";
 import { type MemoryLimit, memoryHeadroom, SYSTEM_RESERVE_MB } from "../shared/memory";
 import { type Components, memoryText } from "./components";
 import {
   convertMoney,
   EXCHANGE_RATE_NOTE,
   type NonLiveRates,
+  offerTerms,
   pricedOffer,
   priceLabel,
 } from "./cost";
 import { previewMemoryText } from "./previews";
-import { keptTypeText, type ServerSize } from "./server-changes";
+import {
+  keptTypeText,
+  noResizeText,
+  resizesInPlace,
+  resizeWaysText,
+  type ServerSize,
+} from "./server-changes";
 import {
   containersText,
   previewSizing,
@@ -38,6 +47,7 @@ import {
   usableOffer,
   withSharedPreviews,
 } from "./sizing";
+import { noProviderBackupsText } from "./snapshots";
 import { type DesignWording, designWording } from "./wording";
 
 export interface BuildDesignOptionsInput {
@@ -71,6 +81,8 @@ interface Candidate {
   cost: CostEstimate;
   /** Rates in the estimate of a live offer that were not read from the API. */
   rates: NonLiveRates;
+  /** What it means besides its monthly price ({@link offerTerms}). */
+  terms: string[];
   /** Why it is the deployed server's type, standing in for one with a smaller disk. */
   kept?: string;
   /** Why it replaces the deployed server: no type where that runs meets the need. */
@@ -130,7 +142,8 @@ export async function buildDesignOptionSet(
         ? withSharedPreviews(app, input.sharedPreviews)
         : app;
   const locations = regionLocations(region, provider);
-  const backups = requirements.dataCriticality !== "none";
+  // Never the provider's backups where it offers none through OpsCrew (its snapshots cover the data).
+  const backups = requirements.dataCriticality !== "none" && profile.providerBackups;
 
   const offers = (await Promise.all(locations.map((location) => catalog.listOffers(location))))
     .flat()
@@ -176,10 +189,24 @@ export async function buildDesignOptionSet(
   for (const offer of offered) {
     if (!meets(offer, sizing)) continue;
     const extras = await extrasFor(offer.location);
-    const candidate = { offer, ...pricedOffer(offer, extras, pricing) };
+    const candidate = {
+      offer,
+      ...pricedOffer(offer, extras, pricing),
+      terms: offerTerms(offer, extras),
+    };
     const shrinks =
       current !== undefined && offer.location === current.location && offer.diskGb < current.diskGb;
     (shrinks ? shrinking : candidates).push(candidate);
+  }
+  // A provider that can't change a server's size in place keeps the deployed type: the others
+  // where it runs are left out as those with a smaller disk are, and none fits when it doesn't.
+  if (current !== undefined && isCloudProvider(provider) && !resizesInPlace(provider)) {
+    const there = candidates.filter((c) => c.offer.location === current.location);
+    if (!there.some((c) => isCurrent(c.offer))) {
+      throw outgrown(current, sizing, provider);
+    }
+    shrinking.push(...there.filter((c) => !isCurrent(c.offer)));
+    candidates = candidates.filter((c) => isCurrent(c.offer));
   }
   // A deployed server stays where it runs; another location only when no type there meets the need.
   if (home !== undefined) {
@@ -193,7 +220,7 @@ export async function buildDesignOptionSet(
   }
   candidates.sort(cheapestFirst);
   // The deployed type, the cheapest of its CPU kind left, names the cheapest of that kind left out
-  // for its smaller disk.
+  // for its smaller disk, or where the provider can't change its size at all.
   const cheapestOf = (list: Candidate[], cpu: string | undefined) =>
     list.filter((c) => c.offer.cpuType === cpu).sort(cheapestFirst)[0];
   const own = cheapestOf(candidates, current?.cpuType);
@@ -265,6 +292,23 @@ export async function buildDesignOptionSet(
   return { options: parsed, kept };
 }
 
+/**
+ * The refusal when the deployed server's type no longer meets the need on a provider that can't
+ * change a server's size in place, naming the ways to another size ({@link resizeWaysText}).
+ */
+function outgrown(current: ComputeOffer, sizing: Sizing, provider: CloudProvider): OpsCrewError {
+  const { serverNoun: noun, locationNames } = providerProfile(provider);
+  const place = locationNames[current.location] ?? current.location;
+  const memory = Math.round(sizing.memoryGb * 10) / 10;
+  return new OpsCrewError(
+    "INVALID_INPUT",
+    `Your ${noun} in ${place} is a ${current.id} (${current.vcpus} vCPU, ${current.memoryGb} GB memory, ${current.diskGb} GB disk), which no longer has the ${sizing.vcpus} vCPU, ${memory} GB memory and ${sizing.diskGb} GB disk this app needs, and ${noResizeText(provider)}. plan.yaml was not changed.`,
+    {
+      hint: `${resizeWaysText(provider)}. Or lower the memory limits in opscrew/plan.yaml and run \`opscrew design\` again.`,
+    },
+  );
+}
+
 function meets(offer: ComputeOffer, sizing: Sizing): boolean {
   return (
     offer.vcpus >= sizing.vcpus &&
@@ -322,7 +366,7 @@ const TIER_TRADEOFFS: Record<DesignTier, string[]> = {
 
 function toOption(
   tier: DesignTier,
-  { offer, cost, rates, kept, moved }: Candidate,
+  { offer, cost, rates, terms, kept, moved }: Candidate,
   context: {
     provider: VpsProviderId;
     wording: DesignWording;
@@ -354,7 +398,12 @@ function toOption(
   const summary = [
     `One ${offer.id} ${wording.summaryNoun} (${offer.vcpus} ${offer.cpuType} vCPU, ${offer.memoryGb} GB memory, ${offer.diskGb} GB disk) in ${place} (${offer.location}) running ${containersText(sizing)} with Docker Compose behind ${EDGE_PROXIES[sizing.edge].label}.`,
     `${price}.`,
-    backups ? "Automated backups are on." : "Automated backups are off.",
+    ...terms,
+    isCloudProvider(provider) && !wording.profile.providerBackups
+      ? noProviderBackupsText(provider)
+      : backups
+        ? "Automated backups are on."
+        : "Automated backups are off.",
     sizing.previewCap === undefined
       ? memoryText(
           { ...sizing.components, observability: { monitoring: sizing.monitoring } },
@@ -378,10 +427,10 @@ function toOption(
   tradeoffs.push("A single server: if it fails, the app is down until the server is restored.");
   if (serviceOf(sizing, "postgres")) {
     tradeoffs.push(
-      "Postgres runs in a container on the same server; restoring it relies on the server backups.",
+      `Postgres runs in a container on the same server; restoring it relies on the ${wording.profile.providerBackups ? "server backups" : "snapshots of the app's data"}.`,
     );
   }
-  if (!backups) {
+  if (!backups && wording.profile.providerBackups) {
     tradeoffs.push("No automated backups, because you said losing the data would not matter.");
   }
   const budgetPrice = convertMoney(cost.monthly, budget.currency);
@@ -399,7 +448,9 @@ function toOption(
     tradeoffs.push(
       mixed
         ? `The ${wording.profile.serverNoun} price is live from ${wording.name}; ${notLive.map((r) => `${r.the} uses ${r.rate}, because ${r.reason}`).join("; ")}.`
-        : `Prices are an ${priceLabel(cost)} from ${wording.name}'s published price list and availability was not checked; set ${wording.tokenVar} for live prices.`,
+        : wording.tokenVar === undefined
+          ? `Prices are an ${priceLabel(cost)} from ${wording.name}'s published price list (${wording.name} has no price API) and availability was not checked.`
+          : `Prices are an ${priceLabel(cost)} from ${wording.name}'s published price list and availability was not checked; set ${wording.tokenVar} for live prices.`,
     );
     const ageDays =
       context.now === undefined
