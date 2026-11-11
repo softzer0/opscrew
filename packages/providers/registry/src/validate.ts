@@ -79,6 +79,7 @@ const offering = z.object({
   serverSnapshotsOutliveServer: z.boolean(),
   deleteProtection: z.boolean(),
   resize: z.boolean(),
+  offAfterRefusedResize: z.boolean(),
   removal: z.discriminatedUnion("kind", [
     z.object({ kind: z.literal("delete") }),
     z.object({
@@ -121,6 +122,8 @@ const terraform = z.object({
 type Texts = Definition["texts"];
 
 const texts = z.object({
+  resizeOffline: z.string().optional(),
+  rotate: z.object({ deleteToken: z.string() }),
   interview: z.object({ label: z.string(), hint: z.string() }),
   design: z.object({
     summaryNoun: z.string(),
@@ -170,23 +173,34 @@ const texts = z.object({
  * The contract's shape. Typed against `CloudProviderDefinition`, so a required field the contract
  * gains and this schema lacks fails the typecheck.
  */
-const definitionSchema: z.ZodType<Definition> = z.object({
-  contractVersion: z.literal(CLOUD_PROVIDER_CONTRACT_VERSION, {
-    error: `must be ${CLOUD_PROVIDER_CONTRACT_VERSION}, the contract version this OpsCrew reads`,
-  }),
-  id: z.string().min(1),
-  displayName: z.string(),
-  name: z.string(),
-  serverNoun: z.string(),
-  consoleUrl: z.string(),
-  accountUrl: z.string(),
-  credentials,
-  connector: fn<Definition["connector"]>(),
-  regions,
-  offering,
-  terraform,
-  texts,
-});
+const definitionSchema: z.ZodType<Definition> = z
+  .object({
+    contractVersion: z.literal(CLOUD_PROVIDER_CONTRACT_VERSION, {
+      error: `must be ${CLOUD_PROVIDER_CONTRACT_VERSION}, the contract version this OpsCrew reads`,
+    }),
+    id: z.string().min(1),
+    displayName: z.string(),
+    name: z.string(),
+    serverNoun: z.string(),
+    sizeNoun: z.string(),
+    consoleUrl: z.string(),
+    accountUrl: z.string(),
+    credentials,
+    connector: fn<Definition["connector"]>(),
+    regions,
+    offering,
+    terraform,
+    texts,
+  })
+  .superRefine((definition, ctx) => {
+    if (definition.offering.resize !== (definition.texts.resizeOffline !== undefined)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["texts", "resizeOffline"],
+        message: "is needed exactly when offering.resize is true",
+      });
+    }
+  });
 
 /**
  * Checks a cloud provider definition against the contract (ADR 0029) and returns it unchanged.

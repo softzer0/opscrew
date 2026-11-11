@@ -52,6 +52,7 @@ export const definition: CloudProviderDefinition = {
   displayName: "Hetzner Cloud",
   name: "Hetzner",
   serverNoun: "server",
+  sizeNoun: "server type",
   consoleUrl: "https://console.hetzner.cloud/",
   accountUrl: "https://console.hetzner.cloud/",
   credentials: {
@@ -110,6 +111,7 @@ export const definition: CloudProviderDefinition = {
     serverSnapshotsOutliveServer: true,
     deleteProtection: true,
     resize: true,
+    offAfterRefusedResize: true,
     removal: { kind: "delete" },
     unavailable:
       /resource_unavailable|out of stock|unsupported location|error during placement|(?<!service )unavailable/i,
@@ -158,6 +160,11 @@ export const definition: CloudProviderDefinition = {
     },
   },
   texts: {
+    resizeOffline:
+      "The app is offline one to three minutes while Hetzner Cloud restarts the server on its new type; its addresses stay the same",
+    rotate: {
+      deleteToken: `the Hetzner Cloud Console (${HETZNER_CREDENTIALS.createUrl} → your project → Security → API tokens)`,
+    },
     interview: {
       label: "Hetzner Cloud",
       hint: "lowest prices; servers in Germany, Finland, the US and Singapore",

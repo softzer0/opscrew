@@ -34,6 +34,7 @@ export const definition: CloudProviderDefinition = {
   displayName: DISPLAY_NAME,
   name: "DigitalOcean",
   serverNoun: "Droplet",
+  sizeNoun: "size",
   consoleUrl: "https://cloud.digitalocean.com/",
   accountUrl: "https://cloud.digitalocean.com/account",
   credentials: {
@@ -108,6 +109,7 @@ export const definition: CloudProviderDefinition = {
     serverSnapshotsOutliveServer: true,
     deleteProtection: false,
     resize: true,
+    offAfterRefusedResize: false,
     removal: { kind: "delete" },
     unavailable:
       /(size|image|region) is not available|not available in (this|the selected) region|(?<!service (temporarily )?)unavailable|out of stock/i,
@@ -172,6 +174,9 @@ export const definition: CloudProviderDefinition = {
     },
   },
   texts: {
+    resizeOffline:
+      "The app is offline while DigitalOcean resizes the Droplet: about a minute per GB of disk in use, often less; its addresses stay the same",
+    rotate: { deleteToken: TOKEN_URL },
     interview: {
       label: "DigitalOcean",
       hint: "use your DigitalOcean account; data centres in Germany, the Netherlands, the US and Singapore; prices in USD",

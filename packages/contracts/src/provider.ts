@@ -134,6 +134,8 @@ export interface ProviderOffering {
   deleteProtection: boolean;
   /** True when a size change applies to the running server; false refuses it with a move instead. */
   resize: boolean;
+  /** True when the provider leaves the server switched off after it refuses a smaller disk. */
+  offAfterRefusedResize: boolean;
   removal: ProviderRemoval;
   /** Provider error text meaning the size is unavailable or out of stock in the location. */
   unavailable: RegExp;
@@ -270,6 +272,14 @@ export interface ProviderDestroyTexts {
 
 /** Everything the provider says to the user, by where it is said. */
 export interface ProviderTexts {
+  /**
+   * How long the app is offline while the provider changes the server's size, as a sentence, for
+   * example `The app is offline one to three minutes while …`. Present exactly when
+   * `offering.resize` is true.
+   */
+  resizeOffline?: string;
+  /** `opscrew rotate`: where the user deletes an old credential, a page or a console path. */
+  rotate: { deleteToken: string };
   /** The interview's option. */
   interview: { label: string; hint: string };
   /** Design's wording. */
@@ -308,6 +318,8 @@ export interface CloudProviderDefinition {
   name: string;
   /** What the provider calls a server: `server` or `Droplet`. */
   serverNoun: string;
+  /** What the provider calls a server's size: `server type`, `size` or `plan`. */
+  sizeNoun: string;
   /** The provider's web console. */
   consoleUrl: string;
   /** Where the user fixes account problems: a locked account, an unverified email, limits. */

@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { validateCloudProvider } from "./validate";
 
 const { credentials, regions, terraform } = hetzner;
+const { resizeOffline: _resizeOffline, ...withoutResize } = hetzner.texts;
 
 /** The message `validateCloudProvider` throws for `candidate`. */
 function failure(candidate: unknown): string {
@@ -31,10 +32,20 @@ describe("validateCloudProvider", () => {
         ...hetzner.offering,
         snapshots: { kind: "included" },
         removal: { kind: "cancel-at-term-end", minimumTermMonths: 1 },
+        resize: false,
       },
-      texts: { ...hetzner.texts, design },
+      texts: { ...withoutResize, design },
     };
     expect(validateCloudProvider(contabo)).toBe(contabo);
+  });
+
+  it("wants the resize downtime exactly when the provider resizes in place", () => {
+    expect(failure({ ...hetzner, texts: withoutResize })).toContain(
+      "texts.resizeOffline: is needed exactly when offering.resize is true",
+    );
+    expect(failure({ ...hetzner, offering: { ...hetzner.offering, resize: false } })).toContain(
+      "texts.resizeOffline: is needed exactly when offering.resize is true",
+    );
   });
 
   it("refuses another contract version", () => {
