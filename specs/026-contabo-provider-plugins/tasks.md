@@ -174,7 +174,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/provider-contabo && pnpm lint`
   - Effort: xhigh
 
-- [ ] T2615 [US1] [US2] Contabo's definition and module
+- [x] T2615 [US1] [US2] Contabo's definition and module
   - Owns: `packages/providers/contabo/src/definition.ts` (+ test), `packages/providers/contabo/module/**`, `packages/providers/contabo/src/generated/**`, `packages/providers/contabo/src/index.ts`
   - Reads: plan 4–5; research R2, R6; Hetzner's definition and module
   - Depends: T2602, T2614
