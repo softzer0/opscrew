@@ -67,7 +67,7 @@ export {
   renderPagesVerification,
   verificationRecordName,
 } from "./serverless";
-export { appServerVariables, extraServerVariables } from "./servers";
+export { appServerVariables, extraServerVariables, sharedResources } from "./servers";
 export {
   type BucketProvider,
   backupsRootDir,

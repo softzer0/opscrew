@@ -70,8 +70,8 @@ export function bucketDeletionWarning(deletion: Pick<BucketDeletion, "bucket">):
  */
 function bucketConsole(provider: ProviderBucket["provider"]): string {
   if (provider === "r2") return "the Cloudflare dashboard (R2 Object Storage)";
-  const { storageConsole, console } = cloudProvider(provider).texts.destroy;
-  return storageConsole ?? console;
+  // Every bucket provider (Hetzner, DigitalOcean) names its object-storage console.
+  return cloudProvider(provider).texts.destroy.storageConsole as string;
 }
 
 /**

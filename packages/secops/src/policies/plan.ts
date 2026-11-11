@@ -1,5 +1,6 @@
 import type {
   PlannedFirewallRule,
+  PlannedResourceJson,
   PolicyResult,
   ProviderSecOps,
   Severity,
@@ -7,16 +8,6 @@ import type {
 import { isRecord } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { CLOUD_PROVIDERS } from "@opscrew/providers";
-
-/** One managed resource from an engine plan, with known values and unknown-at-plan-time markers. */
-export interface PlannedResource {
-  address: string;
-  type: string;
-  name: string;
-  values: Record<string, unknown>;
-  /** Attributes that will be known only after apply (true or nested structure of booleans). */
-  unknown: Record<string, unknown>;
-}
 
 const OPEN_TO_ALL = new Set(["0.0.0.0/0", "::/0"]);
 const PUBLIC_TCP_PORTS = new Set(["22", "80", "443"]);
@@ -42,7 +33,7 @@ function serverWantsBackups(deployPlan: DeployPlan, address: string): boolean {
 }
 
 /** Flattens `planned_values` (root and child modules) and merges `after_unknown` from changes. */
-export function plannedResources(planJson: unknown): PlannedResource[] {
+export function plannedResources(planJson: unknown): PlannedResourceJson[] {
   if (!isRecord(planJson)) return [];
   const unknownByAddress = new Map<string, Record<string, unknown>>();
   const changes = Array.isArray(planJson.resource_changes) ? planJson.resource_changes : [];
@@ -52,7 +43,7 @@ export function plannedResources(planJson: unknown): PlannedResource[] {
     const afterUnknown = change.change.after_unknown;
     if (isRecord(afterUnknown)) unknownByAddress.set(change.address, afterUnknown);
   }
-  const out: PlannedResource[] = [];
+  const out: PlannedResourceJson[] = [];
   const walk = (module: unknown) => {
     if (!isRecord(module)) return;
     for (const resource of Array.isArray(module.resources) ? module.resources : []) {
@@ -75,7 +66,7 @@ export function plannedResources(planJson: unknown): PlannedResource[] {
 }
 
 /** True when an attribute has a non-empty known value or will be set during apply. */
-function isSet(resource: PlannedResource, attribute: string): boolean {
+function isSet(resource: PlannedResourceJson, attribute: string): boolean {
   const value = resource.values[attribute];
   if (Array.isArray(value)) return value.length > 0 || resource.unknown[attribute] !== undefined;
   if (value !== undefined && value !== null && value !== "") return true;
@@ -129,7 +120,7 @@ function openPorts(
 
 /** SSH (port 22) may be open to the whole internet only when the plan allows it. */
 function sshPolicyResult(
-  firewall: PlannedResource,
+  firewall: PlannedResourceJson,
   rules: PlannedFirewallRule[],
   deployPlan: DeployPlan,
 ): PolicyResult {
@@ -151,7 +142,7 @@ function sshPolicyResult(
 
 /** `no-open-admin-ports` and, behind Cloudflare, `origin-cloudflare-only` for one firewall. */
 function openPortResults(
-  firewall: PlannedResource,
+  firewall: PlannedResourceJson,
   rules: PlannedFirewallRule[],
   proxiedBehindCloudflare: boolean,
   deployPlan: DeployPlan,
@@ -214,7 +205,7 @@ const PROVIDERS: readonly ProviderChecks[] = CLOUD_PROVIDERS.map((provider) => (
 function providerPolicies(
   provider: ProviderChecks,
   planJson: unknown,
-  resources: PlannedResource[],
+  resources: PlannedResourceJson[],
   deployPlan: DeployPlan,
   proxiedBehindCloudflare: boolean,
 ): PolicyResult[] {

@@ -47,18 +47,20 @@ import {
   PORTAINER_DEPLOY_SECRETS,
   pagesVerificationRootDir,
   providerBucket,
+  sharedResources,
   storageRootDir,
   TUNNEL_DEPLOY_SECRETS,
   tunnelMode,
   usesTunnel,
 } from "@opscrew/iac-templates";
 import { type DeployPlan, isCloudProvider, snapshotOffsiteOf } from "@opscrew/plan-schema";
-import { CLOUD_PROVIDERS } from "@opscrew/providers";
+import { cloudProvider } from "@opscrew/providers";
 import { blockingPolicyFailures, evaluatePlanPolicies } from "@opscrew/secops";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
 import { requireNoOtherPause, withDeploysPausedUntilDone } from "../move/deploys";
+import { VPS_PROVIDERS } from "../providers";
 import { cloudflareTokenMissing, type GitHubSetup } from "../provision/credentials";
 import { ownEngineEnv, ownTarget } from "../provision/own";
 import {
@@ -143,17 +145,17 @@ const ACCESS_TOKEN = "module.access.cloudflare_zero_trust_access_service_token.s
 /** The Access policy that lets exactly that token through. */
 const ACCESS_POLICY = "module.access.cloudflare_zero_trust_access_policy.ssh[0]";
 
-/** The resource type in a deploy key's id expression: `coalesce(hcloud_ssh_key.deploy.id)`. */
-const KEY_ID_TYPE = /\b([a-z][a-z0-9_]*)\.[a-z][a-z0-9_]*\.id\b/;
-
 /**
  * The provider objects of the deploy key, which a server gets only when it is created: the type of
- * the key each provider's extra servers share (its definition's `extraShared.sshKeyId`).
+ * the shared resource whose id each provider's extra servers take as their key (its definition's
+ * `extraShared.sshKeyId`, for example `coalesce(hcloud_ssh_key.deploy.id)`).
  */
 const DEPLOY_KEY_TYPES: ReadonlySet<string> = new Set(
-  CLOUD_PROVIDERS.flatMap(({ terraform }) => {
-    const type = KEY_ID_TYPE.exec(terraform.extraShared.sshKeyId)?.[1];
-    return type === undefined ? [] : [type];
+  VPS_PROVIDERS.flatMap((provider) => {
+    const { sshKeyId } = cloudProvider(provider).terraform.extraShared;
+    return sharedResources(provider)
+      .filter((address) => sshKeyId.includes(`${address}.id`))
+      .map((address) => address.slice(0, address.indexOf(".")));
   }),
 );
 

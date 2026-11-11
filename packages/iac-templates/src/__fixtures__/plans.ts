@@ -53,7 +53,7 @@ export interface TestPlanOptions {
   postgres?: boolean;
 }
 
-/** Each provider's fixture server and its monthly price. */
+/** Each provider's fixture server, its monthly price and whether the price includes VAT. */
 const TARGETS = {
   hetzner: {
     location: "nbg1",
@@ -61,6 +61,7 @@ const TARGETS = {
     image: "ubuntu-24.04",
     amount: 7.09,
     currency: "EUR",
+    pricesIncludeVat: false,
   },
   digitalocean: {
     location: "fra1",
@@ -68,6 +69,7 @@ const TARGETS = {
     image: "ubuntu-24-04-x64",
     amount: 15.6,
     currency: "USD",
+    pricesIncludeVat: false,
   },
   contabo: {
     location: "EU",
@@ -75,6 +77,8 @@ const TARGETS = {
     image: DEFAULT_IMAGES.contabo,
     amount: 5.5,
     currency: "EUR",
+    // As Contabo's catalog: its prices include VAT.
+    pricesIncludeVat: true,
   },
 } as const satisfies Record<CloudProvider, unknown>;
 
@@ -138,7 +142,7 @@ export function testPlan(o: TestPlanOptions = {}): DeployPlan {
     cost: {
       monthly: { amount: t.amount, currency: t.currency },
       breakdown: [{ item: "server", monthly: { amount: t.amount, currency: t.currency } }],
-      pricesIncludeVat: false,
+      pricesIncludeVat: t.pricesIncludeVat,
       source: "static",
       asOf: "2026-10-12T00:00:00.000Z",
     },

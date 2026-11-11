@@ -607,8 +607,10 @@ describe.skipIf(!runIt)("rendered HCL validates (integration)", () => {
 
     // Every move layout uses both providers and Cloudflare, so the layouts share one directory per
     // engine: the providers are downloaded once, and each layout re-runs init for its modules.
+    // The engines validate the directions to and from Hetzner, which take every provider's module
+    // both ways; layouts.test.ts checks the rendered files of every direction without them.
     let layoutRoot: Promise<string> | undefined;
-    for (const [from, to] of DIRECTIONS) {
+    for (const [from, to] of DIRECTIONS.filter((pair) => pair.includes("hetzner"))) {
       for (const layout of MOVE_LAYOUTS) {
         it.skipIf(!engine)(
           `validates the ${layout} layout from ${from} to ${to} with ${name}`,

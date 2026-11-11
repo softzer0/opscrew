@@ -16,6 +16,16 @@ export const CLOUD_PROVIDERS: readonly CloudProviderDefinition[] = [
   contabo,
 ].map(validateCloudProvider);
 
+/**
+ * Each cloud provider's credential variables and its name, for help texts: the first variable
+ * (`HCLOUD_TOKEN for Hetzner Cloud`), or every variable of a set all of which are needed
+ * (`A, B, C and D for Contabo`).
+ */
+export const CLOUD_CREDENTIALS: string = CLOUD_PROVIDERS.map(
+  ({ credentials, displayName }) =>
+    `${credentials.mode === "all" ? listText(credentials.envVars) : credentials.envVars[0]} for ${displayName}`,
+).join(", ");
+
 /** The definition of the cloud server provider `id`; throws `INVALID_INPUT` for any other id. */
 export function cloudProvider(id: string): CloudProviderDefinition {
   const found = CLOUD_PROVIDERS.find((provider) => provider.id === id);

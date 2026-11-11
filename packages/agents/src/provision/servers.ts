@@ -7,16 +7,16 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { otherActiveApps } from "@opscrew/connector-ssh-host";
 import type { ApprovalRecord, ApprovalRequest, IacEngine, PhaseName } from "@opscrew/contracts";
-import { listText, OpsCrewError, readTextIfExists, tfstateFile } from "@opscrew/core";
+import { listText, OpsCrewError, orText, readTextIfExists, tfstateFile } from "@opscrew/core";
+import { sharedResources } from "@opscrew/iac-templates";
 import { APP_SERVER, type DeployPlan, serverOfService } from "@opscrew/plan-schema";
-import { CLOUD_PROVIDERS } from "@opscrew/providers";
 import { z } from "zod";
 import type { CheckKey } from "../check/key";
 import type { PhaseDeps } from "../context";
 import { designMove } from "../design/moves";
 import { PROTECTED_PROVIDERS } from "../destroy/checks";
 import { deletionSession, LIFT_PROTECTION_TITLE, liftProtection } from "../destroy/deletion";
-import { providerProfile } from "../providers";
+import { providerProfile, VPS_PROVIDERS } from "../providers";
 import {
   continuesHint,
   type HostPlanOutcome,
@@ -147,21 +147,11 @@ export function removedCloudServers(
   return Object.keys(extraServerOutputs(outputs ?? {})).filter((name) => !kept.has(name));
 }
 
-/** A resource block's first line in HCL: `resource "hcloud_ssh_key" "deploy" {`. */
-const RESOURCE_BLOCK = /^resource "([^"]+)" "([^"]+)"/;
-
 /**
  * The root's own resources an extra server at another provider shares (each provider's
  * `extraShared`: its deploy key, and DigitalOcean's app tag), by address; they go with the last.
  */
-const SHARED_EXTRA: ReadonlySet<string> = new Set(
-  CLOUD_PROVIDERS.flatMap(({ terraform }) =>
-    terraform.extraShared.resources.flatMap((line) => {
-      const block = RESOURCE_BLOCK.exec(line);
-      return block === null ? [] : [`${block[1]}.${block[2]}`];
-    }),
-  ),
-);
+const SHARED_EXTRA: ReadonlySet<string> = new Set(VPS_PROVIDERS.flatMap(sharedResources));
 
 /** The extra server whose module holds the resource at `address`: `module.server_<name>.…`. */
 export function extraServerOf(address: string): string | undefined {
@@ -276,8 +266,15 @@ export async function liftRemovedProtection(
     variables.includes(`variable "${server}_delete_protection"`),
   );
   // Only a provider with delete protection declares the variable (Hetzner).
-  const [provider] = PROTECTED_PROVIDERS;
+  const [provider, ...more] = PROTECTED_PROVIDERS;
   if (protectedServers.length === 0 || provider === undefined) return undefined;
+  if (more.length > 0) {
+    throw new OpsCrewError(
+      "INTERNAL",
+      `OpsCrew cannot tell whether ${listText(protectedServers)} ${protectedServers.length === 1 ? "is" : "are"} on ${orText(PROTECTED_PROVIDERS.map((id) => providerProfile(id).displayName))}, so it lifted no delete protection. Nothing was changed.`,
+      { hint: "This is a bug in OpsCrew; please report it." },
+    );
+  }
   const names = protectedServers.map((server) => cloudServerName(input.plan, server));
   const flags = (list: readonly string[]) => list.map((name) => `--confirm ${name}`).join(" ");
   const one = protectedServers.length === 1;

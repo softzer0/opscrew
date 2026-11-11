@@ -225,7 +225,7 @@ export interface SharedLayout {
  * The resources a provider's deploy key and app tag are, in the root and in a server module: the
  * addresses of the resources its `extraShared` creates.
  */
-function sharedResources(provider: CloudProvider): string[] {
+export function sharedResources(provider: CloudProvider): string[] {
   return cloudProvider(provider).terraform.extraShared.resources.flatMap((line) => {
     const resource = /^resource "(\w+)" "(\w+)" \{$/.exec(line);
     return resource ? [`${resource[1]}.${resource[2]}`] : [];

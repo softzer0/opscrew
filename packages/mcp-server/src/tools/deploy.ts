@@ -50,10 +50,11 @@ import {
   readArtifact,
   snapshotOffsiteOf,
 } from "@opscrew/plan-schema";
+import { CLOUD_CREDENTIALS } from "@opscrew/providers";
 import { DEEP_TOOL_NAME, type DeepToolResult } from "@opscrew/secops";
 import { z } from "zod";
 import type { ResolvedMcpDeps } from "../deps";
-import { CLOUD_CREDENTIALS, CLOUD_NAMES } from "../providers";
+import { CLOUD_NAMES } from "../providers";
 import {
   type CallExtra,
   dialogHandler,

@@ -8,12 +8,10 @@ import {
   type DeployProvider,
   onOneServer,
   type Region,
-  RegionSchema,
   type Requirements,
   type ServerlessProvider,
 } from "@opscrew/plan-schema";
 import { CLOUD_PROVIDERS, cloudProvider } from "@opscrew/providers";
-import { z } from "zod";
 
 /** What the phases need to know about a VPS provider, so none of them imports its connector. */
 export interface ProviderProfile {
@@ -75,9 +73,6 @@ export interface ProviderProfile {
   mirroredAttributes: Readonly<Record<string, readonly string[]>>;
 }
 
-/** A definition's locations per region, read with OpsCrew's regions (ADR 0029). */
-const RegionLocationsSchema = z.record(RegionSchema, z.array(z.string()));
-
 /** A cloud provider's profile, read from its definition in the registry (ADR 0029). */
 function cloudProfile(id: CloudProvider): ProviderProfile {
   const definition = cloudProvider(id);
@@ -99,7 +94,8 @@ function cloudProfile(id: CloudProvider): ProviderProfile {
     backupPercent: offering.backupPercent,
     backupsOutliveServer: offering.backupsOutliveServer,
     providerBackups: offering.providerBackups,
-    regionLocations: RegionLocationsSchema.parse(regions.locations),
+    // The registry checks on load that the keys are exactly OpsCrew's regions (ADR 0029).
+    regionLocations: regions.locations as Readonly<Record<Region, readonly string[]>>,
     locationNames: regions.locationNames,
     regionNotes: regions.notes,
     unavailable: offering.unavailable,
@@ -288,7 +284,7 @@ export const VPS_PROVIDERS: readonly CloudProvider[] = CLOUD_PROVIDERS.map(({ id
 );
 
 /** The cloud provider when nothing names one (no answer, no token): the registry's first. */
-export const DEFAULT_CLOUD_PROVIDER: CloudProvider = CloudProviderSchema.parse(VPS_PROVIDERS[0]);
+export const DEFAULT_CLOUD_PROVIDER = VPS_PROVIDERS[0] as CloudProvider;
 
 const PROFILES: ReadonlyMap<VpsProviderId, ProviderProfile> = new Map([
   ...VPS_PROVIDERS.map((id) => [id, cloudProfile(id)] as const),

@@ -310,7 +310,8 @@ const TAKEN = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\n$/;
 
 describe.skipIf(!shWorks())(
   "the snapshot and the rollback's database step",
-  { timeout: 120_000 },
+  // A rollback case runs the shell scripts several times: over two minutes under a full test run.
+  { timeout: 300_000 },
   () => {
     beforeEach(() => {
       work = mkdtempSync(join(tmpdir(), "opscrew-snapshots-")).replaceAll("\\", "/");

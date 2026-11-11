@@ -5,7 +5,7 @@ import { definition as contabo } from "@opscrew/provider-contabo";
 import { definition as digitalocean } from "@opscrew/provider-digitalocean";
 import { definition as hetzner } from "@opscrew/provider-hetzner";
 import { describe, expect, it } from "vitest";
-import { CLOUD_PROVIDERS, cloudProvider } from "./index";
+import { CLOUD_CREDENTIALS, CLOUD_PROVIDERS, cloudProvider } from "./index";
 import { validateCloudProvider } from "./validate";
 
 describe("the registry", () => {
@@ -24,6 +24,12 @@ describe("the registry", () => {
     expect(cloudProvider("hetzner")).toBe(hetzner);
     expect(cloudProvider("digitalocean")).toBe(digitalocean);
     expect(cloudProvider("contabo")).toBe(contabo);
+  });
+
+  it("names each provider's credentials: every one of a set, else the first", () => {
+    expect(CLOUD_CREDENTIALS).toBe(
+      "HCLOUD_TOKEN for Hetzner Cloud, DIGITALOCEAN_TOKEN for DigitalOcean, CNTB_OAUTH2_CLIENT_ID, CNTB_OAUTH2_CLIENT_SECRET, CNTB_OAUTH2_USER and CNTB_OAUTH2_PASS for Contabo",
+    );
   });
 
   it("refuses an unknown provider, naming the known ones", () => {

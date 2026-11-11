@@ -36,6 +36,7 @@ import {
   cancelledText,
   cancelNotes,
   dataSnapshotOffer,
+  nothingSavedLine,
   shutDown,
   shutdownLines,
 } from "./cancel";
@@ -303,12 +304,7 @@ async function destroyInfrastructure(
             ]
           : []),
         ...checkPauseNote(plan),
-        // A cancelled server stays billed, so the teardown saves nothing on it before its term ends.
-        ...(cancel
-          ? [
-              `Nothing is saved on ${cancel.text} until ${cancel.servers.length === 1 ? "its term ends" : "their terms end"}.`,
-            ]
-          : []),
+        ...(cancel ? [nothingSavedLine(cancel.servers, name)] : []),
         `Plan hash: ${summary.planHash}`,
       ].join("\n"),
       planHash: summary.planHash,

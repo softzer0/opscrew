@@ -14,7 +14,6 @@ import {
   approvalDecision,
   isPlanHash,
   isUserFacingError,
-  listText,
   OpsCrewError,
   systemClock,
 } from "@opscrew/core";
@@ -26,7 +25,7 @@ import {
   type ServerlessProvider,
   ServerlessProviderSchema,
 } from "@opscrew/plan-schema";
-import { CLOUD_PROVIDERS } from "@opscrew/providers";
+import { CLOUD_CREDENTIALS, CLOUD_PROVIDERS } from "@opscrew/providers";
 import { type Command, Option } from "commander";
 import { askTypedName, formatRequest, hashListed, withAllowDowntime } from "../approval";
 import type { CliContext } from "../context";
@@ -480,12 +479,6 @@ async function runCommand(
   }
   return abortRetarget(deps, { ...common, confirm });
 }
-
-/** Each cloud provider's credential variables, every one of a set all of which are needed. */
-const CLOUD_CREDENTIALS = CLOUD_PROVIDERS.map(
-  ({ credentials, displayName }) =>
-    `${credentials.mode === "all" ? listText(credentials.envVars) : credentials.envVars[0]} for ${displayName}`,
-).join(", ");
 
 /** The help's paragraph on how a move works, wrapped by {@link wrapHelp}. */
 const HOW_A_MOVE_WORKS = [

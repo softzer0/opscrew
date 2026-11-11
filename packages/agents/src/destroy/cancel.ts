@@ -115,6 +115,11 @@ export function cancelNotes(
   });
 }
 
+/** A cancelled server stays billed, so removing it saves nothing on it before its term ends. */
+export function nothingSavedLine(servers: readonly CancelledServer[], app: string): string {
+  return `Nothing is saved on ${cancelledText(servers, app)} until ${servers.length === 1 ? "its term ends" : "their terms end"}.`;
+}
+
 /** The approval's lines for the shutdowns that come before the destroy plan's apply. */
 export function shutdownLines(servers: readonly CancelledServer[], app: string): string[] {
   return servers.map((server) => {

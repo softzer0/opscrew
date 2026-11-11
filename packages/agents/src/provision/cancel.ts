@@ -16,8 +16,8 @@ import {
   type CancelledServer,
   cancelDates,
   cancelFailedHint,
-  cancelledText,
   cancelNotes,
+  nothingSavedLine,
   shutDown,
   shutdownLines,
 } from "../destroy/cancel";
@@ -104,11 +104,7 @@ export function cancelApprovalNotes(
       gone,
     ].filter((line) => line !== undefined);
   });
-  return [
-    ...shutdownLines(servers, app),
-    ...notes,
-    `Nothing is saved on ${cancelledText(servers, app)} until ${servers.length === 1 ? "its term ends" : "their terms end"}.`,
-  ];
+  return [...shutdownLines(servers, app), ...notes, nothingSavedLine(servers, app)];
 }
 
 /** What the shutdowns and the read-back need: who runs them, and how each provider is reached. */
