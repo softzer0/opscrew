@@ -4,6 +4,7 @@ import type {
   CredentialCheck,
   CredentialRequirement,
   FetchLike,
+  ProviderRedactor,
   ServerSnapshot,
   ServerSnapshotApi,
   SnapshotRequest,
@@ -48,7 +49,7 @@ export interface DigitalOceanConnectorOptions {
   env: Record<string, string | undefined>;
   fetch?: FetchLike;
   /** Shared redactor; a private one is created when omitted. The token is always registered. */
-  redactor?: Redactor;
+  redactor?: ProviderRedactor;
   baseUrl?: string;
   version?: string;
   sleep?: (ms: number) => Promise<void>;

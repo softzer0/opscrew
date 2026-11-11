@@ -4,3 +4,4 @@ export {
   type DigitalOceanConnectorOptions,
   digitaloceanConnector,
 } from "./connector";
+export { definition } from "./definition";
