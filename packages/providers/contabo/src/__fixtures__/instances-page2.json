@@ -1,0 +1,55 @@
+{
+  "data": [
+    {
+      "tenantId": "DE",
+      "customerId": "54321",
+      "instanceId": 103,
+      "name": "vmi103",
+      "displayName": "shop-worker",
+      "region": "EU",
+      "productId": "V154",
+      "status": "stopped",
+      "cancelDate": "2026-12-10"
+    },
+    {
+      "tenantId": "DE",
+      "customerId": "54321",
+      "instanceId": 104,
+      "name": "vmi104",
+      "displayName": "shop-api",
+      "region": "EU",
+      "productId": "V153",
+      "status": "running",
+      "cancelDate": ""
+    },
+    {
+      "tenantId": "DE",
+      "customerId": "54321",
+      "instanceId": 106,
+      "name": "vmi106",
+      "displayName": "shop-web",
+      "region": "EU",
+      "productId": "V153",
+      "status": "running",
+      "cancelDate": ""
+    },
+    {
+      "tenantId": "DE",
+      "customerId": "54321",
+      "instanceId": 200,
+      "name": "vmi200",
+      "displayName": "blog",
+      "region": "US-east",
+      "productId": "V153",
+      "status": "running",
+      "cancelDate": ""
+    }
+  ],
+  "_links": {
+    "first": "/v1/compute/instances?page=1&size=100",
+    "previous": "/v1/compute/instances?page=1&size=100",
+    "last": "/v1/compute/instances?page=2&size=100",
+    "self": "/v1/compute/instances?page=2&size=100"
+  },
+  "_pagination": { "size": 100, "totalElements": 7, "totalPages": 2, "page": 2 }
+}

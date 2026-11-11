@@ -1,0 +1,42 @@
+{
+  "data": [
+    {
+      "tenantId": "DE",
+      "customerId": "54321",
+      "snapshotId": "snap1762851600",
+      "name": "opscrew-shop-20261111T090000Z",
+      "description": "OpsCrew snapshot of shop (production), 20261111T090000Z",
+      "instanceId": 101,
+      "createdDate": "2026-11-11T09:00:00.000Z",
+      "autoDeleteDate": "2026-12-11T09:00:00.000Z",
+      "imageId": "9b7f0c5e-6a2d-4c1b-8f3e-2d4a6b8c0e1f",
+      "imageName": "ubuntu-24.04"
+    },
+    {
+      "tenantId": "DE",
+      "customerId": "54321",
+      "snapshotId": "snap1762754400",
+      "name": "opscrew-shop-20261110T060000Z",
+      "description": "OpsCrew snapshot of shop (production), 20261110T060000Z",
+      "instanceId": 101,
+      "createdDate": "2026-11-10T06:00:00.000Z",
+      "autoDeleteDate": "2026-12-10T06:00:00.000Z",
+      "imageId": "9b7f0c5e-6a2d-4c1b-8f3e-2d4a6b8c0e1f",
+      "imageName": "ubuntu-24.04"
+    },
+    {
+      "tenantId": "DE",
+      "customerId": "54321",
+      "snapshotId": "snap1762000000",
+      "name": "before-upgrade",
+      "description": "taken by hand",
+      "instanceId": 101,
+      "createdDate": "2026-11-01T12:26:40.000Z",
+      "autoDeleteDate": "2026-12-01T12:26:40.000Z",
+      "imageId": "9b7f0c5e-6a2d-4c1b-8f3e-2d4a6b8c0e1f",
+      "imageName": "ubuntu-24.04"
+    }
+  ],
+  "_links": { "first": "/v1/compute/instances/101/snapshots?page=1", "last": "/v1/compute/instances/101/snapshots?page=1", "self": "/v1/compute/instances/101/snapshots?page=1" },
+  "_pagination": { "size": 100, "totalElements": 3, "totalPages": 1, "page": 1 }
+}

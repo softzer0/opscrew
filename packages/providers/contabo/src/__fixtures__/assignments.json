@@ -1,0 +1,9 @@
+{
+  "data": [
+    { "tenantId": "DE", "customerId": "54321", "tagId": 7, "tagName": "opscrew-app:shop", "resourceType": "instance", "resourceId": "101", "resourceName": "vmi101" },
+    { "tenantId": "DE", "customerId": "54321", "tagId": 7, "tagName": "opscrew-app:shop", "resourceType": "instance", "resourceId": "103", "resourceName": "vmi103" },
+    { "tenantId": "DE", "customerId": "54321", "tagId": 7, "tagName": "opscrew-app:shop", "resourceType": "image", "resourceId": "200", "resourceName": "an image" }
+  ],
+  "_links": { "first": "/v1/tags/7/assignments?page=1", "last": "/v1/tags/7/assignments?page=1", "self": "/v1/tags/7/assignments?page=1" },
+  "_pagination": { "size": 100, "totalElements": 3, "totalPages": 1, "page": 1 }
+}

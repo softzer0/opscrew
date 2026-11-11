@@ -1,0 +1,7 @@
+{
+  "data": [
+    { "tenantId": "DE", "customerId": "54321", "tagId": 8, "tagName": "opscrew-app:shop-api", "resourceType": "instance", "resourceId": "104", "resourceName": "vmi104" }
+  ],
+  "_links": { "first": "/v1/tags/8/assignments?page=1", "last": "/v1/tags/8/assignments?page=1", "self": "/v1/tags/8/assignments?page=1" },
+  "_pagination": { "size": 100, "totalElements": 1, "totalPages": 1, "page": 1 }
+}

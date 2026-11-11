@@ -1,0 +1,8 @@
+{
+  "data": [
+    { "tenantId": "DE", "customerId": "54321", "tagId": 7, "name": "opscrew-app:shop", "color": "#0A78C3" },
+    { "tenantId": "DE", "customerId": "54321", "tagId": 8, "name": "opscrew-app:shop-api", "color": "#0A78C3" }
+  ],
+  "_links": { "first": "/v1/tags?page=1", "last": "/v1/tags?page=1", "self": "/v1/tags?page=1" },
+  "_pagination": { "size": 100, "totalElements": 2, "totalPages": 1, "page": 1 }
+}

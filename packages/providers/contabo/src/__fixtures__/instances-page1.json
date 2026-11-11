@@ -1,0 +1,45 @@
+{
+  "data": [
+    {
+      "tenantId": "DE",
+      "customerId": "54321",
+      "instanceId": 101,
+      "name": "vmi101",
+      "displayName": "shop",
+      "region": "EU",
+      "productId": "V153",
+      "status": "running",
+      "cancelDate": "",
+      "future_field": { "kept": true }
+    },
+    {
+      "tenantId": "DE",
+      "customerId": "54321",
+      "instanceId": 102,
+      "name": "vmi102",
+      "displayName": "shop",
+      "region": "EU",
+      "productId": "V153",
+      "status": "provisioning",
+      "cancelDate": null
+    },
+    {
+      "tenantId": "DE",
+      "customerId": "54321",
+      "instanceId": 105,
+      "name": "vmi105",
+      "displayName": "shopping",
+      "region": "EU",
+      "productId": "V153",
+      "status": "running",
+      "cancelDate": ""
+    }
+  ],
+  "_links": {
+    "first": "/v1/compute/instances?page=1&size=100",
+    "next": "/v1/compute/instances?page=2&size=100",
+    "last": "/v1/compute/instances?page=2&size=100",
+    "self": "/v1/compute/instances?page=1&size=100"
+  },
+  "_pagination": { "size": 100, "totalElements": 7, "totalPages": 2, "page": 1 }
+}
