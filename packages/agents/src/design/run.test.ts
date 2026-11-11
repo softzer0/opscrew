@@ -1,7 +1,6 @@
 import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { STATIC_PRICES_AS_OF as HETZNER_PRICES_AS_OF } from "@opscrew/connector-hetzner";
 import type { FetchLike } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { fakeSecret, materializeFixture } from "@opscrew/core/testing";
@@ -16,6 +15,7 @@ import {
   serviceOf,
   writeArtifact,
 } from "@opscrew/plan-schema";
+import { STATIC_PRICES_AS_OF as HETZNER_PRICES_AS_OF } from "@opscrew/provider-hetzner";
 import { describe, expect, it } from "vitest";
 import { runInterview } from "../interview";
 import { promoteWorld } from "../promote/__fixtures__/world";

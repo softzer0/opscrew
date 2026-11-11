@@ -5,6 +5,8 @@ export type ProviderId =
   | "cloudflare"
   | "github"
   | "digitalocean"
+  /** Contabo (026): a cloud server provider whose servers are cancelled at the end of their term. */
+  | "contabo"
   /** A server the user already owns, reached over SSH (no provider API). */
   | "own"
   /**
@@ -60,6 +62,10 @@ export interface ComputeOffer {
   /** `live` when read from the provider API now; `static` when from a dated fallback table. */
   source: "live" | "static";
   asOf: IsoDateTime;
+  /** A one-time fee charged when the server is created (Contabo's smallest plan on a monthly term). */
+  setupFee?: Money;
+  /** Whole-server snapshots included in the price, where the provider includes them (Contabo). */
+  includedSnapshots?: number;
 }
 
 /** Location-dependent extra costs used by cost estimates. */
@@ -71,6 +77,8 @@ export interface ProviderExtras {
   snapshotPerGbMonth?: Money;
   /** When the snapshot rate was read, where that differs from `asOf` (a dated published rate). */
   snapshotRateAsOf?: IsoDateTime;
+  /** True when snapshots are included in the server's price up to its offer's `includedSnapshots`. */
+  snapshotsIncluded?: boolean;
   pricesIncludeVat: boolean;
   source: "live" | "static";
   asOf: IsoDateTime;
@@ -98,6 +106,11 @@ export interface AppServer {
   name: string;
   /** Provider status, for example `running` (Hetzner) or `active` (DigitalOcean). */
   status: string;
+  /**
+   * When a cancelled server's contract ends (ISO 8601), at a provider that cancels at the end of
+   * the term instead of deleting (Contabo). Absent while the server is not cancelled.
+   */
+  cancelledUntil?: string;
 }
 
 export interface SnapshotRequest {
@@ -150,7 +163,6 @@ export interface ServerSnapshotApi {
 
 /** A VPS provider connector: credentials, price catalogue and server API. */
 export interface VpsConnector extends Connector {
-  readonly id: VpsProviderId;
   /** True when a token is set (it may still be invalid). */
   readonly configured: boolean;
   catalog(): ComputeCatalog;

@@ -1,5 +1,5 @@
-import { STATIC_PRICES_AS_OF } from "@opscrew/connector-hetzner";
 import type { DeployPlan } from "@opscrew/plan-schema";
+import { STATIC_PRICES_AS_OF } from "@opscrew/provider-hetzner";
 import { describe, expect, it } from "vitest";
 import { makeRequirements, offer, ownPlan, portainerPlan, testPlan } from "../../testing";
 import { sitePlan } from "../../testing/serverless";

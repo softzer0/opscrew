@@ -16,6 +16,7 @@
     "@opscrew/contracts": "workspace:*",
     "@opscrew/core": "workspace:*",
     "@opscrew/plan-schema": "workspace:*",
+    "@opscrew/providers": "workspace:*",
     "ignore": "^7.0.12",
     "smol-toml": "^1.9.1",
     "yaml": "^2.9.1"

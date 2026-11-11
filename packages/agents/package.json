@@ -15,11 +15,9 @@
   },
   "dependencies": {
     "@opscrew/connector-cloudflare": "workspace:*",
-    "@opscrew/connector-digitalocean": "workspace:*",
     "@opscrew/connector-docker": "workspace:*",
     "@opscrew/connector-github": "workspace:*",
     "@opscrew/connector-godaddy": "workspace:*",
-    "@opscrew/connector-hetzner": "workspace:*",
     "@opscrew/connector-namecheap": "workspace:*",
     "@opscrew/connector-porkbun": "workspace:*",
     "@opscrew/connector-portainer": "workspace:*",
@@ -30,6 +28,9 @@
     "@opscrew/iac-engine": "workspace:*",
     "@opscrew/iac-templates": "workspace:*",
     "@opscrew/plan-schema": "workspace:*",
+    "@opscrew/provider-digitalocean": "workspace:*",
+    "@opscrew/provider-hetzner": "workspace:*",
+    "@opscrew/providers": "workspace:*",
     "@opscrew/secops": "workspace:*",
     "yaml": "^2.9.1",
     "zod": "^4.6.5"

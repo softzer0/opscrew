@@ -1,0 +1,24 @@
+{
+  "name": "@opscrew/providers",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The built-in cloud server providers: their definitions, validated, and the one place OpsCrew reads provider facts from (ADR 0029).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@opscrew/contracts": "workspace:*",
+    "@opscrew/core": "workspace:*",
+    "@opscrew/plan-schema": "workspace:*",
+    "@opscrew/provider-digitalocean": "workspace:*",
+    "@opscrew/provider-hetzner": "workspace:*",
+    "zod": "^4.6.5"
+  }
+}

@@ -14,10 +14,10 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { AdviceReport, Proposal } from "@opscrew/agents";
 import { GitHubClient } from "@opscrew/connector-github";
-import { hetznerConnector } from "@opscrew/connector-hetzner";
 import type { ComputeOffer, ProviderExtras } from "@opscrew/contracts";
 import { IMAGES } from "@opscrew/iac-templates";
 import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
+import { hetznerConnector } from "@opscrew/provider-hetzner";
 import { describe, expect } from "vitest";
 import {
   ADVISE_GATE,

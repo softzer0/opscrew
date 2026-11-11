@@ -1,7 +1,7 @@
-import { digitaloceanConnector } from "@opscrew/connector-digitalocean";
-import { hetznerConnector } from "@opscrew/connector-hetzner";
 import type { VpsConnector, VpsProviderId } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
+import { digitaloceanConnector } from "@opscrew/provider-digitalocean";
+import { hetznerConnector } from "@opscrew/provider-hetzner";
 import type { PhaseDeps } from "../context";
 import { type OwnServerFacts, type OwnServerLogin, ownServerConnector } from "./own";
 

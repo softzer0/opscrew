@@ -1,0 +1,20 @@
+{
+  "name": "@opscrew/provider-digitalocean",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DigitalOcean: the cloud server provider definition, its connector (credentials, live catalogue and pricing, Droplets and snapshots) and its server module.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@opscrew/contracts": "workspace:*",
+    "@opscrew/core": "workspace:*",
+    "zod": "^4.6.5"
+  }
+}

@@ -156,7 +156,7 @@ describe.skipIf(!token)(
       if (differences.length > 0) {
         expect.fail(
           [
-            `${differences.length} difference(s) between packages/connectors/digitalocean/src/static-prices.ts (as of ${STATIC_PRICES_AS_OF.slice(0, 10)}) and the live DigitalOcean API:`,
+            `${differences.length} difference(s) between packages/providers/digitalocean/src/static-prices.ts (as of ${STATIC_PRICES_AS_OF.slice(0, 10)}) and the live DigitalOcean API:`,
             ...differences.map((d) => `- ${d}`),
             "Update the table and STATIC_PRICES_AS_OF from the live values.",
           ].join("\n"),

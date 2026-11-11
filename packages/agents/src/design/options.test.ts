@@ -1,6 +1,6 @@
-import { STATIC_PRICES_AS_OF, StaticHetznerCatalog } from "@opscrew/connector-hetzner";
 import type { ProviderExtras } from "@opscrew/contracts";
 import { CostEstimateSchema, DesignOptionListSchema, serviceOf } from "@opscrew/plan-schema";
+import { STATIC_PRICES_AS_OF, StaticHetznerCatalog } from "@opscrew/provider-hetzner";
 import { describe, expect, it } from "vitest";
 import {
   AS_OF,

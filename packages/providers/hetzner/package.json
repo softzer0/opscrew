@@ -1,8 +1,8 @@
 {
-  "name": "@opscrew/connector-hetzner",
+  "name": "@opscrew/provider-hetzner",
   "version": "0.1.0",
   "private": true,
-  "description": "Hetzner Cloud adapter: credentials, live catalogue and pricing.",
+  "description": "Hetzner Cloud: the cloud server provider definition, its connector (credentials, live catalogue and pricing, servers and snapshots) and its server module.",
   "license": "Apache-2.0",
   "type": "module",
   "exports": {

@@ -14,7 +14,8 @@
     "test": "turbo run test",
     "lint": "biome check .",
     "format": "biome check --write .",
-    "check": "pnpm lint && pnpm typecheck && pnpm test"
+    "check": "pnpm lint && pnpm typecheck && pnpm test",
+    "gen:provider-modules": "tsx scripts/gen-provider-modules.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.15",

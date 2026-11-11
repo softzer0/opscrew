@@ -1,6 +1,6 @@
-import { HETZNER_TOKEN_HINT } from "@opscrew/connector-hetzner";
 import type { VpsProviderId } from "@opscrew/contracts";
 import { isServerlessProvider } from "@opscrew/plan-schema";
+import { HETZNER_TOKEN_HINT } from "@opscrew/provider-hetzner";
 import { providerProfile } from "../providers";
 import type { DeletionProvider } from "./types";
 

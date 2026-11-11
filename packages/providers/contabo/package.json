@@ -1,8 +1,8 @@
 {
-  "name": "@opscrew/connector-digitalocean",
+  "name": "@opscrew/provider-contabo",
   "version": "0.1.0",
   "private": true,
-  "description": "DigitalOcean adapter: credentials, live catalogue and pricing, server lookup and snapshots.",
+  "description": "Contabo: the cloud server provider definition, its connector (OAuth2 client, dated static catalogue, servers and snapshots) and its server module.",
   "license": "Apache-2.0",
   "type": "module",
   "exports": {

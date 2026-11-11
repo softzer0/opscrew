@@ -35,9 +35,6 @@ importers:
       '@opscrew/connector-cloudflare':
         specifier: workspace:*
         version: link:../connectors/cloudflare
-      '@opscrew/connector-digitalocean':
-        specifier: workspace:*
-        version: link:../connectors/digitalocean
       '@opscrew/connector-docker':
         specifier: workspace:*
         version: link:../connectors/docker
@@ -47,9 +44,6 @@ importers:
       '@opscrew/connector-godaddy':
         specifier: workspace:*
         version: link:../connectors/godaddy
-      '@opscrew/connector-hetzner':
-        specifier: workspace:*
-        version: link:../connectors/hetzner
       '@opscrew/connector-namecheap':
         specifier: workspace:*
         version: link:../connectors/namecheap
@@ -80,6 +74,15 @@ importers:
       '@opscrew/plan-schema':
         specifier: workspace:*
         version: link:../plan-schema
+      '@opscrew/provider-digitalocean':
+        specifier: workspace:*
+        version: link:../providers/digitalocean
+      '@opscrew/provider-hetzner':
+        specifier: workspace:*
+        version: link:../providers/hetzner
+      '@opscrew/providers':
+        specifier: workspace:*
+        version: link:../providers/registry
       '@opscrew/secops':
         specifier: workspace:*
         version: link:../secops
@@ -135,9 +138,6 @@ importers:
       '@opscrew/connector-cloudflare':
         specifier: workspace:*
         version: link:../connectors/cloudflare
-      '@opscrew/connector-digitalocean':
-        specifier: workspace:*
-        version: link:../connectors/digitalocean
       '@opscrew/connector-docker':
         specifier: workspace:*
         version: link:../connectors/docker
@@ -147,9 +147,6 @@ importers:
       '@opscrew/connector-godaddy':
         specifier: workspace:*
         version: link:../connectors/godaddy
-      '@opscrew/connector-hetzner':
-        specifier: workspace:*
-        version: link:../connectors/hetzner
       '@opscrew/connector-namecheap':
         specifier: workspace:*
         version: link:../connectors/namecheap
@@ -183,6 +180,15 @@ importers:
       '@opscrew/plan-schema':
         specifier: workspace:*
         version: link:../plan-schema
+      '@opscrew/provider-digitalocean':
+        specifier: workspace:*
+        version: link:../providers/digitalocean
+      '@opscrew/provider-hetzner':
+        specifier: workspace:*
+        version: link:../providers/hetzner
+      '@opscrew/providers':
+        specifier: workspace:*
+        version: link:../providers/registry
       '@opscrew/runtime-claude':
         specifier: workspace:*
         version: link:../runtime-claude
@@ -194,18 +200,6 @@ importers:
         version: 8.5.1(postcss@8.5.29)(tsx@4.23.15)(typescript@7.0.2)(yaml@2.9.1)
 
   packages/connectors/cloudflare:
-    dependencies:
-      '@opscrew/contracts':
-        specifier: workspace:*
-        version: link:../../contracts
-      '@opscrew/core':
-        specifier: workspace:*
-        version: link:../../core
-      zod:
-        specifier: ^4.6.5
-        version: 4.6.5
-
-  packages/connectors/digitalocean:
     dependencies:
       '@opscrew/contracts':
         specifier: workspace:*
@@ -249,18 +243,6 @@ importers:
         version: 0.8.2
 
   packages/connectors/godaddy:
-    dependencies:
-      '@opscrew/contracts':
-        specifier: workspace:*
-        version: link:../../contracts
-      '@opscrew/core':
-        specifier: workspace:*
-        version: link:../../core
-      zod:
-        specifier: ^4.6.5
-        version: 4.6.5
-
-  packages/connectors/hetzner:
     dependencies:
       '@opscrew/contracts':
         specifier: workspace:*
@@ -349,6 +331,9 @@ importers:
       '@opscrew/plan-schema':
         specifier: workspace:*
         version: link:../plan-schema
+      '@opscrew/providers':
+        specifier: workspace:*
+        version: link:../providers/registry
       ignore:
         specifier: ^7.0.12
         version: 7.0.12
@@ -382,6 +367,9 @@ importers:
       '@opscrew/plan-schema':
         specifier: workspace:*
         version: link:../plan-schema
+      '@opscrew/providers':
+        specifier: workspace:*
+        version: link:../providers/registry
       yaml:
         specifier: ^2.9.1
         version: 2.9.1
@@ -413,6 +401,9 @@ importers:
       '@opscrew/plan-schema':
         specifier: workspace:*
         version: link:../plan-schema
+      '@opscrew/providers':
+        specifier: workspace:*
+        version: link:../providers/registry
       '@opscrew/secops':
         specifier: workspace:*
         version: link:../secops
@@ -431,6 +422,63 @@ importers:
       yaml:
         specifier: ^2.9.1
         version: 2.9.1
+      zod:
+        specifier: ^4.6.5
+        version: 4.6.5
+
+  packages/providers/contabo:
+    dependencies:
+      '@opscrew/contracts':
+        specifier: workspace:*
+        version: link:../../contracts
+      '@opscrew/core':
+        specifier: workspace:*
+        version: link:../../core
+      zod:
+        specifier: ^4.6.5
+        version: 4.6.5
+
+  packages/providers/digitalocean:
+    dependencies:
+      '@opscrew/contracts':
+        specifier: workspace:*
+        version: link:../../contracts
+      '@opscrew/core':
+        specifier: workspace:*
+        version: link:../../core
+      zod:
+        specifier: ^4.6.5
+        version: 4.6.5
+
+  packages/providers/hetzner:
+    dependencies:
+      '@opscrew/contracts':
+        specifier: workspace:*
+        version: link:../../contracts
+      '@opscrew/core':
+        specifier: workspace:*
+        version: link:../../core
+      zod:
+        specifier: ^4.6.5
+        version: 4.6.5
+
+  packages/providers/registry:
+    dependencies:
+      '@opscrew/contracts':
+        specifier: workspace:*
+        version: link:../../contracts
+      '@opscrew/core':
+        specifier: workspace:*
+        version: link:../../core
+      '@opscrew/plan-schema':
+        specifier: workspace:*
+        version: link:../../plan-schema
+      '@opscrew/provider-digitalocean':
+        specifier: workspace:*
+        version: link:../digitalocean
+      '@opscrew/provider-hetzner':
+        specifier: workspace:*
+        version: link:../hetzner
       zod:
         specifier: ^4.6.5
         version: 4.6.5
@@ -470,6 +518,9 @@ importers:
       '@opscrew/plan-schema':
         specifier: workspace:*
         version: link:../plan-schema
+      '@opscrew/providers':
+        specifier: workspace:*
+        version: link:../providers/registry
       ignore:
         specifier: ^7.0.12
         version: 7.0.12

@@ -20,6 +20,7 @@
     "@opscrew/detect": "workspace:*",
     "@opscrew/iac-engine": "workspace:*",
     "@opscrew/plan-schema": "workspace:*",
+    "@opscrew/providers": "workspace:*",
     "@opscrew/secops": "workspace:*",
     "zod": "^4.6.5"
   }

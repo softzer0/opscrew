@@ -3255,8 +3255,8 @@ What these passes don't cover:
 ## Price tables
 
 Before each release, check that the dated price tables OpsCrew falls back to without a token still
-match the providers. `packages/connectors/hetzner/src/static-prices.live.test.ts` and
-`packages/connectors/digitalocean/src/static-prices.live.test.ts` read the live catalogue with the
+match the providers. `packages/providers/hetzner/src/static-prices.live.test.ts` and
+`packages/providers/digitalocean/src/static-prices.live.test.ts` read the live catalogue with the
 same tokens (read-only calls, nothing is created or billed) and fail with a list of every
 difference: prices to the cent, server types or sizes and locations or regions missing on either
 side, and Hetzner's IPv4 price and backup percentage. Without the token each live check is
@@ -3265,8 +3265,8 @@ DigitalOcean API has no backup or traffic prices, so check `BACKUP_PERCENT` and
 `TRAFFIC_PER_TB_USD` by hand against https://www.digitalocean.com/pricing/droplets.
 
 ```bash
-OPSCREW_E2E_HCLOUD_TOKEN=… pnpm --filter @opscrew/connector-hetzner exec vitest run src/static-prices.live.test.ts
-OPSCREW_E2E_DIGITALOCEAN_TOKEN=… pnpm --filter @opscrew/connector-digitalocean exec vitest run src/static-prices.live.test.ts
+OPSCREW_E2E_HCLOUD_TOKEN=… pnpm --filter @opscrew/provider-hetzner exec vitest run src/static-prices.live.test.ts
+OPSCREW_E2E_DIGITALOCEAN_TOKEN=… pnpm --filter @opscrew/provider-digitalocean exec vitest run src/static-prices.live.test.ts
 ```
 
 ## Cost and cleanup

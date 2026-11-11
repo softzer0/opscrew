@@ -1,6 +1,6 @@
-import { STATIC_PRICES_AS_OF } from "@opscrew/connector-hetzner";
 import type { Money } from "@opscrew/contracts";
 import type { DeployPlan } from "@opscrew/plan-schema";
+import { STATIC_PRICES_AS_OF } from "@opscrew/provider-hetzner";
 import { describe, expect, it } from "vitest";
 import { EXCHANGE_RATE_NOTE } from "../../design/cost";
 import { makeRequirements, offer, ownPlan, portainerPlan, testPlan } from "../../testing";

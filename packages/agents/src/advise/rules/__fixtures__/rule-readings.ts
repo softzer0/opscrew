@@ -4,8 +4,8 @@
  * as live), plans with another type, a worker or an extra server, and the proposals checked
  * against the schema `--json` and MCP use.
  */
-import { StaticDigitalOceanCatalog } from "@opscrew/connector-digitalocean";
-import { StaticHetznerCatalog } from "@opscrew/connector-hetzner";
+import { StaticDigitalOceanCatalog } from "@opscrew/provider-digitalocean";
+import { StaticHetznerCatalog } from "@opscrew/provider-hetzner";
 import type {
   CheckResult,
   ComputeCatalog,
