@@ -129,12 +129,14 @@ describe("advise's move to a provider with terms", () => {
     });
     const move = costed(readings).find((p) => p.id === "cost.app.other-provider");
     expect(move?.apply).toEqual({ kind: "command", command: "opscrew retarget --to digitalocean" });
-    // $2 without backups, which the provider doesn't offer, in euros.
-    expect(move?.price?.after).toBe(1.82);
+    // $2 in euros, against the cx23 without its backups, which the provider doesn't offer.
+    expect(move?.price).toMatchObject({ before: 5.99, after: 1.82 });
     const why = texts(move);
+    // $5 is €4.55, against €4.17 saved a month.
     expect(why).toContain(
-      "Plus a one-time setup fee of $5.00 (excl. tax) when the server is created, not part of the monthly price",
+      "Plus a one-time setup fee of $5.00 (excl. tax) when the server is created, not part of the monthly price []",
     );
+    expect(why).toContain("The saving covers the setup fee in 2 months");
     expect(why).toContain(
       "The contract runs at least 1 month; a removal ends it at the end of the term",
     );

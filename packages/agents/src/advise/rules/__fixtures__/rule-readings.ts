@@ -12,9 +12,11 @@ import type {
   ComputeOffer,
   ProviderExtras,
 } from "@opscrew/contracts";
+import { Redactor } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { expect } from "vitest";
 import type { ContainerReading, ResourceReading } from "../../../status";
+import { vpsConnector } from "../../../providers";
 import { offer } from "../../../testing";
 import {
   type PriceList,
@@ -149,6 +151,13 @@ export function hetznerTable(location = "nbg1", source: "static" | "live" = "sta
 /** DigitalOcean's prices in `location` from its dated static table. */
 export function digitaloceanTable(location = "fra1") {
   return pricesOf(new StaticDigitalOceanCatalog(), location, "static");
+}
+
+/** Contabo's prices in `location` from its dated static table (it has no price API). */
+export function contaboTable(location = "EU") {
+  const offline = () => Promise.reject(new Error("The tests read no network."));
+  const deps = { env: {}, fetch: offline, redactor: new Redactor(), version: "0.0.0-test" };
+  return pricesOf(vpsConnector("contabo", deps).catalog(), location, "static");
 }
 
 /** The server's address, which no proposal may show. */

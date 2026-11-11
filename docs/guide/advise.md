@@ -24,7 +24,8 @@ through `opscrew provision` and your approval (see [Applying a proposal](#applyi
 - **Your plan and the interview's answers:** what runs where, the budget you gave, the region, and
   how much the app's data matters.
 - **The providers' prices,** live from [Hetzner](https://www.hetzner.com/)'s and [DigitalOcean](https://www.digitalocean.com/)'s price lists when their tokens
-  can read them, otherwise OpsCrew's dated list, and it says so with the date.
+  can read them, otherwise OpsCrew's dated list, and it says so with the date. [Contabo](https://contabo.com/)
+  has no price API, so its prices always come from OpsCrew's dated list.
 - **[GitHub](https://github.com/):** the repository's [Dependabot](https://docs.github.com/en/code-security/dependabot) alerts and Dependabot's open pull requests, the
   [scheduled check](alerts.md)'s issues of the last 14 days when the check is on, and when your
   GitHub token expires.
@@ -81,9 +82,24 @@ a proposal: what it needs, without a price, and what to do yourself.
 |---|---|
 | **Over budget** | The servers OpsCrew created cost more a month than the budget you gave in the interview. It names the other proposals that each bring them under it, or suggests `opscrew design` when none does |
 | **A cheaper type** | Where the server runs, a type with at least its CPUs, memory and disk costs less |
-| **Another provider** | The same server costs less at the other provider (Hetzner Cloud or DigitalOcean) in your region. It names [`opscrew retarget`](retarget.md), which moves an app on one server with a short maintenance window |
+| **Another provider** | A server with at least the vCPUs, memory and disk of yours costs less at another provider in your region. It names [`opscrew retarget`](retarget.md), which moves an app on one server with a short maintenance window. It is proposed only when the saving holds whatever VAT you pay, is at least 10% of the current server's monthly price, and pays any setup fee back within 3 months |
 
-Prices are monthly, before VAT, with the server's IPv4 address and backups when they are on.
+Prices are monthly, with the server's IPv4 address and backups when they are on. Each price says
+whether it includes VAT (Contabo's prices do, Hetzner's and DigitalOcean's don't) and gives its
+date: live, or the date of OpsCrew's price list. OpsCrew doesn't know your VAT rate, so a saving
+counts, here and toward the budget, only when it holds whatever VAT you pay: moving off a price
+that includes VAT, the new price is compared with 27% VAT on top, the highest standard rate in the
+EU.
+
+A move to another provider compares both servers with the same data protection: where the new
+provider offers no automated backups, the current server is priced without them too, and OpsCrew's
+[data snapshots](snapshots.md) take their place. Its text also names the new provider's terms where
+it has them: a one-time setup fee, a minimum term with a removal that ends only at the end of it,
+no change of size in place, and no automated backups from the provider.
+
+Moving off a provider with terms, the old server is billed to the end of its term, so the saving
+starts after it, and `opscrew retarget --finish` cancels the old server rather than deleting it.
+The new server's automated backups are priced in when the interview says your data matters.
 
 ### Reliability
 
@@ -178,7 +194,8 @@ Advise uses the tokens you already gave OpsCrew, and only reads with them:
   advice still comes. Add it to the token to have the alerts read (see
   [The GitHub token](security.md#the-github-token)). The scheduled check's issues need "Issues: Read",
   which the check already asks for.
-- **The provider's token** reads the live prices; without one, the dated list is used.
+- **The provider's token** reads the live prices; without one, the dated list is used. Contabo has
+  no price API, so its dated list is always used.
 - **The Cloudflare token** is only checked for its expiry date.
 
 ## From Claude Code

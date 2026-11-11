@@ -291,7 +291,7 @@ describe("applyProposal: refusals", () => {
     const error = await refused(s, "size.app.huge");
     expect(error.code).toBe("INVALID_INPUT");
     expect(error.message).toBe(
-      '"size.app.huge" is not among advise\'s proposals on a fresh reading (the figures may have changed since the list was shown). The current ones are size.app.larger, security.app.reboot, security.env.dependabot-off, cost.app.other-provider, reliability.app.backups, reliability.env.check. Nothing was changed.',
+      '"size.app.huge" is not among advise\'s proposals on a fresh reading (the figures may have changed since the list was shown). The current ones are size.app.larger, security.app.reboot, security.env.dependabot-off, reliability.app.backups, reliability.env.check. Nothing was changed.',
     );
     expect(error.hint).toBe(
       "Run `opscrew advise` to see them, then `opscrew advise --apply <id>` with one of their ids.",

@@ -101,6 +101,23 @@ describe("renderAdviceReport", () => {
     );
   });
 
+  it("labels each side's VAT when one side's price includes it", () => {
+    const move: Proposal = {
+      ...MONITORING,
+      price: {
+        before: 5.99,
+        after: 5.5,
+        currency: "EUR",
+        source: "static",
+        asOf: "2026-10-14T00:00:00.000Z",
+        includesVat: { before: false, after: true },
+      },
+    };
+    expect(renderAdviceReport(report({ proposals: [move] }), "")).toContain(
+      "    Price: €5.99 (excl. VAT) → €5.50 (incl. VAT) a month (static prices dated 2026-10-14)",
+    );
+  });
+
   it("leaves out an urgency without proposals and lists what couldn't be read", () => {
     const text = renderAdviceReport(
       report({

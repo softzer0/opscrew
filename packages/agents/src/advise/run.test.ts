@@ -149,7 +149,6 @@ describe("runAdvise: one server", () => {
       "security.env.dependabot-alerts",
       "security.app.updates",
       // when convenient
-      "cost.app.other-provider",
       "reliability.app.backups",
       "reliability.env.check",
     ]);
@@ -246,7 +245,7 @@ describe("runAdvise: one server", () => {
     expect(byId(report, "upkeep.env.cloudflare-token")?.urgency).toBe("soon");
   });
 
-  it("proposes nothing for a healthy app but a cheaper provider, with what it checked", async () => {
+  it("says when there is nothing to propose, with what it checked", async () => {
     const plan = DeployPlanSchema.parse({
       ...testPlan({ deployed: true }),
       observability: { check: { enabled: true } },
@@ -257,8 +256,8 @@ describe("runAdvise: one server", () => {
       github: new FakeAdviseGitHub(),
     });
     const report = await runAdvise(s.deps, plan, s.options);
-    // Contabo's dated price list is below Hetzner's for a server at least as large.
-    expect(report.proposals.map((proposal) => proposal.id)).toEqual(["cost.app.other-provider"]);
+    // Contabo's V153 saves €0.49 on the cx23, less than 10% of its price.
+    expect(report.proposals).toEqual([]);
     expect(report.checked.length).toBeGreaterThan(5);
   });
 

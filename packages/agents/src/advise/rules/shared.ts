@@ -146,14 +146,21 @@ export function priceSource(
   return { source: "static", ...(dates.length === 0 ? {} : { asOf: dates.sort()[0] }) };
 }
 
-/** `before` and `after` a change, in `before`'s currency (`after` converted at the fixed rate). */
+/**
+ * `before` and `after` a change, in `before`'s currency (`after` converted at the fixed rate), with
+ * which side includes VAT when one does.
+ */
 export function priceChange(before: CostEstimate, after: CostEstimate): ProposalPrice {
   const currency = before.monthly.currency;
+  const vat = before.pricesIncludeVat || after.pricesIncludeVat;
   return {
     before: before.monthly.amount,
     after: convertMoney(after.monthly, currency).amount,
     currency,
     ...priceSource([before, after]),
+    ...(vat
+      ? { includesVat: { before: before.pricesIncludeVat, after: after.pricesIncludeVat } }
+      : {}),
   };
 }
 

@@ -2,7 +2,7 @@
  * Advise's report and an applied proposal in words (feature 021, US1, US2, US4), as `opscrew
  * advise` prints them and the `opscrew_advise` MCP tool returns them.
  */
-import { formatMoney, listText, plural } from "@opscrew/core";
+import { formatMoney, listText, plural, taxLabel } from "@opscrew/core";
 import type { AppliedProposal } from "./apply";
 import {
   type AdviceReport,
@@ -34,14 +34,21 @@ function reasonLine(reason: Reason): string {
   return `    - ${reason.text} (${notes.join(", ")})`;
 }
 
-/** `€3.49 → €5.49 a month (live prices)`, or the static prices with their date. */
+/**
+ * `€3.49 → €5.49 a month (live prices)`, or the static prices with their date; each side with its
+ * VAT label when one includes VAT (`€5.99 (excl. VAT) → €5.50 (incl. VAT) a month …`).
+ */
 export function priceWords(price: ProposalPrice): string {
-  const money = (amount: number) => formatMoney({ amount, currency: price.currency });
+  const { includesVat: vat } = price;
+  const money = (amount: number, includesVat: boolean | undefined) => {
+    const text = formatMoney({ amount, currency: price.currency });
+    return includesVat === undefined ? text : `${text} (${taxLabel(price.currency, includesVat)})`;
+  };
   const source =
     price.source === "live"
       ? "live prices"
       : `static prices${price.asOf === undefined ? "" : ` dated ${price.asOf.slice(0, 10)}`}`;
-  return `${money(price.before)} → ${money(price.after)} a month (${source})`;
+  return `${money(price.before, vat?.before)} → ${money(price.after, vat?.after)} a month (${source})`;
 }
 
 /** How to apply `proposal`: `advise --apply` with `flags`, its command, or what to do by hand. */

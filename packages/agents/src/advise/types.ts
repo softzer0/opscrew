@@ -48,6 +48,11 @@ const PriceSchema = z.object({
   currency: z.enum(["EUR", "USD"]),
   source: z.enum(["live", "static"]),
   asOf: z.string().min(1).optional(),
+  /**
+   * Which side includes VAT (or sales tax), when one does (Contabo's prices); absent when neither
+   * does. OpsCrew has no VAT rate to put both on one basis.
+   */
+  includesVat: z.object({ before: z.boolean(), after: z.boolean() }).optional(),
 });
 
 const PlanChangeSchema = z.discriminatedUnion("kind", [
@@ -95,7 +100,7 @@ export type Urgency = (typeof URGENCIES)[number];
 export type Basis = z.infer<typeof BasisSchema>;
 /** One sentence of why, with its figure. */
 export type Reason = z.infer<typeof ReasonSchema>;
-/** The monthly net price before and after the proposal. */
+/** The monthly price before and after the proposal, net unless `includesVat` says otherwise. */
 export type ProposalPrice = z.infer<typeof PriceSchema>;
 /** A plan edit `opscrew advise --apply` can make. */
 export type PlanChange = z.infer<typeof PlanChangeSchema>;

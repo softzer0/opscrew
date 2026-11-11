@@ -1,4 +1,4 @@
-import type { Money } from "@opscrew/contracts";
+import type { ComputeOffer, Money } from "@opscrew/contracts";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { STATIC_PRICES_AS_OF } from "@opscrew/provider-hetzner";
 import { describe, expect, it } from "vitest";
@@ -7,6 +7,7 @@ import { makeRequirements, offer, ownPlan, portainerPlan, testPlan } from "../..
 import { sitePlan } from "../../testing/serverless";
 import type { PriceList, Proposal } from "../types";
 import {
+  contaboTable,
   digitaloceanTable,
   hetznerTable,
   history,
@@ -165,8 +166,13 @@ describe("costRules: the other provider", () => {
       }),
     ]);
     const why = texts(proposals[0]);
-    expect(why).toContain("$15.60");
-    expect(why).toContain("€10.69");
+    expect(why).toContain(
+      "A server with at least the vCPUs, memory and disk of s-1vcpu-2gb costs less at Hetzner: cx33 there against s-1vcpu-2gb at DigitalOcean [€10.69 (excl. VAT, estimate as of 2026-10-14) against $15.60 (excl. tax, estimate as of 2026-10-12) a month]",
+    );
+    // Both providers' prices exclude VAT, both offer backups and neither has terms.
+    expect(why).not.toMatch(
+      /includes VAT|automatic backups|contract runs|in place|--finish` cancels/,
+    );
     expect(why).toContain(`${EXCHANGE_RATE_NOTE.slice(0, -1)} []`);
     expect(why).toContain("maintenance window");
   });
@@ -231,6 +237,248 @@ describe("costRules: the other provider", () => {
   });
 });
 
+describe("costRules: the other provider on the same basis (Contabo)", () => {
+  const important = makeRequirements({ dataCriticality: "important" });
+  const CONTABO_AS_OF = "2026-11-11T00:00:00.000Z";
+
+  /** Contabo's prices in its EU region: `offers` (VAT included, as its price list has them). */
+  function contaboList(...offers: ComputeOffer[]): PriceList {
+    return {
+      provider: "contabo",
+      location: "EU",
+      offers,
+      extras: {
+        snapshotsIncluded: true,
+        pricesIncludeVat: true,
+        source: "static",
+        asOf: CONTABO_AS_OF,
+      },
+    };
+  }
+
+  /** A Contabo plan in its EU region. */
+  function vps(init: Parameters<typeof offer>[0]): ComputeOffer {
+    return offer({
+      provider: "contabo",
+      location: "EU",
+      pricesIncludeVat: true,
+      asOf: CONTABO_AS_OF,
+      includedSnapshots: 1,
+      ...init,
+    });
+  }
+
+  /** The cost proposals of `appPlan`'s quiet server against `prices`, with `requirements`. */
+  async function moveOf(appPlan: DeployPlan, prices: PriceList[], requirements = important) {
+    const proposals = costed(
+      readingsOf(appPlan, { servers: { app: server(reading()) }, prices, requirements }),
+    );
+    return proposals.find((p) => p.id === "cost.app.other-provider");
+  }
+
+  it("compares a Hetzner server without its backups, which Contabo doesn't offer, naming each side", async () => {
+    const move = await moveOf(cpx22, [await hetznerTable(), await contaboTable()]);
+    expect(move).toMatchObject({
+      title: "Move the app to Contabo: V153 (4 vCPU, 8 GB memory, 100 GB disk) in Germany",
+      // cpx22 with its IPv4 address and without its 20% for backups, against Contabo's price with VAT.
+      price: {
+        before: 19.99,
+        after: 5.5,
+        currency: "EUR",
+        source: "static",
+        asOf: STATIC_PRICES_AS_OF,
+        includesVat: { before: false, after: true },
+      },
+      apply: { kind: "command", command: "opscrew retarget --to contabo" },
+    });
+    const why = texts(move);
+    expect(why).toContain(
+      "A server with at least the vCPUs, memory and disk of cpx22 costs less at Contabo: V153 there against cpx22 at Hetzner [€5.50 (incl. VAT, estimate as of 2026-11-11) against €19.99 (excl. VAT, estimate as of 2026-10-14) a month]",
+    );
+    expect(why).not.toContain("same server");
+    expect(why).toContain(
+      "Contabo's price includes VAT and Hetzner's doesn't: without VAT the saving is larger still (OpsCrew doesn't know your VAT rate to take it off)",
+    );
+    expect(why).toContain(
+      "Contabo offers no automatic backups through OpsCrew: OpsCrew's own snapshots of the app's data (`opscrew snapshot`) cover it instead",
+    );
+    expect(why).toContain(
+      "Hetzner's price is compared without its automated backups, which Contabo doesn't offer; the bucket for the snapshots' encrypted copy off the server isn't counted",
+    );
+    expect(why).toContain(
+      "The contract runs at least 1 month; a removal ends it at the end of the term",
+    );
+    expect(why).toContain("Contabo can't change a server's size in place");
+    expect(why).toContain("Whole-server snapshots are included in the price, up to 1");
+    expect(why).toContain("`--finish` deletes the old server");
+    expect(why).not.toContain("setup fee");
+  });
+
+  it("counts a move's saving toward the budget from the server's whole price, backups included", async () => {
+    const readings = readingsOf(cpx22, {
+      servers: { app: server(reading()) },
+      prices: [await hetznerTable(), await contaboTable()],
+      requirements: makeRequirements({
+        dataCriticality: "important",
+        budgetMonthly: { amount: 8, currency: "EUR" },
+      }),
+    });
+    const [budget] = costed(readings);
+    // €23.89 with backups less €18.39 is Contabo's €5.50; the cx33's €10.69 stays above €8.
+    expect(budget).toMatchObject({
+      id: "cost.env.budget",
+      price: {
+        before: 23.89,
+        after: 5.5,
+        currency: "EUR",
+        includesVat: { before: false, after: true },
+      },
+      apply: { kind: "command", command: "opscrew advise --apply cost.app.other-provider" },
+    });
+    const why = texts(budget);
+    expect(why).toContain("[€23.89 (excl. VAT) against €8.00 a month]");
+    expect(why).toContain("brings them under it: cost.app.other-provider (saves €18.39)");
+  });
+
+  it("proposes no move that saves less than 10% of the server's price", async () => {
+    // €5.50 against the cx23's €5.99 without backups: €0.49, about 8%.
+    expect(await moveOf(plan, [await hetznerTable(), await contaboTable()])).toBeUndefined();
+    const at = (price: number) => vps({ id: "V-edge", vcpus: 2, memoryGb: 4, diskGb: 40, price });
+    // €0.60 is 10% of €5.99 and more; €0.59 is less.
+    expect(await moveOf(plan, [await hetznerTable(), contaboList(at(5.39))])).toBeDefined();
+    expect(await moveOf(plan, [await hetznerTable(), contaboList(at(5.4))])).toBeUndefined();
+  });
+
+  /** Hetzner's cx23 at €6.50 with its IPv4 address: €7.00 a month without backups. */
+  const sevenEuros: PriceList = {
+    provider: "hetzner",
+    location: "nbg1",
+    offers: [offer({ id: "cx23", vcpus: 2, memoryGb: 4, diskGb: 40, price: 6.5 })],
+    extras: {
+      ipv4Monthly: { amount: 0.5, currency: "EUR" },
+      pricesIncludeVat: false,
+      source: "static",
+      asOf: STATIC_PRICES_AS_OF,
+    },
+  };
+
+  it("compares the edges in whole cents", async () => {
+    // €0.70 on €7.00 is exactly 10%, which 0.7 >= 7 * 0.1 would miss.
+    const at = vps({ id: "V-cent", vcpus: 2, memoryGb: 4, diskGb: 40, price: 6.3 });
+    expect(await moveOf(plan, [sevenEuros, contaboList(at)])).toBeDefined();
+    // A €2.10 fee is exactly 3 months of €0.70.
+    const fee = { ...at, setupFee: { amount: 2.1, currency: "EUR" as const } };
+    const move = await moveOf(plan, [sevenEuros, contaboList(fee)]);
+    expect(texts(move)).toContain("The saving covers the setup fee in 3 months []");
+  });
+
+  it("proposes no move that only the left-out backups paid for", async () => {
+    // €6.50 is below the cx23's €7.09 with backups, but not its €5.99 without them.
+    const dear = vps({ id: "V-dear", vcpus: 2, memoryGb: 4, diskGb: 40, price: 6.5 });
+    expect(await moveOf(plan, [await hetznerTable(), contaboList(dear)])).toBeUndefined();
+  });
+
+  it("names the setup fee once, with the months until the saving covers it, within 3 months", async () => {
+    // €4.99 against €5.99: €1.00 saved a month.
+    const fee = (amount: number) => ({
+      ...vps({ id: "V-fee", vcpus: 2, memoryGb: 4, diskGb: 40, price: 4.99 }),
+      setupFee: { amount, currency: "EUR" as const },
+    });
+    const move = await moveOf(plan, [await hetznerTable(), contaboList(fee(3))]);
+    const why = texts(move);
+    expect(why).toContain(
+      "Plus a one-time setup fee of €3.00 (incl. VAT) when the server is created, not part of the monthly price []",
+    );
+    expect(why).toContain("The saving covers the setup fee in 3 months []");
+    expect(why.match(/one-time setup fee/g)).toHaveLength(1);
+    expect(await moveOf(plan, [await hetznerTable(), contaboList(fee(3.01))])).toBeUndefined();
+  });
+
+  describe("from Contabo", () => {
+    const contabo = testPlan({ deployed: true, provider: "contabo" });
+    /** A Contabo plan of a cx33's size, at `price` with VAT. */
+    const plan33 = (price: number) => vps({ id: "V-33", vcpus: 4, memoryGb: 8, diskGb: 80, price });
+    const fromContabo = async (price: number, requirements = important) =>
+      moveOf(
+        { ...contabo, target: { ...contabo.target, serverType: "V-33" } } as DeployPlan,
+        [contaboList(plan33(price)), await hetznerTable("nbg1"), await hetznerTable("fsn1")],
+        requirements,
+      );
+
+    it("prices the new server's backups as the move turns them on, and the term before the saving", async () => {
+      const move = await fromContabo(20);
+      expect(move).toMatchObject({
+        title: "Move the app to Hetzner: cx33 (4 vCPU, 8 GB memory, 80 GB disk) in Nuremberg",
+        // cx33 with its IPv4 address and 20% for backups, as the interview's important data has them.
+        price: {
+          before: 20,
+          after: 10.69,
+          currency: "EUR",
+          includesVat: { before: true, after: false },
+        },
+        apply: { kind: "command", command: "opscrew retarget --to hetzner" },
+      });
+      const why = texts(move);
+      expect(why).toContain(
+        "Contabo's price includes VAT and Hetzner's doesn't: the saving holds even with 27% VAT on Hetzner's, the highest rate in the EU",
+      );
+      expect(why).toContain(
+        "Hetzner's automated backups are on after the move, as the interview says the app's data is important, and priced in",
+      );
+      expect(why).toContain(
+        "Contabo bills the old server to the end of its term, so the saving starts after it",
+      );
+      expect(why).toContain("`--finish` cancels the old server at the end of its term");
+      expect(why).not.toContain("deletes the old server");
+      expect(why).not.toContain("The contract runs at least");
+      expect(why).toContain(
+        "Contabo's price includes up to 1 whole-server snapshot; Hetzner charges for its own []",
+      );
+    });
+
+    it("prices the new server without backups when the data doesn't matter", async () => {
+      const move = await fromContabo(20, makeRequirements());
+      expect(move?.price).toMatchObject({ before: 20, after: 8.99 });
+      expect(texts(move)).not.toContain("automated backups");
+    });
+
+    it("counts toward the budget only the saving that holds whatever VAT you pay", async () => {
+      const budgetOf = async (amount: number) => {
+        const readings = readingsOf(
+          { ...contabo, target: { ...contabo.target, serverType: "V-33" } } as DeployPlan,
+          {
+            servers: { app: server(reading()) },
+            prices: [contaboList(plan33(20)), await hetznerTable("nbg1")],
+            requirements: makeRequirements({ budgetMonthly: { amount, currency: "EUR" } }),
+          },
+        );
+        return costed(readings).find((p) => p.id === "cost.env.budget");
+      };
+      // €20 against Hetzner's €8.99, €11.42 with 27% VAT: €8.58 saved whatever VAT you pay.
+      const budget = await budgetOf(12);
+      expect(budget?.price).toMatchObject({
+        before: 20,
+        after: 11.42,
+        includesVat: { before: true, after: true },
+      });
+      const why = texts(budget);
+      expect(why).toContain("[€20.00 (incl. VAT) against €12.00 a month]");
+      expect(why).toContain("cost.app.other-provider (saves €8.58)");
+      // €20 less €8.99 would be under €11, but not €20 less €8.58.
+      expect(texts(await budgetOf(11))).toContain(
+        "None of the other proposals brings them under it",
+      );
+    });
+
+    it("proposes no move when VAT could explain the gap", async () => {
+      // €8.99 is 18% below €11 without VAT, but €11.42 with 27% VAT on it.
+      expect(await fromContabo(11, makeRequirements())).toBeUndefined();
+      // €13 less €11.42 is €1.58, more than 10% of €13.
+      expect(await fromContabo(13, makeRequirements())).toBeDefined();
+    });
+  });
+});
+
 describe("costRules: the budget", () => {
   it("says by how much the servers pass the budget, and which proposal brings them under", async () => {
     const proposals = await costApp(cpx22, { amount: 15, currency: "EUR" });
@@ -251,7 +499,7 @@ describe("costRules: the budget", () => {
     });
     expect(budget?.server).toBeUndefined();
     const why = texts(budget);
-    expect(why).toContain("[€23.89 against €15.00 a month]");
+    expect(why).toContain("[€23.89 (excl. VAT) against €15.00 a month]");
     expect(why).toContain("cost.app.cheaper-type (saves €13.20)");
   });
 
@@ -292,7 +540,7 @@ describe("costRules: the budget", () => {
     });
     const [budget] = costed(readings);
     expect(budget).toMatchObject({ id: "cost.env.budget" });
-    expect(texts(budget)).toContain("[€14.18 against €10.00 a month]");
+    expect(texts(budget)).toContain("[€14.18 (excl. VAT) against €10.00 a month]");
   });
 });
 
