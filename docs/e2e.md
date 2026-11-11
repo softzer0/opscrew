@@ -3252,6 +3252,120 @@ What these passes don't cover:
 - the scheduled check's credentials issue;
 - the kinds other than these six.
 
+## Contabo
+
+`packages/cli/test/live/contabo.test.ts`, with `OPSCREW_E2E_CONTABO=1`, runs feature 026 on
+Contabo (SC-2601, SC-2604): `examples/flask-sqlite` on one Cloud VPS 4 (`V153`) in region EU.
+
+**Every run buys a month. Ask the founder before every run, a rerun after a failure included.**
+Contabo bills by the month, not by the hour: a server is bought for at least one month, and a
+Cloud VPS 4 on a monthly term adds a one-time setup fee. `opscrew destroy` only cancels it at the
+end of its term. So each run costs a month of a Cloud VPS 4 (the price is in
+`packages/providers/contabo/src/static-prices.ts`) and its setup fee, and the cancelled server
+stays in the account until its term ends.
+
+The app is named after the run, `e2e-cntb-<run id>`, as in [Snapshots and
+restores](#snapshots-and-restores), so no server of an earlier run is ever taken for this one's.
+OpsCrew gets the four credentials as `CNTB_OAUTH2_CLIENT_ID`, `CNTB_OAUTH2_CLIENT_SECRET`,
+`CNTB_OAUTH2_USER` and `CNTB_OAUTH2_PASS`, as a user's run does, and no other provider's token.
+`OPSCREW_E2E_APP` is ignored, and so is `OPSCREW_E2E_REGION` (it must still be a valid region if
+set).
+
+Each step below is one numbered test, so a run reads as "N of 9 steps":
+1. **The interview.** The example goes to the throwaway repository's `main`, as for
+   [environments](#environments-and-promotion). Then `init --fix`, `analyze --no-ai`, the run's
+   name set in `opscrew/architecture.json`, and `interview --answers` without a provider
+   (`eu-central`, the run's own hostname behind Cloudflare). With only Contabo's credentials set,
+   the interview must choose Contabo (US1).
+2. **Design.** The plan must be a `V153` in `EU`, without provider backups, priced from the
+   static table at its date, with no backups in the price. Design's output must name the price
+   list and its date, the one-time setup fee, "The contract runs at least 1 month; a removal ends
+   it at the end of the term." and "Contabo offers no automatic backups through OpsCrew". Then
+   `snapshot offsite off` (the pass tests Contabo, not the R2 copies, whose key only Cloudflare's
+   dashboard makes) and, for the recovery copy's age key, `secrets folder` and `--key-out` on
+   every provision, as the rotation passes do.
+3. **Provision.** `adapt`'s pull request is merged. Contabo must have no server of the app yet.
+   Then provision, each plan approved by its hash; every round plans first, and a plan that
+   creates or replaces a Contabo server while Contabo has one of the app stops the run before its
+   apply, so the test never buys a second server. Every provision run ends before the step's own
+   timeout, so none is still applying when the cleanup destroys. The server named after the app
+   and its address must then be there; each of the rest that fails is a finding, which fails
+   step 9 without stopping the run (the month is paid either way):
+   - provision's output has no takeover note (FR-2607);
+   - Contabo has exactly one server of the app, tagged `opscrew-app:<app>` and not cancelled;
+   - the firewall `<app>-firewall` is active and lists that server (FR-2606);
+   - the SSH key `<app>-deploy` is OpsCrew's deploy key.
+4. **Deploy and verify.** The deploy-setup pull request is merged and its deploy run must succeed.
+   The app must answer on its hostname through Cloudflare, and `verify` must pass. A value is
+   written through the app into its SQLite file.
+5. **A whole-server snapshot.** `snapshot --server` must say it is "included in the server's
+   price", and `snapshot list --json` must list it as kind `server` of the app's server (US4).
+6. **Its restore.** A second value is written. Then `restore --server <id>`, run first without
+   `--approve` and then with `--confirm <app> --approve <hash>`, as in
+   [Snapshots and restores](#snapshots-and-restores); its result must say "and the app answers".
+   Contabo must still have the same server, OpsCrew's record the same address, the app must read
+   back the first value, and `verify` must pass again.
+7. **Secure and drift.** `secure` must write `SECURITY_REPORT.md` without the findings of a server
+   no Contabo firewall lists or without an SSH key; `drift` must find no difference.
+8. **Destroy** (US2, FR-2608). `destroy --confirm <app> --no-snapshot`, each plan approved by its
+   hash. Its output must say that Contabo does not delete the server at once but ends its
+   contract at the end of its current term (1 month at least) and bills it until then, that
+   OpsCrew shuts it down now and deletes the app's other resources at once, that its disk and its
+   Contabo snapshots go when the term ends, and "Shutting the server <app> down". It must show
+   the day the contract ends, and that day must be the one Contabo answers for the server. The
+   server must no longer run, the audit log must hold its shutdown and its end date, Contabo must
+   have nothing else of the app (no firewall, SSH key or tag), and Cloudflare nothing of the app.
+9. **Nothing leaked** (SC-2604), always run: none of the four credentials, and no other known
+   secret, in any CLI output, the deploy job's log, any audit entry, saved plan, state file,
+   report or Cloudflare record, any commit (every branch) or pull request of the run, as for
+   environments. Step 3's findings fail this step too.
+
+### Cleanup
+
+The cleanup is the one for environments, after every step and always: `opscrew destroy` if a
+step failed after provision started, so the server is cancelled whatever happened; then the
+GitHub environments, deploy secrets and deploy pauses, the app's records in Cloudflare, and the
+repository reset. Then, at Contabo:
+- OpsCrew's snapshots of the app's server are deleted (they would go with the server anyway);
+- a server of the app that is not cancelled is shut down and cancelled through Contabo's API;
+- the firewall `<app>-firewall`, the SSH key `<app>-deploy` and the tag `opscrew-app:<app>` left
+  are deleted through Contabo's API.
+
+After a finished destroy, each of those it had to cancel or delete is a problem that fails the
+run, and so are two servers of the app. Nothing at Contabo is left but the cancelled server,
+which goes when its term ends.
+
+**If a run was interrupted**, in Contabo's Customer Control Panel: cancel the server
+`e2e-cntb-<run id>` if it is not cancelled, and delete the firewall `e2e-cntb-<run id>-firewall`,
+the secret `e2e-cntb-<run id>-deploy` and the tag `opscrew-app:e2e-cntb-<run id>`. In the
+throwaway repository and in Cloudflare, delete what the environments test lists.
+
+| Variable | What it is |
+|---|---|
+| `OPSCREW_E2E_CONTABO` | `1` runs this test. Ask the founder first: each run buys a month of a Cloud VPS 4 and its setup fee. |
+| `OPSCREW_E2E_CONTABO_CLIENT_ID`, `OPSCREW_E2E_CONTABO_CLIENT_SECRET`, `OPSCREW_E2E_CONTABO_USER`, `OPSCREW_E2E_CONTABO_PASS` | Contabo's API credentials, from the Customer Control Panel (Account → Security): the client id and client secret, the API user (the account's login email) and the API password. They reach the whole account, so use one with nothing else in it. |
+| `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN` | The throwaway repository and its token, as for environments. |
+| `OPSCREW_E2E_CLOUDFLARE_TOKEN`, `OPSCREW_E2E_DOMAIN` | As for your own server: the app answers on the run's own hostname in that zone. |
+
+Without them the test is skipped, with a message naming each one it misses. Set
+`OPSCREW_E2E_CONTABO=1` only on the command line of this one file, never in `.env.e2e` or an
+exported shell: a run of every live test would otherwise buy a month too.
+
+```bash
+pnpm --filter opscrew build
+cd packages/cli
+OPSCREW_E2E_CONTABO=1 OPSCREW_E2E_CONTABO_CLIENT_ID=… OPSCREW_E2E_CONTABO_CLIENT_SECRET=… \
+  OPSCREW_E2E_CONTABO_USER=… OPSCREW_E2E_CONTABO_PASS=… OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e \
+  OPSCREW_E2E_GITHUB_TOKEN=… OPSCREW_E2E_CLOUDFLARE_TOKEN=… OPSCREW_E2E_DOMAIN=e2e.example.com \
+  npx vitest run test/live/contabo.test.ts
+```
+
+Not measured yet: Contabo's create time is unverified. The pass makes one deploy run with a build.
+
+What this pass doesn't cover (fakes do): moves to and from Contabo, several servers, previews,
+monitoring, rollback, data snapshots, `advise` and `rotate` on Contabo; a create that times out
+(SC-2605); the snapshot limit's refusal; a cancel Contabo refuses; the regions other than EU.
+
 ## Price tables
 
 Before each release, check that the dated price tables OpsCrew falls back to without a token still
