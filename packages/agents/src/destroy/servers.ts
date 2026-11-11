@@ -18,6 +18,8 @@ import {
   APP_SERVER,
   type CloudProvider,
   type DeployPlan,
+  isCloudProvider,
+  isCloudTarget,
   servicesOn,
   writeArtifact,
 } from "@opscrew/plan-schema";
@@ -130,18 +132,17 @@ export function serverSnapshots(
   choice: "auto" | boolean | undefined,
 ): ServerSnapshot[] {
   const target = plan.target;
-  const app =
-    target.provider === "hetzner" || target.provider === "digitalocean"
-      ? [
-          {
-            server: APP_SERVER,
-            provider: target.provider,
-            module: "module.server.",
-            backups: target.backups,
-            storage: plan.storage,
-          },
-        ]
-      : [];
+  const app = isCloudTarget(target)
+    ? [
+        {
+          server: APP_SERVER,
+          provider: target.provider,
+          module: "module.server.",
+          backups: target.backups,
+          storage: plan.storage,
+        },
+      ]
+    : [];
   const extras = extraCloudServers(plan).map((server) => ({
     server: server.name,
     provider: server.provider,
@@ -205,7 +206,7 @@ export function serverLines(plan: DeployPlan, snapshots: readonly ServerSnapshot
       ? "a snapshot of it is taken first"
       : "OpsCrew takes no snapshot of it";
   const app = plan.target.provider;
-  const appTexts = app === "hetzner" || app === "digitalocean" ? destroyTexts(app) : undefined;
+  const appTexts = isCloudProvider(app) ? destroyTexts(app) : undefined;
   const appLine =
     appTexts === undefined
       ? `Server ${APP_SERVER}: the app, its private network and OpsCrew's records of them are removed; your server stays.`

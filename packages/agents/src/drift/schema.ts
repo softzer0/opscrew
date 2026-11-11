@@ -1,4 +1,5 @@
 import type { IacEngine, ResourceDrift } from "@opscrew/contracts";
+import { CLOUD_PROVIDERS } from "@opscrew/providers";
 import { z } from "zod";
 
 /** Attribute names per resource type, for example `{ hcloud_server: ["status"] }`. */
@@ -76,14 +77,16 @@ export async function providerReadOnlyAttributes(
 }
 
 /**
- * What the server modules ignore in their `lifecycle` (`ignore_changes = [user_data, image,
- * ssh_keys]` in `hetzner-vps` and `digitalocean-droplet`): provision never changes them, so they
- * are no drift. A rebuild from a snapshot (`opscrew restore --server`) changes the image itself.
+ * What every provider's server module ignores in its server's `lifecycle` (`ignore_changes =
+ * [user_data, image, ssh_keys]`): provision never changes them, so they are no drift. A rebuild
+ * from a snapshot (`opscrew restore --server`) changes the image itself.
  */
-export const LIFECYCLE_IGNORED: AttributesByType = {
-  hcloud_server: ["image", "ssh_keys", "user_data"],
-  digitalocean_droplet: ["image", "ssh_keys", "user_data"],
-};
+export const LIFECYCLE_IGNORED: AttributesByType = Object.fromEntries(
+  CLOUD_PROVIDERS.map(({ terraform }) => [
+    terraform.serverResourceType,
+    ["image", "ssh_keys", "user_data"],
+  ]),
+);
 
 /** Union of attribute lists per resource type. */
 export function mergeAttributes(...lists: AttributesByType[]): Record<string, string[]> {

@@ -19,7 +19,7 @@ import {
   type PlanService,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { providerProfile } from "../providers/profiles";
+import { providerProfile, VPS_PROVIDERS } from "../providers";
 import { copyPath } from "../secrets/files";
 import { GeneratedValuesSchema, generatedValuesFile } from "../shared/app-secrets";
 import { readValidJson } from "../shared/files";
@@ -175,16 +175,11 @@ export const USER_TOKENS: readonly {
   /** A token the user may leave unset: listed only when it is set. */
   optional?: true;
 }[] = [
-  {
-    name: "hetzner",
-    vars: providerProfile("hetzner").tokenVars,
-    uses: (plan) => plan.target.provider === "hetzner",
-  },
-  {
-    name: "digitalocean",
-    vars: providerProfile("digitalocean").tokenVars,
-    uses: (plan) => plan.target.provider === "digitalocean",
-  },
+  ...VPS_PROVIDERS.map((provider) => ({
+    name: provider,
+    vars: providerProfile(provider).tokenVars,
+    uses: (plan: DeployPlan) => plan.target.provider === provider,
+  })),
   {
     name: "cloudflare",
     vars: ["CLOUDFLARE_API_TOKEN"],

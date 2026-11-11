@@ -13,7 +13,7 @@ import { type ContainerLogLine, sinceAfter } from "@opscrew/connector-portainer"
 import type { CommandResult, RemoteExec } from "@opscrew/contracts";
 import { OpsCrewError, type Redactor } from "@opscrew/core";
 import { appDir, portainerTarget, shellQuote } from "@opscrew/iac-templates";
-import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
+import { APP_SERVER, type DeployPlan, isCloudProvider } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { appFolder } from "../localhost/services";
 import { previewServer } from "../previews/host";
@@ -390,16 +390,17 @@ export async function dockerLogs(
   }
   // A preview environment on another environment's server: through that environment's login.
   const server = await previewServer(deps, plan);
-  switch (server.plan.target.provider) {
+  const { provider } = server.plan.target;
+  if (isCloudProvider(provider)) {
+    return sshLogs(deps, await cloudServerSsh(server.deps, server.plan, services));
+  }
+  switch (provider) {
     case "portainer":
       return portainerLogs(deps, plan, services);
     case "localhost":
       return localLogs(deps);
     case "own":
       return sshLogs(deps, await ownServerSsh(server.deps, server.plan, services, options.hostKey));
-    case "hetzner":
-    case "digitalocean":
-      return sshLogs(deps, await cloudServerSsh(server.deps, server.plan, services));
     default:
       throw new Error(`A site on ${plan.target.provider} has no containers.`);
   }
@@ -496,7 +497,11 @@ export async function appFiles(
   const services = options.services ?? {};
   // A preview environment on another environment's server: through that environment's login.
   const server = await previewServer(deps, plan);
-  switch (server.plan.target.provider) {
+  const { provider } = server.plan.target;
+  if (isCloudProvider(provider)) {
+    return sshFiles(deps, plan, await cloudServerSsh(server.deps, server.plan, services));
+  }
+  switch (provider) {
     case "localhost":
       return localFiles(deps, plan);
     case "own":
@@ -505,9 +510,6 @@ export async function appFiles(
         plan,
         await ownServerSsh(server.deps, server.plan, services, options.hostKey),
       );
-    case "hetzner":
-    case "digitalocean":
-      return sshFiles(deps, plan, await cloudServerSsh(server.deps, server.plan, services));
     default:
       throw new Error(`OpsCrew has no shell on ${plan.target.provider}.`);
   }

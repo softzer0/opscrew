@@ -13,6 +13,8 @@ import {
   APP_SERVER,
   type CloudProvider,
   type DeployPlan,
+  isCloudProvider,
+  isCloudTarget,
   isServerlessProvider,
   type Requirements,
 } from "@opscrew/plan-schema";
@@ -21,7 +23,7 @@ import type { PhaseDeps } from "../context";
 import { extraCatalogs } from "../design/run";
 import { readEnvironmentRequirements } from "../environments/requirements";
 import { sharedPreviewsLimit } from "../previews/host";
-import { providerProfile } from "../providers";
+import { providerProfile, VPS_PROVIDERS } from "../providers";
 import { renderedServers } from "../provision/disk-guard";
 import type { ProvisionServices } from "../provision/types";
 import { credentialInventory } from "../rotate/inventory";
@@ -153,12 +155,7 @@ async function hostChecks(
 /** True when OpsCrew reaches server `name` over SSH: not a Portainer, this computer or a site. */
 function overSsh(plan: DeployPlan, name: string): boolean {
   const { provider } = plan.target;
-  return (
-    name !== APP_SERVER ||
-    provider === "hetzner" ||
-    provider === "digitalocean" ||
-    provider === "own"
-  );
+  return name !== APP_SERVER || isCloudProvider(provider) || provider === "own";
 }
 
 /**
@@ -223,17 +220,14 @@ async function asDeployed(deps: PhaseDeps, plan: DeployPlan): Promise<DeployPlan
   });
   return {
     ...plan,
-    target:
-      app !== undefined && (target.provider === "hetzner" || target.provider === "digitalocean")
-        ? { ...target, ...app }
-        : target,
+    target: app !== undefined && isCloudTarget(target) ? { ...target, ...app } : target,
     ...(servers === undefined ? {} : { servers }),
   };
 }
 
 /**
  * The price lists of each server OpsCrew created in `plan` (where it runs) and, for the cost rule's
- * comparison, of the other provider in the interview's region; the catalogue of each provider is
+ * comparison, of the other providers in the interview's region; the catalogue of each provider is
  * read once, live with its token or the dated static list (said in `notRead`).
  */
 async function priceLists(
@@ -247,15 +241,14 @@ async function priceLists(
   const want = (provider: CloudProvider, location: string) =>
     wanted.set(`${provider} ${location}`, { provider, location });
   for (const { target } of [{ target: plan.target }, ...(plan.servers ?? [])]) {
-    if (target.provider === "hetzner" || target.provider === "digitalocean") {
-      want(target.provider, target.location);
-    }
+    if (isCloudTarget(target)) want(target.provider, target.location);
   }
-  const { target } = plan;
+  const { provider } = plan.target;
   const region = requirements?.region;
-  if ((target.provider === "hetzner" || target.provider === "digitalocean") && region) {
-    const other = target.provider === "hetzner" ? "digitalocean" : "hetzner";
-    for (const location of providerProfile(other).regionLocations[region]) want(other, location);
+  if (isCloudProvider(provider) && region) {
+    for (const other of VPS_PROVIDERS.filter((id) => id !== provider)) {
+      for (const location of providerProfile(other).regionLocations[region]) want(other, location);
+    }
   }
   if (wanted.size > 0) deps.reporter.step("Reading the providers' prices (read-only)");
   const read = await Promise.all(

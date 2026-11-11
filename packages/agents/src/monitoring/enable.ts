@@ -13,6 +13,7 @@ import {
   type DeployPlan,
   type DeployTarget,
   type ExtraServer,
+  isCloudProvider,
   MONITORING_SERVER,
   MonitoringSchema,
   type MonitoringSettings,
@@ -150,7 +151,7 @@ type CloudTarget = Extract<DeployTarget | ExtraServer["target"], { serverType: s
 
 /** True for a server OpsCrew creates (it has a type at a provider). */
 function isCloud(target: DeployTarget | ExtraServer["target"] | undefined): target is CloudTarget {
-  return target?.provider === "hetzner" || target?.provider === "digitalocean";
+  return isCloudProvider(target?.provider);
 }
 
 /** One of the plan's servers as the checks see it: its memory and price. */

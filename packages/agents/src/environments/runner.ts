@@ -3,6 +3,7 @@ import {
   type DeployPlan,
   type DeployProvider,
   EnvironmentSchema,
+  isCloudProvider,
   onOneServer,
   targetArch,
 } from "@opscrew/plan-schema";
@@ -54,10 +55,9 @@ function archMismatch(
   target: { provider: DeployProvider; arch: "amd64" | "arm64" },
 ): OpsCrewError {
   const { provider } = target;
-  const server =
-    provider === "hetzner" || provider === "digitalocean"
-      ? `every server type OpsCrew offers at ${providerProfile(provider).displayName} is ${target.arch} (x86-64)`
-      : `the ${environment} environment's server is ${target.arch}`;
+  const server = isCloudProvider(provider)
+    ? `every server type OpsCrew offers at ${providerProfile(provider).displayName} is ${target.arch} (x86-64)`
+    : `the ${environment} environment's server is ${target.arch}`;
   return new OpsCrewError(
     "INVALID_INPUT",
     `The runner machine ${machine.name} is ${machine.arch}, and ${server}: an image built on ${machine.name} would not run on the server, so it cannot build the ${environment} environment's image.`,

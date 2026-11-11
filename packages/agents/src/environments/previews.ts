@@ -6,10 +6,12 @@ import {
   listText,
   normalizeHostName,
   OpsCrewError,
+  orText,
   toPosixRelative,
 } from "@opscrew/core";
 import {
   type DeployPlan,
+  isCloudProvider,
   isServerlessTarget,
   likelyCloudflareZone,
   PREVIEW_APP_NAME_MAX,
@@ -20,6 +22,7 @@ import {
   type QuestionId,
   type Requirements,
 } from "@opscrew/plan-schema";
+import { CLOUD_PROVIDERS } from "@opscrew/providers";
 import type { PhaseDeps } from "../context";
 import { type OwnServerDesignInput, runDesign } from "../design/run";
 import { answersToRequirements } from "../interview/answers";
@@ -39,6 +42,7 @@ import {
   shareableHosts,
   sharedServerWarning,
 } from "../previews/host";
+import { DEFAULT_CLOUD_PROVIDER, VPS_PROVIDERS } from "../providers";
 import { missing } from "../provision/credentials";
 import { inspectOwnServerForDesign, sharedServerDesign } from "../shared/own-server-design";
 import {
@@ -51,7 +55,10 @@ import {
 import { writeEnvironmentRequirements } from "./requirements";
 
 /** Where previews run: a server OpsCrew creates, or one the user has (FR-2201). */
-const PREVIEW_TARGETS: ReadonlySet<string> = new Set(["hetzner", "digitalocean", "own"]);
+const PREVIEW_TARGETS: ReadonlySet<string> = new Set([...VPS_PROVIDERS, "own"]);
+
+/** The flag for a new server of the previews, in refusals: `--target hetzner or digitalocean`. */
+const NEW_SERVER = `--target ${orText(VPS_PROVIDERS)}`;
 
 /** The command that buys a domain, which the preview domain's refusals name. */
 const BUY = "`opscrew domain buy <name>`";
@@ -85,6 +92,7 @@ export function previewQuestions(
   const interview = buildQuestions(facts, context.base);
   const asked = (id: QuestionId) => interview.find((q) => q.id === id) as Question;
   const provider = asked("provider");
+  const prod = context.prodPlan.target.provider;
   const { seedCommand, seedNote } = facts.build;
   const hosts = context.hosts ?? [];
   return [
@@ -101,7 +109,7 @@ export function previewQuestions(
           hint: "beside it, only when it holds test data and test keys",
         })),
       ],
-      default: context.prodPlan.target.provider === "digitalocean" ? "digitalocean" : "hetzner",
+      default: isCloudProvider(prod) ? prod : DEFAULT_CLOUD_PROVIDER,
     },
     { ...asked("region"), id: "region" },
     {
@@ -391,8 +399,8 @@ export async function addPreviewEnvironment(
   if (target === undefined || !PREVIEW_TARGETS.has(target)) {
     throw refusedBeforeChange(
       "INVALID_INPUT",
-      `Previews run on a server of their own that GitHub's machines reach over SSH: a new server at Hetzner or DigitalOcean, or a server you already have, not ${target ?? "no target"}.`,
-      `Run \`${command}\` with --target hetzner, digitalocean or own.`,
+      `Previews run on a server of their own that GitHub's machines reach over SSH: a new server at ${orText(CLOUD_PROVIDERS.map((provider) => provider.name))}, or a server you already have, not ${target ?? "no target"}.`,
+      `Run \`${command}\` with --target ${orText([...PREVIEW_TARGETS])}.`,
     );
   }
   // The server previews share, once its plan allows it (FR-2228).
@@ -497,7 +505,7 @@ export async function addPreviewEnvironment(
       throw refusedBeforeChange(
         "INVALID_INPUT",
         "Previews need a server the internet reaches: GitHub's machines connect to it over SSH, and Cloudflare's proxy sends visitors to it.",
-        `Use a server with a public address, or a new one (--target hetzner or digitalocean), then run \`${command}\` again.`,
+        `Use a server with a public address, or a new one (${NEW_SERVER}), then run \`${command}\` again.`,
       );
     }
     await recordOwnServerAnswers(paths, own);
@@ -508,7 +516,7 @@ export async function addPreviewEnvironment(
       throw refusedBeforeChange(
         "PHASE_PRECONDITION",
         `Your server runs ${listText(apps.map((a) => `"${a.name}"`))}, and previews run pull requests' code: it would run beside ${apps.length === 1 ? "it" : "them"}, so previews need a server with nothing else on it.`,
-        `Use another server of yours, or a new one (--target hetzner or digitalocean), then run \`${command}\` again.`,
+        `Use another server of yours, or a new one (${NEW_SERVER}), then run \`${command}\` again.`,
       );
     }
   }

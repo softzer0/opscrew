@@ -22,6 +22,7 @@ import {
   isUserFacingError,
   listText,
   OpsCrewError,
+  orText,
   sha256Hex,
   taxLabel,
 } from "@opscrew/core";
@@ -32,7 +33,7 @@ import type { PhaseDeps } from "../context";
 import { destroyTexts } from "../destroy/texts";
 import { requireNoOtherPause, withDeploysPausedUntilDone } from "../move/deploys";
 import { NOTHING_CHANGED } from "../promote/shared";
-import { providerProfile, vpsConnector } from "../providers";
+import { providerProfile, VPS_PROVIDERS, vpsConnector } from "../providers";
 import { missing } from "../provision/credentials";
 import type { GitHubApi } from "../provision/types";
 import { MAINTENANCE_WINDOW_TITLE } from "../retarget/texts";
@@ -139,7 +140,7 @@ function noProviderServer(run: SnapshotRun, which: string, command: string): Ops
         : `${which === APP_SERVER ? "The app's server" : `Server ${which}`} of ${environment} is your own server`;
   return new OpsCrewError(
     "PHASE_PRECONDITION",
-    `${place}, and \`${command}\` only works on a server OpsCrew created at Hetzner Cloud or DigitalOcean, whose provider snapshots and rebuilds it. ${NOTHING_CHANGED}`,
+    `${place}, and \`${command}\` only works on a server OpsCrew created at ${orText(VPS_PROVIDERS.map((id) => providerProfile(id).displayName))}, whose provider snapshots and rebuilds it. ${NOTHING_CHANGED}`,
     {
       hint: `\`opscrew snapshot${flags}\` takes a snapshot of the app's data there, \`opscrew snapshot list${flags}\` shows them and \`opscrew restore <id>${flags}\` restores one.`,
     },

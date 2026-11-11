@@ -15,6 +15,7 @@ import type { PhaseName, RemoteExec } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { VPS_PROVIDERS } from "../providers";
 import type { ProvisionServices } from "../provision/types";
 import { approveAndApplyHostPlan, type HostAdapterApi, type HostPlanOutcome } from "../shared";
 import { deployShell } from "../status/certificates";
@@ -116,7 +117,7 @@ export async function cloudRunnerPlan(
  */
 async function unpreparedServer(root: string, plan: DeployPlan): Promise<OpsCrewError> {
   const { file, flag } = await planWhere(root, plan);
-  const other = plan.target.provider === "hetzner" ? "digitalocean" : "hetzner";
+  const other = VPS_PROVIDERS.find((provider) => provider !== plan.target.provider);
   return new OpsCrewError(
     "PHASE_PRECONDITION",
     "This server was created before OpsCrew prepared its servers for a self-hosted runner: its first boot did not make /srv/runners for deploy or let deploy's services run without a login, and deploy has no root to do that now. Nothing was changed.",

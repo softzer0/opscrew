@@ -12,7 +12,8 @@ import {
 import { GitHubClient } from "@opscrew/connector-github";
 import { canonicalJson, errorText, OpsCrewError, sha256Hex } from "@opscrew/core";
 import { CHECK_SECRETS, CLOUDFLARE_DEPLOY_SECRETS, deploySecretName } from "@opscrew/iac-templates";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { type CloudProvider, type DeployPlan, isCloudProvider } from "@opscrew/plan-schema";
+import { cloudProvider } from "@opscrew/providers";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
 import { type InitCheckId, type InitServices, runInitChecks } from "../init";
@@ -78,9 +79,8 @@ interface TokenWords {
   perEnvironment?: true;
 }
 
-const TOKEN_WORDS: Readonly<Record<UserTokenName, TokenWords>> = {
-  hetzner: { title: "Hetzner Cloud token" },
-  digitalocean: { title: "DigitalOcean token" },
+/** The words of the tokens that are not a cloud provider's (theirs: {@link tokenWords}). */
+const TOKEN_WORDS: Readonly<Record<Exclude<UserTokenName, CloudProvider>, TokenWords>> = {
   cloudflare: { title: "Cloudflare token", expiry: "cloudflare" },
   github: { title: "GitHub token", expiry: "github" },
   "cloudflare-deploy": {
@@ -97,8 +97,15 @@ interface UserToken extends TokenWords {
   vars: readonly string[];
 }
 
+/** How the token `name` is named: a cloud provider's after the provider (`Hetzner Cloud token`). */
+function tokenWords(name: UserTokenName): TokenWords {
+  return isCloudProvider(name)
+    ? { title: `${providerProfile(name).displayName} token` }
+    : TOKEN_WORDS[name];
+}
+
 function userToken(name: UserTokenName): UserToken {
-  return { ...TOKEN_WORDS[name], vars: USER_TOKENS.find((t) => t.name === name)?.vars ?? [] };
+  return { ...tokenWords(name), vars: USER_TOKENS.find((t) => t.name === name)?.vars ?? [] };
 }
 
 /** The token's value and the variable it came from, when one of its variables is set. */
@@ -115,11 +122,8 @@ function tokenValue(
 
 /** The provider's page where the user deletes the token `name`. */
 function deletePage(name: UserTokenName): string {
+  if (isCloudProvider(name)) return cloudProvider(name).texts.rotate.deleteToken;
   switch (name) {
-    case "hetzner":
-      return `the Hetzner Cloud Console (${providerProfile("hetzner").tokenUrl} → your project → Security → API tokens)`;
-    case "digitalocean":
-      return providerProfile("digitalocean").tokenUrl;
     case "cloudflare":
     case "cloudflare-deploy":
       return CLOUDFLARE_TOKEN_PAGE;
@@ -228,9 +232,8 @@ export async function tokenExpiries(
  * {@link replaceToken} has already found.
  */
 function initChecksOf(name: UserTokenName, plan: DeployPlan): InitCheckId[] {
+  if (isCloudProvider(name)) return ["provider"];
   switch (name) {
-    case "hetzner":
-    case "digitalocean":
     // The hosting check reads both Cloudflare tokens' Workers permission.
     case "cloudflare-deploy":
       return ["provider"];

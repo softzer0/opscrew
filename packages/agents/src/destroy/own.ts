@@ -57,7 +57,7 @@ import {
 } from "../shared";
 import { connectAndInspectOwnServer, inspectOwnHost } from "../shared/own-server";
 import { extraCloudProviders, extraCloudServers } from "../shared/servers";
-import { deletesServer, serverData } from "./checks";
+import { deletesProtectedServer, serverData } from "./checks";
 import {
   applyCloudflareRemoval,
   approveCloudflareRemoval,
@@ -821,7 +821,7 @@ export async function destroyOwnServer(
       const protection = await liftProtection(iac, {
         vars,
         names,
-        serverInState: deletesServer(resources, "hetzner"),
+        serverInState: deletesProtectedServer(resources),
         mismatchHint: DRIFT_THEN_DESTROY,
       });
       protectionApproval = protection.approval;

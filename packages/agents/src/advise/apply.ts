@@ -4,7 +4,7 @@
  * its hash is approved; the others give their command or what to do by hand. Nothing else changes.
  */
 import { OpsCrewError } from "@opscrew/core";
-import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
+import { APP_SERVER, type DeployPlan, isCloudProvider } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { planFile } from "../runners";
 import { writePlanIfChanged } from "../shared";
@@ -32,9 +32,7 @@ function onServer(
   edit: { serverType: string } | { backups: true },
 ): DeployPlan {
   const cloud = <T extends { provider: string }>(target: T): T =>
-    target.provider === "hetzner" || target.provider === "digitalocean"
-      ? { ...target, ...edit }
-      : target;
+    isCloudProvider(target.provider) ? { ...target, ...edit } : target;
   if (server === APP_SERVER) return { ...plan, target: cloud(plan.target) };
   return {
     ...plan,

@@ -5,21 +5,29 @@ import { cloudTarget, type ServerModule, serviceSpec } from "@opscrew/iac-templa
 import {
   APP_SERVER,
   type CloudDeployTarget,
+  type CloudProvider,
   DATABASE_KINDS,
   type DeployPlan,
   isServerlessProvider,
   servicesOn,
 } from "@opscrew/plan-schema";
 import { z } from "zod";
-import { providerProfile } from "../providers";
+import { providerProfile, VPS_PROVIDERS } from "../providers";
 import { destroyTexts } from "./texts";
 import type { DeletionProvider } from "./types";
 
 /**
- * Terraform type of the Hetzner server, the only resource the protection-lifting plan may change.
- * Only Hetzner has delete protection, so that plan (and this check) exists only there.
+ * The cloud providers whose servers have delete protection (Hetzner), which a plan of its own lifts
+ * before a deletion; that plan (and its check) exists only there.
  */
-export const PROTECTED_SERVER_TYPE = providerProfile("hetzner").serverResourceType;
+export const PROTECTED_PROVIDERS: readonly CloudProvider[] = VPS_PROVIDERS.filter(
+  (provider) => providerProfile(provider).deleteProtection,
+);
+
+/** Terraform types of their servers, the only resources the protection-lifting plan may change. */
+const PROTECTED_SERVER_TYPES: ReadonlySet<string> = new Set(
+  PROTECTED_PROVIDERS.map((provider) => providerProfile(provider).serverResourceType),
+);
 
 /** Server attributes the protection-lifting plan is allowed to change. */
 export const PROTECTION_ATTRIBUTES: readonly string[] = ["delete_protection", "rebuild_protection"];
@@ -57,6 +65,13 @@ export function deletesServer(
 ): boolean {
   const type = serverType(provider);
   return changes.some((c) => c.type === type && (c.action === "delete" || c.action === "replace"));
+}
+
+/** True when the changes delete (or replace) a server with delete protection, at any provider. */
+export function deletesProtectedServer(changes: readonly ResourceChange[]): boolean {
+  return changes.some(
+    (c) => PROTECTED_SERVER_TYPES.has(c.type) && (c.action === "delete" || c.action === "replace"),
+  );
 }
 
 /** A provider resource id: a string, or a number (written as a string). */
@@ -180,7 +195,7 @@ export function unprotectPlanProblems(
   const problems: string[] = [];
   for (const change of changes) {
     if (
-      change.type !== PROTECTED_SERVER_TYPE ||
+      !PROTECTED_SERVER_TYPES.has(change.type) ||
       change.action !== "update" ||
       !underPrefix(change.address, options.prefix) ||
       (options.within !== undefined &&

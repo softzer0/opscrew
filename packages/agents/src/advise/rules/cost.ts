@@ -1,14 +1,19 @@
 /**
  * Advise's cost rules (feature 021, US5; plan.md "4. The rules"): the servers above the interview's
  * budget, a cheaper type with at least the same CPUs, memory and disk where a server runs, and the
- * same server for less at the other provider. Prices come from the catalogues, live or dated.
+ * same server for less at another provider. Prices come from the catalogues, live or dated.
  */
 import { formatMoney } from "@opscrew/core";
-import { APP_SERVER, type CloudProvider, isServerlessProvider } from "@opscrew/plan-schema";
+import {
+  APP_SERVER,
+  type CloudProvider,
+  isServerlessProvider,
+  type Region,
+} from "@opscrew/plan-schema";
 import { convertMoney, EXCHANGE_RATE_NOTE, roundCents } from "../../design/cost";
 import { cheapestServerOffer } from "../../design/servers";
 import { designWording } from "../../design/wording";
-import { providerProfile } from "../../providers";
+import { providerProfile, VPS_PROVIDERS } from "../../providers";
 import { hasExtraServers } from "../../shared/servers";
 import type { Proposal, Readings, Reason } from "../types";
 import {
@@ -58,35 +63,45 @@ function cheaperType(server: PricedServer): Proposal[] {
 }
 
 /**
- * The app's server for less at the other provider OpsCrew moves apps to, in the interview's
- * region, with at least its CPUs, memory and disk (US5-3): `opscrew retarget`, which moves an app
- * on one server only.
+ * The app's server at `other` in `region`, with at least its CPUs, memory and disk: the cheapest
+ * type at each of the region's locations, then the cheapest of those.
  */
-function otherProvider(readings: Readings, app: PricedServer | undefined): Proposal[] {
-  const { requirements, plan, flags } = readings;
-  const region = requirements?.region;
-  if (app === undefined || region === undefined || hasExtraServers(plan)) return [];
-  const { offer: current, list: here } = app.prices;
-  const other: CloudProvider = app.provider === "hetzner" ? "digitalocean" : "hetzner";
+function cheapestAt(readings: Readings, app: PricedServer, other: CloudProvider, region: Region) {
+  const current = app.prices.offer;
   const locations = providerProfile(other).regionLocations[region];
-  // The cheapest type at each of the region's locations, then the cheapest of those.
-  const best = readings.prices
+  return readings.prices
     .filter((list) => list.provider === other && locations.includes(list.location))
     .flatMap((list) => {
       const offers = list.offers.filter((o) => sameKind(current, o));
       const offer = cheapestServerOffer(offers, list.location, sizeOf(current), current.diskGb);
       return offer === undefined
         ? []
-        : [{ offer, cost: serverCost(other, offer, list, app.backups) }];
+        : [{ other, offer, cost: serverCost(other, offer, list, app.backups) }];
     })
     .sort(
       (a, b) =>
         a.cost.monthly.amount - b.cost.monthly.amount ||
         locations.indexOf(a.offer.location) - locations.indexOf(b.offer.location),
     )[0];
-  if (best === undefined) return [];
+}
+
+/**
+ * The app's server for less at another provider OpsCrew moves apps to (the cheapest of them), in
+ * the interview's region, with at least its CPUs, memory and disk (US5-3): `opscrew retarget`,
+ * which moves an app on one server only.
+ */
+function otherProvider(readings: Readings, app: PricedServer | undefined): Proposal[] {
+  const { requirements, plan, flags } = readings;
+  const region = requirements?.region;
+  if (app === undefined || region === undefined || hasExtraServers(plan)) return [];
+  const { offer: current, list: here } = app.prices;
   const before = serverCost(app.provider, current, here, app.backups);
-  const price = priceChange(before, best.cost);
+  const best = VPS_PROVIDERS.filter((id) => id !== app.provider)
+    .flatMap((id) => cheapestAt(readings, app, id, region) ?? [])
+    .map((found) => ({ ...found, price: priceChange(before, found.cost) }))
+    .sort((a, b) => a.price.after - b.price.after)[0];
+  if (best === undefined) return [];
+  const { other, price } = best;
   if (price.after >= price.before) return [];
   const there = designWording(other).name;
   const place = providerProfile(other).locationNames[best.offer.location] ?? best.offer.location;

@@ -9,6 +9,7 @@ import {
   storageRootDir,
 } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
+import { cloudProvider } from "@opscrew/providers";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import {
@@ -63,12 +64,15 @@ export function bucketDeletionWarning(deletion: Pick<BucketDeletion, "bucket">):
     : `With --delete-data, OpsCrew also deletes the app's bucket ${bucketWords(bucket)} and every file in it. This cannot be undone.`;
 }
 
-/** Where the user deletes a bucket by hand. */
-const CONSOLE: Readonly<Record<ProviderBucket["provider"], string>> = {
-  r2: "the Cloudflare dashboard (R2 Object Storage)",
-  hetzner: "the Hetzner Cloud Console (Object Storage)",
-  digitalocean: "the DigitalOcean control panel (Spaces Object Storage)",
-};
+/**
+ * Where the user deletes a bucket by hand: Cloudflare's dashboard for R2, else the object-storage
+ * console of the cloud provider that holds it (its definition's `texts.destroy.storageConsole`).
+ */
+function bucketConsole(provider: ProviderBucket["provider"]): string {
+  if (provider === "r2") return "the Cloudflare dashboard (R2 Object Storage)";
+  const { storageConsole, console } = cloudProvider(provider).texts.destroy;
+  return storageConsole ?? console;
+}
 
 /**
  * What remains of the app's bucket after a teardown without `--delete-data` (FR-1319): the bucket
@@ -78,7 +82,7 @@ const CONSOLE: Readonly<Record<ProviderBucket["provider"], string>> = {
 export function bucketKept(plan: DeployPlan): string | undefined {
   const bucket = providerBucket(plan);
   if (bucket === undefined) return undefined;
-  return `The app's bucket ${bucketWords(bucket)} with the app's files, which ${STORAGE_NAMES[bucket.provider]} bills until it is deleted. OpsCrew deletes it only in the teardown that removes the app, with \`${DELETE_DATA}\`; to delete it now, empty and delete it in ${CONSOLE[bucket.provider]}.`;
+  return `The app's bucket ${bucketWords(bucket)} with the app's files, which ${STORAGE_NAMES[bucket.provider]} bills until it is deleted. OpsCrew deletes it only in the teardown that removes the app, with \`${DELETE_DATA}\`; to delete it now, empty and delete it in ${bucketConsole(bucket.provider)}.`;
 }
 
 /**
@@ -192,7 +196,7 @@ export async function confirmBucketGone(
   deps.reporter.info(`${name} still lists the bucket ${bucket.bucket}; deleting it again.`);
   await client.deleteBucket();
   if (await gone()) return undefined;
-  const check = `Check ${CONSOLE[bucket.provider]} in a few minutes and delete the bucket ${bucket.bucket} there if it is still listed.`;
+  const check = `Check ${bucketConsole(bucket.provider)} in a few minutes and delete the bucket ${bucket.bucket} there if it is still listed.`;
   return {
     remaining: `The app's bucket ${bucketWords(bucket)}, which ${name} still listed after OpsCrew deleted it twice, so ${name} may still bill it. ${check}`,
     error: new OpsCrewError(

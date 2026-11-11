@@ -52,7 +52,8 @@ import {
   tunnelMode,
   usesTunnel,
 } from "@opscrew/iac-templates";
-import { type DeployPlan, snapshotOffsiteOf } from "@opscrew/plan-schema";
+import { type DeployPlan, isCloudProvider, snapshotOffsiteOf } from "@opscrew/plan-schema";
+import { CLOUD_PROVIDERS } from "@opscrew/providers";
 import { blockingPolicyFailures, evaluatePlanPolicies } from "@opscrew/secops";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
@@ -142,8 +143,19 @@ const ACCESS_TOKEN = "module.access.cloudflare_zero_trust_access_service_token.s
 /** The Access policy that lets exactly that token through. */
 const ACCESS_POLICY = "module.access.cloudflare_zero_trust_access_policy.ssh[0]";
 
-/** The provider objects of the deploy key, which a server gets only when it is created. */
-const DEPLOY_KEY_TYPES: ReadonlySet<string> = new Set(["hcloud_ssh_key", "digitalocean_ssh_key"]);
+/** The resource type in a deploy key's id expression: `coalesce(hcloud_ssh_key.deploy.id)`. */
+const KEY_ID_TYPE = /\b([a-z][a-z0-9_]*)\.[a-z][a-z0-9_]*\.id\b/;
+
+/**
+ * The provider objects of the deploy key, which a server gets only when it is created: the type of
+ * the key each provider's extra servers share (its definition's `extraShared.sshKeyId`).
+ */
+const DEPLOY_KEY_TYPES: ReadonlySet<string> = new Set(
+  CLOUD_PROVIDERS.flatMap(({ terraform }) => {
+    const type = KEY_ID_TYPE.exec(terraform.extraShared.sshKeyId)?.[1];
+    return type === undefined ? [] : [type];
+  }),
+);
 
 /** The root module's output with each tunnel's id. */
 const TUNNEL_ID_OUTPUTS: Readonly<Record<TunnelModule, string>> = {
@@ -1246,10 +1258,8 @@ export async function replaceDeployKeyObject(
     again: string;
   },
 ): Promise<string | undefined> {
-  const cloud = plan.target.provider === "hetzner" || plan.target.provider === "digitalocean";
-  const extra = (plan.servers ?? []).some(
-    (server) => server.target.provider === "hetzner" || server.target.provider === "digitalocean",
-  );
+  const cloud = isCloudProvider(plan.target.provider);
+  const extra = (plan.servers ?? []).some((server) => isCloudProvider(server.target.provider));
   if ((!cloud && !extra) || !(await hasState(deps.paths))) return undefined;
   const { again } = input;
   const setup = await rotationEngine(deps, plan, input, again);

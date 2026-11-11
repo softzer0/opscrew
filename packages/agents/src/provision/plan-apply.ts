@@ -30,10 +30,12 @@ import type { RenderedFile } from "@opscrew/iac-templates";
 import { usesTunnel } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
+  isCloudTarget,
   isServerlessProvider,
   readArtifact,
   writeArtifact,
 } from "@opscrew/plan-schema";
+import { cloudProvider } from "@opscrew/providers";
 import { blockingPolicyFailures, evaluatePlanPolicies } from "@opscrew/secops";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
@@ -120,13 +122,11 @@ export interface PlanAndApplyOptions {
 const FORBIDDEN =
   /:\s*403\b|\bforbidden\b|not authori[sz]ed|insufficient[_ ]permissions?|missing (?:the )?(?:required )?scopes?|token_readonly|only allowed to perform GET requests/i;
 
-/** Engine log text naming each provider's API or resources, so a 403 is blamed on the right token. */
-const PROVIDER_API: Readonly<Record<VpsProviderId, RegExp>> = {
-  hetzner: /api\.hetzner\.cloud|hcloud_|token_readonly/i,
-  digitalocean: /api\.digitalocean\.com|digitalocean_/i,
+/** Engine log text naming the provider's API or resources, so a 403 is blamed on the right token. */
+function providerApi(provider: VpsProviderId): RegExp {
   // A server the user owns has no provider API: no engine error is blamed on a provider token.
-  own: /(?!)/,
-};
+  return provider === "own" ? /(?!)/ : cloudProvider(provider).credentials.apiPattern;
+}
 
 const CLOUDFLARE_API = /api\.cloudflare\.com|cloudflare_/i;
 
@@ -147,7 +147,7 @@ function blockOwner(block: string, provider: VpsProviderId): "cloudflare" | "pro
   if (/\bwith module\.(?:dns|tunnel|portainer_tunnel|access)\./.test(block)) return "cloudflare";
   if (/\bwith module\.server\./.test(block)) return "provider";
   const cloudflare = CLOUDFLARE_API.test(block);
-  const named = PROVIDER_API[provider].test(block);
+  const named = providerApi(provider).test(block);
   if (cloudflare && !named) return "cloudflare";
   if (named && !cloudflare) return "provider";
   return undefined;
@@ -200,13 +200,9 @@ function applyFailureHint(
   const target = deployPlan.target;
   // Only a server OpsCrew creates can have a size that is unavailable (a Portainer target
   // returned above).
-  if (
-    (target.provider === "hetzner" || target.provider === "digitalocean") &&
-    profile.unavailable.test(errors) &&
-    !SERVICE_DOWN.test(errors)
-  ) {
-    const size = provider === "hetzner" ? "server type" : "size";
+  if (isCloudTarget(target) && profile.unavailable.test(errors) && !SERVICE_DOWN.test(errors)) {
     const { serverType, location } = target;
+    const size = cloudProvider(target.provider).sizeNoun;
     const next =
       options.redesignHint ??
       `Run \`opscrew design\` to pick another ${size} or location, then run \`${command}\` again. ${kept}`;

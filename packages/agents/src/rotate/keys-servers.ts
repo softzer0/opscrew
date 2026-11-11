@@ -7,7 +7,7 @@ import { checkKeyLine, previewKeyLine } from "@opscrew/connector-ssh-host";
 import type { CommandResult, RemoteExec } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { shellQuote } from "@opscrew/iac-templates";
-import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
+import { APP_SERVER, type DeployPlan, isCloudProvider } from "@opscrew/plan-schema";
 import { otherPlans } from "../check/files";
 import { checkReachesOverSsh } from "../check/provision";
 import type { PhaseDeps } from "../context";
@@ -68,7 +68,7 @@ function holder(
 /** True for a server OpsCrew logs in to with the deploy key: one it created, or the user's own. */
 function hasServer(plan: DeployPlan, server: string): boolean {
   const provider = targetOf(plan, server)?.provider;
-  return provider === "hetzner" || provider === "digitalocean" || provider === "own";
+  return isCloudProvider(provider) || provider === "own";
 }
 
 /**

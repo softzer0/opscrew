@@ -1,7 +1,14 @@
 import type { ComputeCatalog } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { appServerVariables } from "@opscrew/iac-templates";
-import { APP_SERVER, type CloudProvider, type DeployPlan } from "@opscrew/plan-schema";
+import {
+  APP_SERVER,
+  type CloudProvider,
+  type DeployPlan,
+  isCloudProvider,
+  isCloudTarget,
+} from "@opscrew/plan-schema";
+import { cloudProvider } from "@opscrew/providers";
 import {
   applied,
   appServerChange,
@@ -48,8 +55,7 @@ export async function renderedServers(
     plan,
     servers.map((s) => s.name),
   );
-  const { provider } = plan.target;
-  if (provider === "hetzner" || provider === "digitalocean") {
+  if (isCloudProvider(plan.target.provider)) {
     const tfvars = await committedTfvars(root, plan);
     const names = appServerVariables();
     const location = tfvars?.[names.location];
@@ -71,7 +77,7 @@ async function resizes(root: string, plan: DeployPlan): Promise<Resize[]> {
   const rendered = await renderedServers(root, plan);
   const { target } = plan;
   const last = rendered.get(APP_SERVER);
-  if (last !== undefined && (target.provider === "hetzner" || target.provider === "digitalocean")) {
+  if (last !== undefined && isCloudTarget(target)) {
     const app = appServerChange({ ...plan, target: { ...target, ...last } }, plan);
     if (app?.kind === "resize") {
       found.push({ name: APP_SERVER, provider: target.provider, change: app });
@@ -111,8 +117,9 @@ export async function requireNoSmallerDisk(input: DiskGuardInput): Promise<strin
     const profile = providerProfile(provider);
     const noun = profile.serverNoun;
     // Measured at Hetzner (research R5, S1): it switches the server off before it refuses.
-    const switchedOff =
-      provider === "hetzner" ? `, and the attempt would leave the ${noun} switched off` : "";
+    const switchedOff = cloudProvider(provider).offering.offAfterRefusedResize
+      ? `, and the attempt would leave the ${noun} switched off`
+      : "";
     const shrinks = `${profile.displayName} can't make a ${noun}'s disk smaller${switchedOff}`;
     // A type's disk is the type's own: look it up wherever the type is still sold.
     const offers = await (await catalogFor(provider, before.location)).listOffers();

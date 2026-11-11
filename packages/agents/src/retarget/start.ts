@@ -16,6 +16,7 @@ import {
   type DeployTarget,
   type DesignOption,
   isCloudProvider,
+  isCloudTarget,
   isServerlessProvider,
   monitoringOf,
   monitoringServerName,
@@ -33,7 +34,7 @@ import { deployStrategyFor, ROLLING_NOTE, snapshotSettings } from "../design/str
 import { recordOwnServerAnswers } from "../interview/own-server";
 import { recordPortainerAnswers } from "../interview/portainer";
 import type { NetworkHostFacts } from "../network";
-import { providerProfile, vpsConnector } from "../providers";
+import { providerProfile, VPS_PROVIDERS, vpsConnector } from "../providers";
 import { readRequirements, requireStorageKey } from "../provision";
 import {
   boundHostAdapter,
@@ -78,6 +79,9 @@ import {
 import type { MoveData, MoveTargetId, RetargetOptions, RetargetSummary } from "./types";
 import { mountWords } from "./window";
 
+/** What `--to` takes for a move to a server, in hints: the cloud providers, then `own`. */
+const SERVER_TARGETS: readonly string[] = [...VPS_PROVIDERS, "own"];
+
 export function nothingLive(plan: DeployPlan): OpsCrewError {
   return new OpsCrewError(
     "PHASE_PRECONDITION",
@@ -106,7 +110,7 @@ function portainerNoNetwork(plan: DeployPlan): OpsCrewError {
     "PHASE_PRECONDITION",
     `${plan.app.name} ${listText(what)}, which need a server, so it does not move to your Portainer. Nothing was changed.`,
     {
-      hint: `Move it to a server instead (\`${RUN_COMMAND} --to <hetzner|digitalocean|own>\`).`,
+      hint: `Move it to a server instead (\`${RUN_COMMAND} --to <${SERVER_TARGETS.join("|")}>\`).`,
     },
   );
 }
@@ -491,7 +495,7 @@ async function portainerSide(
       "PHASE_PRECONDITION",
       `Your Portainer environment runs on ${answers.arch}, but the app's image is built for ${arch}, and a move to Portainer deploys the image the app runs now. Nothing was changed.`,
       {
-        hint: `Move the app to a server of ${answers.arch} first (\`${RUN_COMMAND} --to <hetzner|digitalocean|own>\`), or run \`opscrew design\` and \`opscrew provision\` to build it for ${answers.arch}, then move it to your Portainer.`,
+        hint: `Move the app to a server of ${answers.arch} first (\`${RUN_COMMAND} --to <${SERVER_TARGETS.join("|")}>\`), or run \`opscrew design\` and \`opscrew provision\` to build it for ${answers.arch}, then move it to your Portainer.`,
       },
     );
   }
@@ -518,7 +522,7 @@ async function portainerSide(
 
 /** The new side's target in words with its details, for the summary's first line. */
 function targetLine(target: DeployTarget, which: "old" | "new"): string {
-  if (target.provider === "hetzner" || target.provider === "digitalocean") {
+  if (isCloudTarget(target)) {
     return `${providerProfile(target.provider).displayName} (${target.serverType} in ${target.location})`;
   }
   return sideWords(target, which);
@@ -551,12 +555,11 @@ export function moveSummary(
     ? `; the app stays offline from then ${untilSwitched(plan)}`
     : "";
   const cloudOld = isCloudProvider(from.provider);
-  const prepare =
-    to.provider === "hetzner" || to.provider === "digitalocean"
-      ? `Create ${fresh} (${to.serverType} in ${to.location}) next to ${old}.`
-      : to.provider === "own"
-        ? `Set up ${fresh} for the app with a host plan you approve by its hash, beside any other apps there.`
-        : "Check your Portainer environment for the app's stacks.";
+  const prepare = isCloudTarget(to)
+    ? `Create ${fresh} (${to.serverType} in ${to.location}) next to ${old}.`
+    : to.provider === "own"
+      ? `Set up ${fresh} for the app with a host plan you approve by its hash, beside any other apps there.`
+      : "Check your Portainer environment for the app's stacks.";
   const deploy =
     to.provider === "portainer"
       ? `Point the GitHub deploy secrets at ${fresh}, set up the app's stacks there with the version ${old} runs (a stack plan you approve by its hash) and check the app; the stack's Caddy stays stopped until the switch.`
@@ -724,7 +727,7 @@ async function newTargetId(
       "PHASE_PRECONDITION",
       "opscrew/requirements.yaml asks for a site host, and an app with a server does not move to one. Nothing was changed.",
       {
-        hint: `Run \`${RUN_COMMAND} --to <hetzner|digitalocean|own|portainer>\`, or \`opscrew destroy\`, then \`opscrew interview\`, \`opscrew design\` and \`opscrew provision\` for the site host.`,
+        hint: `Run \`${RUN_COMMAND} --to <${[...SERVER_TARGETS, "portainer"].join("|")}>\`, or \`opscrew destroy\`, then \`opscrew interview\`, \`opscrew design\` and \`opscrew provision\` for the site host.`,
       },
     );
   }

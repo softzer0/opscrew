@@ -9,10 +9,12 @@ import { otherActiveApps } from "@opscrew/connector-ssh-host";
 import type { ApprovalRecord, ApprovalRequest, IacEngine, PhaseName } from "@opscrew/contracts";
 import { listText, OpsCrewError, readTextIfExists, tfstateFile } from "@opscrew/core";
 import { APP_SERVER, type DeployPlan, serverOfService } from "@opscrew/plan-schema";
+import { CLOUD_PROVIDERS } from "@opscrew/providers";
 import { z } from "zod";
 import type { CheckKey } from "../check/key";
 import type { PhaseDeps } from "../context";
 import { designMove } from "../design/moves";
+import { PROTECTED_PROVIDERS } from "../destroy/checks";
 import { deletionSession, LIFT_PROTECTION_TITLE, liftProtection } from "../destroy/deletion";
 import { providerProfile } from "../providers";
 import {
@@ -145,9 +147,21 @@ export function removedCloudServers(
   return Object.keys(extraServerOutputs(outputs ?? {})).filter((name) => !kept.has(name));
 }
 
-/** The root's own resources an extra server at another provider shares; they go with the last. */
-const SHARED_EXTRA =
-  /^(?:hcloud_ssh_key\.deploy|digitalocean_ssh_key\.deploy|digitalocean_tag\.app)$/;
+/** A resource block's first line in HCL: `resource "hcloud_ssh_key" "deploy" {`. */
+const RESOURCE_BLOCK = /^resource "([^"]+)" "([^"]+)"/;
+
+/**
+ * The root's own resources an extra server at another provider shares (each provider's
+ * `extraShared`: its deploy key, and DigitalOcean's app tag), by address; they go with the last.
+ */
+const SHARED_EXTRA: ReadonlySet<string> = new Set(
+  CLOUD_PROVIDERS.flatMap(({ terraform }) =>
+    terraform.extraShared.resources.flatMap((line) => {
+      const block = RESOURCE_BLOCK.exec(line);
+      return block === null ? [] : [`${block[1]}.${block[2]}`];
+    }),
+  ),
+);
 
 /** The extra server whose module holds the resource at `address`: `module.server_<name>.…`. */
 function extraServerOf(address: string): string | undefined {
@@ -172,7 +186,7 @@ function deletions(
     const server = extraServerOf(change.address);
     if (server !== undefined && !kept.has(server) && change.action === "delete") {
       removed.add(server);
-    } else if (SHARED_EXTRA.test(change.address) && change.action === "delete") {
+    } else if (SHARED_EXTRA.has(change.address) && change.action === "delete") {
       shared = true;
     } else {
       others = true;
@@ -252,7 +266,9 @@ export async function liftRemovedProtection(
   const protectedServers = input.removed.filter((server) =>
     variables.includes(`variable "${server}_delete_protection"`),
   );
-  if (protectedServers.length === 0) return undefined;
+  // Only a provider with delete protection declares the variable (Hetzner).
+  const [provider] = PROTECTED_PROVIDERS;
+  if (protectedServers.length === 0 || provider === undefined) return undefined;
   const names = protectedServers.map((server) => cloudServerName(input.plan, server));
   const flags = (list: readonly string[]) => list.map((name) => `--confirm ${name}`).join(" ");
   const one = protectedServers.length === 1;
@@ -280,7 +296,7 @@ export async function liftRemovedProtection(
   const session = deletionSession(
     {
       deps,
-      provider: "hetzner",
+      provider,
       app: input.plan.app.name,
       command: input.command,
       what: "removal",

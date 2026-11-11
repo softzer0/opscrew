@@ -3,7 +3,7 @@
  * rules and lists their proposals, the most urgent first. It changes nothing.
  */
 import { OpsCrewError } from "@opscrew/core";
-import { type DeployPlan, monitoringOf } from "@opscrew/plan-schema";
+import { type DeployPlan, isCloudProvider, monitoringOf } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
 import { moveInProgress } from "../provision/guard";
@@ -217,8 +217,7 @@ export async function adviseWithFlags(
       basis: basisOf(readings),
       checked,
       notRead: readings.notRead,
-      suggestMonitoring:
-        monitoringOf(plan) === undefined && (provider === "hetzner" || provider === "digitalocean"),
+      suggestMonitoring: monitoringOf(plan) === undefined && isCloudProvider(provider),
     },
     flags,
   };

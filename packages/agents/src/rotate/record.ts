@@ -5,27 +5,31 @@
  */
 import { join } from "node:path";
 import { OpsCrewError, type ProjectPaths, toPosixRelative } from "@opscrew/core";
-import { type CredentialsRecord, readOptionalArtifact, writeArtifact } from "@opscrew/plan-schema";
+import {
+  type CloudProvider,
+  type CredentialsRecord,
+  readOptionalArtifact,
+  writeArtifact,
+} from "@opscrew/plan-schema";
 import { z } from "zod";
 import { appPaths } from "../apps/list";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
+import { VPS_PROVIDERS } from "../providers";
 import { changeGenerated, generatedValuesFile } from "../shared/app-secrets";
 import { readValidJson } from "../shared/files";
 
-/** The names of the user's own tokens: OpsCrew copies them and never keeps a generation of them. */
-export const USER_TOKEN_NAMES = [
-  "hetzner",
-  "digitalocean",
-  "cloudflare",
-  "github",
-  "cloudflare-deploy",
-  "ghcr",
-  "ntfy",
-] as const;
+/** The user's own tokens that are not a cloud provider's. */
+const OTHER_TOKEN_NAMES = ["cloudflare", "github", "cloudflare-deploy", "ghcr", "ntfy"] as const;
 
-/** The name a user's token has in `opscrew rotate`. */
-export type UserTokenName = (typeof USER_TOKEN_NAMES)[number];
+/** The name a user's token has in `opscrew rotate`: a cloud provider's id, or another token's. */
+export type UserTokenName = CloudProvider | (typeof OTHER_TOKEN_NAMES)[number];
+
+/**
+ * The names of the user's own tokens, the cloud providers' first: OpsCrew copies them and never
+ * keeps a generation of them.
+ */
+export const USER_TOKEN_NAMES: readonly UserTokenName[] = [...VPS_PROVIDERS, ...OTHER_TOKEN_NAMES];
 
 function isUserToken(name: string): boolean {
   return (USER_TOKEN_NAMES as readonly string[]).includes(name);

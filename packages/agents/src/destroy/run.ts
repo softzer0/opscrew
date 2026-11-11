@@ -28,7 +28,13 @@ import {
   tunnelSafeEngine,
   waitForTunnelToClose,
 } from "../shared/tunnel-connections";
-import { dataWarning, deletesServer, deletionPlanProblems, planHeading } from "./checks";
+import {
+  dataWarning,
+  deletesProtectedServer,
+  deletesServer,
+  deletionPlanProblems,
+  planHeading,
+} from "./checks";
 import {
   COMMAND,
   CONTINUES_WITH_LEFT,
@@ -750,7 +756,7 @@ async function destroyDeployment(
         ...(profile.deleteProtection ? [name] : []),
         ...extraProtectedServers(plan).map((server) => server.resource),
       ],
-      serverInState: deletesServer(preview.changes, "hetzner"),
+      serverInState: deletesProtectedServer(preview.changes),
       ...(snapshotId !== undefined ? { snapshotId } : {}),
       mismatchHint:
         "The infrastructure was probably changed outside OpsCrew, or its files no longer match what was applied. Run `opscrew drift` to see the differences and `opscrew provision` to bring everything back in line, then run `opscrew destroy` again.",

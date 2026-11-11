@@ -54,10 +54,8 @@ export function moveSide(
 ): MoveSide {
   const { services } = session;
   const target = sideTarget(session, which);
+  if (isCloudProvider(target.provider)) return cloudSide(which, options);
   switch (target.provider) {
-    case "hetzner":
-    case "digitalocean":
-      return cloudSide(which, options);
     case "own":
       return ownSide(
         which,

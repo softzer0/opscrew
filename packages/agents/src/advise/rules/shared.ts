@@ -12,7 +12,9 @@ import {
   type CostEstimate,
   type DeployPlan,
   type ExtraServer,
+  isCloudTarget,
 } from "@opscrew/plan-schema";
+import { cloudProvider } from "@opscrew/providers";
 import { convertMoney, costFor } from "../../design/cost";
 import { providerProfile } from "../../providers";
 import type { ResourceReading } from "../../status";
@@ -80,7 +82,7 @@ export function isPriced(server: CloudServer): server is PricedServer {
 /** The plan's servers OpsCrew created (the app's, then the extra ones), each with its prices. */
 export function cloudServers(readings: Pick<Readings, "plan" | "prices">): CloudServer[] {
   return planTargets(readings.plan).flatMap(({ name, target }) => {
-    if (target.provider !== "hetzner" && target.provider !== "digitalocean") return [];
+    if (!isCloudTarget(target)) return [];
     const { provider, location, serverType, backups } = target;
     const prices = serverPrices(readings, target);
     return [
@@ -156,18 +158,16 @@ export function priceChange(before: CostEstimate, after: CostEstimate): Proposal
 
 /** What changing `server`'s type to `offer` does to the app and the disk (research R5, S1). */
 function typeChangeReasons(server: PricedServer, offer: ComputeOffer): Reason[] {
-  const { displayName, serverNoun } = providerProfile(server.provider);
-  const offline =
-    server.provider === "digitalocean"
-      ? `The app is offline while ${displayName} resizes the ${serverNoun}: about a minute per GB of disk in use, often less; its addresses stay the same`
-      : `The app is offline one to three minutes while ${displayName} restarts the ${serverNoun} on its new type; its addresses stay the same`;
+  const { displayName, texts } = cloudProvider(server.provider);
+  // Present for every provider that resizes in place, the only ones with a type change.
+  const offline = texts.resizeOffline;
   const from = server.prices.offer.diskGb;
   const disk =
     offer.diskGb > from
       ? `The change is one way: the disk grows from ${from} GB to ${offer.diskGb} GB, and ${displayName} can't make it smaller again`
       : `The disk stays ${from} GB`;
   return [
-    { text: offline, basis: PLAN },
+    ...(offline === undefined ? [] : [{ text: offline, basis: PLAN }]),
     { text: disk, basis: PLAN },
   ];
 }

@@ -1,6 +1,6 @@
 import { cloudTarget, type InfraLayout, type ServerModule } from "@opscrew/iac-templates";
 import type { CloudDeployTarget, DeployTarget, Retarget } from "@opscrew/plan-schema";
-import { isCloudProvider } from "@opscrew/plan-schema";
+import { isCloudProvider, isCloudTarget } from "@opscrew/plan-schema";
 import { providerProfile } from "../providers";
 
 /**
@@ -23,13 +23,7 @@ export function previousTarget(move: Pick<Retarget, "from">): CloudDeployTarget 
  */
 export function oldSideTarget(move: Pick<Retarget, "from">): DeployTarget {
   const { target } = move.from;
-  switch (target.provider) {
-    case "hetzner":
-    case "digitalocean":
-      return previousTarget(move);
-    default:
-      return target;
-  }
+  return isCloudTarget(target) ? previousTarget(move) : target;
 }
 
 /**
