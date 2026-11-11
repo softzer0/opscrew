@@ -44,7 +44,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/providers && pnpm lint`
   - Effort: high
 
-- [ ] T2603 [P] [US3] Hetzner's definition
+- [x] T2603 [P] [US3] Hetzner's definition
   - Owns: `packages/providers/hetzner/src/**`, `packages/providers/hetzner/module/**`
   - Reads: plan 1–3; research R1; the Hetzner parts of `agents/src/providers/profiles.ts`, `agents/src/design/{wording,delay}.ts`, `agents/src/provision/plan-apply.ts`, `agents/src/destroy/{texts,storage}.ts`, `agents/src/init/checks.ts`, `agents/src/interview/questions.ts`, `iac-templates/src/providers.ts`, `iac-templates/src/infra/servers.ts`, `iac-templates/modules/hetzner-vps/**`, `secops/src/policies/plan.ts`, `secops/src/rules/secrets.ts`, `detect/src/env.ts`
   - Depends: T2601
@@ -55,7 +55,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/provider-hetzner && pnpm lint`
   - Effort: high
 
-- [ ] T2604 [P] [US3] DigitalOcean's definition
+- [x] T2604 [P] [US3] DigitalOcean's definition
   - Owns: `packages/providers/digitalocean/src/**`, `packages/providers/digitalocean/module/**`
   - Reads: as T2603, DigitalOcean's parts; `iac-templates/modules/digitalocean-droplet/**`
   - Depends: T2601
