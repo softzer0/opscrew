@@ -7,7 +7,8 @@ there. The lead keeps this file current. Research for a feature goes in that fea
 
 Done: 000–025. Plain PHP apps (013's US8) and
 [025 credential rotation](025-credential-rotation/) shipped together as 0.2.6 on 2026-11-09.
-Next: 026, once the founder gives the go-ahead.
+Being built: [026 Contabo, opening with the provider plugin system](026-contabo-provider-plugins/)
+(the founder's go-ahead, 2026-11-11).
 
 ## 019 Rollback
 
