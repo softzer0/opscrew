@@ -28,6 +28,7 @@ import {
   type DesignOption,
   EnvironmentSchema,
   infraDirFor,
+  isCloudProvider,
   isServerlessProvider,
   isServerlessTarget,
   type MonitoringSettings,
@@ -42,6 +43,7 @@ import {
   workflowPathFor,
   writeArtifact,
 } from "@opscrew/plan-schema";
+import { cloudProvider } from "@opscrew/providers";
 import { appCandidatesText } from "../analyze/summary";
 import { appFlag } from "../apps/choice";
 import { requireOnePagesSite, requireUniqueNames } from "../apps/names";
@@ -117,7 +119,7 @@ import {
   routeJobsOffText,
   uncallableRouteJobs,
 } from "./components";
-import { convertMoney, EXCHANGE_RATE_NOTE, priceLabel } from "./cost";
+import { convertMoney, EXCHANGE_RATE_NOTE, offerTerms, priceLabel } from "./cost";
 import { keptEdits } from "./kept-edits";
 import { buildDesignOptionSet, lowHeadroomText, minimumMonthlyCost } from "./options";
 import {
@@ -171,7 +173,7 @@ import {
   serverlessSecretWarnings,
 } from "./serverless";
 import { ownServerMemory, regionLocations, type ServerApp, sizeFor } from "./sizing";
-import { snapshotDesignLines, withDesignedSnapshots } from "./snapshots";
+import { noProviderBackupsText, snapshotDesignLines, withDesignedSnapshots } from "./snapshots";
 import { checkKeptFolder, checkSqliteFolder, volumeOwnerWarning } from "./storage";
 import { keptDeploy } from "./strategy";
 import { designWording } from "./wording";
@@ -1016,6 +1018,10 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   const now = deps.clock.now();
 
   const chosen = await pick(designOptions, options);
+  // Without the chooser (a script, or `--option`), the chosen option's terms it would show.
+  if (options.choose === undefined || options.optionId !== undefined) {
+    for (const line of await chosenTerms(chosen, preview.catalog)) reporter.info(say(line));
+  }
   // A server-less site builds no image, so no builder is chosen for it.
   const { serverless } = preview;
   let build: BuilderChoice | undefined;
@@ -1983,6 +1989,33 @@ function serverChangeWarnings(
   return [
     `The chosen option changes the server type from ${before.serverType} to ${after.serverType}, so the next \`opscrew provision\` will resize the ${server}. The app is offline while the ${server} restarts.`,
   ];
+}
+
+/**
+ * What the chooser shows of a cloud option besides its price, as its summary words it: the
+ * offer's terms (`offerTerms`) and, at a provider without automated backups through OpsCrew, that
+ * its snapshots cover the data. Empty for Hetzner and DigitalOcean.
+ */
+async function chosenTerms(
+  chosen: DesignOption,
+  catalog: ComputeCatalog | undefined,
+): Promise<string[]> {
+  const { provider, location, serverType } = chosen.target;
+  if (catalog === undefined || !isCloudProvider(provider)) return [];
+  // A provider without terms (Hetzner, DigitalOcean) needs no second look at its catalogue.
+  const { offering } = cloudProvider(provider);
+  if (
+    offering.removal.kind === "delete" &&
+    offering.snapshots.kind === "per-gb" &&
+    offering.providerBackups
+  ) {
+    return [];
+  }
+  const offer = (await catalog.listOffers(location)).find((o) => o.id === serverType);
+  const terms = offer === undefined ? [] : offerTerms(offer, await catalog.extras(location));
+  return providerProfile(provider).providerBackups
+    ? terms
+    : [...terms, noProviderBackupsText(provider)];
 }
 
 async function pick(
