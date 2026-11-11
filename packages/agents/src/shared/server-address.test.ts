@@ -183,7 +183,9 @@ describe("the server's address in OpsCrew's local state", () => {
         expect(hint).toMatch(
           /If this project deploys to your own server, do not delete the file: run `opscrew interview` again instead.*confirm the server's host key again/,
         );
-        expect(hint).toMatch(/For Hetzner Cloud or DigitalOcean .*Delete \.opscrew\/server\.json/);
+        expect(hint).toMatch(
+          /For Hetzner Cloud, DigitalOcean or Contabo .*Delete \.opscrew\/server\.json/,
+        );
         expect(hint).toContain("on the computer that provisioned the server");
       }
       // Nothing guessed, nothing overwritten.

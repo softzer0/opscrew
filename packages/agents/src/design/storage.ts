@@ -107,7 +107,7 @@ const SPACES_REGION: Readonly<Record<string, string>> = { nyc1: "nyc3" };
 type BucketCloud = Extract<StorageProvider, CloudProvider>;
 
 /** True for a cloud provider that sells the buckets OpsCrew uses: Hetzner and DigitalOcean. */
-function sellsBuckets(provider: DeployProvider): provider is BucketCloud {
+export function sellsBuckets(provider: DeployProvider): provider is BucketCloud {
   return provider === "hetzner" || provider === "digitalocean";
 }
 

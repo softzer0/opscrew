@@ -22,7 +22,13 @@ import {
 } from "@opscrew/core";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
-import { providerProfile, type VpsConnectorOptions, vpsConnector } from "../providers";
+import {
+  providerCredentials,
+  providerProfile,
+  tokenNotSet,
+  type VpsConnectorOptions,
+  vpsConnector,
+} from "../providers";
 import { lastLines } from "../provision/plan-apply";
 import {
   describeChanges,
@@ -458,9 +464,12 @@ export function serverApi(scope: ServerScope, input: ServerApiInput): ServerSnap
   };
   const api = input.servers ?? vpsConnector(provider, deps, options).servers;
   if (!api) {
+    const profile = providerProfile(provider);
     throw new OpsCrewError(
       "CREDENTIALS_MISSING",
-      `No ${texts.displayName} token found: set ${providerProfile(provider).tokenVars.join(" or ")}.`,
+      profile.tokenMode === "all"
+        ? `${texts.displayName} needs all of ${listText(profile.tokenVars)}: ${tokenNotSet(providerCredentials(profile, deps.env).missing)}.`
+        : `No ${texts.displayName} token found: set ${profile.tokenVars.join(" or ")}.`,
       { hint: texts.tokenHint(scope.command) },
     );
   }

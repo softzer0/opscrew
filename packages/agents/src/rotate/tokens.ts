@@ -17,7 +17,7 @@ import { cloudProvider } from "@opscrew/providers";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
 import { type InitCheckId, type InitServices, runInitChecks } from "../init";
-import { providerProfile } from "../providers";
+import { providerProfile, tokenNotSet } from "../providers";
 import { setupGitHub } from "../provision/credentials";
 import { type RunProvisionOptions, runProvision } from "../provision/run";
 import {
@@ -30,13 +30,7 @@ import type { GitHubApi, ProvisionResult } from "../provision/types";
 import { requestApproval } from "../shared/approvals";
 import { gitClient, githubClientFromToken } from "../shared/github";
 import { readPortainerConnection } from "../shared/server-record";
-import {
-  credentialInventory,
-  tokenNotSet,
-  USER_TOKENS,
-  type UserTokenEntry,
-  userTokenValue,
-} from "./inventory";
+import { credentialInventory, USER_TOKENS, type UserTokenEntry, userTokenValue } from "./inventory";
 import { readCredentialsRecord, recordRotation, type UserTokenName } from "./record";
 import { tokenFirstSeen, tokenSeenAt } from "./record-tokens";
 
@@ -180,7 +174,7 @@ async function readExpiry(
     const expiresAt = await client.tokenExpiry();
     return expiresAt === undefined ? {} : { expiresAt };
   }
-  if ("missing" in set) return { notRead: tokenNotSet(set.missing) };
+  if ("missing" in set) return { notRead: `${tokenNotSet(set.missing)}.` };
   const common = { fetch: deps.fetch, redactor: deps.redactor, version: deps.version };
   if (token.expiry === "cloudflare") {
     const client = cloudflareConnector({

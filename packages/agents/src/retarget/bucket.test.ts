@@ -593,4 +593,11 @@ describe("bucketChoice", () => {
       stays: expect.stringContaining("Hetzner Cloud has no object storage in the app's region"),
     });
   });
+
+  it("keeps it on a move to a cloud provider whose object storage OpsCrew does not use", () => {
+    const contabo = makeRequirements({ provider: "contabo" });
+    expect(bucketChoice(hetzner(), "contabo", { keep: false, requirements: contabo })).toEqual({
+      stays: `Bucket: ${BUCKET} on Hetzner Object Storage (fsn1) stays there and keeps billing after the move: OpsCrew uses no object storage at Contabo; the app on the new side keeps using it with the same key.`,
+    });
+  });
 });

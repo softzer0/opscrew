@@ -4,7 +4,7 @@
  * else changes and its date. Names and dates only: no value is ever read into the result.
  */
 import { join } from "node:path";
-import { exists, listText } from "@opscrew/core";
+import { exists } from "@opscrew/core";
 import {
   hasLogin,
   type RotationMode,
@@ -241,11 +241,6 @@ export function userTokenValue(
   if (set === undefined) return { missing };
   const parts = set.map((variable) => ({ variable, value: env[variable]?.trim() ?? "" }));
   return { parts, value: parts.map((part) => part.value).join("\n") };
-}
-
-/** `HCLOUD_TOKEN is not set.`, or the unset variables of a set. */
-export function tokenNotSet(missing: readonly string[]): string {
-  return `${listText(missing)} ${missing.length === 1 ? "is" : "are"} not set.`;
 }
 
 const USER_TOKEN_CHANGES =

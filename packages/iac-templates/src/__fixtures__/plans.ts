@@ -1,9 +1,12 @@
 import {
   type AppBuild,
+  type CloudProvider,
+  DEFAULT_IMAGES,
   type DeployPlan,
   DeployPlanSchema,
   type PlanService,
 } from "@opscrew/plan-schema";
+import { cloudProvider } from "@opscrew/providers";
 import type { RenderContext } from "../types";
 
 /**
@@ -33,7 +36,7 @@ export const PUBLIC_KEY =
   "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE opscrew-deploy";
 
 export interface TestPlanOptions {
-  provider?: "hetzner" | "digitalocean" | "own";
+  provider?: CloudProvider | "own";
   /** Own servers only: how the internet reaches the server (default public). */
   access?: "public" | "tunnel";
   /** Own servers only (default amd64). */
@@ -50,15 +53,30 @@ export interface TestPlanOptions {
   postgres?: boolean;
 }
 
+/** Each provider's fixture server and its monthly price. */
 const TARGETS = {
-  hetzner: { location: "nbg1", serverType: "cx23", image: "ubuntu-24.04", currency: "EUR" },
+  hetzner: {
+    location: "nbg1",
+    serverType: "cx23",
+    image: "ubuntu-24.04",
+    amount: 7.09,
+    currency: "EUR",
+  },
   digitalocean: {
     location: "fra1",
     serverType: "s-1vcpu-2gb",
     image: "ubuntu-24-04-x64",
+    amount: 15.6,
     currency: "USD",
   },
-} as const;
+  contabo: {
+    location: "EU",
+    serverType: "V153",
+    image: DEFAULT_IMAGES.contabo,
+    amount: 5.5,
+    currency: "EUR",
+  },
+} as const satisfies Record<CloudProvider, unknown>;
 
 /** The services design writes for an app on PostgreSQL (`db`) and one on Redis (`cache`). */
 export function testServices(o: { postgres?: boolean; redis?: boolean }): PlanService[] {
@@ -98,7 +116,6 @@ export function testServices(o: { postgres?: boolean; redis?: boolean }): PlanSe
 export function testPlan(o: TestPlanOptions = {}): DeployPlan {
   const provider = o.provider ?? "hetzner";
   const t = TARGETS[provider === "own" ? "hetzner" : provider];
-  const amount = provider === "digitalocean" ? 15.6 : 7.09;
   return DeployPlanSchema.parse({
     schemaVersion: 1,
     createdAt: "2026-10-11T12:00:00.000Z",
@@ -113,13 +130,14 @@ export function testPlan(o: TestPlanOptions = {}): DeployPlan {
             location: t.location,
             serverType: t.serverType,
             image: t.image,
-            backups: o.backups ?? true,
+            // Contabo has no provider backups OpsCrew turns on.
+            backups: o.backups ?? cloudProvider(provider).offering.providerBackups,
           },
     services: testServices({ postgres: o.postgres ?? true }),
     externalServices: o.postgres === false ? ["supabase"] : [],
     cost: {
-      monthly: { amount, currency: t.currency },
-      breakdown: [{ item: "server", monthly: { amount, currency: t.currency } }],
+      monthly: { amount: t.amount, currency: t.currency },
+      breakdown: [{ item: "server", monthly: { amount: t.amount, currency: t.currency } }],
       pricesIncludeVat: false,
       source: "static",
       asOf: "2026-10-12T00:00:00.000Z",

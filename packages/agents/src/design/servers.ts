@@ -1,5 +1,5 @@
 import type { ComputeCatalog, ComputeOffer, Currency } from "@opscrew/contracts";
-import { formatMoney, listText, OpsCrewError } from "@opscrew/core";
+import { formatMoney, listText, OpsCrewError, orText } from "@opscrew/core";
 import { DRAGONFLY_MIN_VCPUS, serviceSpec } from "@opscrew/iac-templates";
 import {
   type CloudProvider,
@@ -11,7 +11,7 @@ import {
   type PlanService,
   type Region,
 } from "@opscrew/plan-schema";
-import { providerProfile } from "../providers";
+import { providerProfile, VPS_PROVIDERS } from "../providers";
 import { type MemoryLimit, memoryHeadroom, SYSTEM_RESERVE_MB } from "../shared/memory";
 import {
   convertMoney,
@@ -182,7 +182,7 @@ export async function designCloudServer(input: CloudServerInput): Promise<Design
       "INVALID_INPUT",
       `Server ${name} has no ${provider === undefined ? "provider" : "location"}, and the app's server is your own, so OpsCrew has none to give it. plan.yaml was not changed.`,
       {
-        hint: `Set servers[].target.provider (hetzner or digitalocean) and servers[].target.location for server ${name} in opscrew/plan.yaml, then run \`opscrew design\` again.`,
+        hint: `Set servers[].target.provider (${orText(VPS_PROVIDERS)}) and servers[].target.location for server ${name} in opscrew/plan.yaml, then run \`opscrew design\` again.`,
       },
     );
   }

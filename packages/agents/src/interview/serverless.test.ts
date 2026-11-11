@@ -46,18 +46,19 @@ describe("the interview's server-less targets", () => {
     expect(values).toEqual([
       "hetzner",
       "digitalocean",
+      "contabo",
       "cloudflare-workers",
       "github-pages",
       "own",
       "portainer",
       "localhost",
     ]);
-    expect(provider?.options?.[2]).toEqual({
+    expect(provider?.options?.[3]).toEqual({
       value: "cloudflare-workers",
       label: "Cloudflare (no server)",
       hint: expect.stringContaining("free for static files"),
     });
-    expect(provider?.options?.[3]).toEqual({
+    expect(provider?.options?.[4]).toEqual({
       value: "github-pages",
       label: "GitHub Pages (no server)",
       hint: expect.stringContaining("no commercial use"),
@@ -77,6 +78,7 @@ describe("the interview's server-less targets", () => {
     expect((await interview("astro-ssr")).values).toEqual([
       "hetzner",
       "digitalocean",
+      "contabo",
       "cloudflare-workers",
       "own",
       "portainer",
@@ -85,6 +87,7 @@ describe("the interview's server-less targets", () => {
     expect((await interview("express-api")).values).toEqual([
       "hetzner",
       "digitalocean",
+      "contabo",
       "own",
       "portainer",
       "localhost",

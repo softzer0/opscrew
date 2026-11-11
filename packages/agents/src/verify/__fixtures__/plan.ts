@@ -1,4 +1,5 @@
 import { type CloudProvider, type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
+import { cloudProvider } from "@opscrew/providers";
 import { selfHostedServices } from "../../design/sizing";
 
 export const SERVER_IPV4 = "203.0.113.10";
@@ -26,17 +27,24 @@ const TARGETS = {
     serverType: "s-1vcpu-2gb",
     image: "ubuntu-24-04-x64",
   },
+  contabo: { provider: "contabo", location: "EU", serverType: "V153" },
 } as const;
 
 /** A deploy plan for the `shop` app, with a domain by default and the server provisioned. */
 export function testPlan(o: TestPlanOptions = {}): DeployPlan {
   const domain = "domain" in o ? o.domain : "shop.example.com";
+  const target = TARGETS[o.provider ?? "hetzner"];
   return DeployPlanSchema.parse({
     schemaVersion: 1,
     createdAt: "2026-10-01T12:00:00.000Z",
     updatedAt: "2026-10-01T12:00:00.000Z",
     app: { name: "shop", port: 3000, healthPath: "/api/health", env: [] },
-    target: { mode: "vps-compose", ...TARGETS[o.provider ?? "hetzner"], backups: true },
+    target: {
+      mode: "vps-compose",
+      ...target,
+      // Contabo has no provider backups OpsCrew turns on.
+      backups: cloudProvider(target.provider).offering.providerBackups,
+    },
     services: selfHostedServices({ postgres: true, redis: false }),
     externalServices: [],
     cost: {

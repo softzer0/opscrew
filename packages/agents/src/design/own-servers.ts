@@ -1,5 +1,5 @@
 import { otherActiveApps, tunnelOf } from "@opscrew/connector-ssh-host";
-import { listText, OpsCrewError } from "@opscrew/core";
+import { listText, OpsCrewError, orText } from "@opscrew/core";
 import type { PlanService } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import type { InterviewAnswers } from "../interview";
@@ -11,6 +11,7 @@ import {
   type ServerQuestion,
 } from "../interview/own-server";
 import type { NetworkHostFacts } from "../network";
+import { VPS_PROVIDERS } from "../providers";
 import type { OwnServerServices } from "../provision/types";
 import type { MemoryLimit } from "../shared/memory";
 import { connectExtraServer, ownServerFacts, ownServerPublicAddress } from "../shared/own-server";
@@ -111,7 +112,7 @@ export async function designOwnServer(
         ? `Server ${name} has no public IPv4 address OpsCrew can find, so it cannot run ${placed}: the deploys and OpsCrew's commands reach an extra server at its public address. plan.yaml was not changed.`
         : `Neither the app's server nor server ${name} has a public IPv4 address OpsCrew can find, so the private network cannot link them: one of the two must be reachable. plan.yaml was not changed.`,
       {
-        hint: `Place ${placed} on a cloud server (servers[].target.provider hetzner or digitalocean) or on the app's server (no services[].server), or give server ${name}'s public IPv4 address as its address: remove ownServers.${name} from .opscrew/server.json and run \`opscrew design\` again.`,
+        hint: `Place ${placed} on a cloud server (servers[].target.provider ${orText(VPS_PROVIDERS)}) or on the app's server (no services[].server), or give server ${name}'s public IPv4 address as its address: remove ownServers.${name} from .opscrew/server.json and run \`opscrew design\` again.`,
       },
     );
   }

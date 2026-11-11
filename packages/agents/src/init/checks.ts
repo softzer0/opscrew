@@ -24,6 +24,7 @@ import {
   isUserFacingError,
   listText,
   lowerFirst,
+  orText,
 } from "@opscrew/core";
 import { detectEngines, MIN_ENGINE_VERSION, versionAtLeast } from "@opscrew/iac-engine";
 import { CHECK_PAUSED_VARIABLE, usesTunnel } from "@opscrew/iac-templates";
@@ -51,12 +52,12 @@ import {
 } from "../domain/registrars";
 import {
   PORTAINER_TOKEN_VAR,
-  type ProviderProfile,
   planProvider,
   providerCredentials,
   providerFromTokens,
   providerProfile,
   requestedProvider,
+  tokenNotSet,
   VPS_PROVIDERS,
   vpsConnector,
 } from "../providers";
@@ -648,15 +649,6 @@ async function checkOwnServerLogin(deps: PhaseDeps, choice: ServerChoice): Promi
   return { status: login.ok ? "pass" : "fail", message: `${login.message}${hostKey}` };
 }
 
-/**
- * The variables of a provider's credentials that are set, once they are complete, as a list: its
- * first token variable that is set, or every variable of a set.
- */
-function tokenVarOf(env: Record<string, string | undefined>, profile: ProviderProfile) {
-  const { set } = providerCredentials(profile, env);
-  return set === undefined ? undefined : listText(set);
-}
-
 /** `is`, or `are` for several variables (a set of credentials). */
 const isAre = (vars: readonly string[]) => (vars.length === 1 ? "is" : "are");
 
@@ -685,11 +677,18 @@ async function checkProviderToken(
   const env = deps.env;
   const { provider } = choice;
   if (provider === undefined) {
-    const withToken = VPS_PROVIDERS.map(providerProfile).filter((p) => tokenVarOf(env, p));
+    const withToken = VPS_PROVIDERS.map(providerProfile).flatMap((profile) => {
+      const { set } = providerCredentials(profile, env);
+      return set === undefined ? [] : [{ profile, set }];
+    });
     if (withToken.length > 1) {
+      // One variable each reads as a plain list; a set of credentials is named with its provider.
+      const tokens = withToken.every(({ set }) => set.length === 1)
+        ? withToken.flatMap(({ set }) => set)
+        : withToken.map(({ profile, set }) => `${listText(set)} for ${profile.displayName}`);
       return {
         status: "pass",
-        message: `${withToken.map((p) => tokenVarOf(env, p)).join(" and ")} are both set. ${ONLY_ONE} OpsCrew uses and checks only the chosen provider's token.`,
+        message: `${listText(tokens)} are ${withToken.length === 2 ? "both" : "all"} set. ${ONLY_ONE} OpsCrew uses and checks only the chosen provider's token.`,
       };
     }
     const fixes = VPS_PROVIDERS.map((id) => {
@@ -699,7 +698,7 @@ async function checkProviderToken(
     const docker = which("docker");
     return {
       status: "warn",
-      message: `No cloud provider token is set (${VPS_PROVIDERS.map((id) => `${listText(providerCredentials(providerProfile(id), env).missing)} for ${providerProfile(id).displayName}`).join(" or ")}). OpsCrew can deploy to this computer (localhost; ${docker === undefined ? "Docker is not installed" : `Docker found at ${docker}`}), to a server you already have, or to a cloud provider with its token.`,
+      message: `No cloud provider token is set (${orText(VPS_PROVIDERS.map((id) => `${listText(providerCredentials(providerProfile(id), env).missing)} for ${providerProfile(id).displayName}`))}). OpsCrew can deploy to this computer (localhost; ${docker === undefined ? "Docker is not installed" : `Docker found at ${docker}`}), to a server you already have, or to a cloud provider with its token.`,
       fix: `Choose where in \`opscrew interview\`. This computer and a server you already have need no token${docker === undefined ? `; this computer needs Docker: ${DOCKER_INSTALL}` : "."} For a cloud provider, set one token. ${fixes.join(" ")}`,
     };
   }
@@ -743,11 +742,11 @@ async function checkProviderToken(
     );
     const why =
       others.length > 0
-        ? ` (${choice.source === "plan" ? "the plan deploys" : "your interview answers deploy"} to ${profile.displayName}, so ${others.join(" and ")} ${isAre(others)} not used)`
+        ? ` (${choice.source === "plan" ? "the plan deploys" : "your interview answers deploy"} to ${profile.displayName}, so ${listText(others)} ${isAre(others)} not used)`
         : "";
     return {
       status: "fail",
-      message: `${listText(missing)} ${isAre(missing)} not set${why}.`,
+      message: `${tokenNotSet(missing)}${why}.`,
       fix: `${fix}${scopeNote}`,
     };
   }

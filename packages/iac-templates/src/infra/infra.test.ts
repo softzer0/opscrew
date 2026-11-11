@@ -292,6 +292,7 @@ const validatedPlans = {
   hetzner: () => plan({ domain: "example.com", www: true }),
   digitalocean: () =>
     testPlan({ provider: "digitalocean", domain: "example.com", www: true, backups: true }),
+  contabo: () => testPlan({ provider: "contabo", domain: "example.com", www: true }),
   "hetzner with a Portainer subdomain": () =>
     testPlan({ domain: "shop.example.com", portainer: PORTAINER_SUBDOMAIN }),
   "own server (public)": () => testPlan({ provider: "own", domain: "example.com", www: true }),
@@ -425,6 +426,8 @@ async function initAndValidate(
 /**
  * Plans the validated root under `root` offline (no refresh, placeholder tokens, an own server's
  * address from the environment as the CLI passes it) and returns the plan's text, all creates.
+ * Hetzner's and DigitalOcean's roots only: Contabo's provider fetches a token from Contabo even
+ * for a plan, so its roots are validated, never planned, here.
  */
 async function planOffline(bin: string, root: string): Promise<string> {
   const runner = new NodeCommandRunner();

@@ -296,6 +296,11 @@ describe("provider question", () => {
           hint: "use your DigitalOcean account; data centres in Germany, the Netherlands, the US and Singapore; prices in USD",
         },
         {
+          value: "contabo",
+          label: "Contabo",
+          hint: "cheap servers in Germany, the US and Singapore; monthly contracts, a removal ends at the end of the term; prices in EUR",
+        },
+        {
           value: "own",
           label: "A server you already have",
           hint: "an Ubuntu or Debian server you reach over SSH with a key, rented anywhere or at home; you already pay for it",

@@ -1,7 +1,8 @@
 import { checkDialect } from "@opscrew/iac-engine";
 import type { CloudProvider } from "@opscrew/plan-schema";
+import { CLOUD_PROVIDERS, cloudProvider } from "@opscrew/providers";
 import { describe, expect, it } from "vitest";
-import { DIRECTIONS, testTarget } from "../__fixtures__/layouts";
+import { DIRECTIONS, SNAPSHOT_DIRECTIONS, testTarget } from "../__fixtures__/layouts";
 import { CF_RANGES, testCloudflare, testContext, testPlan } from "../__fixtures__/plans";
 import { renderDeployment } from "../render";
 import type { InfraLayout, RenderedFile, ServerModule } from "../types";
@@ -16,11 +17,16 @@ import {
 const MODULE_DIRS: Record<CloudProvider, string> = {
   hetzner: "hetzner-vps",
   digitalocean: "digitalocean-droplet",
+  contabo: "contabo-vps",
 };
-const TOKEN_VARS: Record<CloudProvider, string> = {
-  hetzner: "HCLOUD_TOKEN",
-  digitalocean: "DIGITALOCEAN_TOKEN",
+const CREDENTIALS_COMMENTS: Record<CloudProvider, string> = {
+  hetzner: "# Token from the HCLOUD_TOKEN environment variable (never stored in files or state).",
+  digitalocean:
+    "# Token from the DIGITALOCEAN_TOKEN environment variable (never stored in files or state).",
+  contabo:
+    "# Credentials from the CNTB_OAUTH2_CLIENT_ID, CNTB_OAUTH2_CLIENT_SECRET, CNTB_OAUTH2_USER and CNTB_OAUTH2_PASS environment variables (never stored in files or state).",
 };
+const CLOUD_IDS = CLOUD_PROVIDERS.map(({ id }) => id as CloudProvider);
 const MOVES_ONLY: readonly LayoutName[] = ["rename", "abort-rename"];
 
 /** The plan during a move: `plan.target` is already the new target. */
@@ -87,7 +93,7 @@ const variableNames = (variablesTf: string) =>
   [...variablesTf.matchAll(/^variable "([^"]+)"/gm)].map((m) => m[1]);
 
 describe("renderInfra move layouts (snapshots)", () => {
-  for (const [from, to] of DIRECTIONS) {
+  for (const [from, to] of SNAPSHOT_DIRECTIONS) {
     describe(`${from} to ${to}`, () => {
       for (const name of LAYOUT_NAMES) {
         it(`renders the ${name} layout`, () => {
@@ -215,7 +221,7 @@ describe("renderInfra move layouts", () => {
   });
 
   it("lists the one server by its provider without a move", () => {
-    for (const provider of ["hetzner", "digitalocean"] as const) {
+    for (const provider of CLOUD_IDS) {
       const files = renderInfra(testPlan({ provider }), testContext());
       expect(serversOutput(content(files, "prod/outputs.tf"))).toEqual({ [provider]: "server" });
     }
@@ -245,16 +251,15 @@ describe("renderInfra move layouts", () => {
         const main = content(files, "prod/main.tf");
         const versions = content(files, "prod/versions.tf");
         for (const provider of [from, to]) {
-          expect(main, label).toContain(
-            `# Token from the ${TOKEN_VARS[provider]} environment variable (never stored in files or state).`,
+          expect(main, label).toContain(CREDENTIALS_COMMENTS[provider]);
+          expect(versions, label).toContain(
+            `source  = "${cloudProvider(provider).terraform.provider.source}"`,
           );
         }
         expect([...main.matchAll(/^provider "([^"]+)" \{\}$/gm)].map((m) => m[1])).toEqual([
-          ...[from, to].map((p) => (p === "hetzner" ? "hcloud" : "digitalocean")),
+          ...[from, to].map((p) => cloudProvider(p).terraform.provider.name),
           "cloudflare",
         ]);
-        expect(versions).toContain('source  = "hetznercloud/hcloud"');
-        expect(versions).toContain('source  = "digitalocean/digitalocean"');
         expect(versions).toContain('source  = "cloudflare/cloudflare"');
         const vendored = new Set(
           files
@@ -262,7 +267,7 @@ describe("renderInfra move layouts", () => {
             .map((f) => f.path.split("/")[3]),
         );
         expect(vendored, label).toEqual(
-          new Set(["cloudflare-dns", "digitalocean-droplet", "hetzner-vps"]),
+          new Set(["cloudflare-dns", MODULE_DIRS[from], MODULE_DIRS[to]]),
         );
       }
     }
@@ -340,10 +345,10 @@ describe("renderInfra move layouts", () => {
             new RegExp(`variable "${variable}" \\{\\n[^}]*\\n {2}default {5}= true\\n\\}`),
           );
         }
-        // DigitalOcean modules get no protection argument.
+        // The modules of providers without delete protection get no protection argument.
         for (const module of ["server", "server_previous"] as const) {
           const target = module === "server" ? layout.server : layout.previous;
-          if (target?.provider !== "digitalocean") continue;
+          if (target === undefined || target.provider === "hetzner") continue;
           expect(moduleBlock(content(files, "prod/main.tf"), module), label).not.toContain(
             "protection",
           );
@@ -406,7 +411,7 @@ describe("renderInfra move layouts", () => {
   });
 
   it("differs from the plain root module only by the note for a one-server layout", () => {
-    for (const provider of ["hetzner", "digitalocean"] as const) {
+    for (const provider of CLOUD_IDS) {
       const plan = movePlan(provider);
       const plain = renderInfra(plan, testContext({ cloudflare: testCloudflare() }));
       const withLayout = renderInfra(

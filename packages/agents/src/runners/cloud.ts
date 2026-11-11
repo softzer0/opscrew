@@ -12,7 +12,7 @@ import {
   type RunnerFacts,
 } from "@opscrew/connector-ssh-host";
 import type { PhaseName, RemoteExec } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import { OpsCrewError, orText } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { VPS_PROVIDERS } from "../providers";
@@ -117,12 +117,14 @@ export async function cloudRunnerPlan(
  */
 async function unpreparedServer(root: string, plan: DeployPlan): Promise<OpsCrewError> {
   const { file, flag } = await planWhere(root, plan);
-  const other = VPS_PROVIDERS.find((provider) => provider !== plan.target.provider);
+  const moves = VPS_PROVIDERS.filter((provider) => provider !== plan.target.provider).map(
+    (provider) => `\`opscrew retarget --to ${provider}${flag}\``,
+  );
   return new OpsCrewError(
     "PHASE_PRECONDITION",
     "This server was created before OpsCrew prepared its servers for a self-hosted runner: its first boot did not make /srv/runners for deploy or let deploy's services run without a login, and deploy has no root to do that now. Nothing was changed.",
     {
-      hint: `Give the environment a new server: run \`opscrew destroy${flag}\` (it deletes the server and its data, after a snapshot when the server holds data), then \`opscrew provision${flag}\`. Or move the app to a new server at the other provider with \`opscrew retarget --to ${other}${flag}\`, which moves its Postgres and Valkey with it. To keep this server, set environment.runner to github in ${file}.`,
+      hint: `Give the environment a new server: run \`opscrew destroy${flag}\` (it deletes the server and its data, after a snapshot when the server holds data), then \`opscrew provision${flag}\`. Or move the app to a new server at another provider with ${orText(moves)}, which moves its Postgres and Valkey with it. To keep this server, set environment.runner to github in ${file}.`,
     },
   );
 }

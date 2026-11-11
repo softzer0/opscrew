@@ -90,8 +90,13 @@ export const TOKENS = {
 export const NEW_SERVERS: Record<CloudProvider, { id: string; ipv4: string; ipv6: string }> = {
   hetzner: { id: "4712", ipv4: "198.51.100.20", ipv6: "2001:db8:20::1" },
   digitalocean: { id: "3164445", ipv4: "198.51.100.30", ipv6: "2001:db8:30::1" },
+  contabo: { id: "202611002", ipv4: "198.51.100.40", ipv6: "2001:db8:40::1" },
 };
-export const OLD_IDS: Record<CloudProvider, string> = { hetzner: "4711", digitalocean: "3164444" };
+export const OLD_IDS: Record<CloudProvider, string> = {
+  hetzner: "4711",
+  digitalocean: "3164444",
+  contabo: "202611001",
+};
 
 /** Everything the fakes saw, in order: the trail SC-502 is checked on. */
 export type MoveEvent =
@@ -136,6 +141,7 @@ interface FakeServer {
 const MODULE_PROVIDER: Record<string, CloudProvider> = {
   "hetzner-vps": "hetzner",
   "digitalocean-droplet": "digitalocean",
+  "contabo-vps": "contabo",
 };
 
 const RESOURCES: Record<CloudProvider, readonly (readonly [string, string])[]> = {
@@ -150,14 +156,23 @@ const RESOURCES: Record<CloudProvider, readonly (readonly [string, string])[]> =
     ["digitalocean_firewall", "this"],
     ["digitalocean_droplet", "this"],
   ],
+  contabo: [
+    ["contabo_secret", "deploy"],
+    ["contabo_tag", "app"],
+    ["contabo_instance", "this"],
+    ["contabo_tag_assignment", "app"],
+    ["contabo_firewall", "this"],
+  ],
 };
 const SERVER_TYPE: Record<CloudProvider, string> = {
   hetzner: "hcloud_server",
   digitalocean: "digitalocean_droplet",
+  contabo: "contabo_instance",
 };
 const REGISTRY: Record<CloudProvider, string> = {
   hetzner: "registry.opentofu.org/hetznercloud/hcloud",
   digitalocean: "registry.opentofu.org/digitalocean/digitalocean",
+  contabo: "registry.opentofu.org/contabo/contabo",
 };
 
 interface FakeConfig {
@@ -1282,6 +1297,7 @@ export function targetOf(kind: MoveSideKind, records = true): DeployPlan["target
   switch (kind) {
     case "hetzner":
     case "digitalocean":
+    case "contabo":
       return movePlan({ from: kind }).target;
     case "own":
       return {

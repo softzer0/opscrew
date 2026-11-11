@@ -1,5 +1,5 @@
 import { posix } from "node:path";
-import { ENVIRONMENT_NAME_MESSAGE, ENVIRONMENT_NAME_PATTERN } from "@opscrew/core";
+import { ENVIRONMENT_NAME_MESSAGE, ENVIRONMENT_NAME_PATTERN, orText } from "@opscrew/core";
 import { z } from "zod";
 import { AppKeySchema, infraDirFor, workflowPathFor } from "./apps";
 import {
@@ -34,6 +34,7 @@ import {
   type ServerlessProvider,
   ServiceKindSchema,
   UrlPathSchema,
+  VpsProviderSchema,
 } from "./enums";
 import { AbsolutePathSchema } from "./facts";
 import { MigrationsSchema } from "./migrations";
@@ -1231,16 +1232,14 @@ function checkEnvironment(
     ctx.addIssue({
       code: "custom",
       path: ["environment", "runner"],
-      message:
-        'can be "server" only on a server OpsCrew creates or your own server (target.provider hetzner, digitalocean or own); use "github" here',
+      message: `can be "server" only on a server OpsCrew creates or your own server (target.provider ${orText(VpsProviderSchema.options)}); use "github" here`,
     });
   }
   if (runner === "host" && !onServer) {
     ctx.addIssue({
       code: "custom",
       path: ["environment", "runner"],
-      message:
-        'can be "host" only on a server OpsCrew creates or your own server (target.provider hetzner, digitalocean or own): a runner machine deploys to the server over SSH; use "github" here',
+      message: `can be "host" only on a server OpsCrew creates or your own server (target.provider ${orText(VpsProviderSchema.options)}): a runner machine deploys to the server over SSH; use "github" here`,
     });
   }
   if (runner === "host" && environment.runnerHost === undefined) {
@@ -1364,7 +1363,7 @@ function checkPreviews(
   } else if (!onOneServer(provider)) {
     issue(
       ["target", "provider"],
-      `can be "hetzner", "digitalocean" or "own" with previews: previews run on a server OpsCrew deploys to over SSH, which a ${provider} target is not; choose a cloud server or a server you own for the preview environment`,
+      `can be ${orText(VpsProviderSchema.options.map((id) => `"${id}"`))} with previews: previews run on a server OpsCrew deploys to over SSH, which a ${provider} target is not; choose a cloud server or a server you own for the preview environment`,
     );
   }
   if (environment.runner !== "github") {

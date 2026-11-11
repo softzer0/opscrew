@@ -341,12 +341,12 @@ describe("where extra servers and the network go", () => {
       {
         path: "servers",
         message:
-          "is refused with a Portainer target: extra servers run on a cloud server or your own server (target.provider hetzner, digitalocean or own); remove servers, or choose such a target",
+          "is refused with a Portainer target: extra servers run on a cloud server or your own server (target.provider hetzner, digitalocean, contabo or own); remove servers, or choose such a target",
       },
       {
         path: "network",
         message:
-          "is refused with a Portainer target: the private network links a cloud server or your own server (target.provider hetzner, digitalocean or own); remove network, or choose such a target",
+          "is refused with a Portainer target: the private network links a cloud server or your own server (target.provider hetzner, digitalocean, contabo or own); remove network, or choose such a target",
       },
     ]);
     const local = await splitPlan({

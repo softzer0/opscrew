@@ -36,11 +36,13 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { cloudTarget } from "@opscrew/iac-templates";
 import {
   type CloudProvider,
+  DEFAULT_IMAGES,
   type DeployPlan,
   DeployPlanSchema,
   type Retarget,
   writeArtifact,
 } from "@opscrew/plan-schema";
+import { cloudProvider } from "@opscrew/providers";
 import { selfHostedServices } from "../design/sizing";
 import type { CloudflareApi, GitHubApi } from "../provision/types";
 import { hasDeployment, updateServerAddresses } from "../shared";
@@ -82,6 +84,7 @@ export interface PlanInputOptions {
 const TARGETS = {
   hetzner: { location: "nbg1", serverType: "cx23" },
   digitalocean: { location: "fra1", serverType: "s-1vcpu-2gb", image: "ubuntu-24-04-x64" },
+  contabo: { location: "EU", serverType: "V153", image: DEFAULT_IMAGES.contabo },
 } as const;
 
 /** A valid `opscrew/plan.yaml` input (parsed with the schema so defaults are filled). */
@@ -108,7 +111,8 @@ export function testPlan(options: PlanInputOptions = {}) {
       provider,
       mode: "vps-compose",
       ...TARGETS[provider],
-      backups: true,
+      // Contabo has no provider backups OpsCrew turns on.
+      backups: cloudProvider(provider).offering.providerBackups,
     },
     services: selfHostedServices({ postgres: options.postgres ?? true, redis: false }),
     externalServices: [],

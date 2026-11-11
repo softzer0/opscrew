@@ -53,7 +53,7 @@ const droplet = testPlan({ deployed: true, provider: "digitalocean", postgres: t
 
 /** The two ways to another size the refusals name. */
 const WAYS =
-  "There are two ways to another size: `opscrew retarget --to hetzner` moves the app to Hetzner Cloud with a short maintenance window for its data; or, at DigitalOcean with downtime, take a snapshot of the app's data with its encrypted copy off the Droplet (`opscrew snapshot`, after `opscrew snapshot offsite on --to <provider>` and `opscrew provision` if the copy is off), remove the Droplet with `opscrew destroy` (DigitalOcean bills it to the end of its term), run `opscrew design` and `opscrew provision` with the new size, then put the data back from that copy with `opscrew restore <id> --from offsite --key-file <path>`";
+  "There are two ways to another size: `opscrew retarget --to hetzner` or `opscrew retarget --to contabo` moves the app to Hetzner Cloud or Contabo with a short maintenance window for its data; or, at DigitalOcean with downtime, take a snapshot of the app's data with its encrypted copy off the Droplet (`opscrew snapshot`, after `opscrew snapshot offsite on --to <provider>` and `opscrew provision` if the copy is off), remove the Droplet with `opscrew destroy` (DigitalOcean bills it to the end of its term), run `opscrew design` and `opscrew provision` with the new size, then put the data back from that copy with `opscrew restore <id> --from offsite --key-file <path>`";
 
 describe("advise's size changes where the provider can't resize in place", () => {
   it("proposes the larger type as a move to a new server, by hand, without resize reasons", async () => {

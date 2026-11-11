@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { SERVER_IPV4 } from "../testing";
+import { SERVER_IPV4, testPlan } from "../testing";
 import { fakeProvider, WHOLE_SERVER } from "./__fixtures__/provider";
 import { SH_AVAILABLE } from "./__fixtures__/server";
 import {
@@ -129,6 +129,21 @@ describe.skipIf(!SH_AVAILABLE)("opscrew snapshot list on servers", () => {
     expect(listed.map((entry) => entry.id)).toEqual([ID]);
     expect(world.deps.reporter.text()).toContain(
       "warn: The whole-server snapshots at Hetzner Cloud are not listed: set HCLOUD_TOKEN to list them.",
+    );
+  });
+
+  it("names the unset variables of a provider's set of credentials", async () => {
+    const plan = stagingPlan([{ kind: "postgres", name: "db" }], {
+      base: testPlan({ deployed: true, provider: "contabo" }),
+    });
+    const world = await snapshotWorld(plan);
+    const env = { ...world.deps.env, CNTB_OAUTH2_CLIENT_ID: "opscrew", CNTB_OAUTH2_USER: "me" };
+    await listSnapshots(
+      { ...world.deps, env },
+      { services: { ...world.services, serverSnapshots: () => undefined } },
+    );
+    expect(world.deps.reporter.text()).toContain(
+      "warn: The whole-server snapshots at Contabo are not listed: set all of CNTB_OAUTH2_CLIENT_ID, CNTB_OAUTH2_CLIENT_SECRET, CNTB_OAUTH2_USER and CNTB_OAUTH2_PASS to list them (CNTB_OAUTH2_CLIENT_SECRET and CNTB_OAUTH2_PASS are not set).",
     );
   });
 

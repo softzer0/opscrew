@@ -149,6 +149,7 @@ describe("runAdvise: one server", () => {
       "security.env.dependabot-alerts",
       "security.app.updates",
       // when convenient
+      "cost.app.other-provider",
       "reliability.app.backups",
       "reliability.env.check",
     ]);
@@ -169,6 +170,7 @@ describe("runAdvise: one server", () => {
       "Hetzner Cloud's prices in nbg1",
       "DigitalOcean's prices in fra1",
       "DigitalOcean's prices in ams3",
+      "Contabo's prices in EU",
       "Dependabot alerts",
       "Dependabot's open pull requests",
       "the GitHub token's expiry",
@@ -176,6 +178,9 @@ describe("runAdvise: one server", () => {
     ]);
     // No tokens here: the dated static prices, said so.
     expect(report.notRead).toEqual([
+      expect.stringMatching(
+        /^live prices: Contabo has no price API, so prices come from Contabo's published price list dated \d{4}-\d{2}-\d{2}/,
+      ),
       expect.stringMatching(
         /^live prices: DIGITALOCEAN_TOKEN is not set, so prices come from DigitalOcean's published price list dated \d{4}-\d{2}-\d{2}/,
       ),
@@ -241,7 +246,7 @@ describe("runAdvise: one server", () => {
     expect(byId(report, "upkeep.env.cloudflare-token")?.urgency).toBe("soon");
   });
 
-  it("says when there is nothing to propose, with what it checked", async () => {
+  it("proposes nothing for a healthy app but a cheaper provider, with what it checked", async () => {
     const plan = DeployPlanSchema.parse({
       ...testPlan({ deployed: true }),
       observability: { check: { enabled: true } },
@@ -252,7 +257,8 @@ describe("runAdvise: one server", () => {
       github: new FakeAdviseGitHub(),
     });
     const report = await runAdvise(s.deps, plan, s.options);
-    expect(report.proposals).toEqual([]);
+    // Contabo's dated price list is below Hetzner's for a server at least as large.
+    expect(report.proposals.map((proposal) => proposal.id)).toEqual(["cost.app.other-provider"]);
     expect(report.checked.length).toBeGreaterThan(5);
   });
 

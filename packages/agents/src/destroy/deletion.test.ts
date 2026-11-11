@@ -32,6 +32,7 @@ import {
   liftProtection,
   previewDeletion,
   remainingAfterDeletion,
+  serverApi,
   snapshotRecordPath,
   snapshotWanted,
   takeSnapshotBeforeDelete,
@@ -498,6 +499,31 @@ describe("takeSnapshotBeforeDelete", () => {
     expect(snapshotWanted("auto", { serverData: false, backups: false })).toBe(false);
     expect(snapshotWanted(true, { serverData: false, backups: false })).toBe(true);
     expect(snapshotWanted(false, { serverData: true, backups: true })).toBe(false);
+  });
+});
+
+describe("serverApi", () => {
+  it("stops without the provider's credentials, naming a set's unset variables", async () => {
+    const api = async (provider: VpsProviderId, env: Record<string, string>) => {
+      const deps = await createTestPhaseDeps({ env });
+      const scope = { deps, provider, app: "shop", command: "opscrew destroy", what: "teardown" };
+      return () => serverApi({ ...scope, phase: "provision" }, {});
+    };
+    expect(await api("hetzner", {})).toThrow(
+      expect.objectContaining({
+        code: "CREDENTIALS_MISSING",
+        message: "No Hetzner Cloud token found: set HCLOUD_TOKEN.",
+      }),
+    );
+    expect(
+      await api("contabo", { CNTB_OAUTH2_CLIENT_ID: "opscrew", CNTB_OAUTH2_PASS: "me" }),
+    ).toThrow(
+      expect.objectContaining({
+        code: "CREDENTIALS_MISSING",
+        message:
+          "Contabo needs all of CNTB_OAUTH2_CLIENT_ID, CNTB_OAUTH2_CLIENT_SECRET, CNTB_OAUTH2_USER and CNTB_OAUTH2_PASS: CNTB_OAUTH2_CLIENT_SECRET and CNTB_OAUTH2_USER are not set.",
+      }),
+    );
   });
 });
 

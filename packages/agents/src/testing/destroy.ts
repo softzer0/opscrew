@@ -275,6 +275,10 @@ const FAKE_SERVERS: Record<CloudProvider, { server: AppServer; snapshotId: strin
     server: { id: "3164444", name: "shop", status: "active" },
     snapshotId: "6372321",
   },
+  contabo: {
+    server: { id: "202611001", name: "shop", status: "running" },
+    snapshotId: "202611001:snap1762862400",
+  },
 };
 
 /**

@@ -9,9 +9,10 @@ import {
   otherActiveApps,
 } from "@opscrew/connector-ssh-host";
 import type { PhaseName, RemoteExec } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import { OpsCrewError, orText } from "@opscrew/core";
 import { IMAGES } from "@opscrew/iac-templates";
 import { type DeployPlan, onOneServer } from "@opscrew/plan-schema";
+import { CLOUD_PROVIDERS } from "@opscrew/providers";
 import type { PhaseDeps } from "../context";
 import { hasPublicAddress, type KeyMaker, type ReadNetworkServices } from "../network";
 import type { NetworkServer } from "../provision/network";
@@ -47,7 +48,7 @@ export function requireServers(plan: DeployPlan): void {
       "PHASE_PRECONDITION",
       `Devices join the private network of an app on a cloud server or your own server, and this app runs on ${plan.target.provider}. Nothing was changed.`,
       {
-        hint: "Use `opscrew vpn` with an app deployed to Hetzner, DigitalOcean or your own server.",
+        hint: `Use \`opscrew vpn\` with an app deployed to ${orText([...CLOUD_PROVIDERS.map((p) => p.name), "your own server"])}.`,
       },
     );
   }

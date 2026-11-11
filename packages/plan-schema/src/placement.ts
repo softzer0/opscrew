@@ -6,7 +6,12 @@
 import { orText } from "@opscrew/core";
 import { z } from "zod";
 import { APP_SERVER, ComponentNameSchema, type PlanService } from "./components";
-import { IsoDateTimeSchema, onOneServer, type SelfHostedServiceKind } from "./enums";
+import {
+  IsoDateTimeSchema,
+  onOneServer,
+  type SelfHostedServiceKind,
+  VpsProviderSchema,
+} from "./enums";
 import { isOutsideMember, monitoringOf } from "./monitoring";
 import type { MonitoringSettings } from "./plan";
 
@@ -207,8 +212,7 @@ export function checkPlacement(plan: PlacementFields, ctx: z.RefinementCtx): voi
   const servers = plan.servers ?? [];
   if (!onOneServer(plan.target.provider)) {
     const target = TARGET_NAMES[plan.target.provider] ?? plan.target.provider;
-    const choose =
-      "a cloud server or your own server (target.provider hetzner, digitalocean or own)";
+    const choose = `a cloud server or your own server (target.provider ${orText(VpsProviderSchema.options)})`;
     if (servers.length > 0) {
       issue(
         ["servers"],

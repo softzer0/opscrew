@@ -4,8 +4,9 @@
  * deleted through the connectors. Taking one is `opscrew snapshot --server`'s (T2409).
  */
 import type { ServerSnapshotApi } from "@opscrew/contracts";
+import { listText } from "@opscrew/core";
 import { type CloudProvider, isCloudProvider } from "@opscrew/plan-schema";
-import { providerProfile, vpsConnector } from "../providers";
+import { providerCredentials, providerProfile, tokenNotSet, vpsConnector } from "../providers";
 import { extraCloudProviders } from "../shared/servers";
 import type { SnapshotRun } from "./run";
 import type { SnapshotEntry } from "./types";
@@ -46,7 +47,9 @@ export async function providerSnapshots(run: SnapshotRun): Promise<ProviderSnaps
     const api = serverApi(run, provider);
     if (api === undefined) {
       deps.reporter.warn(
-        `The whole-server snapshots at ${profile.displayName} are not listed: set ${profile.tokenVars.join(" or ")} to list them.`,
+        profile.tokenMode === "all"
+          ? `The whole-server snapshots at ${profile.displayName} are not listed: set all of ${listText(profile.tokenVars)} to list them (${tokenNotSet(providerCredentials(profile, deps.env).missing)}).`
+          : `The whole-server snapshots at ${profile.displayName} are not listed: set ${profile.tokenVars.join(" or ")} to list them.`,
       );
       continue;
     }

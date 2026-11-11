@@ -52,7 +52,7 @@ describe("target guards and move layouts (package root)", () => {
       expect.objectContaining({
         code: "PHASE_PRECONDITION",
         message:
-          "This step only applies to servers OpsCrew creates on Hetzner Cloud or DigitalOcean, not to a server you already own.",
+          "This step only applies to servers OpsCrew creates on Hetzner Cloud, DigitalOcean or Contabo, not to a server you already own.",
         hint: BUG,
       }),
     );

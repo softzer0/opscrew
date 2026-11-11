@@ -1,7 +1,7 @@
 import type { VpsConnector, VpsProviderId } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import { OpsCrewError, orText } from "@opscrew/core";
 import { isCloudProvider } from "@opscrew/plan-schema";
-import { cloudProvider } from "@opscrew/providers";
+import { CLOUD_PROVIDERS, cloudProvider } from "@opscrew/providers";
 import type { PhaseDeps } from "../context";
 import { type OwnServerFacts, type OwnServerLogin, ownServerConnector } from "./own";
 
@@ -46,7 +46,7 @@ export function vpsConnector(
     "INVALID_INPUT",
     `OpsCrew does not know the server provider "${String(id satisfies never)}".`,
     {
-      hint: "Use hetzner, digitalocean or own as the provider in opscrew/requirements.yaml and opscrew/plan.yaml.",
+      hint: `Use ${orText([...CLOUD_PROVIDERS.map((p) => p.id), "own"])} as the provider in opscrew/requirements.yaml and opscrew/plan.yaml.`,
     },
   );
 }

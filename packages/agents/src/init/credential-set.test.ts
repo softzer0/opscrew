@@ -101,7 +101,7 @@ describe("opscrew init with credentials as a set", () => {
     const partial = await providerCheck(three, { offline: true });
     expect(partial.status).toBe("warn");
     expect(partial.message).toContain(
-      "HCLOUD_TOKEN for Hetzner Cloud or SET_PASS for DigitalOcean",
+      "HCLOUD_TOKEN for Hetzner Cloud, SET_PASS for DigitalOcean or CNTB_OAUTH2_CLIENT_ID, CNTB_OAUTH2_CLIENT_SECRET, CNTB_OAUTH2_USER and CNTB_OAUTH2_PASS for Contabo",
     );
 
     const whole = await providerCheck(ALL, { offline: true });
@@ -111,7 +111,7 @@ describe("opscrew init with credentials as a set", () => {
 
     const both = await providerCheck({ ...ALL, HCLOUD_TOKEN: "h" }, { offline: true });
     expect(both.message).toContain(
-      "HCLOUD_TOKEN and SET_ID, SET_SECRET, SET_USER and SET_PASS are both set.",
+      "HCLOUD_TOKEN for Hetzner Cloud and SET_ID, SET_SECRET, SET_USER and SET_PASS for DigitalOcean are both set.",
     );
   });
 });

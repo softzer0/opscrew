@@ -9,6 +9,7 @@ import {
   type PhaseDeps,
   previewDesignOptions,
   priceLabel,
+  providerCredentials,
   providerProfile,
   readEnvironmentRequirements,
   readOwnServer,
@@ -19,8 +20,13 @@ import {
 import type { ApprovalHandler } from "@opscrew/contracts";
 import { formatMoney, OpsCrewError, orText, taxLabel, toPosixRelative } from "@opscrew/core";
 import { detectProject } from "@opscrew/detect";
-import { type DesignOption, isServerlessProvider, readArtifact } from "@opscrew/plan-schema";
-import { CLOUD_PROVIDERS } from "@opscrew/providers";
+import {
+  type DesignOption,
+  isCloudProvider,
+  isServerlessProvider,
+  readArtifact,
+} from "@opscrew/plan-schema";
+import { CLOUD_PROVIDERS, cloudProvider } from "@opscrew/providers";
 import { z } from "zod";
 import { CollectingReporter, type ResolvedMcpDeps } from "../deps";
 import { CLOUD_NAMES } from "../providers";
@@ -199,7 +205,12 @@ function priceSourceText(
 ): string {
   const profile = providerProfile(provider);
   if (priceSource === "live") return `prices live from ${profile.displayName}`;
-  const tokenSet = profile.tokenVars.some((name) => (deps.env[name] ?? "").trim() !== "");
+  // Only a provider with a price API has live prices, and a set of credentials counts once every
+  // one of its variables is set.
+  const tokenSet =
+    isCloudProvider(provider) &&
+    cloudProvider(provider).texts.design.livePricesVar !== undefined &&
+    providerCredentials(profile, deps.env).set !== undefined;
   return tokenSet
     ? `prices live from ${profile.displayName}'s API where it returns them; rates it does not return are labelled with their published date on each option`
     : "prices from a dated price list; estimates";

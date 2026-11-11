@@ -1,4 +1,4 @@
-import { OpsCrewError } from "@opscrew/core";
+import { OpsCrewError, orText } from "@opscrew/core";
 import {
   type CloudProvider,
   type DeployTarget,
@@ -28,9 +28,8 @@ export function cloudTarget<T extends Pick<DeployTarget, "provider">>(
 ): T & { provider: CloudProvider } {
   const { provider } = target;
   if (!isCloudProvider(provider)) {
-    const names = CLOUD_PROVIDERS.map((cloud) => cloud.displayName);
     throw wrongTarget(
-      `This step only applies to servers OpsCrew creates on ${names.slice(0, -1).join(", ")} or ${names.at(-1)}, not to ${NOT_CLOUD[provider]}.`,
+      `This step only applies to servers OpsCrew creates on ${orText(CLOUD_PROVIDERS.map((cloud) => cloud.displayName))}, not to ${NOT_CLOUD[provider]}.`,
     );
   }
   return target as T & { provider: CloudProvider };

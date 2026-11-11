@@ -1,5 +1,5 @@
 import type { Money, VpsProviderId } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import { listText, OpsCrewError, orText } from "@opscrew/core";
 import { wrongTarget } from "@opscrew/iac-templates";
 import {
   type CloudProvider,
@@ -324,7 +324,7 @@ export function providerProfile(
   const profile = PROFILES.get(id);
   if (profile === undefined) {
     throw new OpsCrewError("INVALID_INPUT", `OpsCrew does not know the server provider "${id}".`, {
-      hint: "Use hetzner, digitalocean, own or portainer as the provider in opscrew/requirements.yaml and opscrew/plan.yaml.",
+      hint: `Use ${orText([...VPS_PROVIDERS, "own", "portainer"])} as the provider in opscrew/requirements.yaml and opscrew/plan.yaml.`,
     });
   }
   return profile;
@@ -337,7 +337,7 @@ export function providerProfile(
 function serverProvider(provider: DeployProvider): VpsProviderId {
   if (onOneServer(provider)) return provider;
   throw wrongTarget(
-    `This step only applies to an app on one server (Hetzner Cloud, DigitalOcean or a server you own), not to ${NOT_ON_SERVER[provider]}.`,
+    `This step only applies to an app on one server (${orText([...CLOUD_PROVIDERS.map((p) => p.displayName), "a server you own"])}), not to ${NOT_ON_SERVER[provider]}.`,
   );
 }
 
@@ -411,6 +411,11 @@ export function providerCredentials(
   env: Readonly<Record<string, string | undefined>>,
 ): CredentialVars {
   return credentialVars(profile.tokenVars, profile.tokenMode, env);
+}
+
+/** `HCLOUD_TOKEN is not set`, or the unset variables of a set: `A and B are not set`. */
+export function tokenNotSet(missing: readonly string[]): string {
+  return `${listText(missing)} ${missing.length === 1 ? "is" : "are"} not set`;
 }
 
 /**

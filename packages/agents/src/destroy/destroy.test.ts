@@ -20,6 +20,7 @@ import {
   writeArtifact,
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { applyMarkerFile } from "../provision/takeover";
 import { ensureStatePassphrase, readServerAddresses, recordServerAddress } from "../shared";
 import {
   createProject,
@@ -539,6 +540,18 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
     expect(text).toContain("The teardown deletes these resources:");
     expect(text).toContain("the PostgreSQL database");
     expect(text).toContain("What remains:");
+  });
+
+  it("removes the marker of a provision that stopped mid-apply once the teardown is done", async () => {
+    const { deps, services } = await setup();
+    const marker = applyMarkerFile(deps.paths);
+    await mkdir(dirname(marker), { recursive: true });
+    await writeFile(
+      marker,
+      '{"planHash":"x","startedAt":"2026-10-11T12:00:00.000Z","servers":[]}\n',
+    );
+    await runDestroy(deps, { services });
+    expect(existsSync(marker)).toBe(false);
   });
 
   it("stops when the typed name is wrong: nothing deleted, and says protection is already lifted", async () => {

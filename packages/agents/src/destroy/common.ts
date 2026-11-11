@@ -32,6 +32,7 @@ import {
   type SecretPlace,
   secretsEnvironment,
 } from "../provision/secrets";
+import { applyMarkerFile } from "../provision/takeover";
 import { planWhere } from "../runners/words";
 import {
   approvalEntry,
@@ -732,7 +733,8 @@ function gitHubFailed(
 /**
  * 8. OpsCrew's record of a finished teardown: `opscrew/plan.yaml` without the app's URL, with
  * `destroyedAt` and the plans this run's `approvals` approved; the record of the stored deploy
- * secrets goes (with `forgetAddress`, the server's address in `.opscrew/server.json` too) and the
+ * secrets goes (with `forgetAddress`, the server's address in `.opscrew/server.json` too), and so
+ * does the marker of a provision that stopped mid-apply (its servers are gone), and the
  * `provision` phase is recorded as skipped with `summary`. Returns the plan as written.
  */
 export async function recordTeardown(
@@ -755,6 +757,7 @@ export async function recordTeardown(
   await writeArtifact("plan", deps.paths.files.plan, destroyed);
   if (opts.forgetAddress) await recordServerAddress(deps.paths, undefined);
   await rm(deps.paths.files.deploySecrets, { force: true });
+  await rm(applyMarkerFile(deps.paths), { force: true });
   await deps.state.markPhase("provision", "skipped", opts.summary);
   return destroyed;
 }

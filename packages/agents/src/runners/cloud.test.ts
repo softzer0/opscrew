@@ -314,7 +314,7 @@ describe.skipIf(!findExecutable("git"))("the server's runner on a server OpsCrew
       "This server was created before OpsCrew prepared its servers for a self-hosted runner: its first boot did not make /srv/runners for deploy or let deploy's services run without a login, and deploy has no root to do that now. Nothing was changed.",
     );
     expect(hint).toBe(
-      "Give the environment a new server: run `opscrew destroy` (it deletes the server and its data, after a snapshot when the server holds data), then `opscrew provision`. Or move the app to a new server at the other provider with `opscrew retarget --to digitalocean`, which moves its Postgres and Valkey with it. To keep this server, set environment.runner to github in opscrew/plan.yaml.",
+      "Give the environment a new server: run `opscrew destroy` (it deletes the server and its data, after a snapshot when the server holds data), then `opscrew provision`. Or move the app to a new server at another provider with `opscrew retarget --to digitalocean` or `opscrew retarget --to contabo`, which moves its Postgres and Valkey with it. To keep this server, set environment.runner to github in opscrew/plan.yaml.",
     );
     expect(s.handler.requests).toEqual([]);
     expect(s.engine.applied).toHaveLength(applied);

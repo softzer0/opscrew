@@ -3,6 +3,7 @@ import { join } from "node:path";
 import {
   ensureStateDir,
   OpsCrewError,
+  orText,
   type ProjectPaths,
   readTextIfExists,
   stripBom,
@@ -14,6 +15,7 @@ import {
   PortainerWebSchema,
   ServerNameSchema,
 } from "@opscrew/plan-schema";
+import { CLOUD_PROVIDERS } from "@opscrew/providers";
 import { z } from "zod";
 
 /** A server's public addresses. */
@@ -328,7 +330,7 @@ function damaged(reason: string): OpsCrewError {
     "ARTIFACT_INVALID",
     `OpsCrew's record of the servers on this computer (.opscrew/server.json) is damaged (${reason}), so OpsCrew stopped instead of guessing the servers' addresses.`,
     {
-      hint: "Fix the JSON in .opscrew/server.json and run the command again. If this project deploys to your own server, do not delete the file: run `opscrew interview` again instead, which keeps the damaged file as .opscrew/server.json.damaged, and confirm the server's host key again when OpsCrew next connects. If this project deploys to your Portainer, do not delete the file: it lists the stacks OpsCrew created there, which only OpsCrew's record lets it update or remove. For Hetzner Cloud or DigitalOcean you can also start over. Delete .opscrew/server.json and run the command again: OpsCrew then reads the addresses from the infrastructure state in .opscrew/tfstate. If that state is not on this computer, run OpsCrew on the computer that provisioned the server.",
+      hint: `Fix the JSON in .opscrew/server.json and run the command again. If this project deploys to your own server, do not delete the file: run \`opscrew interview\` again instead, which keeps the damaged file as .opscrew/server.json.damaged, and confirm the server's host key again when OpsCrew next connects. If this project deploys to your Portainer, do not delete the file: it lists the stacks OpsCrew created there, which only OpsCrew's record lets it update or remove. For ${orText(CLOUD_PROVIDERS.map((p) => p.displayName))} you can also start over. Delete .opscrew/server.json and run the command again: OpsCrew then reads the addresses from the infrastructure state in .opscrew/tfstate. If that state is not on this computer, run OpsCrew on the computer that provisioned the server.`,
     },
   );
 }

@@ -142,7 +142,9 @@ describe("environment.previews", () => {
       };
     });
     expect(issue.path).toBe("target.provider");
-    expect(issue.message).toContain('can be "hetzner", "digitalocean" or "own" with previews');
+    expect(issue.message).toContain(
+      'can be "hetzner", "digitalocean", "contabo" or "own" with previews',
+    );
   });
 
   it("refuses a runner or a build other than GitHub's", async () => {

@@ -97,9 +97,15 @@ export function renderRunbook(plan: DeployPlan, ctx: RunbookContext): RenderedFi
     ? `kept private behind Cloudflare: \`${status}\` shows them`
     : `${ip ?? PENDING} / ${ipv6 ?? PENDING}`;
   const repo = `${ctx.github.owner}/${ctx.github.repo}`;
+  const snapshot = opscrew(plan, "snapshot", environments);
+  const { providerBackups } = provider.offering;
   const db = dataCell(
     plan,
-    target.backups ? text.backupsOnDatabaseCell : "automated backups are off",
+    target.backups
+      ? text.backupsOnDatabaseCell
+      : providerBackups
+        ? "automated backups are off"
+        : `snapshots with \`${snapshot}\``,
     externalDatabaseCell(plan),
   );
   const dns = usesCloudflare(plan)
@@ -152,9 +158,18 @@ export function renderRunbook(plan: DeployPlan, ctx: RunbookContext): RenderedFi
     lines.push(
       "## Database backups",
       "",
-      target.backups
-        ? text.backupsOn
-        : `Automated server backups are **off**. Turn them on with \`${opscrew(plan, "design", environments)}\` (they cost extra; it shows the price) or make your own backups:`,
+      ...(target.backups
+        ? [text.backupsOn]
+        : providerBackups
+          ? [
+              `Automated server backups are **off**. Turn them on with \`${opscrew(plan, "design", environments)}\` (they cost extra; it shows the price) or make your own backups:`,
+            ]
+          : [
+              `${provider.name} has no automated server backups OpsCrew turns on; OpsCrew's own snapshots of the data take their place:`,
+              `\`${snapshot}\` takes one, \`${opscrew(plan, "snapshot schedule on", environments)}\` takes them on a schedule, and`,
+              `\`${opscrew(plan, "snapshot offsite on --to <provider>", environments)}\` keeps an encrypted copy of each off the server;`,
+              `\`${opscrew(plan, "restore <id>", environments)}\` puts one back. You can also make your own backups:`,
+            ]),
       "",
       ...DATABASE_DUMP,
     );

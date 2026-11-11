@@ -284,17 +284,24 @@ describe("the server modules", () => {
       expect(MODULE_FILES[`${module}/outputs.tf`]).toMatch(
         /output "ssh_key_id" \{[^}]*value {7}= local\.ssh_key_id/,
       );
-      // The deploy key only without ssh_key_id; a key created as a single resource keeps its place.
+      // The deploy key only without ssh_key_id.
       expect(main).toMatch(
-        /_ssh_key" "deploy" \{\n {2}count {6}= var\.ssh_key_id == null \? 1 : 0/,
-      );
-      expect(main).toMatch(
-        /moved \{\n {2}from = \w+_ssh_key\.deploy\n {2}to {3}= \w+_ssh_key\.deploy\[0\]/,
+        /resource "\w+" "deploy" \{\n {2}count += var\.ssh_key_id == null \? 1 : 0/,
       );
       expect(main).toMatch(/for_each = var\.web \? local\.web_rules : \[\]/);
       expect(main).toMatch(/for_each = var\.wireguard_port\[\*\]/);
     });
   }
+
+  // Hetzner's and DigitalOcean's deploy keys were once created as a single resource.
+  it.each(["hetzner-vps", "digitalocean-droplet"])(
+    "%s keeps a key created as a single resource in its place",
+    (module) => {
+      expect(MODULE_FILES[`${module}/main.tf`]).toMatch(
+        /moved \{\n {2}from = \w+_ssh_key\.deploy\n {2}to {3}= \w+_ssh_key\.deploy\[0\]/,
+      );
+    },
+  );
 
   it("hetzner-vps opens SSH only to allowed networks, 80 and 443 only with web, and WireGuard's port to everyone", () => {
     const main = MODULE_FILES["hetzner-vps/main.tf"] ?? "";

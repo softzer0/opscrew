@@ -1,6 +1,7 @@
 import { OpsCrewError } from "@opscrew/core";
 import { FAKE_SECRET_KINDS, type FakeSecretKind, fakeSecret } from "@opscrew/core/testing";
-import { CloudProviderSchema } from "@opscrew/plan-schema";
+import { type CloudProvider, CloudProviderSchema, DEFAULT_IMAGES } from "@opscrew/plan-schema";
+import { definition as contabo } from "@opscrew/provider-contabo";
 import { definition as digitalocean } from "@opscrew/provider-digitalocean";
 import { definition as hetzner } from "@opscrew/provider-hetzner";
 import { describe, expect, it } from "vitest";
@@ -9,9 +10,10 @@ import { validateCloudProvider } from "./validate";
 
 describe("the registry", () => {
   it("lists the built-in definitions in order, as their packages export them", () => {
-    expect(CLOUD_PROVIDERS).toHaveLength(2);
+    expect(CLOUD_PROVIDERS).toHaveLength(3);
     expect(CLOUD_PROVIDERS[0]).toBe(hetzner);
     expect(CLOUD_PROVIDERS[1]).toBe(digitalocean);
+    expect(CLOUD_PROVIDERS[2]).toBe(contabo);
   });
 
   it("has the ids of plan-schema's cloud providers, in order", () => {
@@ -21,6 +23,7 @@ describe("the registry", () => {
   it("returns a provider's definition itself", () => {
     expect(cloudProvider("hetzner")).toBe(hetzner);
     expect(cloudProvider("digitalocean")).toBe(digitalocean);
+    expect(cloudProvider("contabo")).toBe(contabo);
   });
 
   it("refuses an unknown provider, naming the known ones", () => {
@@ -34,7 +37,7 @@ describe("the registry", () => {
     expect(error).toMatchObject({
       code: "INVALID_INPUT",
       message: 'OpsCrew does not create servers on "linode".',
-      hint: "Choose one of its cloud providers: hetzner and digitalocean.",
+      hint: "Choose one of its cloud providers: hetzner, digitalocean and contabo.",
     });
   });
 });
@@ -44,6 +47,10 @@ describe.each(CLOUD_PROVIDERS.map((provider) => [provider.id, provider] as const
   (_id, provider) => {
     it("passes validation", () => {
       expect(validateCloudProvider(provider)).toBe(provider);
+    });
+
+    it("has plan-schema's default image", () => {
+      expect(DEFAULT_IMAGES[provider.id as CloudProvider]).toBe(provider.offering.defaultImage);
     });
 
     it("gives module arguments for the app's server, an extra server and the previous one", () => {

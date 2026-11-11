@@ -19,7 +19,7 @@ afterEach(async () => {
 /** The repository folder of the most recent {@link connect}. */
 let lastRoot = "";
 
-async function connect() {
+async function connect(env: Record<string, string> = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), "opscrew-mcp-design-"));
   cleanups.push(() => rm(dir, { recursive: true, force: true }));
   const root = path.join(dir, "repo");
@@ -31,7 +31,7 @@ async function connect() {
   );
   const server = createOpscrewMcpServer({
     version: "0.0.0-test",
-    env: { OPSCREW_HOME: path.join(dir, "home") },
+    env: { OPSCREW_HOME: path.join(dir, "home"), ...env },
     fetch: forbiddenFetch,
     runner: new ScriptedRunner(),
     cwd: root,
@@ -58,8 +58,11 @@ const ANSWERS = {
   dataCriticality: "none",
 };
 
-async function optionsText(answers: Record<string, unknown>): Promise<string> {
-  const call = await connect();
+async function optionsText(
+  answers: Record<string, unknown>,
+  env: Record<string, string> = {},
+): Promise<string> {
+  const call = await connect(env);
   const saved = await call("opscrew_save_requirements", { answers });
   expect(saved.isError).toBeFalsy();
   const result = await call("opscrew_design_options");
@@ -131,6 +134,21 @@ describe("opscrew_design_options tax wording", () => {
     const heading = await optionsText({ ...ANSWERS, budgetMonthly: "10 EUR", provider: "hetzner" });
     expect(heading).toContain("Hetzner Cloud");
     expect(heading).toContain("excl. VAT");
+  });
+
+  it("names the dated price list of a provider without a price API, its credentials set", async () => {
+    const credentials = {
+      CNTB_OAUTH2_CLIENT_ID: "opscrew",
+      CNTB_OAUTH2_CLIENT_SECRET: "client",
+      CNTB_OAUTH2_USER: "me",
+      CNTB_OAUTH2_PASS: "password",
+    };
+    const heading = await optionsText(
+      { ...ANSWERS, budgetMonthly: "10 EUR", provider: "contabo" },
+      credentials,
+    );
+    expect(heading).toContain("Deployment options on Contabo");
+    expect(heading).toContain("prices from a dated price list; estimates");
   });
 });
 

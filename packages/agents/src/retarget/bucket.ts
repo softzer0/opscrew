@@ -22,7 +22,7 @@ import {
 import type { DeployPlan, Requirements } from "@opscrew/plan-schema";
 import { isCloudProvider } from "@opscrew/plan-schema";
 import { z } from "zod";
-import { storageOffers } from "../design/storage";
+import { sellsBuckets, storageOffers } from "../design/storage";
 import { confirmBucketGone } from "../destroy/storage";
 import { providerProfile } from "../providers";
 import { findSavedPlan, isMovesOnly, planAndApply, type SavedPlan } from "../provision";
@@ -106,6 +106,11 @@ export function bucketChoice(
     };
   }
   if (input.keep) return { stays: `${billing} (--keep-bucket); ${same}.` };
+  if (!sellsBuckets(to)) {
+    return {
+      stays: `${billing}: OpsCrew uses no object storage at ${providerProfile(to).displayName}; ${same}.`,
+    };
+  }
   const offer =
     input.requirements === undefined
       ? undefined

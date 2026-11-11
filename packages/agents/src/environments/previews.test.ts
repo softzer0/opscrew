@@ -240,7 +240,12 @@ describe("addEnvironment with previews", () => {
     expect(questions.find((q) => q.id === "domain")?.help).toContain(
       "`opscrew domain buy <name>` buys one",
     );
-    expect(questions[0]?.options?.map((o) => o.value)).toEqual(["hetzner", "digitalocean", "own"]);
+    expect(questions[0]?.options?.map((o) => o.value)).toEqual([
+      "hetzner",
+      "digitalocean",
+      "contabo",
+      "own",
+    ]);
     const plan = await readArtifact("plan", preview.paths.files.plan);
     expect(plan.environment?.previews).toEqual({
       cap: 2,
@@ -742,6 +747,7 @@ describe("addEnvironment with previews on another environment's server (US9)", (
     expect(where?.[0]?.options?.map((o) => o.value)).toEqual([
       "hetzner",
       "digitalocean",
+      "contabo",
       "own",
       "share:dev",
     ]);
