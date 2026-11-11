@@ -199,6 +199,16 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew && pnpm lint`
   - Effort: high
 
+- [ ] T2625 [US4] Provision removes a server at a provider that cancels
+  - Owns: `packages/agents/src/provision/**`
+  - Reads: plan 4.1; T2610's `packages/agents/src/destroy/cancel.ts`
+  - Depends: T2610, T2612
+  - Accept:
+    - When `opscrew provision` removes a server at a `cancel-at-term-end` provider (design dropped an extra server, or a move's old server), its plan says the server is cancelled and billed to the end of its term and that its disk and snapshots go then; the server is shut down after approval and before the apply (audited); its end date is read back, shown and audited; a refused cancel names the provider's console. Reuse T2610's code through `../destroy`, no copy.
+    - Hetzner and DigitalOcean unchanged.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm lint`
+  - Effort: high
+
 ## Phase 6: Wave 5 (parallel)
 
 - [ ] T2617 [P] [US6] The guide
