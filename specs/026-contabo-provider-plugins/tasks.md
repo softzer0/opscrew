@@ -216,6 +216,6 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
 ## Phase 7: Live, simplify, release (lead)
 
 - [ ] T2620 The live pass on one Cloud VPS 4 (lead; the founder is asked before any rerun that needs another server), recorded on `docs/e2e-coverage.md`.
-- [ ] T2621 Simplify pass over the feature's changes (lead).
+- [ ] T2621 Simplify pass over the feature's changes (lead). Noted so far: `orText` (mcp-server) and plan-schema's private `orList` become one `orText` in `core/text.ts` beside `listText`; secops's `PlannedResource` becomes the contract's `PlannedResourceJson`; the definitions' copied module-argument helpers.
 - [ ] T2622 The constitution's provider order (Contabo with the hosting providers, a MINOR bump) and `CLAUDE.md`'s package list (lead).
 - [ ] T2623 The release, following `docs/releasing.md` (lead).
