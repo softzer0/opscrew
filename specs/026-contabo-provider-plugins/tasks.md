@@ -263,7 +263,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Verify: `node plugin/validate.mjs && pnpm turbo run typecheck test --filter=@opscrew/mcp-server && pnpm lint`
   - Effort: medium
 
-- [ ] T2619 [P] [US1] [US2] The live test
+- [x] T2619 [P] [US1] [US2] The live test
   - Owns: `packages/cli/test/live/contabo*.ts`, `docs/e2e.md`
   - Reads: SC-2601, SC-2604; `packages/cli/test/live/live.test.ts` as the model
   - Depends: T2616
