@@ -139,6 +139,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
     - Design, cost and advise add an offer's `setupFee` once (shown as one-time), state the minimum term for `cancel-at-term-end`, and price snapshots as "included, up to N" when `snapshotsIncluded`.
     - `resize: false` refuses design's and advise's size changes, naming the move to a new server (retarget) as the way.
     - `snapshot --server` refuses at `includedSnapshots`, naming the oldest to delete; a restore of a snapshot that is not the newest says first that the provider deletes the newer ones (for `snapshots.kind: "included"`).
+    - A whole-server snapshot id may hold one colon (`<instance>:<snapshot>`, Contabo's): `snapshot delete` and `restore --server` accept it; data snapshot ids keep letters and digits only.
     - Tested with a fake definition; Hetzner and DigitalOcean unchanged.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew && pnpm lint`
   - Effort: high
