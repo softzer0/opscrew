@@ -19,7 +19,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
 
 ## Phase 1: Contract and packages (lead)
 
-- [ ] T2601 The contract, ADR 0029 and the packages (lead)
+- [x] T2601 The contract, ADR 0029 and the packages (lead)
   - Owns: `packages/contracts/src/**`, `docs/adr/0029-*.md`, `pnpm-workspace.yaml`, `packages/providers/*/package.json`, `packages/providers/*/tsconfig.json`, every consumer's `package.json`, `pnpm-lock.yaml`, `scripts/gen-provider-modules.ts`, the root `package.json`
   - Accept:
     - `CloudProviderDefinition` (contract version 1) in `packages/contracts/src/provider.ts` as plan 1 says, with `ModuleCall` and `ProviderRequirement` moved in; `ComputeOffer.setupFee?`, `ComputeOffer.includedSnapshots?`, `ProviderExtras.snapshotsIncluded?`, `AppServer.cancelledUntil?`.
