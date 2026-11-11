@@ -163,7 +163,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Accept: once the founder's account exists, free calls only: a token and its lifetime; the images (Ubuntu 24.04's name and id); the data centers; the product ids of Cloud VPS 4, 6, 8 and 12; a `contabo_firewall` and a `contabo_secret` created and deleted alone through the engine; the setup fee from the founder's checkout. Recorded as research R6.
   - Effort: lead
 
-- [ ] T2614 [US1] Contabo's client and connector
+- [x] T2614 [US1] Contabo's client and connector
   - Owns: `packages/providers/contabo/src/**` except `definition.ts`
   - Reads: research R2, R6; plan 5; `packages/providers/hetzner/src/{connector,client}*.ts` as the model
   - Depends: T2601 (runs beside wave 1; the spike's facts, T2613, go into its price table afterwards)
