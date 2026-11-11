@@ -43,7 +43,7 @@ import { otherPlans } from "../check/files";
 import type { PhaseDeps } from "../context";
 import { workflowBranch } from "../environments/branches";
 import { commandFlags } from "../environments/choice";
-import { USER_TOKENS } from "../rotate/inventory";
+import { USER_TOKENS, userTokenValue } from "../rotate/inventory";
 import { assertValuesCurrent } from "../rotate/record";
 import { tokenFirstSeen } from "../rotate/record-tokens";
 import { readPendingRotation, unfinishedRotation } from "../rotate/values-pending";
@@ -204,8 +204,8 @@ export async function buildAppEnvironment(
   }
   for (const token of USER_TOKENS) {
     if (!token.uses(plan)) continue;
-    const value = token.vars.map((name) => deps.env[name]?.trim()).find((v) => v);
-    if (value !== undefined) await tokenFirstSeen(deps, token.name, value);
+    const found = userTokenValue(deps.env, token);
+    if ("value" in found) await tokenFirstSeen(deps, token.name, found.value);
   }
   let dotenvText: string | undefined;
   const ask = deps.interactive ? services.askEnv : undefined;

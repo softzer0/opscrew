@@ -5,7 +5,7 @@ import {
 } from "@opscrew/connector-cloudflare";
 import { type GitClient, githubConnector } from "@opscrew/connector-github";
 import type { CredentialRequirement, VpsProviderId } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import { listText, OpsCrewError } from "@opscrew/core";
 import {
   managesPortainerRecords,
   portainerHostname,
@@ -16,7 +16,12 @@ import {
 import { type DeployPlan, snapshotOffsiteOf } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { cloudflareTokenHint } from "../domain/common";
-import { type ProviderProfile, providerProfile, vpsConnector } from "../providers";
+import {
+  type ProviderProfile,
+  providerCredentials,
+  providerProfile,
+  vpsConnector,
+} from "../providers";
 import {
   githubClientFromToken,
   githubCoordinates,
@@ -69,6 +74,23 @@ export function missing(service: string, requirement: CredentialRequirement): Op
     {
       hint: `${requirement.description} It needs: ${requirement.scopes.join(", ")}. Create one at ${requirement.createUrl}`,
     },
+  );
+}
+
+/**
+ * The stop when a provider whose credentials are a set (`tokenMode: all`) lacks some of them:
+ * names the missing ones; the requirement's description says what they are and what they reach.
+ */
+function incomplete(
+  profile: ProviderProfile,
+  requirement: CredentialRequirement,
+  env: PhaseDeps["env"],
+): OpsCrewError {
+  const { missing: unset } = providerCredentials(profile, env);
+  return new OpsCrewError(
+    "CREDENTIALS_MISSING",
+    `${profile.displayName} needs all of ${listText(profile.tokenVars)}: ${listText(unset)} ${unset.length === 1 ? "is" : "are"} not set.`,
+    { hint: `${requirement.description} Create them at ${requirement.createUrl}` },
   );
 }
 
@@ -156,7 +178,11 @@ export async function checkProvider(
     configured: connector.configured,
     verify: () => connector.verifyCredentials(),
   };
-  if (!check.configured) throw missing(profile.displayName, connector.credentials);
+  if (!check.configured) {
+    throw profile.tokenMode === "all"
+      ? incomplete(profile, connector.credentials, deps.env)
+      : missing(profile.displayName, connector.credentials);
+  }
   const result = await check.verify();
   if (result.ok) return;
   if (result.identity !== undefined) throw accountBlocked(profile, result.message);

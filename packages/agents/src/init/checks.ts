@@ -53,6 +53,7 @@ import {
   PORTAINER_TOKEN_VAR,
   type ProviderProfile,
   planProvider,
+  providerCredentials,
   providerFromTokens,
   providerProfile,
   requestedProvider,
@@ -587,17 +588,18 @@ function providerChoice(
 }
 
 /**
- * Title of the provider check: `Hetzner Cloud token`, `DigitalOcean token`, the SSH login of the
- * user's own server (it has no token), the user's Portainer, or a neutral one.
+ * Title of the provider check: `Hetzner Cloud token`, `DigitalOcean token` (`… credentials` for a
+ * provider whose credentials are a set), the SSH login of the user's own server (it has no token),
+ * the user's Portainer, or a neutral one.
  */
 function providerTitle(choice: ProviderChoice): string {
   if (choice.provider === "own") return "Your own server (SSH login)";
   if (choice.provider === "portainer") return "Your Portainer";
   if (choice.provider === "localhost") return "This computer";
   if (isServerlessProvider(choice.provider)) return serverlessName(choice.provider);
-  return choice.provider
-    ? `${providerProfile(choice.provider).displayName} token`
-    : "Cloud provider token";
+  if (choice.provider === undefined) return "Cloud provider token";
+  const profile = providerProfile(choice.provider);
+  return `${profile.displayName} ${profile.tokenMode === "all" ? "credentials" : "token"}`;
 }
 
 /** What the provider check's timeout message calls the service. */
@@ -646,10 +648,17 @@ async function checkOwnServerLogin(deps: PhaseDeps, choice: ServerChoice): Promi
   return { status: login.ok ? "pass" : "fail", message: `${login.message}${hostKey}` };
 }
 
-/** The first token variable of a provider that is set. */
+/**
+ * The variables of a provider's credentials that are set, once they are complete, as a list: its
+ * first token variable that is set, or every variable of a set.
+ */
 function tokenVarOf(env: Record<string, string | undefined>, profile: ProviderProfile) {
-  return profile.tokenVars.find((name) => hasEnv(env, name));
+  const { set } = providerCredentials(profile, env);
+  return set === undefined ? undefined : listText(set);
 }
+
+/** `is`, or `are` for several variables (a set of credentials). */
+const isAre = (vars: readonly string[]) => (vars.length === 1 ? "is" : "are");
 
 const DOCKER_INSTALL =
   "Install Docker Desktop (Windows, macOS), Docker Engine (Linux) or Colima (macOS) and start it.";
@@ -690,7 +699,7 @@ async function checkProviderToken(
     const docker = which("docker");
     return {
       status: "warn",
-      message: `No cloud provider token is set (${VPS_PROVIDERS.map((id) => `${providerProfile(id).tokenVars[0]} for ${providerProfile(id).displayName}`).join(" or ")}). OpsCrew can deploy to this computer (localhost; ${docker === undefined ? "Docker is not installed" : `Docker found at ${docker}`}), to a server you already have, or to a cloud provider with its token.`,
+      message: `No cloud provider token is set (${VPS_PROVIDERS.map((id) => `${listText(providerCredentials(providerProfile(id), env).missing)} for ${providerProfile(id).displayName}`).join(" or ")}). OpsCrew can deploy to this computer (localhost; ${docker === undefined ? "Docker is not installed" : `Docker found at ${docker}`}), to a server you already have, or to a cloud provider with its token.`,
       fix: `Choose where in \`opscrew interview\`. This computer and a server you already have need no token${docker === undefined ? `; this computer needs Docker: ${DOCKER_INSTALL}` : "."} For a cloud provider, set one token. ${fixes.join(" ")}`,
     };
   }
@@ -724,50 +733,53 @@ async function checkProviderToken(
   // How to create the token, and for a provider whose API can't list a token's scopes, the ones
   // OpsCrew needs (appended as it is: it starts with a space, or is empty).
   const { fix, scopeNote } = cloudProvider(provider).texts.init;
-  const envVar = tokenVarOf(env, profile);
+  // Its token, or every credential of a set: until all are set, the missing ones are named and
+  // nothing is called.
+  const { set, missing } = providerCredentials(profile, env);
   const unchosen = choice.source === "token" ? ` No provider is chosen yet. ${ONLY_ONE}` : "";
-  if (envVar === undefined) {
-    const others = VPS_PROVIDERS.filter((id) => id !== provider).flatMap((id) => {
-      const other = tokenVarOf(env, providerProfile(id));
-      return other ? [other] : [];
-    });
+  if (set === undefined) {
+    const others = VPS_PROVIDERS.filter((id) => id !== provider).flatMap(
+      (id) => providerCredentials(providerProfile(id), env).set ?? [],
+    );
     const why =
       others.length > 0
-        ? ` (${choice.source === "plan" ? "the plan deploys" : "your interview answers deploy"} to ${profile.displayName}, so ${others.join(" and ")} is not used)`
+        ? ` (${choice.source === "plan" ? "the plan deploys" : "your interview answers deploy"} to ${profile.displayName}, so ${others.join(" and ")} ${isAre(others)} not used)`
         : "";
     return {
       status: "fail",
-      message: `${profile.tokenVars[0]} is not set${why}.`,
+      message: `${listText(missing)} ${isAre(missing)} not set${why}.`,
       fix: `${fix}${scopeNote}`,
     };
   }
+  const envVar = listText(set);
+  const several = set.length > 1;
   if (offline) {
     return {
       status: "pass",
-      message: `${envVar} is set (${OFFLINE_NOTE}).${scopeNote}${unchosen}`,
+      message: `${envVar} ${isAre(set)} set (${OFFLINE_NOTE}).${scopeNote}${unchosen}`,
     };
   }
   const result = await connector.verifyCredentials();
   if (result.ok) {
     const identity = result.identity ? ` (${result.identity})` : "";
-    const detail = /\bworks\.$/.test(result.message) ? "" : ` ${result.message}`;
+    const detail = /\bworks?\.$/.test(result.message) ? "" : ` ${result.message}`;
     return {
       status: "pass",
-      message: `${envVar} works${identity}.${detail}${scopeNote}${unchosen}`,
+      message: `${envVar} ${several ? "work" : "works"}${identity}.${detail}${scopeNote}${unchosen}`,
     };
   }
   if (result.identity !== undefined) {
     // The token was accepted, but the account itself is locked or not verified yet.
     return {
       status: "fail",
-      message: `${envVar} was accepted, but the ${profile.displayName} account cannot be used yet. ${result.message}`,
+      message: `${envVar} ${several ? "were" : "was"} accepted, but the ${profile.displayName} account cannot be used yet. ${result.message}`,
       fix: `Resolve this on your ${profile.displayName} account page (${profile.accountUrl}), then run \`opscrew init\` again.`,
     };
   }
   // The fix already names the permission or scopes; the connector's message may name them too.
   return {
     status: "fail",
-    message: `${envVar} does not work: ${result.message}`,
+    message: `${envVar} ${several ? "do" : "does"} not work: ${result.message}`,
     fix,
   };
 }

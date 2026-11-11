@@ -17,6 +17,7 @@ import type {
   RemoteExec,
   ResourceChange,
   ResourceMove,
+  ServerSnapshotApi,
 } from "@opscrew/contracts";
 import type { EnginePreference } from "@opscrew/iac-engine";
 import type { CloudProvider } from "@opscrew/plan-schema";
@@ -96,18 +97,27 @@ export type GitHubApi = Pick<
  * Collaborators that talk to the outside world. Each defaults to the real implementation built
  * from `PhaseDeps` (env, fetch, runner); tests replace them with fakes.
  */
+/** A provider's credential check, as its connector does it (fakes in tests). */
+export interface ProviderCheck {
+  configured: boolean;
+  verify(): Promise<CredentialCheck>;
+  /**
+   * Its servers, which provision compares with the infrastructure state to take over one an
+   * earlier apply lost; without it none is looked up.
+   */
+  servers?: ServerSnapshotApi;
+}
+
 export interface ProvisionServices {
   /** Picks the IaC engine (default: `selectEngine` from `@opscrew/iac-engine`). */
   engine?: (preference: EnginePreference) => Promise<IacEngine>;
   /** Credential check for the plan's provider (default: `vpsConnector` over its token). */
-  provider?: { configured: boolean; verify(): Promise<CredentialCheck> };
+  provider?: ProviderCheck;
   /**
    * Credential checks of the providers of the extra servers OpsCrew creates, other than the app
    * server's, by provider (default: `vpsConnector` over each one's token).
    */
-  providers?: Partial<
-    Record<CloudProvider, { configured: boolean; verify(): Promise<CredentialCheck> }>
-  >;
+  providers?: Partial<Record<CloudProvider, ProviderCheck>>;
   /** Cloudflare API (default: client from `CLOUDFLARE_API_TOKEN`); `null` means no token. */
   cloudflare?: CloudflareApi | null;
   /** GitHub REST API (default: client from `resolveGitHubToken`); `null` means no token. */

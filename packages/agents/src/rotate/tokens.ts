@@ -10,7 +10,7 @@ import {
   cloudflareConnector,
 } from "@opscrew/connector-cloudflare";
 import { GitHubClient } from "@opscrew/connector-github";
-import { canonicalJson, errorText, OpsCrewError, sha256Hex } from "@opscrew/core";
+import { canonicalJson, errorText, listText, OpsCrewError, sha256Hex } from "@opscrew/core";
 import { CHECK_SECRETS, CLOUDFLARE_DEPLOY_SECRETS, deploySecretName } from "@opscrew/iac-templates";
 import { type CloudProvider, type DeployPlan, isCloudProvider } from "@opscrew/plan-schema";
 import { cloudProvider } from "@opscrew/providers";
@@ -30,7 +30,13 @@ import type { GitHubApi, ProvisionResult } from "../provision/types";
 import { requestApproval } from "../shared/approvals";
 import { gitClient, githubClientFromToken } from "../shared/github";
 import { readPortainerConnection } from "../shared/server-record";
-import { credentialInventory, USER_TOKENS } from "./inventory";
+import {
+  credentialInventory,
+  tokenNotSet,
+  USER_TOKENS,
+  type UserTokenEntry,
+  userTokenValue,
+} from "./inventory";
 import { readCredentialsRecord, recordRotation, type UserTokenName } from "./record";
 import { tokenFirstSeen, tokenSeenAt } from "./record-tokens";
 
@@ -92,32 +98,46 @@ const TOKEN_WORDS: Readonly<Record<Exclude<UserTokenName, CloudProvider>, TokenW
   ntfy: { title: "ntfy access token" },
 };
 
-/** One of the user's tokens: its words and the variables it is read from (inventory's table). */
-interface UserToken extends TokenWords {
-  vars: readonly string[];
-}
+/**
+ * One of the user's tokens: its words, the variables it is read from and whether they are a set
+ * (inventory's table).
+ */
+interface UserToken extends TokenWords, Pick<UserTokenEntry, "vars" | "all"> {}
 
-/** How the token `name` is named: a cloud provider's after the provider (`Hetzner Cloud token`). */
+/**
+ * How the token `name` is named: a cloud provider's after the provider (`Hetzner Cloud token`, or
+ * `Contabo credentials` for a set).
+ */
 function tokenWords(name: UserTokenName): TokenWords {
-  return isCloudProvider(name)
-    ? { title: `${providerProfile(name).displayName} token` }
-    : TOKEN_WORDS[name];
+  if (!isCloudProvider(name)) return TOKEN_WORDS[name];
+  const profile = providerProfile(name);
+  return {
+    title: `${profile.displayName} ${profile.tokenMode === "all" ? "credentials" : "token"}`,
+  };
 }
 
 function userToken(name: UserTokenName): UserToken {
-  return { ...tokenWords(name), vars: USER_TOKENS.find((t) => t.name === name)?.vars ?? [] };
+  const entry = USER_TOKENS.find((t) => t.name === name);
+  return { ...tokenWords(name), vars: entry?.vars ?? [], ...(entry?.all ? { all: true } : {}) };
 }
 
-/** The token's value and the variable it came from, when one of its variables is set. */
+/**
+ * The token's value and the variables it came from (as a list), once it is complete, each
+ * variable's value registered with the redactor; else the variables still to set.
+ */
 function tokenValue(
-  env: PhaseDeps["env"],
+  deps: Pick<PhaseDeps, "env" | "redactor">,
   token: UserToken,
-): { variable: string; value: string } | undefined {
-  for (const variable of token.vars) {
-    const value = env[variable]?.trim();
-    if (value) return { variable, value };
-  }
-  return undefined;
+): { variable: string; value: string } | { missing: readonly string[] } {
+  const found = userTokenValue(deps.env, token);
+  if ("missing" in found) return found;
+  for (const part of found.parts) deps.redactor.addLiteral(part.value, part.variable);
+  return { variable: listText(found.parts.map((part) => part.variable)), value: found.value };
+}
+
+/** The variables the token is read from, as named while it is not set: the first, or a set's. */
+function tokenVariables(token: UserToken): string {
+  return listText(token.all ? token.vars : token.vars.slice(0, 1));
 }
 
 /** The provider's page where the user deletes the token `name`. */
@@ -142,14 +162,14 @@ function onPage(page: string): string {
 }
 
 /**
- * The expiry the provider gives for the token `name` (its value `set`; GitHub's through the
- * GitHub CLI's login too), or why it gave none.
+ * The expiry the provider gives for the token `name` (its value `set`, or the variables still to
+ * set; GitHub's through the GitHub CLI's login too), or why it gave none.
  */
 async function readExpiry(
   deps: Pick<PhaseDeps, "env" | "runner" | "fetch" | "redactor" | "version">,
   name: UserTokenName,
   token: UserToken,
-  set: { variable: string; value: string } | undefined,
+  set: ReturnType<typeof tokenValue>,
 ): Promise<Pick<TokenExpiry, "expiresAt" | "notRead">> {
   if (name === "github") {
     // The GitHub CLI's login counts too, as everywhere else.
@@ -160,7 +180,7 @@ async function readExpiry(
     const expiresAt = await client.tokenExpiry();
     return expiresAt === undefined ? {} : { expiresAt };
   }
-  if (set === undefined) return { notRead: `${token.vars[0]} is not set.` };
+  if ("missing" in set) return { notRead: tokenNotSet(set.missing) };
   const common = { fetch: deps.fetch, redactor: deps.redactor, version: deps.version };
   if (token.expiry === "cloudflare") {
     const client = cloudflareConnector({
@@ -210,11 +230,10 @@ export async function tokenExpiries(
     tokens.map(async (credential): Promise<TokenExpiry> => {
       const name = credential.name as UserTokenName;
       const token = userToken(name);
-      const set = tokenValue(deps.env, token);
-      if (set !== undefined) deps.redactor.addLiteral(set.value, set.variable);
+      const set = tokenValue(deps, token);
       const base = {
         name,
-        variable: set?.variable ?? (token.vars[0] as string),
+        variable: "missing" in set ? tokenVariables(token) : set.variable,
         ...(credential.date === undefined ? {} : { firstSeen: credential.date.at }),
       };
       try {
@@ -330,32 +349,37 @@ export async function replaceToken(
 ): Promise<ReplacedToken> {
   const token = userToken(name);
   const { title } = token;
+  // A set of credentials (every one of its variables needed) is spoken of in the plural.
+  const many = token.all === true;
+  const it = many ? "them" : "it";
   const { root, environment, app } = deps.paths;
   const again = `opscrew rotate ${name}${await commandFlags(root, environment, app)}`;
   const page = deletePage(name);
-  const set = tokenValue(deps.env, token);
-  const variable = set?.variable ?? (token.vars[0] as string);
-  const setFirst = `Make the new token ${onPage(page)}, set the new token in ${variable} first, then run \`${again}\` again.`;
-  if (set === undefined) {
+  const set = tokenValue(deps, token);
+  const variable = "missing" in set ? tokenVariables(token) : set.variable;
+  const setFirst = many
+    ? `Make the new credentials ${onPage(page)}, set them in ${variable} first, then run \`${again}\` again.`
+    : `Make the new token ${onPage(page)}, set the new token in ${variable} first, then run \`${again}\` again.`;
+  if ("missing" in set) {
     throw new OpsCrewError(
       "CREDENTIALS_MISSING",
-      `${variable} is not set, so there is no new ${title} to put in place. Nothing was changed.`,
+      `${listText(set.missing)} ${set.missing.length === 1 ? "is" : "are"} not set, so there ${many ? "are" : "is"} no new ${title} to put in place. Nothing was changed.`,
       { hint: setFirst },
     );
   }
-  deps.redactor.addLiteral(set.value, variable);
   if (await knownHere(deps, name, set.value)) {
     throw new OpsCrewError(
       "INVALID_INPUT",
-      `${variable} holds the ${title} OpsCrew already knows, not a new one. Nothing was changed.`,
+      `${variable} ${many ? "hold" : "holds"} the ${title} OpsCrew already knows, not ${many ? "new ones" : "a new one"}. Nothing was changed.`,
       { hint: setFirst },
     );
   }
   const inventory = await credentialInventory(deps, plan);
   if (!inventory.some((c) => c.kind === "user-token" && c.name === name)) {
+    const article = many ? "" : /^[aeiou]/i.test(title) ? "an " : "a ";
     throw new OpsCrewError(
       "INVALID_INPUT",
-      `The ${environment} environment does not use ${/^[aeiou]/i.test(title) ? "an" : "a"} ${title}, so there is none to replace. Nothing was changed.`,
+      `The ${environment} environment does not use ${article}${title}, so there ${many ? "are" : "is"} none to replace. Nothing was changed.`,
       { hint: "Run `opscrew rotate` to list the credentials it has." },
     );
   }
@@ -370,7 +394,7 @@ export async function replaceToken(
     if (failed !== undefined) {
       throw new OpsCrewError(
         "CREDENTIALS_INVALID",
-        `The new ${title} in ${variable} does not pass OpsCrew's check: ${failed.message} Nothing was changed.`,
+        `The new ${title} in ${variable} ${many ? "do" : "does"} not pass OpsCrew's check: ${failed.message} Nothing was changed.`,
         { hint: `${failed.fix ?? "Fix the token."} Then run \`${again}\` again.` },
       );
     }
@@ -379,7 +403,7 @@ export async function replaceToken(
   const copies = await tokenCopies(deps, plan, name);
   deps.reporter.info(
     copies.length === 0
-      ? `OpsCrew made no copy of the ${title}: it reads it from ${variable} on this computer.`
+      ? `OpsCrew made no copy of the ${title}: it reads ${it} from ${variable} on this computer.`
       : [`The new ${title} replaces every copy OpsCrew made of it:`, ...copies.map(copyText)].join(
           "\n",
         ),
@@ -431,14 +455,14 @@ export async function replaceToken(
   await recordRotation(at, [name]);
   deps.reporter.success(
     copies.length === 0
-      ? `The new ${title} passed OpsCrew's check; recorded today's date for it.`
+      ? `The new ${title} passed OpsCrew's check; recorded today's date for ${it}.`
       : `Replaced the ${title} in ${copies.length === 1 ? "its copy" : `its ${copies.length} copies`}; recorded today's date for it.`,
   );
   // Another environment's copy of the old token stays until that environment's rotation.
   const when =
     token.perEnvironment === true && copies.length > 0
       ? ` once every other environment with a copy of it has the new one too (\`opscrew rotate ${name} --env <name>\`)`
-      : ": OpsCrew no longer uses it";
+      : `: OpsCrew no longer uses ${it}`;
   deps.reporter.info(`Delete the old ${title} ${onPage(page)}${when}.`);
   return { name, copies, deletePage: page };
 }

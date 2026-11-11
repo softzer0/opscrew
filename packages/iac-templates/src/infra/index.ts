@@ -79,6 +79,12 @@ export {
   renderStorage,
   storageRootDir,
 } from "./storage";
+export {
+  rootMainFile,
+  type ServerTakeover,
+  serverResourceAddress,
+  withServerImports,
+} from "./takeover";
 
 const OPEN_TO_ALL = ["0.0.0.0/0", "::/0"];
 

@@ -4,7 +4,7 @@
  * else changes and its date. Names and dates only: no value is ever read into the result.
  */
 import { join } from "node:path";
-import { exists } from "@opscrew/core";
+import { exists, listText } from "@opscrew/core";
 import {
   hasLogin,
   type RotationMode,
@@ -19,7 +19,7 @@ import {
   type PlanService,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { providerProfile, VPS_PROVIDERS } from "../providers";
+import { credentialVars, providerProfile, VPS_PROVIDERS } from "../providers";
 import { copyPath } from "../secrets/files";
 import { GeneratedValuesSchema, generatedValuesFile } from "../shared/app-secrets";
 import { readValidJson } from "../shared/files";
@@ -164,22 +164,34 @@ function appSecretCredentials(names: readonly string[]): Omit<Credential, "date"
   return [app, ...parts];
 }
 
+/** One of the user's own tokens (see {@link USER_TOKENS}). */
+export interface UserTokenEntry {
+  name: UserTokenName;
+  vars: readonly string[];
+  /**
+   * The token is a set of credentials, every one of `vars` needed (a cloud provider's credentials
+   * `mode: "all"`); otherwise the first of them that is set is the token.
+   */
+  all?: true;
+  uses: (plan: DeployPlan) => boolean;
+  /** A token the user may leave unset: listed only when it is set. */
+  optional?: true;
+}
+
 /**
  * The user's own tokens: the variables each is read from (in order, the first named in messages),
  * and when an environment uses it.
  */
-export const USER_TOKENS: readonly {
-  name: UserTokenName;
-  vars: readonly string[];
-  uses: (plan: DeployPlan) => boolean;
-  /** A token the user may leave unset: listed only when it is set. */
-  optional?: true;
-}[] = [
-  ...VPS_PROVIDERS.map((provider) => ({
-    name: provider,
-    vars: providerProfile(provider).tokenVars,
-    uses: (plan: DeployPlan) => plan.target.provider === provider,
-  })),
+export const USER_TOKENS: readonly UserTokenEntry[] = [
+  ...VPS_PROVIDERS.map((provider): UserTokenEntry => {
+    const profile = providerProfile(provider);
+    return {
+      name: provider,
+      vars: profile.tokenVars,
+      ...(profile.tokenMode === "all" ? { all: true as const } : {}),
+      uses: (plan: DeployPlan) => plan.target.provider === provider,
+    };
+  }),
   {
     name: "cloudflare",
     vars: ["CLOUDFLARE_API_TOKEN"],
@@ -208,6 +220,33 @@ export const USER_TOKENS: readonly {
     optional: true,
   },
 ];
+
+/** A user's token as `env` holds it, once it is complete. */
+export interface UserTokenValue {
+  /** Each variable it is read from, with its value: the first one set, or every one of a set. */
+  parts: readonly { variable: string; value: string }[];
+  /** Its value; a set's values one per line (only ever fingerprinted). */
+  value: string;
+}
+
+/**
+ * The token's value in `env` once it is complete: the first of its variables that is set, or
+ * every one of a set; else the variables still to set (`missing`).
+ */
+export function userTokenValue(
+  env: Readonly<Record<string, string | undefined>>,
+  token: Pick<UserTokenEntry, "vars" | "all">,
+): UserTokenValue | { missing: readonly string[] } {
+  const { set, missing } = credentialVars(token.vars, token.all ? "all" : "any", env);
+  if (set === undefined) return { missing };
+  const parts = set.map((variable) => ({ variable, value: env[variable]?.trim() ?? "" }));
+  return { parts, value: parts.map((part) => part.value).join("\n") };
+}
+
+/** `HCLOUD_TOKEN is not set.`, or the unset variables of a set. */
+export function tokenNotSet(missing: readonly string[]): string {
+  return `${listText(missing)} ${missing.length === 1 ? "is" : "are"} not set.`;
+}
 
 const USER_TOKEN_CHANGES =
   "You make the new token and set it here; OpsCrew checks it, replaces every copy it made of it and names the page to delete the old one.";
@@ -437,7 +476,8 @@ export async function credentialInventory(
   const tokens: Credential[] = [];
   for (const token of USER_TOKENS) {
     if (!token.uses(plan)) continue;
-    const value = token.vars.map((name) => deps.env[name]?.trim()).find((v) => v);
+    const found = userTokenValue(deps.env, token);
+    const value = "value" in found ? found.value : undefined;
     if (value === undefined && token.optional) continue;
     const seen = value === undefined ? undefined : await tokenSeenAt(deps, token.name, value);
     tokens.push({

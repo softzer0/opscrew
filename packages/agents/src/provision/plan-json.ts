@@ -6,6 +6,7 @@
  */
 
 import { isRecord } from "@opscrew/core";
+import { z } from "zod";
 
 /** What a sensitive value is replaced with. */
 export const SENSITIVE_VALUE = "(sensitive value)";
@@ -180,4 +181,38 @@ export function maskSensitivePlanJson(planJson: unknown): unknown {
     };
   }
   return out;
+}
+
+/** A resource a plan imports into the state (an `import` block), and the id it is imported by. */
+export interface PlannedImport {
+  address: string;
+  id?: string;
+}
+
+/** The parts of a plan's resource changes that say what it imports. */
+const PlannedImportsSchema = z.looseObject({
+  resource_changes: z
+    .array(
+      z.looseObject({
+        address: z.string(),
+        change: z.looseObject({
+          importing: z.looseObject({ id: z.string().optional() }).nullish(),
+        }),
+      }),
+    )
+    .nullish(),
+});
+
+/**
+ * The resources the plan JSON imports (`resource_changes[].change.importing`), in the engine's
+ * order. An import without changes is a `no-op`, which the plan's changes leave out, but applying
+ * the plan still records it in the state. None for a plan JSON without them.
+ */
+export function plannedImports(planJson: unknown): PlannedImport[] {
+  const parsed = PlannedImportsSchema.safeParse(planJson);
+  if (!parsed.success) return [];
+  return (parsed.data.resource_changes ?? []).flatMap(({ address, change }) => {
+    const id = change.importing?.id;
+    return change.importing == null ? [] : [{ address, ...(id !== undefined ? { id } : {}) }];
+  });
 }

@@ -17,6 +17,7 @@ import {
 } from "@opscrew/contracts";
 import {
   formatMoney,
+  listText,
   OpsCrewError,
   plural,
   type Redactor,
@@ -43,7 +44,7 @@ import { planProvider, providerProfile, vpsConnector } from "../providers";
 import { describeChanges, PlanRefusedError } from "../shared";
 import { engineErrorBlocks } from "../shared/tunnel-connections";
 import { neededScopes } from "./credentials";
-import { maskSensitivePlanJson } from "./plan-json";
+import { maskSensitivePlanJson, plannedImports } from "./plan-json";
 import type { SavedPlan } from "./types";
 import { tunnelTokenPermissions } from "./zero-trust";
 
@@ -195,6 +196,10 @@ function applyFailureHint(
   }
   if (refused.has("provider")) {
     const requirement = vpsConnector(provider, deps).credentials;
+    // Credentials that are a set (`tokenMode: all`) are replaced together, every variable named.
+    if (profile.tokenMode === "all") {
+      return `${displayName} refused the request, so its API credentials probably lack a permission OpsCrew needs. Create new ones at ${requirement.createUrl}, set ${listText(profile.tokenVars)} to them, then run \`${command}\` again. ${kept}`;
+    }
     return `${displayName} refused the request, so the API token is probably missing a permission OpsCrew needs. Create a token at ${requirement.createUrl} with ${neededScopes(requirement)}, set ${profile.tokenVars[0]} to it, then run \`${command}\` again. ${kept}`;
   }
   const target = deployPlan.target;
@@ -271,11 +276,11 @@ export function isMovesOnly(saved: Pick<SavedPlan, "changes" | "moves">): boolea
 }
 
 /**
- * Plain-English plan summary shown before approval (resources, state renames, cost, policies,
- * hash). A plan that only renames resources in the state says that nothing changes in the cloud;
- * with `costUnchanged` (a plan that only updates what is not billed, such as DNS records) the cost
- * line says the cost does not change instead of quoting the deployment's monthly price, and with
- * `price` (a bucket root's) it quotes that price alone.
+ * Plain-English plan summary shown before approval (resources, state renames and imports, cost,
+ * policies, hash). A plan that only renames resources in the state says that nothing changes in
+ * the cloud; with `costUnchanged` (a plan that only updates what is not billed, such as DNS
+ * records) the cost line says the cost does not change instead of quoting the deployment's monthly
+ * price, and with `price` (a bucket root's) it quotes that price alone.
  */
 export function describePlan(
   saved: SavedPlan,
@@ -290,6 +295,10 @@ export function describePlan(
   for (const move of moves) {
     lines.push(`  → ${"moved".padEnd(7)} ${move.from} → ${move.to}`);
   }
+  const imports = plannedImports(saved.planJson);
+  for (const { address, id } of imports) {
+    lines.push(`  ← ${"import".padEnd(7)} ${address}${id === undefined ? "" : ` (id ${id})`}`);
+  }
   if (isMovesOnly(saved)) {
     lines.push(
       `Changes: none in the cloud; ${plural(moves.length, "resource")} renamed in the infrastructure state only.`,
@@ -301,8 +310,12 @@ export function describePlan(
       moves.length > 0
         ? ` ${plural(moves.length, "resource")} renamed in the infrastructure state.`
         : "";
+    const imported =
+      imports.length > 0
+        ? ` ${plural(imports.length, "resource")} imported into the infrastructure state.`
+        : "";
     lines.push(
-      `Changes: ${create} to create, ${update} to update, ${del} to delete, ${replace} to replace.${renamed}`,
+      `Changes: ${create} to create, ${update} to update, ${del} to delete, ${replace} to replace.${renamed}${imported}`,
     );
     if (options.costUnchanged === true) {
       lines.push("Cost: unchanged (nothing that is billed is created or deleted).");
@@ -599,9 +612,11 @@ export function approveLaterHint(
  * stops after saving the plan and printing its hash; with `approvePlanHash` it applies the saved
  * plan from that earlier run (plans are never re-made, so the hash the user reviewed is the one
  * applied). Policy failures (critical/high) stop before approval is requested. A plan without
- * changes is "already up to date" only when it has no state renames either: a moves-only plan is
- * approved as a state rename (nothing changes in the cloud) and applied like any other. The hooks
- * (`approvalNotes`, `beforeApply`, `applyFailed`) see the plan being approved and applied.
+ * changes is "already up to date" only when it has no state renames or imports either: a
+ * moves-only plan is approved as a state rename (nothing changes in the cloud), and a plan that
+ * imports a server another apply lost is approved with its imports, and both are applied like any
+ * other. The hooks (`approvalNotes`, `beforeApply`, `applyFailed`) see the plan being approved
+ * and applied.
  */
 export async function planAndApply(
   deps: PhaseDeps,
@@ -666,9 +681,11 @@ export async function planAndApply(
     );
   }
 
-  // A plan that only renames resources in the state (`moved` blocks) still has to be applied.
+  // A plan that only renames resources in the state (`moved` blocks) or imports them (`import`
+  // blocks) still has to be applied.
   const movesOnly = isMovesOnly(saved);
-  if (saved.changes.length === 0 && !movesOnly) {
+  const imports = plannedImports(saved.planJson).length;
+  if (saved.changes.length === 0 && !movesOnly && imports === 0) {
     deps.reporter.success("The infrastructure is already up to date.");
     const outputs = await engine.output(dir, { env }).catch(() => ({}));
     return { planHash: saved.planHash, applied: false, outputs, plan: saved };
@@ -708,7 +725,7 @@ export async function planAndApply(
   const title = movesOnly
     ? `Rename ${plural(saved.moves?.length ?? 0, "resource")} in the infrastructure state (nothing changes in the cloud)`
     : (options.approvalTitle ??
-      `Apply the infrastructure plan on ${providers} (${create} to create, ${update} to update, ${del} to delete, ${replace} to replace)`);
+      `Apply the infrastructure plan on ${providers} (${create} to create, ${update} to update, ${del} to delete, ${replace} to replace${imports > 0 ? `, ${imports} to import` : ""})`);
   const confirmPhrase = saved.hasDestroy
     ? (options.confirmPhrase?.(saved) ?? deployPlan.app.name)
     : undefined;

@@ -24,7 +24,14 @@ import { previewPlan } from "../previews/__fixtures__/plans";
 import type { RenderContext, RenderedFile } from "../types";
 import { splitPlan } from "./__fixtures__/servers";
 import { ADDRESS_PAIRS, movePlan, type SideName, sideTarget } from "./__fixtures__/sides";
-import { MOVE_LAYOUTS, type MoveLayoutName, moveLayout, renderInfra, tfvars } from "./index";
+import {
+  MOVE_LAYOUTS,
+  type MoveLayoutName,
+  moveLayout,
+  renderInfra,
+  tfvars,
+  withServerImports,
+} from "./index";
 
 describe("renderInfra on a Portainer target", () => {
   it("renders the Portainer root (portainer.test.ts), never a server root: none here", () => {
@@ -484,6 +491,49 @@ describe.skipIf(!runIt)("rendered HCL validates (integration)", () => {
         300_000,
       );
     }
+
+    // A server the state lost is taken over with an `import` block (026 plan 4.3): plain HCL both
+    // engines read, aimed at the addresses the root creates, on two providers. `validate` does not
+    // resolve an import's target; a plan does, before it asks the provider for the server. The
+    // providers' API is a closed local port here, so the plan stops there, having called no one.
+    it.skipIf(!engine)(
+      `validates the hetzner plus a digitalocean db root taking over both servers, and plans their import, with ${name}`,
+      async (test) => {
+        const root = await mkdtemp(join(tmpdir(), `opscrew-infra-${name}-takeover-`));
+        const plan = validatedPlans["hetzner plus a digitalocean db"]();
+        const files = withServerImports(renderInfra(plan, validatedContext()), plan, [
+          { server: "app", id: "4711" },
+          { server: "db", id: "512" },
+        ]);
+        await initAndValidate(test, name, bin, root, files);
+        const runner = new NodeCommandRunner();
+        const cwd = join(root, "opscrew/infra/prod");
+        const init = await runner.run(bin, ["init", "-input=false", "-no-color"], { cwd });
+        expect(init.exitCode, init.stdout + init.stderr).toBe(0);
+        const token = "x".repeat(64);
+        const planned = await runner.run(
+          bin,
+          ["plan", "-refresh=false", "-input=false", "-lock=false", "-no-color"],
+          {
+            cwd,
+            env: {
+              ...process.env,
+              HCLOUD_TOKEN: token,
+              DIGITALOCEAN_TOKEN: token,
+              HCLOUD_ENDPOINT: "http://127.0.0.1:9/v1",
+              DIGITALOCEAN_API_URL: "http://127.0.0.1:9",
+            },
+          },
+        );
+        const output = planned.stdout + planned.stderr;
+        expect(output).not.toMatch(/configuration for the given import[\s\S]*?does not\s+exist/i);
+        expect(output).toContain("module.server.hcloud_server.this: Preparing import... [id=4711]");
+        expect(output).toContain(
+          "module.server_db.digitalocean_droplet.this: Preparing import... [id=512]",
+        );
+      },
+      300_000,
+    );
 
     // An extra server counts its own deploy key from the id it gets, which must be known before
     // apply: an offline plan (no refresh, placeholder tokens) shows it is, with one key per provider.

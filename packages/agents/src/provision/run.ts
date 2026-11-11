@@ -9,7 +9,9 @@ import {
   previewRecipeDir,
   renderBackups,
   renderStorage,
+  rootMainFile,
   usesTunnel,
+  withServerImports,
 } from "@opscrew/iac-templates";
 import {
   APP_SERVER,
@@ -96,6 +98,7 @@ import {
   stringOutput,
   trackedFiles,
   writePlanIfChanged,
+  writeRenderedFiles,
 } from "../shared";
 import {
   deployPauseOf,
@@ -151,6 +154,7 @@ import {
   REMOVAL_PLAN_SUFFIX,
   ROTATION_PLAN_SUFFIX,
 } from "./plan-apply";
+import { plannedImports } from "./plan-json";
 import { provisionPortainer } from "./portainer-flow";
 import type { RecoveryCopy } from "./publish";
 import {
@@ -217,6 +221,13 @@ import {
   STORAGE_PLAN_SUFFIX,
   storageLogin,
 } from "./storage";
+import {
+  clearApplyMarker,
+  lostServers,
+  markApplyStarted,
+  NOTHING_LOST,
+  takeoverNotes,
+} from "./takeover";
 import type { ProvisionOptions, ProvisionResult, ProvisionServices, SavedPlan } from "./types";
 
 /**
@@ -755,6 +766,14 @@ async function provisionFlow(
   const dir = join(root, plan.infra.dir);
   const approvals: PlanApproval[] = [];
 
+  // 3a. The plan's servers the provider has and the state lost (a create that stopped halfway):
+  // taken over in the plan, never bought again (FR-2607). A saved plan holds its imports already.
+  const lost =
+    approveHash === undefined
+      ? await lostServers(deps, { plan, engine, env: engineEnv, services, command })
+      : NOTHING_LOST;
+  for (const note of lost.notes) deps.reporter.warn(note);
+
   // 3b. A server the user owns: connect and confirm its host key, inspect it (read-only) and stop
   // on blocking findings before anything changes; its address reaches the engine only as TF_VAR_*.
   let ownRun: OwnServerRun | undefined;
@@ -962,7 +981,7 @@ async function provisionFlow(
     : await deploySetupDependabot(deps, plan, { writes: approveHash === undefined });
   // The scheduled check's files, rendered from every app's and environment's plan.
   const check = await deploySetupCheck(deps, plan, github);
-  const files = [
+  const rendered = [
     ...deploymentFiles(
       plan,
       ctx,
@@ -974,6 +993,8 @@ async function provisionFlow(
     ...(dependabot?.action === "write" ? [dependabot.file] : []),
     ...check.files,
   ];
+  // The servers the state lost are imported by the plan made from these files.
+  const files = withServerImports(rendered, plan, lost.takeovers);
   // Applying a saved plan keeps the infrastructure code the --plan-only run wrote, which that plan
   // was made from. The other files are in no hashed plan (the pull request and the deploy bring
   // them), so they get the site Cloudflare has now, as in a single run: the client certificate is
@@ -1097,7 +1118,18 @@ async function provisionFlow(
       phase,
       ...first.hooks,
       // An extra server no longer in the plan is deleted only with its name typed, as destroy asks.
-      approvalNotes: (saved) => [...first.hooks.approvalNotes(saved), ...removalNotes(plan, saved)],
+      // A saved plan's servers taken over are named from its imports (it is not planned again).
+      approvalNotes: (saved) => [
+        ...first.hooks.approvalNotes(saved),
+        ...removalNotes(plan, saved),
+        ...(approveHash === undefined ? lost.notes : takeoverNotes(plan, saved)),
+      ],
+      // The marker of an apply under way, with the servers it creates: one that stops leaves it,
+      // for the next run's takeover.
+      beforeApply: async (saved) => {
+        await first.hooks.beforeApply(saved);
+        await markApplyStarted(deps, plan, saved);
+      },
       confirmPhrase: (saved) => removalConfirmPhrase(plan, saved),
       ...(approveHash !== undefined ? { approvePlanHash: approveHash } : {}),
       ...(options.planOnly ? { planOnly: true } : {}),
@@ -1107,6 +1139,17 @@ async function provisionFlow(
       await refreshServerAddress(deps, engine, dir, engineEnv);
     }
     throw first.stopped(error);
+  }
+  // Applied, or nothing left to apply: no apply of this environment stopped halfway any more.
+  if (options.planOnly !== true) await clearApplyMarker(deps);
+  // After an apply that imported servers the state holds them, so the root's main.tf goes back to
+  // what OpsCrew renders without the imports (a plan from it changes nothing; drift compares the
+  // files with that render) before anything below commits it.
+  if (applied.applied && plannedImports(applied.plan?.planJson).length > 0) {
+    await writeRenderedFiles(
+      root,
+      rendered.filter((file) => file.path === rootMainFile(plan)),
+    );
   }
   if (applied.approval) approvals.push(approvalEntry(applied.approval));
   if (first.host !== undefined) {

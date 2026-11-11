@@ -24,6 +24,11 @@ export interface ProviderProfile {
   serverNoun: string;
   /** Environment variables holding the API token, checked in order. */
   tokenVars: readonly string[];
+  /**
+   * How {@link tokenVars} are read: `any`, the first one set is the token; `all`, they are a set
+   * of credentials and every one is needed.
+   */
+  tokenMode: "any" | "all";
   /** Where the user creates the token. */
   tokenUrl: string;
   /** The provider's web console. */
@@ -82,6 +87,7 @@ function cloudProfile(id: CloudProvider): ProviderProfile {
     displayName: definition.displayName,
     serverNoun: definition.serverNoun,
     tokenVars: credentials.envVars,
+    tokenMode: credentials.mode,
     tokenUrl: credentials.createUrl,
     consoleUrl: definition.consoleUrl,
     accountUrl: definition.accountUrl,
@@ -124,6 +130,7 @@ const OWN: ProviderProfile = {
   displayName: "Your own server",
   serverNoun: "server",
   tokenVars: [],
+  tokenMode: "any",
   tokenUrl: "",
   consoleUrl: "",
   accountUrl: "",
@@ -372,12 +379,49 @@ export function requestedRegion(
   return requirements.region;
 }
 
-/** The provider whose token is set, when exactly one provider has a token. */
+/** What the environment holds of a credential (see {@link credentialVars}). */
+export interface CredentialVars {
+  /** The variables holding it, once it is complete: the first one set, or every one of a set. */
+  set?: readonly string[];
+  /** The variables still to set: none once it is complete, else the first one, or a set's unset. */
+  missing: readonly string[];
+}
+
+/**
+ * What `env` holds of a credential read from `vars`: with `any`, the first of them that is set is
+ * the token; with `all`, they are a set and every one is needed, so the unset ones are missing.
+ */
+export function credentialVars(
+  vars: readonly string[],
+  mode: "any" | "all",
+  env: Readonly<Record<string, string | undefined>>,
+): CredentialVars {
+  const isSet = (name: string) => (env[name] ?? "").trim() !== "";
+  if (mode === "all") {
+    const missing = vars.filter((name) => !isSet(name));
+    return missing.length === 0 ? { set: vars, missing } : { missing };
+  }
+  const first = vars.find(isSet);
+  return first === undefined ? { missing: vars.slice(0, 1) } : { set: [first], missing: [] };
+}
+
+/** {@link credentialVars} of a provider's credentials (`tokenVars`, `tokenMode`). */
+export function providerCredentials(
+  profile: Pick<ProviderProfile, "tokenVars" | "tokenMode">,
+  env: Readonly<Record<string, string | undefined>>,
+): CredentialVars {
+  return credentialVars(profile.tokenVars, profile.tokenMode, env);
+}
+
+/**
+ * The provider whose credentials are set, when exactly one provider has them: its token, or every
+ * credential of a provider that needs a set of them.
+ */
 export function providerFromTokens(
   env: Readonly<Record<string, string | undefined>>,
 ): VpsProviderId | undefined {
-  const withToken = VPS_PROVIDERS.filter((id) =>
-    providerProfile(id).tokenVars.some((name) => (env[name] ?? "").trim() !== ""),
+  const withToken = VPS_PROVIDERS.filter(
+    (id) => providerCredentials(providerProfile(id), env).set !== undefined,
   );
   return withToken.length === 1 ? withToken[0] : undefined;
 }
