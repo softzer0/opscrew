@@ -121,7 +121,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
 
 ## Phase 4: Wave 3, what Contabo needs from the consumers (parallel)
 
-- [ ] T2610 [P] [US2] Removal by cancellation
+- [x] T2610 [P] [US2] Removal by cancellation
   - Owns: `packages/agents/src/destroy/**`, `packages/cli/src/commands/destroy*.ts`
   - Reads: plan 4.1; spec US2
   - Depends: T2607, T2609
