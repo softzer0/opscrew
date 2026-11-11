@@ -294,3 +294,19 @@ references, MCP and skills.
 - **Skill names:** skills are namespaced `/<plugin>:<skill>`.
 - **Installing from a shell:** `claude plugin install opscrew-aws@opscrew` works without a
   session, in user scope by default, so the CLI could offer it.
+
+## R5. The founder's decisions (2026-11-11)
+
+1. **What 026 builds of the plugin system:** the contract for cloud server providers. Everything
+   about one provider lives in one place, behind a versioned contract of plain data and functions
+   that a separate package could implement later. That covers its connector, prices, profile,
+   Terraform module, firewall checks, token rules, interview option and docs. Hetzner and
+   DigitalOcean move into it, and Contabo is the first provider written for it. Own server and
+   Portainer stay as they are: they are kinds of target with flows of their own (R1), not
+   providers. Installing packages comes with AWS in 028, designed around its first real user:
+   `opscrew plugin add`, the provenance check (R3) and one Claude Code plugin per provider (R4).
+   AWS is not a VPS (R1, the roadmap's 028), so the contract for packages installed separately
+   is shaped there.
+2. **Live tests on Contabo:** one live pass at the end of the feature on one Cloud VPS 4 (a
+   month's price and the setup fee, R2). The founder is asked before any rerun that needs another
+   server. The founder opens the account and creates its API credentials.
