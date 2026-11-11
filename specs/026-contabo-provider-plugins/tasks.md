@@ -217,6 +217,6 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
 ## Phase 7: Live, simplify, release (lead)
 
 - [ ] T2620 The live pass on one Cloud VPS 4 (lead; the founder is asked before any rerun that needs another server), recorded on `docs/e2e-coverage.md`.
-- [ ] T2621 Simplify pass over the feature's changes (lead). Noted so far: secops's `PlannedResource` becomes the contract's `PlannedResourceJson`; the definitions' copied module-argument helpers; `profiles.ts`' second parse of the region keys and of `DEFAULT_CLOUD_PROVIDER`; the two agents grep tests become one.
+- [ ] T2621 Simplify pass over the feature's changes (lead). Noted so far: secops's `PlannedResource` becomes the contract's `PlannedResourceJson`; the definitions' copied module-argument helpers; `profiles.ts`' second parse of the region keys and of `DEFAULT_CLOUD_PROVIDER`; the two agents grep tests become one; agents (`provision/servers.ts`, `rotate/infra.ts`) read the shared resources' addresses with iac-templates' `sharedResources` instead of their own parse of `extraShared`.
 - [ ] T2622 The constitution's provider order (Contabo with the hosting providers, a MINOR bump) and `CLAUDE.md`'s package list (lead).
 - [ ] T2623 The release, following `docs/releasing.md` (lead).
