@@ -69,14 +69,28 @@ encrypted copy in the off-server bucket. A whole-server snapshot is deleted at i
 
 ## A snapshot of the whole server
 
-On a server OpsCrew created at Hetzner or DigitalOcean, `npx opscrew snapshot --server` has the
-provider snapshot the server's whole disk while it runs; a live snapshot may not be consistent, and
-`--stop` shuts the server down for it, after the user approves that downtime. It costs a monthly
-price at the provider (the summary shows it), and volumes attached to the server are not in it.
-`npx opscrew restore --server <id>` rebuilds the server from it in place, keeping its address, after
-the user types the server's name; everything written on it since is lost, and OpsCrew then checks
-that the app answers. On the user's own server or Portainer `--server` is refused: the data
-snapshot is the one to use there.
+On a server OpsCrew created at Hetzner, DigitalOcean or Contabo, `npx opscrew snapshot --server`
+has the provider snapshot the server's whole disk while it runs; a live snapshot may not be
+consistent, and `--stop` shuts the server down for it, after the user approves that downtime. At
+Hetzner and DigitalOcean it costs a monthly price (the summary shows it), and volumes attached to
+the server are not in it. `npx opscrew restore --server <id>` rebuilds the server from it in place,
+keeping its address, after the user types the server's name; everything written on it since is
+lost, and OpsCrew then checks that the app answers. On the user's own server or Portainer
+`--server` is refused: the data snapshot is the one to use there.
+
+On Contabo:
+
+- Snapshots cost nothing extra up to the plan's count (1 on Cloud VPS 4, 2 or 3 on larger plans),
+  including those taken in Contabo's panel. At the limit OpsCrew refuses and names the one to
+  delete.
+- Restoring a snapshot that is not the newest deletes the newer ones at Contabo; OpsCrew says so
+  before the user approves.
+- A snapshot's id is `<instance>:<snapshot>`; pass it whole.
+- Contabo has no automatic backups OpsCrew turns on, and its snapshots go with the server when its
+  term ends. The data snapshot with its copy off the server is the backup there, and the way to a
+  Contabo server of another size (a plan can't be resized in place; the other way is
+  `npx opscrew retarget` to another provider): take one, `npx opscrew destroy`, design and
+  provision the new size, then `npx opscrew restore <id> --from offsite --key-file <path>`.
 
 ## Scheduled snapshots
 

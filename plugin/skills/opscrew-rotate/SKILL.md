@@ -52,10 +52,11 @@ once no data encrypted with it remains, after the user types the app's name), `d
 `monitoring`, `portainer`, `beszel`, and `recovery-key` (`--key-out <file>` for the new age key;
 never read that file).
 
-**The user's own tokens** (`hetzner`, `digitalocean`, `cloudflare`, `github`,
+**The user's own tokens** (`hetzner`, `digitalocean`, `contabo`, `cloudflare`, `github`,
 `cloudflare-deploy`, `ghcr`, `ntfy`): OpsCrew never makes them. The user makes the new token at
-the provider and sets it in its variable, then runs `npx opscrew rotate <name>`. OpsCrew checks it,
-replaces every copy it made and names the page where the user deletes the old one.
+the provider and sets it in its variable (Contabo's are a set: all four `CNTB_OAUTH2_*` values),
+then runs `npx opscrew rotate <name>`. OpsCrew checks it, replaces every copy it made and names the
+page where the user deletes the old one.
 
 After a rotation OpsCrew records its date in `opscrew/credentials.yaml` (names and dates only) and
 refreshes the recovery copy, both in the deploy pull request.

@@ -47,7 +47,7 @@ export function registerPlacementTool(
           .min(1)
           .optional()
           .describe(
-            `A new cloud server's location (e.g. fsn1, nbg1, hel1 at Hetzner; fra1, ams3 at DigitalOcean). Required for ${listText(CLOUD_IDS)}.`,
+            `A new cloud server's location (e.g. fsn1, nbg1, hel1 at Hetzner; fra1, ams3 at DigitalOcean; EU, US-east at Contabo). Required for ${listText(CLOUD_IDS)}.`,
           ),
         serverType: z
           .string()

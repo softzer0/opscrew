@@ -14,6 +14,7 @@ import {
   approvalDecision,
   isPlanHash,
   isUserFacingError,
+  listText,
   OpsCrewError,
   systemClock,
 } from "@opscrew/core";
@@ -480,6 +481,40 @@ async function runCommand(
   return abortRetarget(deps, { ...common, confirm });
 }
 
+/** Each cloud provider's credential variables, every one of a set all of which are needed. */
+const CLOUD_CREDENTIALS = CLOUD_PROVIDERS.map(
+  ({ credentials, displayName }) =>
+    `${credentials.mode === "all" ? listText(credentials.envVars) : credentials.envVars[0]} for ${displayName}`,
+).join(", ");
+
+/** The help's paragraph on how a move works, wrapped by {@link wrapHelp}. */
+const HOW_A_MOVE_WORKS = [
+  "OpsCrew prepares the new side next to the old one (a new server on a cloud provider, the app set up",
+  "on your own server, or its stacks in your Portainer), deploys the app there with your deploy",
+  "workflow, copies the app's data in a maintenance window (each data mount, unless you start it",
+  "empty), switches DNS and keeps the old side (with its app stopped) until you finish the move.",
+  "Your own server and your Portainer are never deleted: finishing removes only the app from them.",
+  `The cloud providers' credentials (${CLOUD_CREDENTIALS}), PORTAINER_API_KEY for Portainer and`,
+  "your GitHub access are needed for the sides involved. A bucket at the provider being left moves",
+  "to the new provider's object storage (--keep-bucket leaves it). A site moves between Cloudflare's",
+  "hosting and GitHub Pages, with no maintenance window.",
+].join(" ");
+
+/** `text` wrapped at word boundaries into lines of at most 90 characters, each indented by two. */
+function wrapHelp(text: string): string[] {
+  const lines: string[] = [];
+  let line = "";
+  for (const word of text.split(" ")) {
+    if (line !== "" && line.length + 1 + word.length > 90) {
+      lines.push(`  ${line}`);
+      line = word;
+    } else {
+      line = line === "" ? word : `${line} ${word}`;
+    }
+  }
+  return [...lines, `  ${line}`];
+}
+
 /**
  * `opscrew retarget`: moves a live deployment between any two server targets (FR-501, ADR 0027):
  * a cloud provider, the user's own server (`--to own`, its answers from `--answers` or asked) or
@@ -580,16 +615,7 @@ export function register(program: Command, ctx: CliContext): void {
       [
         "",
         "How a move works:",
-        "  OpsCrew prepares the new side next to the old one (a new server on a cloud provider, the",
-        "  app set up on your own server, or its stacks in your Portainer), deploys the app there",
-        "  with your deploy workflow, copies the app's data in a maintenance window (each data",
-        "  mount, unless you start it empty), switches DNS and keeps the old side (with its app",
-        "  stopped) until you finish the move. Your own server and your Portainer are never",
-        "  deleted: finishing removes only the app from them. The cloud providers' API tokens",
-        `  (${CLOUD_PROVIDERS.map((provider) => provider.credentials.envVars[0]).join(", ")}), PORTAINER_API_KEY for Portainer and your GitHub`,
-        "  access are needed for the sides involved. A bucket at the provider being left moves to",
-        "  the new provider's object storage (--keep-bucket leaves it). A site moves between",
-        "  Cloudflare's hosting and GitHub Pages, with no maintenance window.",
+        ...wrapHelp(HOW_A_MOVE_WORKS),
         "",
         "  opscrew retarget --to digitalocean   start the move, or continue it after a stop",
         "  opscrew retarget --to own            move to your own server (asks how to reach it)",

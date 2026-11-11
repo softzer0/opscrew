@@ -230,6 +230,10 @@ describe.skipIf(!findExecutable("git"))(
         "anthropic/requiresUserInteraction": true,
       });
       expect(byName.get("opscrew_plan")?.annotations?.destructiveHint).toBe(false);
+      // A provider whose credentials are a set has every variable named.
+      expect(byName.get("opscrew_plan")?.description).toContain(
+        "HCLOUD_TOKEN for Hetzner Cloud, DIGITALOCEAN_TOKEN for DigitalOcean, CNTB_OAUTH2_CLIENT_ID, CNTB_OAUTH2_CLIENT_SECRET, CNTB_OAUTH2_USER and CNTB_OAUTH2_PASS for Contabo",
+      );
     });
 
     it("opscrew_render previews the generated files without writing them", async () => {

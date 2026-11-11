@@ -77,6 +77,8 @@ steps you run:
 - **GitHub** (api.github.com): your repository, pull requests, Actions secrets and workflows.
 - **Hetzner Cloud and DigitalOcean:** servers, firewalls, volumes, object storage, and live prices
   for the cost estimates.
+- **Contabo** (api.contabo.com, and auth.contabo.com for its sign-in): servers, firewalls, SSH keys
+  and snapshots. Its prices come from a dated list, since it has no price API.
 - **Cloudflare:** DNS records, TLS settings, rules and Workers; DNS-over-HTTPS lookups
   (cloudflare-dns.com) when it checks a site.
 - **Porkbun, Namecheap and GoDaddy**, only in the `domain` steps: availability, prices, purchases
