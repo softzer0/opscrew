@@ -128,7 +128,6 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Accept:
     - For a definition with `removal: "cancel-at-term-end"`: the plan and the typed confirmation say the server is billed to the end of its term and that its disk and snapshots go then; the approved plan lists the shutdown (`servers.powerOff`) before the IaC destroy; after the apply, the end date read back (`findAppServers` → `cancelledUntil`) is shown and audited; no provider snapshot is offered when `serverSnapshotsOutliveServer` is false, and OpsCrew's data snapshot with its off-server copy is offered when the server holds data.
     - When the IaC destroy fails for such a provider (Contabo refuses to cancel a server not created through its API, a 422), the error shows the provider's reason and names its console (`texts.destroy.console`) as where to cancel by hand.
-    - The snapshot limit counts snapshots taken by hand too: the refusal names the provider's console for those.
     - Tested with a fake definition and connector; Hetzner and DigitalOcean unchanged.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew && pnpm lint`
   - Effort: high
