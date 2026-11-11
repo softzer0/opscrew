@@ -3,6 +3,7 @@ import type {
   CredentialCheck,
   CredentialRequirement,
   FetchLike,
+  ProviderRedactor,
   ServerSnapshotApi,
   VpsConnector,
 } from "@opscrew/contracts";
@@ -24,7 +25,7 @@ export interface HetznerConnectorOptions {
   env: Record<string, string | undefined>;
   fetch?: FetchLike;
   /** Shared redactor; a private one is created when omitted. The token is always registered. */
-  redactor?: Redactor;
+  redactor?: ProviderRedactor;
   baseUrl?: string;
   version?: string;
   sleep?: (ms: number) => Promise<void>;
