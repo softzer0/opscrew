@@ -498,6 +498,21 @@ never runs, they stay "not tested live" on the coverage page.
   do them by hand.
 - **Azure and Google Cloud** after AWS, as provider plugins, reusing Azure Verified
   Modules, terraform-google-modules and Infracost.
+- **Fastly in front of an app, in place of Cloudflare's proxy** (founder, 2026-11-11):
+  - a Fastly service through its official Terraform provider (`fastly/fastly`), with Fastly's
+    certificates for the app's hostnames (5 domains free, then $20 a domain);
+  - OpsCrew's rule against probes for secrets and admin panels written into the service, since
+    Fastly's WAF is sold in paid packages;
+  - the server reachable only from Fastly, since Fastly has no tunnel;
+  - the domain stays at Cloudflare (DNS only) or the user's DNS host;
+  - later, if users ask: sites hosted on Fastly Compute (like Workers) and Fastly Object Storage
+    (like R2).
+
+  Fastly's free tier covers 100 GB and 1M requests a month (its pricing page, 2026-11-11). Live
+  tests are decided when it is placed; there is no Fastly account yet. **Research first:** how
+  the origin is restricted to Fastly (its published IP ranges, a shared secret header, mutual
+  TLS), how hostnames and the apex point at Fastly, how certificates are validated, and whether
+  plain VCL can block those paths.
 - **Tailscale or Headscale as the private network** (lead proposal, 2026-10-18; the founder is
   interested in Headscale), next to 018's plain WireGuard:
   - Tailscale for users with a tailnet: OpsCrew joins the servers with tags and writes the ACLs,
