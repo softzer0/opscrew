@@ -43,8 +43,8 @@ kinds, not on which cloud.
   carry its own copies of its dependencies.
 - **D3: one registry, `@opscrew/providers`, is where consumers read provider facts.** It lists
   the built-in definitions in order (Hetzner, DigitalOcean, Contabo), validates each at load (its
-  version, every part, region keys within OpsCrew's regions), and exports a conformance test that
-  every provider package runs. No other code branches on a cloud provider's id.
+  version, every part, region keys within OpsCrew's regions), and runs a conformance test over
+  every one of them.
 - **D4: dependencies point one way:** provider packages → contracts and core; the registry → the
   providers and plan-schema; agents, iac-templates, secops, detect, mcp-server and the CLI → the
   registry. plan-schema keeps literal provider enums, and a registry test keeps them equal to the

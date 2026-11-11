@@ -114,8 +114,8 @@ adds `contabo` to them with plan-schema's enums in wave 4.
   - `cloudProvider(id)`, `isCloudProvider(id)`.
   - Every definition is validated at load (zod: shape, `contractVersion`, region keys), with a
     plain error naming the provider and the part.
-  - The shared conformance test `expectConformingProvider(definition)` (exported from
-    `@opscrew/providers/testing`), which each provider package's test runs.
+  - A conformance test that runs for every built-in definition. It lives in the registry, since a
+    provider package can't depend on the registry, which depends on it.
   - A test that the registry's ids equal `CloudProviderSchema`'s options in plan-schema.
     plan-schema keeps its literal enums, because a provider package uses plan-schema's types and
     a reverse import would be a cycle.
@@ -222,7 +222,7 @@ the provider lists in README, `docs/guide/index.md`, `object-storage.md`, `snaps
 
 ### 7. Tests
 
-- The conformance test for each definition, and the registry's validation and plan-schema
+- The registry's conformance test over every definition, and the registry's validation and plan-schema
   equality tests.
 - Wave 2: the existing tests and snapshots, unchanged.
 - Contabo's client and connector with `fetch` fakes:

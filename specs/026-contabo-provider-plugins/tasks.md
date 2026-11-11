@@ -35,11 +35,11 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
 - [ ] T2602 [P] [US5] The registry `@opscrew/providers`
   - Owns: `packages/providers/registry/src/**`
   - Reads: plan 1–2; `packages/contracts/src/provider.ts`; `packages/plan-schema/src/enums.ts`
-  - Depends: T2601, T2603, T2604 (it imports their definitions; the lead adds each provider package's conformance test when it merges)
+  - Depends: T2601, T2603, T2604 (it imports their definitions)
   - Accept:
     - `CLOUD_PROVIDERS` (Hetzner, then DigitalOcean), `cloudProvider(id)` (throws a plain `INVALID_INPUT` error naming the known ids), `isCloudProvider(id)`.
     - Every definition is validated at load with zod: `contractVersion` 1, every required part present, region keys within `RegionSchema`, locations named, every region mapped, module files non-empty and without `cloud-init.yaml.tftpl`. A bad definition fails with the provider's id and the part.
-    - `@opscrew/providers/testing` exports `expectConformingProvider(definition)`: the validation plus behavioural checks (`moduleArguments` for the app's server, an extra server and a prefix; `connector` with no credentials is `configured: false`; every token rule matches a `fakeSecret`-built sample and none of a list of near misses).
+    - A conformance test in the registry runs for every entry of `CLOUD_PROVIDERS`: the validation plus behavioural checks (`moduleArguments` for the app's server, an extra server and a prefix; `connector` with no credentials is `configured: false`; every token rule matches a `fakeSecret`-built sample). It lives in the registry because a provider package can't depend on the registry, which depends on it.
     - A test that `CLOUD_PROVIDERS`' ids equal `CloudProviderSchema`'s options.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/providers && pnpm lint`
   - Effort: high
@@ -51,7 +51,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Accept:
     - `definition: CloudProviderDefinition` exported from the package root, every value copied exactly (strings byte for byte, the same regexes) from where it lives today; the module's files copied into `module/` without the cloud-init copy, and `src/generated/module.ts` generated.
     - `removal: "delete"`, `resize: true`, `snapshots: { kind: "per-gb" }`, `serverSnapshotsOutliveServer: true`, credentials `mode: "any"`.
-    - A local test checks the definition's shape and that the generated module is current (`collectProviderModule` from `scripts/gen-provider-modules.ts`); the conformance test comes with T2602.
+    - A local test checks the definition's shape and that the generated module is current (`collectProviderModule` from `scripts/gen-provider-modules.ts`); the registry's conformance test (T2602) covers it once merged.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/provider-hetzner && pnpm lint`
   - Effort: high
 
@@ -177,7 +177,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Depends: T2602, T2614
   - Accept:
     - The definition: `removal: "cancel-at-term-end"` with `minimumTermMonths: 1`, `resize: false`, `snapshots: { kind: "included" }`, `serverSnapshotsOutliveServer: false`, `providerBackups: false`, `deleteProtection: false`, credentials `mode: "all"`, the regions of plan 5, the texts (runbook, destroy, init help, interview option), the SecOps row reading `contabo_firewall.instance_ids`, the 403 pattern.
-    - `module/contabo-vps` as plan 5, passing `validate` under both engines; `expectConformingProvider` passes.
+    - `module/contabo-vps` as plan 5, passing `validate` under both engines; the registry's conformance test passes once T2616 adds Contabo to the list.
   - Verify: `PATH="$PWD/.tools/bin:$PATH" pnpm turbo run typecheck test --filter=@opscrew/provider-contabo && pnpm lint`
   - Effort: high
 
