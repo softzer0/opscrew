@@ -180,6 +180,9 @@ importers:
       '@opscrew/plan-schema':
         specifier: workspace:*
         version: link:../plan-schema
+      '@opscrew/provider-contabo':
+        specifier: workspace:*
+        version: link:../providers/contabo
       '@opscrew/provider-digitalocean':
         specifier: workspace:*
         version: link:../providers/digitalocean
@@ -473,6 +476,9 @@ importers:
       '@opscrew/plan-schema':
         specifier: workspace:*
         version: link:../../plan-schema
+      '@opscrew/provider-contabo':
+        specifier: workspace:*
+        version: link:../contabo
       '@opscrew/provider-digitalocean':
         specifier: workspace:*
         version: link:../digitalocean

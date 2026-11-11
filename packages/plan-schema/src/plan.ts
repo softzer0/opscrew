@@ -2298,6 +2298,8 @@ function checkRetarget(
 export const DEFAULT_IMAGES: Readonly<Record<CloudProvider, string>> = {
   hetzner: "ubuntu-24.04",
   digitalocean: "ubuntu-24-04-x64",
+  // Contabo takes an image by id; a registry test keeps it equal to its definition's.
+  contabo: "d64d5c6c-9dda-4e38-8174-0ee282474d8a",
 };
 
 /**

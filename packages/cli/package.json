@@ -86,6 +86,7 @@
     "@opscrew/iac-templates": "workspace:*",
     "@opscrew/mcp-server": "workspace:*",
     "@opscrew/plan-schema": "workspace:*",
+    "@opscrew/provider-contabo": "workspace:*",
     "@opscrew/provider-digitalocean": "workspace:*",
     "@opscrew/provider-hetzner": "workspace:*",
     "@opscrew/providers": "workspace:*",

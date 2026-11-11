@@ -37,6 +37,7 @@
       "enum": [
         "hetzner",
         "digitalocean",
+        "contabo",
         "own",
         "portainer",
         "localhost",

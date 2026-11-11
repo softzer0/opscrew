@@ -97,7 +97,7 @@ export interface ComputeCatalog {
  * a server the user already owns (`own`, which OpsCrew never creates or deletes). An existing
  * Portainer (`portainer`) is not one: there is no server to create, size or price.
  */
-export type VpsProviderId = Extract<ProviderId, "hetzner" | "digitalocean" | "own">;
+export type VpsProviderId = Extract<ProviderId, "hetzner" | "digitalocean" | "contabo" | "own">;
 
 /** A server OpsCrew created for an app, as the provider reports it. */
 export interface AppServer {

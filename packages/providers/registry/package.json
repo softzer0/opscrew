@@ -16,6 +16,7 @@
     "@opscrew/contracts": "workspace:*",
     "@opscrew/core": "workspace:*",
     "@opscrew/plan-schema": "workspace:*",
+    "@opscrew/provider-contabo": "workspace:*",
     "@opscrew/provider-digitalocean": "workspace:*",
     "@opscrew/provider-hetzner": "workspace:*",
     "zod": "^4.6.5"

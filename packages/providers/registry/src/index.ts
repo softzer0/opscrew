@@ -4,14 +4,17 @@
  */
 import type { CloudProviderDefinition } from "@opscrew/contracts";
 import { listText, OpsCrewError } from "@opscrew/core";
+import { definition as contabo } from "@opscrew/provider-contabo";
 import { definition as digitalocean } from "@opscrew/provider-digitalocean";
 import { definition as hetzner } from "@opscrew/provider-hetzner";
 import { validateCloudProvider } from "./validate";
 
-/** The built-in cloud server providers, in order: Hetzner, then DigitalOcean. */
-export const CLOUD_PROVIDERS: readonly CloudProviderDefinition[] = [hetzner, digitalocean].map(
-  validateCloudProvider,
-);
+/** The built-in cloud server providers, in order: Hetzner, DigitalOcean, Contabo. */
+export const CLOUD_PROVIDERS: readonly CloudProviderDefinition[] = [
+  hetzner,
+  digitalocean,
+  contabo,
+].map(validateCloudProvider);
 
 /** The definition of the cloud server provider `id`; throws `INVALID_INPUT` for any other id. */
 export function cloudProvider(id: string): CloudProviderDefinition {

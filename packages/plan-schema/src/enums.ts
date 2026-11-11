@@ -139,7 +139,7 @@ export type Region = z.infer<typeof RegionSchema>;
  * or DigitalOcean, or a server the user already owns (`own`), which OpsCrew prepares over SSH but
  * never creates or deletes.
  */
-export const VpsProviderSchema = z.enum(["hetzner", "digitalocean", "own"]);
+export const VpsProviderSchema = z.enum(["hetzner", "digitalocean", "contabo", "own"]);
 export type VpsProvider = z.infer<typeof VpsProviderSchema>;
 
 /** Cloud providers on which OpsCrew creates the server itself. */

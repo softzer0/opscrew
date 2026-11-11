@@ -301,7 +301,7 @@
           "properties": {
             "provider": {
               "type": "string",
-              "enum": ["hetzner", "digitalocean"]
+              "enum": ["hetzner", "digitalocean", "contabo"]
             },
             "mode": {
               "type": "string",
@@ -619,7 +619,7 @@
                 "properties": {
                   "provider": {
                     "type": "string",
-                    "enum": ["hetzner", "digitalocean"]
+                    "enum": ["hetzner", "digitalocean", "contabo"]
                   },
                   "mode": {
                     "type": "string",
@@ -2182,7 +2182,7 @@
                   "properties": {
                     "provider": {
                       "type": "string",
-                      "enum": ["hetzner", "digitalocean"]
+                      "enum": ["hetzner", "digitalocean", "contabo"]
                     },
                     "mode": {
                       "type": "string",
