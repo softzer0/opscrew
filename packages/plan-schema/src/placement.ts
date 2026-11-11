@@ -3,6 +3,7 @@
  * the app's servers and the user's devices (`network`), a service's move between servers (`move`),
  * where services run, and the plan's rules across them.
  */
+import { orText } from "@opscrew/core";
 import { z } from "zod";
 import { APP_SERVER, ComponentNameSchema, type PlanService } from "./components";
 import { IsoDateTimeSchema, onOneServer, type SelfHostedServiceKind } from "./enums";
@@ -192,11 +193,6 @@ const TARGET_NAMES: Record<string, string> = {
   "github-pages": "GitHub Pages",
 };
 
-/** `a, b or c`. */
-function orList(items: readonly string[]): string {
-  return items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} or ${items.at(-1)}`;
-}
-
 /**
  * The plan's rules across `servers`, `services[].server`, `network` and `move`: extra servers and
  * the network only on a cloud or own target, every server named once and running a service (but the
@@ -380,7 +376,7 @@ function checkNetwork(
       const instead =
         grantable.length > 0
           ? `grant one of ${grantable.map((s) => s.name).join(", ")}`
-          : `the plan has no enabled service of a kind a device can be granted (${orList(GRANTABLE_KINDS)})`;
+          : `the plan has no enabled service of a kind a device can be granted (${orText(GRANTABLE_KINDS)})`;
       issue(
         ["network", "grants", i, "service"],
         `names no enabled service of the plan: "${grant.service}"; ${instead}`,
@@ -388,7 +384,7 @@ function checkNetwork(
     } else if (!GRANTABLE.has(service.kind)) {
       issue(
         ["network", "grants", i, "service"],
-        `is ${service.name}, a ${service.kind} service, which has no logins to grant: a device can be granted ${orList(GRANTABLE_KINDS)}`,
+        `is ${service.name}, a ${service.kind} service, which has no logins to grant: a device can be granted ${orText(GRANTABLE_KINDS)}`,
       );
     }
   }

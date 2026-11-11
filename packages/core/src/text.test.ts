@@ -7,6 +7,7 @@ import {
   listText,
   lowerFirst,
   normalizeHostName,
+  orText,
   plural,
   taxLabel,
   upperFirst,
@@ -18,6 +19,15 @@ describe("listText", () => {
     expect(listText(["a"])).toBe("a");
     expect(listText(["a", "b"])).toBe("a and b");
     expect(listText(["a", "b", "c"])).toBe("a, b and c");
+  });
+});
+
+describe("orText", () => {
+  it("joins alternatives as plain English", () => {
+    expect(orText([])).toBe("");
+    expect(orText(["a"])).toBe("a");
+    expect(orText(["a", "b"])).toBe("a or b");
+    expect(orText(["a", "b", "c"])).toBe("a, b or c");
   });
 });
 

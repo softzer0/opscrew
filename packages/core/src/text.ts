@@ -2,8 +2,17 @@ import type { Currency, Money } from "@opscrew/contracts";
 
 /** Joins items as plain English: `a`, `a and b`, `a, b and c` (`""` for none). */
 export function listText(items: readonly string[]): string {
+  return joinText(items, "and");
+}
+
+/** Joins alternatives as plain English: `a`, `a or b`, `a, b or c` (`""` for none). */
+export function orText(items: readonly string[]): string {
+  return joinText(items, "or");
+}
+
+function joinText(items: readonly string[], word: "and" | "or"): string {
   if (items.length <= 1) return items.join("");
-  return `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
+  return `${items.slice(0, -1).join(", ")} ${word} ${items.at(-1)}`;
 }
 
 /** `1 server`, `2 servers`, `0 servers`: the count and the word, with an `s` unless it is 1. */
