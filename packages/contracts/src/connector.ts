@@ -111,6 +111,12 @@ export interface AppServer {
    * the term instead of deleting (Contabo). Absent while the server is not cancelled.
    */
   cancelledUntil?: string;
+  /**
+   * True when only the server's name matched: the provider's label or tag was never attached, as
+   * after a create that stopped halfway at a provider that tags after creating (Contabo). OpsCrew
+   * takes such a server over only after its own provision stopped mid-apply.
+   */
+  nameOnly?: boolean;
 }
 
 export interface SnapshotRequest {
