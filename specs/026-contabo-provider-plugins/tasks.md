@@ -70,7 +70,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Reads: plan 2–3
   - Depends: T2602, T2603, T2604
   - Accept:
-    - `PROVIDER_TEXT`, `cloudTarget`, `NOT_CLOUD`'s cloud test and `SHARED_RESOURCES` read the registry; no code in the package branches on `"hetzner"` or `"digitalocean"` (a test greps `src/` outside tests and fixtures).
+    - `PROVIDER_TEXT`, `cloudTarget`, `NOT_CLOUD`'s cloud test and `SHARED_RESOURCES` read the registry; no code in the package branches on `"hetzner"` or `"digitalocean"` as a cloud server provider (a test greps `src/` outside tests and fixtures; the object-storage code, `infra/storage.ts`, `prices.ts` and `offsite.ts`, keeps its bucket providers, plan 3).
     - The server modules come from the definitions, with the shared `cloud-init.yaml.tftpl` added to each, written to the same paths; `modules/hetzner-vps` and `modules/digitalocean-droplet` and their `SHARED_FILES` entries are removed; the Cloudflare modules and the check script stay generated as before.
     - The module validate and security tests iterate `CLOUD_PROVIDERS`.
     - The byte-identical rule.
@@ -83,7 +83,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Depends: T2602, T2603, T2604
   - Accept:
     - `providerProfile`, `VPS_PROVIDERS`, `providerFromTokens` and `vpsConnector` build on the registry (own, Portainer, localhost and the serverless profiles unchanged); `design/wording.ts`, `design/delay.ts`, `design/sizing.ts`, the interview's provider options and `init/checks.ts`'s token help read definitions.
-    - No code in these folders branches on `"hetzner"` or `"digitalocean"` (a test greps them).
+    - No code in these folders branches on `"hetzner"` or `"digitalocean"` as a cloud server provider (a test greps them; the object-storage choice, `design/storage.ts` and `interview/components.ts`'s storage offers, stays, plan 3).
     - The byte-identical rule.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm lint`
   - Effort: xhigh
