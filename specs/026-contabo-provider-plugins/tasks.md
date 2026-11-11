@@ -148,7 +148,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Reads: plan 4.3, 4.4
   - Depends: T2605, T2606, T2607
   - Accept:
-    - Before provision's plan, the app's servers at the provider (`findAppServers`) are compared with the state; a running one the state lacks is shown and taken over with an `import` block rendered into the root module (plain HCL both engines accept), approved with the plan; one with `cancelledUntil` is never taken over, and the plan says a new server is bought.
+    - Before provision's plan, the app's servers at the provider (`findAppServers`) are compared with the state; a running one the state lacks, named as one of the plan's servers, is shown and taken over with an `import` block rendered into the root module (plain HCL both engines accept), approved with the plan; one with `cancelledUntil` is never taken over, and the plan says a new server is bought. One with `nameOnly` (its tag never attached) is taken over only when OpsCrew's last provision of that environment stopped mid-apply (a marker under `.opscrew/` written before the apply and removed after it); otherwise the plan stops and names the server and what to do (rename or remove it in the provider's console).
     - `mode: "all"` credentials: init, provision's credential check, `providerFromTokens` and rotate's list of the user's tokens read every variable and name the missing ones.
     - Tested with fakes for all three behaviours, including SC-2605: a create that timed out, then a second provision, buys no second server; Hetzner and DigitalOcean plans unchanged when nothing is lost.
   - Verify: `PATH="$PWD/.tools/bin:$PATH" pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/iac-templates && pnpm lint`
@@ -166,7 +166,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Depends: T2601 (runs beside wave 1; the spike's facts, T2613, go into its price table afterwards)
   - Accept:
     - The client: OAuth2 password grant from the four `CNTB_OAUTH2_*` variables (all needed; the missing ones named), token cached to its expiry and renewed once on a 401, `x-request-id` on every call, zod on every answer, errors in plain English (402, 422 on cancel, 429), the four values registered with the redactor on read.
-    - `contaboConnector`: `verifyCredentials`; a dated static catalog (`static-prices.ts`, the product ids from the API reference (R2), checked against R6 once the spike has run, the monthly rate, `setupFee`, `includedSnapshots`); `ServerSnapshotApi` as plan 5 (`findAppServers` with `cancelledUntil`, snapshots, `rebuild` as revert, power off and on with waits).
+    - `contaboConnector`: `verifyCredentials`; a dated static catalog (`static-prices.ts`, the product ids from the API reference (R2), checked against R6 once the spike has run, the monthly rate, `setupFee`, `includedSnapshots`); `ServerSnapshotApi` as plan 5 (`findAppServers` by the tag `opscrew-app:<app>` plus untagged servers whose display name is the app's or `<app>-…` as `nameOnly`, with `cancelledUntil`; snapshot ids `<instance>:<snapshot>`; `rebuild` as revert; power off and on with waits).
     - Tests with `fetch` fakes: a renewed token, `findAppServers` finding a server whose create timed out, the cancel date read back, the snapshot limit, no credential in any error or log.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/provider-contabo && pnpm lint`
   - Effort: xhigh
