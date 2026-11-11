@@ -99,7 +99,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm lint`
   - Effort: xhigh
 
-- [ ] T2608 [P] [US3] secops and detect
+- [x] T2608 [P] [US3] secops and detect
   - Owns: `packages/secops/src/**`, `packages/detect/src/**`
   - Reads: plan 3
   - Depends: T2602, T2603, T2604
