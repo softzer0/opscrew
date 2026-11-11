@@ -35,7 +35,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
 - [ ] T2602 [P] [US5] The registry `@opscrew/providers`
   - Owns: `packages/providers/registry/src/**`
   - Reads: plan 1–2; `packages/contracts/src/provider.ts`; `packages/plan-schema/src/enums.ts`
-  - Depends: T2601
+  - Depends: T2601, T2603, T2604 (it imports their definitions; the lead adds each provider package's conformance test when it merges)
   - Accept:
     - `CLOUD_PROVIDERS` (Hetzner, then DigitalOcean), `cloudProvider(id)` (throws a plain `INVALID_INPUT` error naming the known ids), `isCloudProvider(id)`.
     - Every definition is validated at load with zod: `contractVersion` 1, every required part present, region keys within `RegionSchema`, locations named, every region mapped, module files non-empty and without `cloud-init.yaml.tftpl`. A bad definition fails with the provider's id and the part.
@@ -51,7 +51,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Accept:
     - `definition: CloudProviderDefinition` exported from the package root, every value copied exactly (strings byte for byte, the same regexes) from where it lives today; the module's files copied into `module/` without the cloud-init copy, and `src/generated/module.ts` generated.
     - `removal: "delete"`, `resize: true`, `snapshots: { kind: "per-gb" }`, `serverSnapshotsOutliveServer: true`, credentials `mode: "any"`.
-    - A test runs `expectConformingProvider` once T2602 is merged; until then a local test checks the shape and that the generated module is current.
+    - A local test checks the definition's shape and that the generated module is current (`collectProviderModule` from `scripts/gen-provider-modules.ts`); the conformance test comes with T2602.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/provider-hetzner && pnpm lint`
   - Effort: high
 

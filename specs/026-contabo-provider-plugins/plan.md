@@ -268,8 +268,9 @@ the provider lists in README, `docs/guide/index.md`, `object-storage.md`, `snaps
 - **T2601 (lead):** the contract and ADR 0029; the package moves and renames; skeletons for the
   registry and Contabo; `pnpm-workspace.yaml`, the consumers' dependencies, the lockfile and the
   root module generator.
-- **Wave 1:** T2602 the registry ∥ T2603 Hetzner's definition ∥ T2604 DigitalOcean's ∥ T2614
-  Contabo's client and connector (it needs only the contract).
+- **Wave 1:** T2603 Hetzner's definition ∥ T2604 DigitalOcean's ∥ T2614 Contabo's client and
+  connector (it needs only the contract); then T2602 the registry, which imports the two
+  definitions.
 - **Wave 2:** T2605 iac-templates ∥ T2606 agents (providers, design, interview, init) ∥ T2607
   agents (provision, destroy, advise, drift, status and the rest) ∥ T2608 secops and detect ∥
   T2609 mcp-server and cli.
