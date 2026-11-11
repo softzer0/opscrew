@@ -209,6 +209,29 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm lint`
   - Effort: high
 
+- [ ] T2626 [US4] Advise compares providers on the same basis
+  - Owns: `packages/agents/src/advise/**`
+  - Reads: T2616's report and review; `packages/agents/src/design/cost.ts` (`offerTerms`, `pricedOffer`)
+  - Depends: T2616
+  - Accept:
+    - advise's move to another provider compares prices on the same VAT basis (both with or both without, as the user's currency shows elsewhere), with or without the provider's backups alike, and names each side's price date.
+    - A proposal to move to a provider with terms states the trade-offs plainly: the one-time setup fee, the minimum term and that a removal ends only at the end of it, no size change in place, no automatic backups from the provider (OpsCrew's data snapshots instead).
+    - It is proposed only when the saving is real on that basis; a Hetzner app no longer gets a move to Contabo by an unequal comparison.
+    - Hetzner 's and DigitalOcean's proposals to each other are unchanged.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm lint`
+  - Effort: high
+
+- [ ] T2627 [US1] [US4] Provision and the runbook for providers with terms
+  - Owns: `packages/agents/src/provision/**`, `packages/iac-templates/src/runbook/**`
+  - Depends: T2616
+  - Accept:
+    - provision refuses a plan whose cloud target has `backups: true` at a provider with `offering.providerBackups: false`, with the reason and what to do.
+    - `provision/credentials.ts` names missing credentials with `tokenNotSet` from `../providers`.
+    - The runbook's "Server size: run `opscrew design`" bullet, for a provider with `offering.resize: false`, names the two ways design names (T2611's `resizeWaysText`), or points to them.
+    - Hetzner and DigitalOcean unchanged.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/iac-templates && pnpm lint`
+  - Effort: medium
+
 ## Phase 6: Wave 5 (parallel)
 
 - [ ] T2617 [P] [US6] The guide
@@ -222,7 +245,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
 - [ ] T2618 [P] [US6] The plugin skills and the MCP text
   - Owns: `plugin/skills/**`, `plugin/README.md`, `packages/mcp-server/src/tools/*.ts` (text only), `packages/cli/src/commands/retarget.ts` (help text only)
   - Depends: T2616
-  - Accept: `opscrew-deploy` and `opscrew-snapshots` say what differs on Contabo; the MCP tool descriptions that list providers include it; where a text names a provider's credential variable (the deploy tools, `retarget`'s help), a provider whose `credentials.mode` is `all` has every variable named, and retarget's hand-wrapped help stays wrapped; `node plugin/validate.mjs` passes.
+  - Accept: `opscrew-deploy` and `opscrew-snapshots` say what differs on Contabo; the MCP tool descriptions that list providers include it, and the rule that names the tools OpsCrew never runs names `cntb` too; where a text names a provider's credential variable (the deploy tools, `retarget`'s help), a provider whose `credentials.mode` is `all` has every variable named, and retarget's hand-wrapped help stays wrapped; `node plugin/validate.mjs` passes.
   - Verify: `node plugin/validate.mjs && pnpm turbo run typecheck test --filter=@opscrew/mcp-server && pnpm lint`
   - Effort: medium
 
@@ -237,6 +260,6 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
 ## Phase 7: Live, simplify, release (lead)
 
 - [ ] T2620 The live pass on one Cloud VPS 4 (lead; the founder is asked before any rerun that needs another server), recorded on `docs/e2e-coverage.md`.
-- [ ] T2621 Simplify pass over the feature's changes (lead). Noted so far: secops's `PlannedResource` becomes the contract's `PlannedResourceJson`; the definitions' copied module-argument helpers; `profiles.ts`' second parse of the region keys and of `DEFAULT_CLOUD_PROVIDER`; the two agents grep tests become one; agents (`provision/servers.ts`, `rotate/infra.ts`) read the shared resources' addresses with iac-templates' `sharedResources` instead of their own parse of `extraShared`; `provision/servers.ts`' lift of delete protection fails closed if more than one provider has it (T2607 review N1); the defensive fallbacks T2607's review listed (S2); the takeover's import blocks become a `RenderContext` field instead of an append to the rendered `main.tf`, and whether the plan's imports belong in iac-engine's plan summary (T2612's report); one "is/are not set" helper for the three copies (T2612's review); one helper for "Nothing is saved on … until its term ends" (destroy and provision, T2625's review); the iac-templates shell-script tests' timeouts under load (`workflow/snapshots.test.ts`' rollback cases).
+- [ ] T2621 Simplify pass over the feature's changes (lead). Noted so far: secops's `PlannedResource` becomes the contract's `PlannedResourceJson`; the definitions' copied module-argument helpers; `profiles.ts`' second parse of the region keys and of `DEFAULT_CLOUD_PROVIDER`; the two agents grep tests become one; agents (`provision/servers.ts`, `rotate/infra.ts`) read the shared resources' addresses with iac-templates' `sharedResources` instead of their own parse of `extraShared`; `provision/servers.ts`' lift of delete protection fails closed if more than one provider has it (T2607 review N1); the defensive fallbacks T2607's review listed (S2); the takeover's import blocks become a `RenderContext` field instead of an append to the rendered `main.tf`, and whether the plan's imports belong in iac-engine's plan summary (T2612's report); one "is/are not set" helper for the three copies (T2612's review); one helper for "Nothing is saved on … until its term ends" (destroy and provision, T2625's review); the `OPSCREW_IT` infra and cloud-init engine loop limited to fewer move directions (17.5 minutes with Contabo, T2616's report); Contabo's fixture plans in iac-templates with `pricesIncludeVat: true` as its catalog; the iac-templates shell-script tests' timeouts under load (`workflow/snapshots.test.ts`' rollback cases).
 - [x] T2622 The constitution's provider order (Contabo with the hosting providers, a MINOR bump) and `CLAUDE.md`'s package list (lead).
 - [ ] T2623 The release, following `docs/releasing.md` (lead).
