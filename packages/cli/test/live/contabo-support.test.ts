@@ -1,7 +1,9 @@
 /**
- * Offline checks of the Contabo live test's helpers: its variables, what it reads in outputs, and
- * its cleanup at Contabo against a fake API.
+ * Offline checks of the Contabo live test's helpers: its variables, what it reads in outputs, a
+ * failed step's wait for a fix, and its cleanup at Contabo against a fake API.
  */
+
+import { join } from "node:path";
 import { type FakeReply, fakeFetch, fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
 import {
@@ -12,10 +14,13 @@ import {
   createsServer,
   dayText,
   designTexts,
+  type FixWait,
+  pauseMs,
   serverSnapshotId,
   shownEndDate,
   takeoverLines,
   unsaid,
+  untilFixed,
 } from "./contabo-support";
 import { missingVariables } from "./support";
 
@@ -210,5 +215,102 @@ describe("the cleanup at Contabo", () => {
     expect(await contabo.cleanUp(app, true, log)).toEqual([
       `destroy left the SSH key ${app}-deploy; the cleanup deleted it`,
     ]);
+  });
+});
+
+describe("a failed step's wait for a fix", () => {
+  const folder = join("work", "run");
+  const retry = join(folder, "retry");
+  const giveUp = join(folder, "give-up");
+
+  /**
+   * A wait on a fake clock that each sleep moves on, until `until`: `files` appear at their times,
+   * and a removed file is gone. Returns the wait, the attempts made, the log and the files removed.
+   */
+  function fakeWait(until: number, files: Record<string, number> = {}) {
+    let clock = 0;
+    const removed: string[] = [];
+    const lines: string[] = [];
+    const wait: FixWait = {
+      folder,
+      until,
+      log: (message) => lines.push(message),
+      describe: (error) => (error instanceof Error ? error.message : String(error)),
+      exists: async (path) => (files[path] ?? Number.POSITIVE_INFINITY) <= clock,
+      remove: async (path) => {
+        removed.push(path);
+        files[path] = Number.POSITIVE_INFINITY;
+      },
+      sleep: async (ms) => {
+        clock += ms;
+      },
+      now: () => clock,
+    };
+    return { wait, lines, removed, clock: () => clock };
+  }
+
+  /** A step that fails until `passesOn`, noting each attempt's number. */
+  function step(passesOn = Number.POSITIVE_INFINITY) {
+    const attempts: number[] = [];
+    const body = async (attempt: number) => {
+      attempts.push(attempt);
+      if (attempt < passesOn) throw new Error(`attempt ${attempt} broke`);
+    };
+    return { attempts, body };
+  }
+
+  it("reads the wait in hours, none when unset", () => {
+    expect(pauseMs({})).toBe(0);
+    expect(pauseMs({ OPSCREW_E2E_CONTABO_PAUSE_HOURS: " " })).toBe(0);
+    expect(pauseMs({ OPSCREW_E2E_CONTABO_PAUSE_HOURS: "48" })).toBe(48 * 3_600_000);
+    for (const value of ["-1", "two", "601"]) {
+      expect(() => pauseMs({ OPSCREW_E2E_CONTABO_PAUSE_HOURS: value })).toThrow(
+        `OPSCREW_E2E_CONTABO_PAUSE_HOURS="${value}" is not a number of hours from 0 to 600.`,
+      );
+    }
+  });
+
+  it("runs a step that passes once, without a word", async () => {
+    const { wait, lines } = fakeWait(3_600_000);
+    const { attempts, body } = step(1);
+    await untilFixed(body, wait);
+    expect(attempts).toEqual([1]);
+    expect(lines).toEqual([]);
+  });
+
+  it("throws a failure at once when there is no time to wait", async () => {
+    const { wait, lines } = fakeWait(0, { [retry]: 0 });
+    const { attempts, body } = step(2);
+    await expect(untilFixed(body, wait)).rejects.toThrow("attempt 1 broke");
+    expect(attempts).toEqual([1]);
+    expect(lines).toEqual([]);
+  });
+
+  it("runs the step again once the file retry appears, and deletes it", async () => {
+    const { wait, lines, removed, clock } = fakeWait(3_600_000, { [retry]: 90_000 });
+    const { attempts, body } = step(2);
+    await untilFixed(body, wait);
+    expect(attempts).toEqual([1, 2]);
+    expect(removed).toEqual([retry]);
+    expect(clock()).toBe(90_000);
+    expect(lines[0]).toBe("attempt 1 failed: attempt 1 broke");
+    expect(lines[1]).toContain("waiting for a fix until 1970-01-01T01:00:00.000Z");
+    expect(lines[1]).toContain(`create ${retry} to run the step again, or ${giveUp} to end`);
+    expect(lines[2]).toBe("running the step again (attempt 2)");
+  });
+
+  it("throws the last failure when the file give-up appears", async () => {
+    const { wait } = fakeWait(3_600_000, { [retry]: 30_000, [giveUp]: 60_000 });
+    const { attempts, body } = step();
+    await expect(untilFixed(body, wait)).rejects.toThrow("attempt 2 broke");
+    expect(attempts).toEqual([1, 2]);
+  });
+
+  it("throws the failure once the wait is over", async () => {
+    const { wait, clock } = fakeWait(120_000);
+    const { attempts, body } = step();
+    await expect(untilFixed(body, wait)).rejects.toThrow("attempt 1 broke");
+    expect(attempts).toEqual([1]);
+    expect(clock()).toBe(120_000);
   });
 });

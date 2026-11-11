@@ -1,13 +1,16 @@
 /**
  * What the Contabo live test (`contabo.test.ts`, feature 026) needs besides the harness: its gate
  * and variables, the four credentials as OpsCrew reads them, what OpsCrew's output says on
- * Contabo, and the test's own reads and deletions at Contabo for its checks and its cleanup. The
+ * Contabo, a failed step's wait for a fix, and the test's own reads and deletions at Contabo for
+ * its checks and its cleanup. The
  * app's servers and their snapshots go through OpsCrew's connector; the firewall, SSH key and tag,
  * which the connector does not cover, and a cancel when OpsCrew's destroy failed, through
  * Contabo's API. The test never creates anything at Contabo itself, and no value of a credential
  * is ever printed.
  */
 import { randomUUID } from "node:crypto";
+import { access, rm } from "node:fs/promises";
+import { join } from "node:path";
 import type { AppServer, FetchLike, ServerSnapshotApi } from "@opscrew/contracts";
 import { Redactor } from "@opscrew/core";
 import { contaboConnector } from "@opscrew/provider-contabo";
@@ -126,6 +129,92 @@ export function takeoverLines(output: string): string[] {
         line.includes("takes it over with an import") ||
         line.includes("OpsCrew cannot take back a cancelled"),
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Waiting for a fix (research R5): the server is paid for its month either way.
+
+/** How long a failed step from 3 on may wait for a fix, in hours; unset or 0, it does not wait. */
+export const CONTABO_PAUSE_VARIABLE = "OPSCREW_E2E_CONTABO_PAUSE_HOURS";
+
+/** The longest wait, 25 days: the cleanup still cancels the server before its month ends. */
+const MAX_PAUSE_HOURS = 600;
+
+/** The wait {@link CONTABO_PAUSE_VARIABLE} sets, in milliseconds. */
+export function pauseMs(env: Record<string, string | undefined>): number {
+  const value = env[CONTABO_PAUSE_VARIABLE]?.trim() ?? "";
+  if (value === "") return 0;
+  const hours = Number(value);
+  if (!Number.isFinite(hours) || hours < 0 || hours > MAX_PAUSE_HOURS) {
+    throw new Error(
+      `${CONTABO_PAUSE_VARIABLE}="${value}" is not a number of hours from 0 to ${MAX_PAUSE_HOURS}.`,
+    );
+  }
+  return hours * 3_600_000;
+}
+
+/** What {@link untilFixed} needs besides the step; the last four stand in for the offline tests. */
+export interface FixWait {
+  /** The folder the files `retry` and `give-up` are created in. */
+  folder: string;
+  /** Until when a failed attempt waits (milliseconds since the epoch). */
+  until: number;
+  log: (message: string) => void;
+  /** The failure as the log may show it (scrubbed). */
+  describe: (error: unknown) => string;
+  exists?: (path: string) => Promise<boolean>;
+  remove?: (path: string) => Promise<void>;
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+}
+
+/** How often a failed step looks for the file `retry` or `give-up`. */
+const FIX_POLL_MS = 30_000;
+
+/**
+ * Runs `body`, given the attempt's number from 1. When it fails before `until`, the step waits for
+ * a fix: it logs the failure and what to do, then looks every 30 seconds for the file `retry` in
+ * `folder` (deleted, then `body` runs again) or `give-up` (the failure is thrown). The failure is
+ * thrown too once `until` has passed.
+ */
+export async function untilFixed(
+  body: (attempt: number) => Promise<void>,
+  wait: FixWait,
+): Promise<void> {
+  const { folder, until, log, describe } = wait;
+  const exists =
+    wait.exists ??
+    ((path: string) =>
+      access(path).then(
+        () => true,
+        () => false,
+      ));
+  const remove = wait.remove ?? ((path: string) => rm(path, { force: true }));
+  const sleep =
+    wait.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const now = wait.now ?? Date.now;
+  const retry = join(folder, "retry");
+  const giveUp = join(folder, "give-up");
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await body(attempt);
+      return;
+    } catch (error) {
+      if (now() >= until) throw error;
+      log(`attempt ${attempt} failed: ${describe(error)}`);
+      log(
+        `waiting for a fix until ${new Date(until).toISOString()}; nothing at Contabo is cancelled meanwhile. Fix the cause and rebuild the CLI, then create ${retry} to run the step again, or ${giveUp} to end the run (its cleanup cancels the server).`,
+      );
+      for (;;) {
+        if (await exists(giveUp)) throw error;
+        if (await exists(retry)) break;
+        if (now() >= until) throw error;
+        await sleep(FIX_POLL_MS);
+      }
+      await remove(retry);
+      log(`running the step again (attempt ${attempt + 1})`);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -13,9 +13,11 @@
  * 8. destroy: the cancel said, the server shut down, its end date shown and audited;
  * 9. none of the four credentials in any output, log, audit entry, state file or commit.
  * The test never buys a second server: provision stops before any plan that would while Contabo
- * has one of the app. Whatever fails after provision, the cleanup still destroys (cancels) the
- * server, with Contabo's API as the last resort; at Contabo only the cancelled server stays,
- * until its term ends.
+ * has one of the app. With `OPSCREW_E2E_CONTABO_PAUSE_HOURS`, a failed step from 3 to 8 waits for
+ * a fix and runs again on the same server, which is paid for its month either way (research R5).
+ * Whatever fails in the end after provision, the cleanup still destroys (cancels) the server, with
+ * Contabo's API as the last resort; at Contabo only the cancelled server stays, until its term
+ * ends.
  */
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -39,10 +41,12 @@ import {
   createsServer,
   dayText,
   designTexts,
+  pauseMs,
   serverSnapshotId,
   shownEndDate,
   takeoverLines,
   unsaid,
+  untilFixed,
 } from "./contabo-support";
 import { AppEnvironments } from "./environment-checks";
 import { LiveRun, serverSettings } from "./harness";
@@ -62,6 +66,8 @@ const SETTINGS = { ...serverSettings(ENV), app: EXAMPLE };
 /** Step 3: adapt, then up to four rounds of provision; every run in it ends before this. */
 const PROVISION_STEP_MS = minutes(150);
 const MISSING = missingVariables(ENV, CONTABO_GATE, CONTABO_VARIABLES);
+/** How long a failed step from 3 on waits for a fix, counted from step 3's start. */
+const PAUSE_MS = MISSING.length > 0 ? 0 : pauseMs(ENV);
 if (ENV[CONTABO_GATE] === "1" && MISSING.length > 0) {
   console.warn(
     `OpsCrew E2E (Contabo): skipped, set ${MISSING.join(", ")} (see docs/e2e.md, "Contabo").`,
@@ -96,6 +102,31 @@ describe.skipIf(MISSING.length > 0)(
     let serverId = "";
     let ipv4: string | undefined;
     let snapshot = "";
+    /** Until when a failed step waits for a fix: {@link PAUSE_MS} after step 3 started. */
+    let waitUntil: number | undefined;
+    /** Step 3's parts a later attempt does not repeat. */
+    let adapted = false;
+    let provisioning = false;
+
+    /**
+     * A step on the server bought (3 to 8): with {@link PAUSE_MS}, a failed attempt waits for a fix
+     * and the step runs again on the same server ({@link untilFixed}); its timeout covers the wait.
+     */
+    function paidStep(
+      title: string,
+      timeoutMs: number,
+      body: (attempt: number) => Promise<void>,
+    ): void {
+      run.step(title, timeoutMs + PAUSE_MS, async () => {
+        waitUntil ??= Date.now() + PAUSE_MS;
+        await untilFixed(body, {
+          folder: run.work,
+          until: waitUntil,
+          log,
+          describe: (error) => run.cleanError(error).message,
+        });
+      });
+    }
 
     /**
      * `provision` until done, as a script runs it, never buying a second server: each round plans
@@ -227,18 +258,24 @@ describe.skipIf(MISSING.length > 0)(
       },
     );
 
-    run.step(
+    paidStep(
       "3. provision: one server bought, with its Contabo firewall and SSH key, and the takeover found nothing (US1, FR-2606, FR-2607)",
       PROVISION_STEP_MS,
-      async () => {
-        // Every provision run ends three minutes before the step's timeout.
+      async (attempt) => {
+        // Every provision run ends three minutes before the attempt's own time is up.
         const deadline = Date.now() + PROVISION_STEP_MS - minutes(3);
-        await run.adaptAndMerge();
-        expect(
-          await contabo.appServers(app),
-          "the app's servers at Contabo before provision",
-        ).toEqual([]);
-        envs.provisioned.add("prod");
+        if (!adapted) {
+          await run.adaptAndMerge();
+          adapted = true;
+        }
+        if (!provisioning) {
+          expect(
+            await contabo.appServers(app),
+            "the app's servers at Contabo before provision",
+          ).toEqual([]);
+          envs.provisioned.add("prod");
+          provisioning = true;
+        }
         const output = await provisionOnce(deadline);
         await envs.remember("prod");
         await run.rememberSecretFile(ageKey(), "age-identity");
@@ -252,7 +289,11 @@ describe.skipIf(MISSING.length > 0)(
         if (ipv4 === undefined) throw new Error("OpsCrew recorded no address of the server.");
         const finding = (text: string) => run.findings.push(`step 3: ${text}`);
         try {
-          if (takeoverLines(output).length > 0) finding("provision printed a takeover note");
+          // A later attempt takes over a server an earlier one's stopped apply created: that is
+          // the takeover working (FR-2607), not a finding.
+          const takeovers = takeoverLines(output);
+          if (takeovers.length > 0 && attempt === 1) finding("provision printed a takeover note");
+          for (const line of attempt === 1 ? [] : takeovers) log(`observed: ${line.trim()}`);
           if (servers.length !== 1) finding(`Contabo has ${servers.length} servers of the app`);
           if (server.nameOnly === true) finding("the server has no opscrew-app tag");
           if (server.cancelledUntil !== undefined) finding("the server is cancelled already");
@@ -290,7 +331,7 @@ describe.skipIf(MISSING.length > 0)(
       },
     );
 
-    run.step(
+    paidStep(
       "4. deploy and verify: the first deploy, and the app answers on its domain through Cloudflare",
       minutes(45),
       async () => {
@@ -301,7 +342,7 @@ describe.skipIf(MISSING.length > 0)(
       },
     );
 
-    run.step(
+    paidStep(
       "5. snapshot --server: a whole-server snapshot, included in the server's price (US4)",
       minutes(30),
       async () => {
@@ -317,7 +358,7 @@ describe.skipIf(MISSING.length > 0)(
       },
     );
 
-    run.step(
+    paidStep(
       "6. restore --server <id> after the server's name typed: the same server and address, the snapshot's data back, and verify again (SC-2601)",
       minutes(45),
       async () => {
@@ -343,7 +384,7 @@ describe.skipIf(MISSING.length > 0)(
       },
     );
 
-    run.step(
+    paidStep(
       "7. secure and drift: the Contabo firewall attached, the deploy key set, and no drift",
       minutes(20),
       async () => {
@@ -360,7 +401,7 @@ describe.skipIf(MISSING.length > 0)(
       },
     );
 
-    run.step(
+    paidStep(
       "8. destroy: the plan says Contabo cancels the server at the end of its term, OpsCrew shuts it down, and the end date is shown and audited; nothing else left at Contabo or in Cloudflare (US2, FR-2608)",
       minutes(40),
       async () => {

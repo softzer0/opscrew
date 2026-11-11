@@ -310,3 +310,10 @@ references, MCP and skills.
 2. **Live tests on Contabo:** one live pass at the end of the feature on one Cloud VPS 4 (a
    month's price and the setup fee, R2). The founder is asked before any rerun that needs another
    server. The founder opens the account and creates its API credentials.
+3. **A failed step keeps the server (2026-11-12):** the month is paid either way, and OpsCrew
+   never takes back a cancelled server, so a rerun after a cancel buys another month and setup
+   fee. A step from 3 to 8 that fails therefore waits for a fix and runs again on the same server
+   (`OPSCREW_E2E_CONTABO_PAUSE_HOURS`, docs/e2e.md "Waiting for a fix"); the server is cancelled
+   only when the pass ends. A new run cannot take the kept server over instead: the takeover needs
+   the checkout that bought it, with its state and deploy key. On a postpaid account (four weeks'
+   notice, R2) the server is cancelled at once as before, since a later cancel would add a month.

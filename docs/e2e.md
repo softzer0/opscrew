@@ -3262,7 +3262,9 @@ Contabo bills by the month, not by the hour: a server is bought for at least one
 Cloud VPS 4 on a monthly term adds a one-time setup fee. `opscrew destroy` only cancels it at the
 end of its term. So each run costs a month of a Cloud VPS 4 (the price is in
 `packages/providers/contabo/src/static-prices.ts`) and its setup fee, and the cancelled server
-stays in the account until its term ends.
+stays in the account until its term ends. OpsCrew never takes back a cancelled server, so a rerun
+buys another; a failed step can wait for a fix instead ([below](#waiting-for-a-fix)), which costs
+nothing more.
 
 The app is named after the run, `e2e-cntb-<run id>`, as in [Snapshots and
 restores](#snapshots-and-restores), so no server of an earlier run is ever taken for this one's.
@@ -3320,10 +3322,32 @@ Each step below is one numbered test, so a run reads as "N of 9 steps":
    report or Cloudflare record, any commit (every branch) or pull request of the run, as for
    environments. Step 3's findings fail this step too.
 
+### Waiting for a fix
+
+The server is paid for its month either way (research R5 of feature 026), so with
+`OPSCREW_E2E_CONTABO_PAUSE_HOURS=<hours>` a step from 3 to 8 that fails does not end the run. It
+waits for a fix and then runs again on the same server, with the run's state, keys and outputs
+intact. The log says what failed and names two files in the run's work folder:
+- `retry`: create it once the cause is fixed and the CLI rebuilt (`pnpm --filter opscrew build`),
+  and the step runs again. First undo what the failed attempt left that the step cannot take
+  twice: a Cloud VPS 4 keeps one snapshot, so delete the one a failed step 5 took.
+- `give-up`: create it to end the run as a failure.
+
+The wait ends that many hours after step 3 started (600 at most, so the server is cancelled
+before its month ends), and the run with it. A later attempt of step 3 may take over a server
+that an earlier one's stopped apply created; that is the takeover working, not a finding. Unset or
+`0`, a failed step ends the run at once. Contabo needs four weeks' notice to cancel a postpaid
+order (none for a prepaid one), so leave the variable unset on a postpaid account: a cancel after
+its first days would add a month.
+
+If the run's process dies while it waits, nothing cancels the server: see "If a run was
+interrupted" below.
+
 ### Cleanup
 
 The cleanup is the one for environments, after every step and always: `opscrew destroy` if a
-step failed after provision started, so the server is cancelled whatever happened; then the
+step failed after provision started (after its wait for a fix, if any), so the server is
+cancelled whatever happened; then the
 GitHub environments, deploy secrets and deploy pauses, the app's records in Cloudflare, and the
 repository reset. Then, at Contabo:
 - OpsCrew's snapshots of the app's server are deleted (they would go with the server anyway);
@@ -3343,6 +3367,7 @@ throwaway repository and in Cloudflare, delete what the environments test lists.
 | Variable | What it is |
 |---|---|
 | `OPSCREW_E2E_CONTABO` | `1` runs this test. Ask the founder first: each run buys a month of a Cloud VPS 4 and its setup fee. |
+| `OPSCREW_E2E_CONTABO_PAUSE_HOURS` | Optional: how many hours after step 3 started a failed step may wait for a fix ([Waiting for a fix](#waiting-for-a-fix)), from 0 (the default, no wait) to 600. |
 | `OPSCREW_E2E_CONTABO_CLIENT_ID`, `OPSCREW_E2E_CONTABO_CLIENT_SECRET`, `OPSCREW_E2E_CONTABO_USER`, `OPSCREW_E2E_CONTABO_PASS` | Contabo's API credentials, from the Customer Control Panel (Account → Security): the client id and client secret, the API user (the account's login email) and the API password. They reach the whole account, so use one with nothing else in it. |
 | `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN` | The throwaway repository and its token, as for environments. |
 | `OPSCREW_E2E_CLOUDFLARE_TOKEN`, `OPSCREW_E2E_DOMAIN` | As for your own server: the app answers on the run's own hostname in that zone. |
