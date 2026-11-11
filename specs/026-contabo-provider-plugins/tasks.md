@@ -238,7 +238,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
 
 ## Phase 6: Wave 5 (parallel)
 
-- [ ] T2617 [P] [US6] The guide
+- [x] T2617 [P] [US6] The guide
   - Owns: `docs/guide/contabo.md`, `docs/guide/{index,object-storage,snapshots,retarget,credential-rotation}.md`, `docs/prices-compared.md`, `README.md`
   - Reads: spec US1, US2, US4, US6; plan 5–6
   - Depends: T2615
