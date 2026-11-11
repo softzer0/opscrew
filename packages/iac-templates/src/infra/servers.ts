@@ -1,5 +1,6 @@
+import type { CloudProviderDefinition, VariablePrefix } from "@opscrew/contracts";
 import type { CloudProvider, DeployPlan } from "@opscrew/plan-schema";
-import { PROVIDER_TEXT, type ProviderText, type VariablePrefix } from "../providers";
+import { cloudProvider } from "@opscrew/providers";
 import type { RenderContext } from "../types";
 import { moduleBlock, type VariableSpec } from "./hcl";
 
@@ -18,7 +19,7 @@ export interface ExtraServerCall {
   module: string;
   prefix: VariablePrefix;
   target: ServerSettings;
-  provider: ProviderText;
+  provider: CloudProviderDefinition;
 }
 
 /** The prefix of an extra server's own root variables: `<name>_`. */
@@ -55,19 +56,15 @@ export function extraServerCalls(plan: DeployPlan): ExtraServerCall[] {
             module: `server_${name}`,
             prefix: extraServerPrefix(name),
             target,
-            provider: PROVIDER_TEXT[target.provider],
+            provider: cloudProvider(target.provider),
           },
         ],
   );
 }
 
-/** `provider "<name>" {}` with where its token comes from, followed by a blank line. */
-export function providerBlock(provider: ProviderText): string[] {
-  return [
-    `# Token from the ${provider.tokenVar} environment variable (never stored in files or state).`,
-    `provider "${provider.terraformProvider.name}" {}`,
-    "",
-  ];
+/** `provider "<name>" {}` with where its credentials come from, followed by a blank line. */
+export function providerBlock({ terraform }: CloudProviderDefinition): string[] {
+  return [`# ${terraform.credentialsComment}`, `provider "${terraform.provider.name}" {}`, ""];
 }
 
 /** The root variable and module argument of the scheduled check's key line. */
@@ -94,29 +91,30 @@ export function previousWireguardArgument(plan: DeployPlan): (readonly [string, 
 }
 
 /**
- * A server's own variables: `location`, `server_type`, `image`, `backups` and, for Hetzner,
- * `delete_protection`, under its prefix. `label` names the server in the descriptions:
+ * A server's own variables: `location`, `server_type`, `image`, `backups` and, when its module
+ * has the switch, `delete_protection`, under its prefix. `label` names the server in the descriptions:
  * `previous` for `module "server_previous"`, an extra server's name, none for the app's server.
  */
 export function serverVariables(
-  { prefix, provider }: { prefix: VariablePrefix; provider: ProviderText },
+  { prefix, provider }: { prefix: VariablePrefix; provider: CloudProviderDefinition },
   label?: string,
 ): VariableSpec[] {
+  const { descriptions, deleteProtectionVariable } = provider.terraform;
   const describe = (text: string) =>
     label === undefined
       ? text
       : `${text.replace(/\.$/, "")} of the ${label} ${provider.serverNoun}.`;
   const specs: VariableSpec[] = [
-    { name: "location", type: "string", description: describe(provider.descriptions.location) },
+    { name: "location", type: "string", description: describe(descriptions.location) },
     {
       name: "server_type",
       type: "string",
-      description: describe(provider.descriptions.serverType),
+      description: describe(descriptions.serverType),
     },
     { name: "image", type: "string", description: describe("Operating system image.") },
-    { name: "backups", type: "bool", description: describe(provider.descriptions.backups) },
+    { name: "backups", type: "bool", description: describe(descriptions.backups) },
   ];
-  if (provider.deleteProtection) {
+  if (deleteProtectionVariable) {
     specs.push({
       name: "delete_protection",
       type: "bool",
@@ -223,11 +221,16 @@ export interface SharedLayout {
   leaving?: CloudProvider | undefined;
 }
 
-/** The resources a provider's deploy key and app tag are, in the root and in a server module. */
-const SHARED_RESOURCES: Record<CloudProvider, readonly string[]> = {
-  hetzner: ["hcloud_ssh_key.deploy"],
-  digitalocean: ["digitalocean_ssh_key.deploy", "digitalocean_tag.app"],
-};
+/**
+ * The resources a provider's deploy key and app tag are, in the root and in a server module: the
+ * addresses of the resources its `extraShared` creates.
+ */
+function sharedResources(provider: CloudProvider): string[] {
+  return cloudProvider(provider).terraform.extraShared.resources.flatMap((line) => {
+    const resource = /^resource "(\w+)" "(\w+)" \{$/.exec(line);
+    return resource ? [`${resource[1]}.${resource[2]}`] : [];
+  });
+}
 
 /** The deploy key and DigitalOcean's app tag a server module holds, for extra servers beside it. */
 function moduleShared(module: "server" | "server_previous") {
@@ -261,7 +264,7 @@ export function borrowedShared(
   if (!layout.bothSides || !calls.some((call) => call.target.provider === provider)) {
     return undefined;
   }
-  return provider === undefined ? undefined : PROVIDER_TEXT[provider].extraShared;
+  return provider === undefined ? undefined : cloudProvider(provider).terraform.extraShared;
 }
 
 /**
@@ -284,7 +287,7 @@ export function sharedMoves(calls: readonly ExtraServerCall[], layout: SharedLay
   if (used(layout.leaving)) {
     lines.push(
       "# The old server's deploy key (and app tag) stay for the extra servers on its provider.",
-      ...SHARED_RESOURCES[layout.leaving as CloudProvider].flatMap((resource) =>
+      ...sharedResources(layout.leaving as CloudProvider).flatMap((resource) =>
         moved(`module.server_previous.${resource}[0]`, resource),
       ),
       "",
@@ -293,7 +296,7 @@ export function sharedMoves(calls: readonly ExtraServerCall[], layout: SharedLay
   if (used(layout.server)) {
     lines.push(
       "# The new server holds the deploy key (and app tag) the extra servers on its provider use.",
-      ...SHARED_RESOURCES[layout.server as CloudProvider].flatMap((resource) =>
+      ...sharedResources(layout.server as CloudProvider).flatMap((resource) =>
         moved(resource, `module.server.${resource}[0]`),
       ),
       "",
@@ -320,18 +323,18 @@ export function extraServerModules(
       .map((call) => call.provider),
   );
   return [
-    ...[...roots].flatMap((provider) => provider.extraShared.resources),
+    ...[...roots].flatMap((provider) => provider.terraform.extraShared.resources),
     ...calls.flatMap((call) => {
       const source = sharedSource(layout, call.target.provider);
-      const shared = source === "root" ? call.provider.extraShared : moduleShared(source);
+      const shared = source === "root" ? call.provider.terraform.extraShared : moduleShared(source);
       return moduleBlock({
         comment: [
           `# The ${call.name} ${call.provider.serverNoun}: no web traffic, only its services on the private network.`,
         ],
         name: call.module,
-        source: call.provider.module,
+        source: call.provider.terraform.module.name,
         args: [
-          ...call.provider.moduleArguments({
+          ...call.provider.terraform.moduleArguments({
             prefix: call.prefix,
             extra: call.name,
             ...(shared.appTag === undefined ? {} : { appTag: shared.appTag }),

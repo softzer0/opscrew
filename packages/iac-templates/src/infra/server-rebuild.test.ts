@@ -1,5 +1,6 @@
+import { CLOUD_PROVIDERS } from "@opscrew/providers";
 import { describe, expect, it } from "vitest";
-import { MODULE_FILES } from "../generated/modules";
+import { MODULE_FILES } from "./modules";
 
 /** The `lifecycle` block of `resource "<type>" "this"` in `source`. */
 function lifecycle(source: string, type: string): string {
@@ -13,10 +14,12 @@ function lifecycle(source: string, type: string): string {
 // API (024 D5), so the state's image no longer matches the server's: the next provision must
 // plan no replacement for it.
 describe("the server modules after a rebuild from a snapshot", () => {
-  it.each([
-    ["hetzner-vps/main.tf", "hcloud_server"],
-    ["digitalocean-droplet/main.tf", "digitalocean_droplet"],
-  ])("%s ignores changes to the server's image", (file, type) => {
+  it.each(
+    CLOUD_PROVIDERS.map(({ terraform }) => [
+      `${terraform.module.name}/main.tf`,
+      terraform.serverResourceType,
+    ]),
+  )("%s ignores changes to the server's image", (file, type) => {
     const ignored = /ignore_changes = \[([^\]]*)\]/.exec(lifecycle(MODULE_FILES[file] ?? "", type));
     expect(ignored?.[1]?.split(",").map((name) => name.trim())).toContain("image");
   });

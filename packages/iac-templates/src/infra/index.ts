@@ -1,3 +1,4 @@
+import type { CloudProviderDefinition, VariablePrefix } from "@opscrew/contracts";
 import {
   APP_SERVER,
   type CloudDeployTarget,
@@ -7,15 +8,9 @@ import {
   type OwnDeployTarget,
   type PortainerDeployTarget,
 } from "@opscrew/plan-schema";
-import { MODULE_FILES } from "../generated/modules";
+import { cloudProvider } from "@opscrew/providers";
 import { webOnlyFromCloudflare } from "../predicates";
-import {
-  cloudTarget,
-  PROVIDER_TEXT,
-  type ProviderText,
-  type VariablePrefix,
-  wrongTarget,
-} from "../providers";
+import { cloudTarget, wrongTarget } from "../providers";
 import type { InfraLayout, LayoutSide, RenderContext, RenderedFile, ServerModule } from "../types";
 import {
   dnsModule,
@@ -37,6 +32,7 @@ import {
   variablesTf,
   versionsTf,
 } from "./hcl";
+import { MODULE_FILES } from "./modules";
 import { ownRoot } from "./own";
 import { managesPortainerRecords, portainerRoot } from "./portainer";
 import { siteRootModule } from "./serverless";
@@ -108,7 +104,7 @@ interface ServerCall {
   target: CloudDeployTarget;
   /** Prefix of the server's own root variables (`location`, `server_type`, …). */
   prefix: VariablePrefix;
-  provider: ProviderText;
+  provider: CloudProviderDefinition;
 }
 
 /**
@@ -136,7 +132,7 @@ interface RootShape {
   /** The plan's extra cloud servers, `module "server_<name>"` each. */
   extras: ExtraServerCall[];
   /** Providers whose requirement, provider block and module are rendered, in the given order. */
-  providers: ProviderText[];
+  providers: CloudProviderDefinition[];
   /** True while a move is in progress (a layout was given). */
   moving: boolean;
   /** Which server modules hold the deploy key and app tag the extra servers use. */
@@ -164,7 +160,7 @@ function rootShape(plan: DeployPlan, ctx: RenderContext): RootShape {
     if (side.provider === "own" || side.provider === "portainer") {
       return [{ kind: "address", slot, prefix, target: side }];
     }
-    return [{ kind: "module", slot, target: side, prefix, provider: PROVIDER_TEXT[side.provider] }];
+    return [{ kind: "module", slot, target: side, prefix, provider: cloudProvider(side.provider) }];
   };
   const sides = [...call("server", layout.server), ...call("server_previous", layout.previous)];
   const servers = sides.filter((side): side is ServerCall => side.kind === "module");
@@ -212,7 +208,7 @@ function rootShape(plan: DeployPlan, ctx: RenderContext): RootShape {
     live,
     moved,
     extras,
-    providers: providers.map((provider) => PROVIDER_TEXT[provider]),
+    providers: providers.map(cloudProvider),
     moving,
     shared: {
       server,
@@ -320,9 +316,9 @@ function mainTf(
             ]
           : [],
         name: server.slot,
-        source: server.provider.module,
+        source: server.provider.terraform.module.name,
         args: [
-          ...server.provider.moduleArguments({
+          ...server.provider.terraform.moduleArguments({
             prefix: server.prefix,
             ...(shared?.appTag === undefined ? {} : { appTag: shared.appTag }),
           }),
@@ -458,7 +454,7 @@ function cloudRoot(plan: DeployPlan, ctx: RenderContext): RootFiles {
   const zone = serverZoneUse(plan);
   return {
     versions: versionsTf(plan, [
-      ...shape.providers.map((provider) => provider.terraformProvider),
+      ...shape.providers.map((provider) => provider.terraform.provider),
       ...(zone !== undefined ? [CLOUDFLARE_PROVIDER] : []),
     ]),
     main: mainTf(plan, shape, ctx, pieces, checkKey),
@@ -470,7 +466,7 @@ function cloudRoot(plan: DeployPlan, ctx: RenderContext): RootFiles {
       ...(pieces?.tfvars ?? {}),
     },
     modules: [
-      ...shape.providers.map((provider) => provider.module),
+      ...shape.providers.map((provider) => provider.terraform.module.name),
       ...(zone !== undefined ? ["cloudflare-dns"] : []),
       ...(pieces?.modules ?? []),
     ],

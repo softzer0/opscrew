@@ -1,3 +1,4 @@
+import type { CloudProviderDefinition } from "@opscrew/contracts";
 import { formatMoney, taxLabel } from "@opscrew/core";
 import {
   type CloudDeployTarget,
@@ -5,8 +6,9 @@ import {
   ghcrImageFor,
   serviceOf,
 } from "@opscrew/plan-schema";
+import { cloudProvider } from "@opscrew/providers";
 import { usesCloudflare } from "../predicates";
-import { cloudTarget, PROVIDER_TEXT, type ProviderText } from "../providers";
+import { cloudTarget } from "../providers";
 import { siteHosts } from "../runtime";
 import { artefactsFolder } from "../runtime-dir";
 import type { RenderedFile } from "../types";
@@ -54,7 +56,7 @@ export { renderSiteRunbook, type SiteRunbookContext } from "./site";
 
 const PENDING = "_(set by `opscrew provision`)_";
 
-function money(plan: DeployPlan, provider: ProviderText): string {
+function money(plan: DeployPlan, provider: CloudProviderDefinition): string {
   const { monthly } = plan.cost;
   const tax = taxLabel(monthly.currency, plan.cost.pricesIncludeVat);
   const source =
@@ -76,7 +78,8 @@ function money(plan: DeployPlan, provider: ProviderText): string {
 export function renderRunbook(plan: DeployPlan, ctx: RunbookContext): RenderedFile {
   if (plan.target.provider === "own") return renderOwnRunbook(plan, plan.target, ctx);
   const target = cloudTarget(plan.target);
-  const provider = PROVIDER_TEXT[target.provider];
+  const provider = cloudProvider(target.provider);
+  const text = provider.texts.runbook;
   const hidden = usesCloudflare(plan) && plan.dns.proxied;
   const ip = hidden ? undefined : ctx.serverIpv4;
   const ipv6 = hidden ? undefined : ctx.serverIpv6;
@@ -96,7 +99,7 @@ export function renderRunbook(plan: DeployPlan, ctx: RunbookContext): RenderedFi
   const repo = `${ctx.github.owner}/${ctx.github.repo}`;
   const db = dataCell(
     plan,
-    target.backups ? provider.runbook.backupsOnDatabaseCell : "automated backups are off",
+    target.backups ? text.backupsOnDatabaseCell : "automated backups are off",
     externalDatabaseCell(plan),
   );
   const dns = usesCloudflare(plan)
@@ -105,7 +108,7 @@ export function renderRunbook(plan: DeployPlan, ctx: RunbookContext): RenderedFi
 
   const lines = [
     ...runbookHead(plan, ctx, url),
-    `| Server | ${cell(`${plan.app.name} — ${provider.serverLabel(target.serverType, target.location)}`)} |`,
+    `| Server | ${cell(`${plan.app.name} — ${text.serverLabel(target.serverType, target.location)}`)} |`,
     `| IPv4 / IPv6 | ${cell(addresses)} |`,
     ...deployRows(plan, repo),
     `| Database | ${cell(db)} |`,
@@ -142,7 +145,7 @@ export function renderRunbook(plan: DeployPlan, ctx: RunbookContext): RenderedFi
           "",
         ]
       : []),
-    ...provider.runbook.connectNote,
+    ...text.connectNote,
   ];
 
   if (serviceOf(plan, "postgres")) {
@@ -150,7 +153,7 @@ export function renderRunbook(plan: DeployPlan, ctx: RunbookContext): RenderedFi
       "## Database backups",
       "",
       target.backups
-        ? provider.runbook.backupsOn
+        ? text.backupsOn
         : `Automated server backups are **off**. Turn them on with \`${opscrew(plan, "design", environments)}\` (they cost extra; it shows the price) or make your own backups:`,
       "",
       ...DATABASE_DUMP,
@@ -171,7 +174,7 @@ export function renderRunbook(plan: DeployPlan, ctx: RunbookContext): RenderedFi
     `Run \`${opscrew(plan, "drift", environments)}\` on the machine that ran \`${provision}\` (the state lives there). It compares three things:`,
     "",
     "- **The real infrastructure with the state:** a refresh-only plan shows anything changed outside OpsCrew, for example",
-    `  a firewall rule edited in ${provider.console} or a DNS record changed in Cloudflare.`,
+    `  a firewall rule edited in ${text.console} or a DNS record changed in Cloudflare.`,
     `- **The state with the code:** a normal plan shows changes in \`${folders.infra}/\` that have not been applied yet.`,
     ...driftFiles(plan),
     "",
@@ -181,7 +184,7 @@ export function renderRunbook(plan: DeployPlan, ctx: RunbookContext): RenderedFi
     "",
     ...securityHead(plan, environments),
     "- What OpsCrew set up on the server: a `deploy` user with key-only SSH, no root login, fail2ban against brute force,",
-    `  automatic security updates, a host firewall (22/80/443) in addition to ${provider.runbook.cloudFirewall}, and Docker log limits.`,
+    `  automatic security updates, a host firewall (22/80/443) in addition to ${text.cloudFirewall}, and Docker log limits.`,
   );
   if (hidden) {
     lines.push(
@@ -301,11 +304,11 @@ function teardown(
   plan: DeployPlan,
   { backups }: CloudDeployTarget,
   repo: string,
-  provider: ProviderText,
+  provider: CloudProviderDefinition,
   environments: readonly string[] | undefined,
 ): string[] {
   const name = plan.app.name;
-  const text = provider.runbook;
+  const text = provider.texts.runbook;
   const noun = provider.serverNoun;
   const deletes = usesCloudflare(plan)
     ? `${text.deletes(name)}, and the Cloudflare DNS records and rules OpsCrew created`

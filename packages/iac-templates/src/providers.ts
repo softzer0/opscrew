@@ -1,11 +1,12 @@
 import { OpsCrewError } from "@opscrew/core";
-import type {
-  CloudProvider,
-  DeployTarget,
-  PortainerDeployTarget,
-  ServerlessProvider,
+import {
+  type CloudProvider,
+  type DeployTarget,
+  isCloudProvider,
+  type PortainerDeployTarget,
+  type ServerlessProvider,
 } from "@opscrew/plan-schema";
-import type { ProviderRequirement } from "./infra/hcl";
+import { CLOUD_PROVIDERS } from "@opscrew/providers";
 
 /**
  * The plain error for code reached with a target it does not handle. Every renderer is called
@@ -18,7 +19,7 @@ export function wrongTarget(message: string): OpsCrewError {
 }
 
 /**
- * `target` when OpsCrew creates the server (Hetzner Cloud, DigitalOcean): a plan's target, a
+ * `target` when OpsCrew creates the server on one of its cloud providers: a plan's target, a
  * server of a move layout, or just `{ provider }`. Throws {@link wrongTarget} for every other
  * target: a server the user owns, a Portainer, the localhost target and the server-less ones.
  */
@@ -26,9 +27,10 @@ export function cloudTarget<T extends Pick<DeployTarget, "provider">>(
   target: T,
 ): T & { provider: CloudProvider } {
   const { provider } = target;
-  if (provider !== "hetzner" && provider !== "digitalocean") {
+  if (!isCloudProvider(provider)) {
+    const names = CLOUD_PROVIDERS.map((cloud) => cloud.displayName);
     throw wrongTarget(
-      `This step only applies to servers OpsCrew creates on Hetzner Cloud or DigitalOcean, not to ${NOT_CLOUD[provider]}.`,
+      `This step only applies to servers OpsCrew creates on ${names.slice(0, -1).join(", ")} or ${names.at(-1)}, not to ${NOT_CLOUD[provider]}.`,
     );
   }
   return target as T & { provider: CloudProvider };
@@ -62,268 +64,3 @@ export function portainerTarget(target: DeployTarget): PortainerDeployTarget {
   }
   return target;
 }
-
-/**
- * Provider-specific wording and HCL pieces for the rendered root module and the runbook. Hetzner
- * entries reproduce the text OpsCrew rendered before DigitalOcean support, byte for byte.
- */
-export interface ProviderText {
-  /** Short name used in possessives, for example "Hetzner's price list". */
-  name: string;
-  /** "server" or "Droplet". */
-  serverNoun: string;
-  /** Runbook "Server" row, for example `Hetzner Cloud cx23 in nbg1`. */
-  serverLabel(serverType: string, location: string): string;
-  /** Where the user edits things by hand, for example "Hetzner Console". */
-  console: string;
-  /** Vendored module directory of the server module. */
-  module: string;
-  /** Terraform provider local name, registry source and version constraint. */
-  terraformProvider: ProviderRequirement;
-  /** Environment variable the Terraform provider reads its token from. */
-  tokenVar: string;
-  /** Whether the server module has a `delete_protection` switch. */
-  deleteProtection: boolean;
-  /** Root variable descriptions that name the provider. */
-  descriptions: { location: string; serverType: string; backups: string };
-  /**
-   * Arguments of a server module call after `source`, in order (name, value). The shared
-   * variables (app name, deploy key, CIDRs) and the labels or tags are the same for every server.
-   */
-  moduleArguments(call: ModuleCall): readonly (readonly [string, string])[];
-  /**
-   * What the root module creates once for the extra servers on this provider when the app's
-   * server is not there (both providers refuse the same key twice): the deploy key and, on
-   * DigitalOcean, the app's tag. `resources` are the HCL lines; `sshKeyId` and `appTag` the
-   * expressions each extra server's module gets.
-   */
-  extraShared: { resources: readonly string[]; sshKeyId: string; appTag?: string };
-  /** Runbook texts. */
-  runbook: {
-    backupsOnDatabaseCell: string;
-    backupsOn: string;
-    cloudFirewall: string;
-    /** What `opscrew destroy` deletes besides DNS, for the app named `app`. */
-    deletes: (app: string) => string;
-    /** Extra paragraph lines after "Connect to the server" (empty for none). */
-    connectNote: readonly string[];
-    snapshotReason: string;
-    snapshotFirst: readonly string[];
-    noSnapshot: readonly string[];
-    deleteProtectionNote: readonly string[];
-    /**
-     * "What remains" bullet: `image` is the app's on GitHub Container Registry, `folder` the app's
-     * artefacts folder (`opscrew`, a further app's `opscrew/apps/<key>`), `backups` whether the
-     * plan has automated backups on.
-     */
-    whatRemains: (
-      image: string,
-      folder: string,
-      workflowPath: string,
-      backups: boolean,
-    ) => readonly string[];
-    hostKey: string;
-  };
-}
-
-/**
- * Prefix of a server module's root variables: none for `module "server"`, `previous_` for
- * `module "server_previous"`, `<name>_` for an extra server's `module "server_<name>"`.
- */
-export type VariablePrefix = "" | `${string}_`;
-
-/** The server module call {@link ProviderText.moduleArguments} renders. */
-export interface ModuleCall {
-  prefix: VariablePrefix;
-  /** An extra server's name: it is named `<app>-<name>` and serves no web traffic. */
-  extra?: string;
-  /**
-   * The app's tag (an HCL expression) this Droplet gets by name, managed elsewhere: absent, its
-   * own module manages the tag. DigitalOcean only.
-   */
-  appTag?: string;
-}
-
-const COMMON_ARGUMENTS = {
-  sshKey: ["ssh_public_key", "var.deploy_ssh_public_key"],
-  sshCidrs: ["ssh_allowed_cidrs", "var.ssh_allowed_cidrs"],
-} as const;
-
-/** The server's name: the app's, or `<app>-<name>` for an extra server. */
-function nameArgument({ extra }: ModuleCall): readonly [string, string] {
-  return ["name", extra === undefined ? "var.app_name" : `"\${var.app_name}-${extra}"`];
-}
-
-/** The web's CIDRs, only on the server that serves the web (not on an extra server). */
-function httpArguments({ extra }: ModuleCall): (readonly [string, string])[] {
-  return extra === undefined ? [["http_allowed_cidrs", "var.http_allowed_cidrs"]] : [];
-}
-
-/** Wording and HCL pieces of each provider OpsCrew creates servers on. */
-export const PROVIDER_TEXT: Record<CloudProvider, ProviderText> = {
-  hetzner: {
-    name: "Hetzner",
-    serverNoun: "server",
-    serverLabel: (type, location) => `Hetzner Cloud ${type} in ${location}`,
-    console: "Hetzner Console",
-    module: "hetzner-vps",
-    terraformProvider: { name: "hcloud", source: "hetznercloud/hcloud", version: "~> 1.70" },
-    tokenVar: "HCLOUD_TOKEN",
-    deleteProtection: true,
-    descriptions: {
-      location: "Hetzner Cloud location.",
-      serverType: "Hetzner Cloud server type.",
-      backups: "Hetzner automated backups.",
-    },
-    moduleArguments: (call) => [
-      nameArgument(call),
-      ["location", `var.${call.prefix}location`],
-      ["server_type", `var.${call.prefix}server_type`],
-      ["image", `var.${call.prefix}image`],
-      ["backups", `var.${call.prefix}backups`],
-      ["delete_protection", `var.${call.prefix}delete_protection`],
-      COMMON_ARGUMENTS.sshKey,
-      COMMON_ARGUMENTS.sshCidrs,
-      ...httpArguments(call),
-      ["labels", '{ "managed-by" = "opscrew", app = var.app_name }'],
-    ],
-    extraShared: {
-      resources: [
-        "# The deploy key of the app's servers on Hetzner Cloud, kept here so that removing a server",
-        "# never deletes it (Hetzner refuses the same key twice). The servers get its id through",
-        "# coalesce, whose result is known not to be null before apply, so their own key's count is known.",
-        'resource "hcloud_ssh_key" "deploy" {',
-        // biome-ignore lint/suspicious/noTemplateCurlyInString: HCL interpolation, not JavaScript.
-        '  name       = "${var.app_name}-deploy"',
-        "  public_key = var.deploy_ssh_public_key",
-        '  labels     = { "managed-by" = "opscrew", app = var.app_name }',
-        "}",
-        "",
-      ],
-      sshKeyId: "coalesce(hcloud_ssh_key.deploy.id)",
-    },
-    runbook: {
-      backupsOnDatabaseCell: "Hetzner automated backups are on",
-      backupsOn:
-        "Hetzner takes a backup of the whole server every day and keeps the last seven (Hetzner Console → your server → Backups).",
-      cloudFirewall: "the Hetzner firewall",
-      deletes: () => "the server, its firewall and SSH key",
-      connectNote: [],
-      snapshotReason: "automated backups are on for this server",
-      snapshotFirst: [
-        "OpsCrew takes a Hetzner snapshot of the server",
-        "  before deleting it (skip it with `--no-snapshot`). Hetzner's automated backups are deleted together with",
-        "  the server, so the snapshot is the only copy that remains.",
-      ],
-      noSnapshot: [
-        "- **Snapshot:** this app keeps no database on the server and backups are off, so OpsCrew does not take a snapshot",
-        "  before deleting the server. Hetzner's automated backups would be deleted together with the server.",
-      ],
-      deleteProtectionNote: [],
-      whatRemains: (image, folder, workflowPath) => [
-        "- **What remains:** the snapshot, if one was taken (Hetzner bills it per GB per month at the rate listed on",
-        "  https://www.hetzner.com/cloud until you delete it in Hetzner Console → Snapshots), the container images in",
-        `  GitHub Container Registry (\`${image}\`), and the files in this repository (\`${folder}/\` and`,
-        `  \`${workflowPath}\`).`,
-      ],
-      hostKey: "the server's host key",
-    },
-  },
-  digitalocean: {
-    name: "DigitalOcean",
-    serverNoun: "Droplet",
-    serverLabel: (type, location) => `DigitalOcean Droplet ${type} in ${location}`,
-    console: "the DigitalOcean control panel",
-    module: "digitalocean-droplet",
-    terraformProvider: {
-      name: "digitalocean",
-      source: "digitalocean/digitalocean",
-      version: "~> 2.106",
-    },
-    tokenVar: "DIGITALOCEAN_TOKEN",
-    deleteProtection: false,
-    descriptions: {
-      location: "DigitalOcean region.",
-      serverType: "DigitalOcean Droplet size.",
-      backups: "DigitalOcean daily backups.",
-    },
-    moduleArguments: (call) => [
-      nameArgument(call),
-      ["region", `var.${call.prefix}location`],
-      ["size", `var.${call.prefix}server_type`],
-      ["image", `var.${call.prefix}image`],
-      ["backups", `var.${call.prefix}backups`],
-      COMMON_ARGUMENTS.sshKey,
-      COMMON_ARGUMENTS.sshCidrs,
-      ...httpArguments(call),
-      // One place manages the app's tag; the app's other Droplets get it by name from there.
-      ...(call.appTag === undefined
-        ? ([
-            // biome-ignore lint/suspicious/noTemplateCurlyInString: HCL interpolation, not JavaScript.
-            ["app_tag", '"opscrew-app:${var.app_name}"'],
-            ["shared_tags", '["managed-by:opscrew"]'],
-          ] as const)
-        : ([["shared_tags", `[${call.appTag}, "managed-by:opscrew"]`]] as const)),
-    ],
-    extraShared: {
-      resources: [
-        "# The deploy key and the app's tag of the app's Droplets, kept here so that removing a Droplet",
-        "# never deletes them (DigitalOcean refuses the same key twice). The Droplets get the key's id",
-        "# through coalesce, whose result is known not to be null before apply, so their own key's count",
-        "# is known.",
-        'resource "digitalocean_ssh_key" "deploy" {',
-        // biome-ignore lint/suspicious/noTemplateCurlyInString: HCL interpolation, not JavaScript.
-        '  name       = "${var.app_name}-deploy"',
-        "  public_key = var.deploy_ssh_public_key",
-        "}",
-        "",
-        'resource "digitalocean_tag" "app" {',
-        // biome-ignore lint/suspicious/noTemplateCurlyInString: HCL interpolation, not JavaScript.
-        '  name = "opscrew-app:${var.app_name}"',
-        "}",
-        "",
-      ],
-      sshKeyId: "coalesce(digitalocean_ssh_key.deploy.id)",
-      appTag: "digitalocean_tag.app.name",
-    },
-    runbook: {
-      backupsOnDatabaseCell: "DigitalOcean daily backups are on",
-      backupsOn:
-        "DigitalOcean takes a backup of the whole Droplet every day (control panel at https://cloud.digitalocean.com/ → your Droplet → Backups). Each backup expires four weeks after it was taken, also after the Droplet is deleted.",
-      cloudFirewall: "the DigitalOcean cloud firewall",
-      deletes: (app) => `the Droplet, its firewall, SSH key and app tag (\`opscrew-app:${app}\`)`,
-      connectNote: [
-        "The web Droplet Console in the DigitalOcean control panel cannot log in as root (root SSH login is disabled and",
-        "only `deploy` may log in); the Recovery Console still works if you ever need it.",
-        "",
-      ],
-      snapshotReason: "daily backups are on for this Droplet",
-      snapshotFirst: [
-        "OpsCrew takes a DigitalOcean snapshot of the Droplet",
-        "  before deleting it (skip it with `--no-snapshot`). DigitalOcean keeps daily backups after the Droplet is deleted,",
-        "  but each one expires four weeks after it was taken, so the snapshot is the only copy that stays.",
-      ],
-      noSnapshot: [
-        "- **Snapshot:** this app keeps no database on the Droplet and backups are off, so OpsCrew does not take a snapshot",
-        "  before deleting the Droplet.",
-      ],
-      deleteProtectionNote: [
-        "- **No delete protection:** DigitalOcean has no delete protection for Droplets. Deleting the Droplet in the",
-        "  control panel removes it and its data immediately; `opscrew destroy` is the safe way, because it shows the plan,",
-        "  offers a snapshot and asks for the typed name first.",
-      ],
-      whatRemains: (image, folder, workflowPath, backups) => [
-        "- **What remains:** the snapshot, if one was taken (DigitalOcean bills it per GB per month at the rate listed on",
-        "  https://www.digitalocean.com/pricing until you delete it in the control panel at https://cloud.digitalocean.com/),",
-        ...(backups
-          ? [
-              "  the daily backups DigitalOcean already took (each is kept for up to four weeks after it was taken, then expires),",
-            ]
-          : []),
-        "  the `managed-by:opscrew` tag (other OpsCrew apps in this account may use it), the container images in GitHub",
-        `  Container Registry (\`${image}\`), and the files in this repository (\`${folder}/\` and \`${workflowPath}\`).`,
-      ],
-      hostKey: "the Droplet's host key",
-    },
-  },
-};

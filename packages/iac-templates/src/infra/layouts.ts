@@ -20,7 +20,7 @@ export const MOVE_LAYOUTS = [
 ] as const;
 export type MoveLayoutName = (typeof MOVE_LAYOUTS)[number];
 
-const isCloud = (side: LayoutSide): side is CloudDeployTarget => isCloudProvider(side.provider);
+const isCloud = (side: DeployTarget): side is CloudDeployTarget => isCloudProvider(side.provider);
 
 /**
  * `target` as a side of a move: a server OpsCrew creates, a server the user owns in public mode,
@@ -28,10 +28,8 @@ const isCloud = (side: LayoutSide): side is CloudDeployTarget => isCloudProvider
  * {@link wrongTarget} for every other target: the move refuses them before any layout.
  */
 function layoutSide(target: DeployTarget): LayoutSide {
+  if (isCloud(target)) return target;
   switch (target.provider) {
-    case "hetzner":
-    case "digitalocean":
-      return target;
     case "own":
       if (target.access === "public") return target;
       break;

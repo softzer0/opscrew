@@ -5,8 +5,9 @@ import {
   type PlanService,
   servicesOn,
 } from "@opscrew/plan-schema";
+import { cloudProvider } from "@opscrew/providers";
 import { hasLogin, serviceSpec } from "../catalog";
-import { cloudTarget, PROVIDER_TEXT } from "../providers";
+import { cloudTarget } from "../providers";
 import { cell, opscrew, runbookFolders } from "./shared";
 
 /** `PostgreSQL (db)`. */
@@ -20,7 +21,7 @@ function place(
 ) {
   if (target.provider === "own") return "your own server";
   const cloud = cloudTarget(target);
-  return PROVIDER_TEXT[cloud.provider].serverLabel(cloud.serverType, cloud.location);
+  return cloudProvider(cloud.provider).texts.runbook.serverLabel(cloud.serverType, cloud.location);
 }
 
 /**

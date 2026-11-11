@@ -3,9 +3,14 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { NodeCommandRunner } from "@opscrew/core";
 import { checkDialect, detectEngines } from "@opscrew/iac-engine";
-import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
+import { type CloudProvider, type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
+import { CLOUD_PROVIDERS } from "@opscrew/providers";
 import { describe, expect, it, type TestContext } from "vitest";
-import { collectModuleFiles, renderGeneratedModule } from "../../scripts/gen-modules";
+import {
+  collectModuleFiles,
+  collectServerModuleFiles,
+  renderGeneratedModule,
+} from "../../scripts/gen-modules";
 import { DIRECTIONS, testTarget } from "../__fixtures__/layouts";
 import {
   ONE_TIME_PIN_ID,
@@ -14,7 +19,7 @@ import {
   testPlan,
   testServices,
 } from "../__fixtures__/plans";
-import { MODULE_FILES } from "../generated/modules";
+import { MODULE_FILES, SERVER_MODULE_FILES } from "../generated/modules";
 import { previewPlan } from "../previews/__fixtures__/plans";
 import type { RenderContext, RenderedFile } from "../types";
 import { splitPlan } from "./__fixtures__/servers";
@@ -252,7 +257,10 @@ describe("renderInfra", () => {
 describe("generated modules", () => {
   it("match the module sources (run gen:modules after editing a module)", () => {
     expect(MODULE_FILES).toEqual(collectModuleFiles());
-    expect(renderGeneratedModule(MODULE_FILES)).toContain("export const MODULE_FILES");
+    expect(SERVER_MODULE_FILES).toEqual(collectServerModuleFiles());
+    expect(renderGeneratedModule(MODULE_FILES, SERVER_MODULE_FILES)).toContain(
+      "export const MODULE_FILES",
+    );
   });
 });
 
@@ -457,7 +465,8 @@ describe.skipIf(!runIt)("rendered HCL validates (integration)", () => {
         300_000,
       );
     }
-    for (const provider of ["hetzner", "digitalocean"] as const) {
+    for (const { id } of CLOUD_PROVIDERS) {
+      const provider = id as CloudProvider;
       it.skipIf(!engine)(
         `validates the ${provider} root with the scheduled check's key with ${name}`,
         async (test) => {

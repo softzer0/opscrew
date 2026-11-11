@@ -1,7 +1,7 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are HCL interpolation, not JavaScript templates.
+import type { CloudProviderDefinition } from "@opscrew/contracts";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { usesCloudflare } from "../predicates";
-import type { ProviderText } from "../providers";
 import { tunnelMode, webFilterMode } from "../tunnel";
 import type { RenderContext } from "../types";
 import {
@@ -84,7 +84,7 @@ function mainTf(
   plan: DeployPlan,
   pieces: TunnelPieces | undefined,
   extras: readonly ExtraServerCall[],
-  providers: readonly ProviderText[],
+  providers: readonly CloudProviderDefinition[],
   checkKey: boolean,
   zone: ZoneUse | undefined,
 ): string {
@@ -158,7 +158,7 @@ export function ownRoot(plan: DeployPlan, ctx: RenderContext): RootFiles {
   const checkKey = ctx.checkKeyLine !== undefined;
   return {
     versions: versionsTf(plan, [
-      ...providers.map((provider) => provider.terraformProvider),
+      ...providers.map((provider) => provider.terraform.provider),
       ...(zone !== undefined ? [CLOUDFLARE_PROVIDER] : []),
     ]),
     main: mainTf(plan, pieces, extras, providers, checkKey, zone),
@@ -172,7 +172,7 @@ export function ownRoot(plan: DeployPlan, ctx: RenderContext): RootFiles {
       ...(pieces?.tfvars ?? {}),
     },
     modules: [
-      ...providers.map((provider) => provider.module),
+      ...providers.map((provider) => provider.terraform.module.name),
       ...(zone === "records" || zone === "previews" ? ["cloudflare-dns"] : []),
       ...(pieces?.modules ?? []),
     ],

@@ -1,10 +1,11 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are HCL interpolation, not JavaScript templates.
+import { CLOUD_PROVIDERS } from "@opscrew/providers";
 import { describe, expect, it } from "vitest";
 import { testContext, testPlan } from "../__fixtures__/plans";
-import { MODULE_FILES } from "../generated/modules";
 import type { RenderContext, RenderedFile } from "../types";
 import { splitPlan, type TestExtraServer } from "./__fixtures__/servers";
 import { appServerVariables, extraServerVariables, renderInfra } from "./index";
+import { MODULE_FILES } from "./modules";
 
 const root = (files: readonly RenderedFile[], name: string) =>
   files.find((f) => f.path === `opscrew/infra/prod/${name}`)?.content ?? "";
@@ -268,7 +269,7 @@ describe("an own app server plus a Hetzner db", () => {
 });
 
 describe("the server modules", () => {
-  for (const module of ["hetzner-vps", "digitalocean-droplet"]) {
+  for (const module of CLOUD_PROVIDERS.map(({ terraform }) => terraform.module.name)) {
     const main = MODULE_FILES[`${module}/main.tf`] ?? "";
     const variables = MODULE_FILES[`${module}/variables.tf`] ?? "";
 

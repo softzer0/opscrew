@@ -5,14 +5,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeCommandRunner } from "@opscrew/core";
 import { detectEngines } from "@opscrew/iac-engine";
-import { DeployPlanSchema } from "@opscrew/plan-schema";
+import { type CloudProvider, DeployPlanSchema } from "@opscrew/plan-schema";
+import { CLOUD_PROVIDERS } from "@opscrew/providers";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { PUBLIC_KEY, testCloudflare, testContext, testPlan } from "../__fixtures__/plans";
-import { MODULE_FILES } from "../generated/modules";
+import { SERVER_MODULE_FILES } from "../generated/modules";
 import { renderInfra } from "./index";
+import { MODULE_FILES } from "./modules";
 
-const MODULES = ["hetzner-vps", "digitalocean-droplet"] as const;
+const MODULES = CLOUD_PROVIDERS.map(({ terraform }) => terraform.module.name);
 
 /**
  * The engines that render the template for real, with OPSCREW_IT=1 as the package's other engine
@@ -30,7 +32,7 @@ for (const name of runIt ? ["tofu", "terraform"] : []) {
     );
   }
 }
-const template = MODULE_FILES["hetzner-vps/cloud-init.yaml.tftpl"] ?? "";
+const template = SERVER_MODULE_FILES["cloud-init.yaml.tftpl"] ?? "";
 
 /**
  * Renders the template the way Terraform's `templatefile` does for this file: keeps or drops the
@@ -397,7 +399,9 @@ describe("cloud-init template", () => {
   });
 });
 
-describe.each(MODULES)("%s module", (module) => {
+describe.each(
+  CLOUD_PROVIDERS.map(({ id, terraform }) => [terraform.module.name, id as CloudProvider] as const),
+)("%s module", (module, provider) => {
   it("uses the shared template and never rebuilds an existing server for it", () => {
     expect(MODULE_FILES[`${module}/cloud-init.yaml.tftpl`]).toBe(template);
     const main = MODULE_FILES[`${module}/main.tf`] ?? "";
@@ -405,7 +409,7 @@ describe.each(MODULES)("%s module", (module) => {
   });
 
   it("renders the same server, its user_data included, with and without the server's runner", () => {
-    const without = testPlan({ provider: module === "hetzner-vps" ? "hetzner" : "digitalocean" });
+    const without = testPlan({ provider });
     const withRunner = DeployPlanSchema.parse({ ...without, environment: { runner: "server" } });
     const ctx = testContext({ cloudflare: testCloudflare() });
     const files = renderInfra(without, ctx);

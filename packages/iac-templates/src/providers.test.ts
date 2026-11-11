@@ -1,3 +1,5 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { testPlan } from "./__fixtures__/plans";
@@ -5,6 +7,33 @@ import * as templates from "./index";
 import { portainerTestPlan } from "./portainer-target/__fixtures__/plans";
 
 const BUG = "This is a bug in OpsCrew: please report it with the command you ran.";
+
+const SRC = fileURLToPath(new URL("./", import.meta.url));
+/** The object-storage code, which keeps its bucket providers (026 plan 3). */
+const BUCKET_CODE = new Set(["infra/storage.ts", "prices.ts", "offsite.ts"]);
+
+describe("cloud server providers", () => {
+  it("are read from the registry: no code outside the object-storage code names one by its id", () => {
+    const found = readdirSync(SRC, { recursive: true, encoding: "utf8" })
+      .map((path) => path.split("\\").join("/"))
+      .filter(
+        (path) =>
+          path.endsWith(".ts") &&
+          !path.endsWith(".test.ts") &&
+          !path.includes("__fixtures__/") &&
+          !path.startsWith("generated/") &&
+          !BUCKET_CODE.has(path),
+      )
+      .flatMap((path) =>
+        readFileSync(`${SRC}${path}`, "utf8")
+          .split("\n")
+          .flatMap((line, index) =>
+            /"(hetzner|digitalocean)"/.test(line) ? [`${path}:${index + 1}: ${line.trim()}`] : [],
+          ),
+      );
+    expect(found).toEqual([]);
+  });
+});
 
 describe("target guards and move layouts (package root)", () => {
   const hetzner = testPlan().target;

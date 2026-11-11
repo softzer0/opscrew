@@ -1,4 +1,5 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are HCL interpolation, not JavaScript templates.
+import type { ProviderRequirement } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { type DeployPlan, snapshotOffsiteOf } from "@opscrew/plan-schema";
 import { OFFSITE_PREFIX } from "../offsite";
@@ -10,7 +11,6 @@ import {
   besideInfraDir,
   CLOUDFLARE_PROVIDER,
   CLOUDFLARE_PROVIDER_BLOCK,
-  type ProviderRequirement,
   rootHeader,
   type VariableSpec,
   variablesTf,

@@ -2,8 +2,8 @@
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testPlan } from "../__fixtures__/plans";
-import { MODULE_FILES } from "../generated/modules";
 import { renderTunnelConnectorCompose } from "../runtime";
+import { MODULE_FILES } from "./modules";
 
 /** The body of `resource "<type>" "<name>"` (up to its closing brace at column 0). */
 function resource(source: string, type: string, name: string): string {

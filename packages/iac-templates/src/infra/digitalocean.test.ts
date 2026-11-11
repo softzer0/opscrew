@@ -7,8 +7,8 @@ import {
   testContext,
   testPlan,
 } from "../__fixtures__/plans";
-import { MODULE_FILES } from "../generated/modules";
 import { renderInfra } from "./index";
+import { MODULE_FILES } from "./modules";
 
 const doPlan = (o: Parameters<typeof testPlan>[0] = {}) =>
   testPlan({ provider: "digitalocean", ...o });

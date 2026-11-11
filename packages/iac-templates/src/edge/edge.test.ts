@@ -1,9 +1,11 @@
 import { sha256Hex } from "@opscrew/core";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
+import { CLOUD_PROVIDERS } from "@opscrew/providers";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testContext, testPlan } from "../__fixtures__/plans";
-import { MODULE_FILES } from "../generated/modules";
+import { SERVER_MODULE_FILES } from "../generated/modules";
+import { MODULE_FILES } from "../infra/modules";
 import { IMAGES } from "../pins";
 import {
   type RuntimeContext,
@@ -540,11 +542,11 @@ describe("snapshots", () => {
 });
 
 describe("OpsCrew's cloud servers", () => {
-  const template = MODULE_FILES["hetzner-vps/cloud-init.yaml.tftpl"] ?? "";
+  const template = SERVER_MODULE_FILES["cloud-init.yaml.tftpl"] ?? "";
 
   it("create the edge's, the apps' and the data folders for deploy at first boot, as on own servers", () => {
-    for (const module of ["hetzner-vps", "digitalocean-droplet"]) {
-      expect(MODULE_FILES[`${module}/cloud-init.yaml.tftpl`]).toBe(template);
+    for (const { terraform } of CLOUD_PROVIDERS) {
+      expect(MODULE_FILES[`${terraform.module.name}/cloud-init.yaml.tftpl`]).toBe(template);
     }
     // The template's whole-line directives (`%{ if web ~}`) are not YAML; the lines between stay.
     const yaml = template.replaceAll("$${", "${").replace(/^%\{.*\n/gm, "");
