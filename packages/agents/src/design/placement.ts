@@ -11,6 +11,7 @@ import {
   type DesignOption,
   type ExtraServer,
   isCloudProvider,
+  isCloudTarget,
   type Move,
   monitoringOf,
   type PlanService,
@@ -30,7 +31,6 @@ import { planFile } from "../runners/words";
 import { reasonOf } from "../shared/errors";
 import { monitoringLimits } from "../shared/memory";
 import { serverRemote, serverWords } from "../shared/server-address";
-import { isCloudTarget } from "../shared/vps-target";
 import { memoryText, serverMemoryText } from "./components";
 import { convertMoney, EXCHANGE_RATE_NOTE } from "./cost";
 import { type HopDelay, hopDelay, type ServerPlace } from "./delay";

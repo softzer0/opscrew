@@ -1,5 +1,9 @@
-import { type DeployPlan, type DesignOption, isServerlessProvider } from "@opscrew/plan-schema";
-import { isCloudTarget } from "../shared/vps-target";
+import {
+  type DeployPlan,
+  type DesignOption,
+  isCloudTarget,
+  isServerlessProvider,
+} from "@opscrew/plan-schema";
 
 /** FR-1217: what a redeploy in the user's Portainer does. */
 export const PORTAINER_RECREATE_NOTE =

@@ -7,12 +7,12 @@ import {
   CostEstimateSchema,
   type DeployTarget,
   type ExtraServer,
+  isCloudTarget,
   type PlanService,
   type Region,
 } from "@opscrew/plan-schema";
 import { providerProfile } from "../providers";
 import { type MemoryLimit, memoryHeadroom, SYSTEM_RESERVE_MB } from "../shared/memory";
-import { isCloudTarget } from "../shared/vps-target";
 import {
   convertMoney,
   EXCHANGE_RATE_NOTE,

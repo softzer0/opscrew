@@ -6,11 +6,11 @@ import {
   type DeployPlan,
   type DeployProvider,
   type ExtraServer,
+  isCloudTarget,
 } from "@opscrew/plan-schema";
 import { z } from "zod";
 import { providerProfile } from "../providers";
 import { readValidJson } from "../shared/files";
-import { isCloudTarget } from "../shared/vps-target";
 
 /** Where a server runs and of what type. */
 export interface ServerSize {

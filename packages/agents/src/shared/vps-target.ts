@@ -1,20 +1,11 @@
 import type { VpsProviderId } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import {
-  type CloudProvider,
   type DeployTarget,
-  isCloudProvider,
   isServerlessProvider,
   PORTAINER_TARGET_NO_MOVE,
   type ServerlessProvider,
 } from "@opscrew/plan-schema";
-
-/** True for a target whose server OpsCrew creates at a cloud provider, narrowing it to one. */
-export function isCloudTarget<T extends { provider: string }>(
-  target: T,
-): target is Extract<T, { provider: CloudProvider }> {
-  return isCloudProvider(target.provider);
-}
 
 /** The plain error of `opscrew retarget` for a Portainer target, which never moves. */
 export function portainerTargetNoMove(): OpsCrewError {

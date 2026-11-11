@@ -22,6 +22,7 @@ import {
   FqdnSchema,
   ImageBuilderSchema,
   IsoDateTimeSchema,
+  isCloudProvider,
   isServerlessProvider,
   MemoryMbSchema,
   onOneServer,
@@ -353,6 +354,13 @@ export function isServerlessTarget<T extends { provider: string }>(
   target: T,
 ): target is Extract<T, { provider: ServerlessProvider }> {
   return isServerlessProvider(target.provider);
+}
+
+/** True for a target whose server OpsCrew creates at a cloud provider, narrowing it to one. */
+export function isCloudTarget<T extends { provider: string }>(
+  target: T,
+): target is Extract<T, { provider: CloudProvider }> {
+  return isCloudProvider(target.provider);
 }
 
 /**
@@ -2298,13 +2306,6 @@ export const DEFAULT_IMAGES: Readonly<Record<CloudProvider, string>> = {
  */
 function withImage<T extends { provider: CloudProvider; image?: string | undefined }>(target: T) {
   return { ...target, image: target.image ?? DEFAULT_IMAGES[target.provider] };
-}
-
-/** True for a server OpsCrew creates on Hetzner Cloud or DigitalOcean. */
-function isCloudTarget(
-  target: z.output<typeof DeployTargetSchema>,
-): target is z.output<typeof CloudTargetSchema> {
-  return CloudProviderSchema.safeParse(target.provider).success;
 }
 
 /** The target with a cloud target's image filled in; any other target as it is. */
