@@ -293,6 +293,13 @@ AWS on 2026-11-06; its scope set from the research on 2026-11-11,
 - Own server and Portainer stay as they are: they are kinds of target with flows of their own,
   not providers.
 - Installing provider packages comes with AWS (028), designed around its first real user.
+- **Other areas get their own contract when a second implementation arrives** (founder,
+  2026-11-11), not before, since a contract with one user tends to take the wrong shape:
+  - DNS and the edge when Fastly is placed, with Cloudflare moved behind it;
+  - the code host with GitLab, with GitHub moved behind it.
+
+  Own server, Portainer, the serverless hosts, object storage, the registrars and the reverse
+  proxies stay built in until then.
 
 **Live tests:** one live pass at the end on one Cloud VPS 4, on an account the founder opens. A
 destroy only cancels a Contabo server at the end of its term (at least a month), so the founder
@@ -512,7 +519,9 @@ never runs, they stay "not tested live" on the coverage page.
   do them by hand.
 - **Azure and Google Cloud** after AWS, as provider plugins, reusing Azure Verified
   Modules, terraform-google-modules and Infracost.
-- **Fastly in front of an app, in place of Cloudflare's proxy** (founder, 2026-11-11):
+- **Fastly in front of an app, in place of Cloudflare's proxy** (founder, 2026-11-11). It
+  opens with a contract for the DNS and edge provider, with Cloudflare moved behind it (026's
+  rule: a contract when the second implementation arrives).
   - a Fastly service through its official Terraform provider (`fastly/fastly`), with Fastly's
     certificates for the app's hostnames (5 domains free, then $20 a domain);
   - OpsCrew's rule against probes for secrets and admin panels written into the service, since
@@ -548,7 +557,8 @@ never runs, they stay "not tested live" on the coverage page.
   (merge requests, protected and masked CI/CD variables, `.gitlab-ci.yml`, gitlab.com and
   self-managed), then Azure DevOps (pull requests, variable groups, `azure-pipelines.yml`,
   workload-identity service connections; pairs with Azure). Each needs a code-host connector, not
-  only a pipeline template. Jenkins is not planned; Ansible is not used.
+  only a pipeline template. GitLab opens with a contract for the code host, with GitHub moved
+  behind it (026's rule, founder, 2026-11-11). Jenkins is not planned; Ansible is not used.
 - **Kubernetes:** out of v1. Later, deploying into a cluster the user already runs (EKS, GKE,
   AKS, DOKS, k3s) with Helm charts and the same plan, approval and security gates; OpsCrew never
   creates clusters.
