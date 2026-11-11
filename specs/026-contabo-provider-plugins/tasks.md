@@ -132,7 +132,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew && pnpm lint`
   - Effort: high
 
-- [ ] T2611 [P] [US1] [US4] Prices, snapshot limits and size changes
+- [x] T2611 [P] [US1] [US4] Prices, snapshot limits and size changes
   - Owns: `packages/agents/src/{design,advise,snapshot,retarget}/**`, `packages/cli/src/commands/{snapshot,restore,retarget}*.ts`
   - Reads: plan 4.2, 4.5
   - Depends: T2606, T2607, T2609
