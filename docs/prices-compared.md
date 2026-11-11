@@ -3,8 +3,9 @@
 Prices as of 2026-11-03, excluding VAT and sales tax. They change often: check the sources before
 quoting a figure, and redo this page rather than editing one number.
 
-AWS, Google Cloud, Azure and Contabo are planned targets that OpsCrew does not support yet, so they
-are named here but not priced.
+AWS, Google Cloud and Azure are planned targets that OpsCrew does not support yet, so they are
+named here but not priced. [Contabo](guide/contabo.md) became a target after this comparison; see
+[Contabo](#contabo) below.
 
 ## The reference app
 
@@ -34,6 +35,18 @@ Two things raise the Hetzner figure:
 The live run that deployed this app on 2026-11-03 took 9 min 39 s from a clean repository to the
 app answering on its own HTTPS hostname, with no human time in it (see
 [e2e-coverage.md](e2e-coverage.md)).
+
+### Contabo
+
+Contabo was not part of the comparison above, and design was not run against it. From Contabo's
+price list of 2026-11-11, its smallest plan, Cloud VPS 4 (4 vCPU, 8 GB, 100 GB disk), holds what
+design asks for this app (2 vCPU, 4 GB, 60 GB):
+- **€5.50 a month,** including VAT, unlike the other prices on this page, on a monthly contract.
+- **A one-time setup fee** on top, whose amount Contabo's page doesn't give.
+- **No provider backups:** OpsCrew's own snapshots cover the data
+  (see [Snapshots and restores](guide/snapshots.md)).
+- **At least a month:** a removal ends the contract at the end of its term
+  (see [Deploy to Contabo](guide/contabo.md)).
 
 ## On popular platforms
 
@@ -84,6 +97,7 @@ Notes:
 - **DigitalOcean:** https://www.digitalocean.com/pricing/droplets,
   https://www.digitalocean.com/pricing/app-platform,
   https://www.digitalocean.com/pricing/managed-databases
+- **Contabo:** https://contabo.com/en/vps/
 - **Heroku:** https://www.heroku.com/pricing,
   https://devcenter.heroku.com/articles/heroku-postgres-plans
 - **Railway:** https://railway.com/pricing

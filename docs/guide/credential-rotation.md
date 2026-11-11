@@ -20,9 +20,9 @@ npx opscrew rotate --json           # the same, as JSON
 The list names every credential OpsCrew made for the environment by the name the command takes.
 For each it says how it rotates, when it was made or last rotated, and what else changes. A
 credential made before OpsCrew kept dates counts from the environment's first deploy. Then come
-your own tokens (the Hetzner, DigitalOcean, Cloudflare and GitHub tokens, and the others you gave
-OpsCrew) with their expiry where the provider shows it, else the date this computer first saw
-them. Listing reads only: it changes nothing and records nothing.
+your own tokens (the Hetzner, DigitalOcean, Contabo, Cloudflare and GitHub tokens, and the others
+you gave OpsCrew) with their expiry where the provider shows it, else the date this computer first
+saw them. Listing reads only: it changes nothing and records nothing.
 
 ## Rotating one
 
@@ -197,6 +197,7 @@ has the rest, including the backup key's options.
 |---|---|
 | `hetzner` | `HCLOUD_TOKEN` |
 | `digitalocean` | `DIGITALOCEAN_TOKEN` |
+| `contabo` | `CNTB_OAUTH2_CLIENT_ID`, `CNTB_OAUTH2_CLIENT_SECRET`, `CNTB_OAUTH2_USER` and `CNTB_OAUTH2_PASS`, all four |
 | `cloudflare` | `CLOUDFLARE_API_TOKEN` |
 | `github` | `GITHUB_TOKEN` or `GH_TOKEN` |
 | `cloudflare-deploy` | `OPSCREW_CLOUDFLARE_DEPLOY_TOKEN` |

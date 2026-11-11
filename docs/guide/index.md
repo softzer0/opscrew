@@ -5,6 +5,7 @@ an app yet.
 
 ## Where your app runs
 
+- [Deploy to Contabo](contabo.md)
 - [Deploy to a server you already have](own-server.md)
 - [Deploy to a Portainer you already run](portainer-target.md)
 - [Your app's production stack on your own computer](localhost.md)

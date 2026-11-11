@@ -39,7 +39,10 @@ in `opscrew/plan.yaml`, as below.
 | **Cloudflare R2** | your domain is on Cloudflare | per GB stored and per million requests, no charge for downloads |
 | **DigitalOcean Spaces** | the app runs on DigitalOcean | a monthly base per account, with storage and downloads included |
 | **Hetzner Object Storage** | the app runs on Hetzner Cloud in Falkenstein (fsn1), Nuremberg (nbg1) or Helsinki (hel1) | a monthly base per account, with storage and downloads included |
-| **[Garage](https://garagehq.deuxfleurs.fr/)** | always; on Hetzner Cloud and DigitalOcean only when you choose it | free: it keeps the files on the server's own disk and uses 64 MB of its memory |
+| **[Garage](https://garagehq.deuxfleurs.fr/)** | always; on Hetzner Cloud, DigitalOcean and Contabo only when you choose it | free: it keeps the files on the server's own disk and uses 64 MB of its memory |
+
+OpsCrew doesn't offer Contabo's own Object Storage: an app on [Contabo](contabo.md) gets Garage or
+Cloudflare R2.
 
 Garage is a small S3-compatible storage server (AGPL 3.0) that OpsCrew runs as one of the app's
 components, without replication: the files are as safe as the server's disk and your backups of

@@ -154,8 +154,9 @@ Data is restored under the version it was taken with:
 
 ## Whole-server snapshots
 
-On a server OpsCrew created at [Hetzner Cloud](https://www.hetzner.com/cloud) or
-[DigitalOcean](https://www.digitalocean.com/), the provider can also snapshot the whole disk:
+On a server OpsCrew created at [Hetzner Cloud](https://www.hetzner.com/cloud),
+[DigitalOcean](https://www.digitalocean.com/) or [Contabo](contabo.md), the provider can also
+snapshot the whole disk:
 
 ```bash
 npx opscrew snapshot --server                      # while the server runs
@@ -178,6 +179,11 @@ npx opscrew restore --server <id>                  # rebuild the server from it
   At Hetzner, OpsCrew lifts the server's delete and rebuild protection for the rebuild and sets it
   again right after, whether the rebuild succeeds or fails. Then it checks that the app answers,
   as `opscrew verify` does. The next `opscrew provision` doesn't replace the rebuilt server.
+- **At Contabo,** snapshots are included in the server's price, up to the number its plan allows
+  (1 on Cloud VPS 4, 2 or 3 on larger plans), snapshots taken by hand included. At the limit,
+  OpsCrew refuses and says which one to delete. Restoring one that isn't the newest deletes the
+  newer ones, and OpsCrew says so first. They go with the server when its term ends (see
+  [Deploy to Contabo](contabo.md#snapshots)).
 - **DigitalOcean's token** needs two more scopes, `snapshot:delete` and `droplet:admin`, only to
   delete or restore whole-server snapshots. Without them, OpsCrew says so.
 

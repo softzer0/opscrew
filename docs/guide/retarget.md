@@ -1,6 +1,6 @@
 # Moving your app somewhere else: `opscrew retarget`
 
-`opscrew retarget` moves a live app, with its data, to another place: [Hetzner Cloud](https://www.hetzner.com/cloud), [DigitalOcean](https://www.digitalocean.com/),
+`opscrew retarget` moves a live app, with its data, to another place: [Hetzner Cloud](https://www.hetzner.com/cloud), [DigitalOcean](https://www.digitalocean.com/), [Contabo](contabo.md),
 [a server you already have](own-server.md) or [a Portainer you already run](portainer-target.md),
 in any direction. That includes moving from one server of yours to another. A site moves between
 [Cloudflare's hosting](cloudflare-hosting.md) and [GitHub Pages](github-pages.md).
@@ -17,7 +17,7 @@ npx opscrew retarget --abort             # before the switch: back to the old si
 
 | `--to` | Moves the app to |
 |---|---|
-| `hetzner`, `digitalocean` | A new server at that cloud provider |
+| `hetzner`, `digitalocean`, `contabo` | A new server at that cloud provider |
 | `own` | A server you already have (OpsCrew asks how to reach it) |
 | `portainer` | An environment in the Portainer you run (OpsCrew asks for it) |
 | `cloudflare-workers`, `github-pages` | The other site host, for a site |
@@ -32,6 +32,7 @@ Some moves aren't possible yet; see [What can't move yet](#what-cant-move-yet).
 ## Before you move
 
 - **The tokens of both sides:** `HCLOUD_TOKEN` for Hetzner, `DIGITALOCEAN_TOKEN` for DigitalOcean,
+  the four `CNTB_OAUTH2_*` values for Contabo (see [the credentials](contabo.md#the-credentials)),
   `PORTAINER_API_KEY` for Portainer, plus your GitHub token, and `CLOUDFLARE_API_TOKEN` when your
   domain's DNS is on Cloudflare. A missing or rejected token stops the move before anything
   changes. In Portainer, use the token of the user who deployed the app's stacks (OpsCrew's own
@@ -48,7 +49,9 @@ Some moves aren't possible yet; see [What can't move yet](#what-cant-move-yet).
   [Without DNS on Cloudflare](#without-dns-on-cloudflare)).
 - **The cost:** both sides run until you finish the move. A new cloud server is billed from its
   creation, and the old one until `--finish` deletes it. The summary shows the new side's monthly
-  price before anything changes; your own server and your Portainer have none.
+  price before anything changes; your own server and your Portainer have none. A Contabo server is
+  bought for at least a month, and one that `--finish` removes is billed to the end of its term
+  (see [Removing the app](contabo.md#removing-the-app)).
 
 ## How a move works
 
