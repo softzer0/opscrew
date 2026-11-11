@@ -237,7 +237,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/iac-templates && pnpm lint`
   - Effort: medium
 
-- [ ] T2628 [US1] Design prints the chosen option's terms in a script
+- [x] T2628 [US1] Design prints the chosen option's terms in a script
   - Owns: `packages/agents/src/design/run.ts` (+ tests)
   - Depends: T2611
   - Accept:
