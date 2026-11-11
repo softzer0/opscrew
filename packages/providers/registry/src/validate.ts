@@ -102,6 +102,9 @@ const moduleFiles = z.record(z.string(), z.string()).superRefine((files, ctx) =>
   }
 });
 
+/** A resource's opening line in `extraShared.resources`: `resource "<type>" "<name>" {`. */
+const RESOURCE_LINE = /^resource "(\w+)" "(\w+)" \{$/;
+
 const terraform = z.object({
   provider: z.object({ name: z.string(), source: z.string(), version: z.string() }),
   serverResourceType: z.string(),
@@ -112,11 +115,35 @@ const terraform = z.object({
   deleteProtectionVariable: z.boolean(),
   descriptions: z.object({ location: z.string(), serverType: z.string(), backups: z.string() }),
   moduleArguments: fn<Definition["terraform"]["moduleArguments"]>(),
-  extraShared: z.object({
-    resources: lines,
-    sshKeyId: z.string(),
-    appTag: z.string().optional(),
-  }),
+  extraShared: z
+    .object({
+      resources: lines,
+      sshKeyId: z.string(),
+      appTag: z.string().optional(),
+    })
+    .superRefine((shared, ctx) => {
+      // iac-templates reads each resource's address from these lines (moved blocks, deletions).
+      const addresses: string[] = [];
+      for (const line of shared.resources.filter((l) => l.startsWith("resource "))) {
+        const match = RESOURCE_LINE.exec(line);
+        if (match === null) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["resources"],
+            message: `has a resource line OpsCrew can't read: ${line}`,
+          });
+        } else addresses.push(`${match[1]}.${match[2]}`);
+      }
+      if (addresses.length === 0) {
+        ctx.addIssue({ code: "custom", path: ["resources"], message: "declares no resource" });
+      } else if (!addresses.some((address) => shared.sshKeyId.includes(address))) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["sshKeyId"],
+          message: "names none of the resources declared",
+        });
+      }
+    }),
 });
 
 type Texts = Definition["texts"];

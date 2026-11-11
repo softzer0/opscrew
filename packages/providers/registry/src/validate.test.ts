@@ -134,4 +134,20 @@ describe("validateCloudProvider", () => {
     const message = failure({ ...hetzner, credentials: { ...credentials, envVars: [] } });
     expect(message).toContain("credentials.envVars:");
   });
+
+  it("wants the shared resources readable and the deploy key among them", () => {
+    const shared = (extraShared: Partial<typeof terraform.extraShared>) => ({
+      ...hetzner,
+      terraform: { ...terraform, extraShared: { ...terraform.extraShared, ...extraShared } },
+    });
+    expect(failure(shared({ resources: ['resource "hcloud_ssh_key" "deploy"  {'] }))).toContain(
+      "terraform.extraShared.resources: has a resource line OpsCrew can't read",
+    );
+    expect(failure(shared({ resources: ["# nothing here"] }))).toContain(
+      "terraform.extraShared.resources: declares no resource",
+    );
+    expect(failure(shared({ sshKeyId: "coalesce(hcloud_ssh_key.other.id)" }))).toContain(
+      "terraform.extraShared.sshKeyId: names none of the resources declared",
+    );
+  });
 });
