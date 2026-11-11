@@ -109,7 +109,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/secops --filter=@opscrew/detect && pnpm lint`
   - Effort: high
 
-- [ ] T2609 [P] [US3] mcp-server and cli
+- [x] T2609 [P] [US3] mcp-server and cli
   - Owns: `packages/mcp-server/src/**`, `packages/cli/src/**`
   - Reads: plan 3
   - Depends: T2602, T2603, T2604
@@ -185,7 +185,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Effort: high
 
 - [ ] T2616 Contabo joins the ids and the registry (lead)
-  - Accept: `contabo` in `ProviderId`, `VpsProviderId`, plan-schema's provider enums and generated schemas, and `CLOUD_PROVIDERS`; `pnpm check` green, any exhaustive switch left over fixed.
+  - Accept: `contabo` in `ProviderId`, `VpsProviderId`, plan-schema's provider enums and generated schemas, and `CLOUD_PROVIDERS`; `pnpm check` green, any exhaustive switch left over fixed; every message that still names the cloud providers in its text is built from the registry with `orText`/`listText` (T2606's list: `providers/profiles.ts`' two hints, `vpsConnector`'s default hint, `design/servers.ts`, `design/own-servers.ts`, `shared/server-record.ts`, and any other a grep for `Hetzner Cloud or DigitalOcean` and `hetzner, digitalocean` finds).
   - Effort: lead
 
 ## Phase 6: Wave 5 (parallel)
@@ -216,6 +216,6 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
 ## Phase 7: Live, simplify, release (lead)
 
 - [ ] T2620 The live pass on one Cloud VPS 4 (lead; the founder is asked before any rerun that needs another server), recorded on `docs/e2e-coverage.md`.
-- [ ] T2621 Simplify pass over the feature's changes (lead). Noted so far: `orText` (mcp-server) and plan-schema's private `orList` become one `orText` in `core/text.ts` beside `listText`; secops's `PlannedResource` becomes the contract's `PlannedResourceJson`; the definitions' copied module-argument helpers.
+- [ ] T2621 Simplify pass over the feature's changes (lead). Noted so far: secops's `PlannedResource` becomes the contract's `PlannedResourceJson`; the definitions' copied module-argument helpers.
 - [ ] T2622 The constitution's provider order (Contabo with the hosting providers, a MINOR bump) and `CLAUDE.md`'s package list (lead).
 - [ ] T2623 The release, following `docs/releasing.md` (lead).
