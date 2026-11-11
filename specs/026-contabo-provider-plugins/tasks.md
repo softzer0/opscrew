@@ -189,7 +189,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Accept: `contabo` in `ProviderId`, `VpsProviderId`, plan-schema's provider enums and generated schemas, and `CLOUD_PROVIDERS`; `pnpm check` green, any exhaustive switch left over fixed; every message that still names the cloud providers in its text is built from the registry with `orText`/`listText` (T2606's list: `providers/profiles.ts`' two hints, `vpsConnector`'s default hint, `design/servers.ts`, `design/own-servers.ts`, `shared/server-record.ts`, and any other a grep for `Hetzner Cloud or DigitalOcean` and `hetzner, digitalocean` finds); `runners/cloud.ts`' "the other provider" names the others (`orText`) once there are three. For a provider with `offering.providerBackups: false`: the runbook (`iac-templates/src/runbook/index.ts`) never offers to turn its backups on and points to OpsCrew's data snapshots instead, and provision refuses a plan whose cloud target has `backups: true` with the reason (T2611's report). For credentials as a set: `plan-apply.ts`' refused-apply hint, `credentials.ts`' wrong-credentials hint and init's "X and Y are both set" word a set of variables properly (T2612's report), and so do `destroy/deletion.ts`' and `snapshot/provider.ts`' "set A or B" and `mcp-server/tools/design.ts`' check of a partly set group; `opscrew destroy` removes the takeover marker (`.opscrew/<env>/apply-started.json`).
   - Effort: lead
 
-- [ ] T2624 [US2] [US4] A move off a provider that cancels
+- [x] T2624 [US2] [US4] A move off a provider that cancels
   - Owns: `packages/agents/src/retarget/**`, `packages/cli/src/commands/retarget*.ts`
   - Reads: plan 4.1; T2610's `packages/agents/src/destroy/cancel.ts`
   - Depends: T2610, T2611
