@@ -145,10 +145,11 @@ human sees and approves every change.
 - Licensing: Apache-2.0 for everything outside `ee/`; FSL-1.1-ALv2 for `ee/`. No AGPL or
   non-commercial dependency may be linked into the CLI; such tools may only be invoked as optional
   external binaries. Semgrep-maintained rules are never used in the hosted control plane.
-- Provider order: hosting on Hetzner Cloud, DigitalOcean, servers the user already owns (over SSH)
-  and a Portainer the user already runs (through its API), with Cloudflare DNS, then AWS, Google Cloud, Azure and Contabo; domains through Cloudflare
-  Registrar first, then Namecheap, Porkbun and GoDaddy. Prices and availability are read live from
-  provider APIs whenever possible; any static fallback is labelled with its date.
+- Provider order: hosting on Hetzner Cloud, DigitalOcean, Contabo, servers the user already owns
+  (over SSH) and a Portainer the user already runs (through its API), with Cloudflare DNS, then AWS,
+  Google Cloud and Azure; domains through Cloudflare Registrar first, then Namecheap, Porkbun and
+  GoDaddy. Prices and availability are read live from provider APIs whenever possible; any static
+  fallback is labelled with its date.
 - CI/CD: GitHub Actions with OIDC federation for hyperscalers; per-repository deploy keys for VPS
   targets; third-party actions avoided or pinned by commit SHA.
 
@@ -184,4 +185,4 @@ human sees and approves every change.
 - Every plan includes a Constitution Check; violations are either fixed or justified in the plan's
   Complexity Tracking table. Every reviewer pass checks constitution compliance.
 
-**Version**: 1.8.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-11-05
+**Version**: 1.9.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-11-11

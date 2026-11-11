@@ -1,7 +1,7 @@
 # OpsCrew — agent guidance
 
 OpsCrew is an open-source crew of AI agents that takes an app from a GitHub repo to a hardened
-production deployment on the user's own cloud (Hetzner Cloud, DigitalOcean, a server the user
+production deployment on the user's own cloud (Hetzner Cloud, DigitalOcean, Contabo, a server the user
 already owns or a Portainer they already run, plus Cloudflare), with Terraform or OpenTofu, and keeps it secure. Read `.specify/memory/constitution.md` before changing anything;
 it is the source of truth and overrides this file.
 
@@ -25,8 +25,12 @@ it is the source of truth and overrides this file.
 - `packages/iac-engine` — `tofu`/`terraform` abstraction (plan JSON, plan-hash-bound apply).
 - `packages/iac-templates` — vendored HCL modules + runtime templates (compose, Caddyfile,
   cloud-init, GitHub workflow) and the renderer.
-- `packages/connectors/*` — `github`, `hetzner`, `digitalocean`, `cloudflare` typed adapters (`@opscrew/connector-*`);
-  phases reach a VPS provider only through `vpsConnector` and `providerProfile` in `packages/agents/src/providers`.
+- `packages/providers/*` — one package per cloud server provider (`@opscrew/provider-hetzner`, `-digitalocean`,
+  `-contabo`): its definition (the contract in ADR 0029), connector and server module. `packages/providers/registry`
+  (`@opscrew/providers`) lists and validates them and is the one place code reads provider facts from
+  (`CLOUD_PROVIDERS`, `cloudProvider(id)`); no other code branches on a cloud provider's id. Phases reach a
+  provider's API through `vpsConnector` and `providerProfile` in `packages/agents/src/providers`.
+- `packages/connectors/*` — `github`, `cloudflare`, the registrars and `docker` typed adapters (`@opscrew/connector-*`).
   `ssh-host` changes servers the user already owns, through host plans approved by hash (ADR 0011);
   `portainer` changes a Portainer the user already runs, through stack plans approved by hash (ADR 0012).
 - `packages/cli` — the `opscrew` CLI (bundled for publishing).
