@@ -160,7 +160,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
 ## Phase 5: Contabo
 
 - [ ] T2613 The spike (lead)
-  - Accept: once the founder's account exists, free calls only: a token and its lifetime; the images (Ubuntu 24.04's name and id); the data centers; the product ids of Cloud VPS 4, 6, 8 and 12; a `contabo_firewall` and a `contabo_secret` created and deleted alone through the engine; the setup fee from the founder's checkout. Recorded as research R6.
+  - Accept: once the founder's account exists, free calls only: a token and its lifetime; the images (Ubuntu 24.04's name and id); the data centers; the product ids of Cloud VPS 4, 6, 8 and 12; a `contabo_firewall` and a `contabo_secret` created and deleted alone through the engine; the setup fee from the founder's checkout; and T2614's open points: the error body's shape, the snapshot-limit refusal, whether a snapshot is usable as soon as the create answers, the statuses a revert goes through, that `opscrew-app:<app>` is an accepted tag name and an instance assignment's `resourceType`, the cancel date's value before a cancel, regional prices and which VAT the prices include. Recorded as research R6, and fixed in the connector where they differ.
   - Effort: lead
 
 - [x] T2614 [US1] Contabo's client and connector
