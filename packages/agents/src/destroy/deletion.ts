@@ -442,11 +442,14 @@ function snapshotFailed(scope: ServerScope, error: unknown, started = true): Ops
   );
 }
 
-/** The provider's server API and the app's servers as it reports them; a failed lookup stops. */
-async function findServers(
-  scope: ServerScope,
-  input: SnapshotBeforeDeleteInput,
-): Promise<{ api: ServerSnapshotApi; found: AppServer[] }> {
+/** How the provider's server API is reached: `servers` replaces it in tests. */
+export type ServerApiInput = Pick<SnapshotBeforeDeleteInput, "servers" | "sleep" | "now">;
+
+/**
+ * The provider's server API: `input.servers` (tests), else the provider connector's, built from its
+ * token; a missing token stops.
+ */
+export function serverApi(scope: ServerScope, input: ServerApiInput): ServerSnapshotApi {
   const { deps, provider } = scope;
   const texts = destroyTexts(provider);
   const options: VpsConnectorOptions = {
@@ -461,6 +464,15 @@ async function findServers(
       { hint: texts.tokenHint(scope.command) },
     );
   }
+  return api;
+}
+
+/** The provider's server API and the app's servers as it reports them; a failed lookup stops. */
+async function findServers(
+  scope: ServerScope,
+  input: SnapshotBeforeDeleteInput,
+): Promise<{ api: ServerSnapshotApi; found: AppServer[] }> {
+  const api = serverApi(scope, input);
   try {
     return { api, found: await api.findAppServers(scope.app) };
   } catch (error) {

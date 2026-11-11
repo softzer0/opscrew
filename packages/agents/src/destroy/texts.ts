@@ -1,5 +1,5 @@
 import type { ProviderDestroyTexts, VpsProviderId } from "@opscrew/contracts";
-import { type CloudProvider, isServerlessProvider } from "@opscrew/plan-schema";
+import { type CloudProvider, isCloudProvider, isServerlessProvider } from "@opscrew/plan-schema";
 import { cloudProvider } from "@opscrew/providers";
 import { providerProfile } from "../providers";
 import type { DeletionProvider } from "./types";
@@ -51,9 +51,36 @@ function ownTexts(): DestroyTexts {
 }
 
 /**
+ * The minimum term in months when `provider` cancels a server at the end of its term instead of
+ * deleting it (its definition's `removal`, Contabo's); `undefined` where the server is deleted at
+ * once (Hetzner, DigitalOcean) and anywhere OpsCrew created no server.
+ */
+export function cancelTerm(provider: string): number | undefined {
+  if (!isCloudProvider(provider)) return undefined;
+  const { removal } = cloudProvider(provider).offering;
+  return removal.kind === "cancel-at-term-end" ? removal.minimumTermMonths : undefined;
+}
+
+/** True when `provider`'s whole-server snapshots outlive the server, so one is worth taking first. */
+export function snapshotsOutlive(provider: CloudProvider): boolean {
+  return cloudProvider(provider).offering.serverSnapshotsOutliveServer;
+}
+
+/**
+ * What goes when a cancelled server's term ends, for the typed questions: its disk, and its
+ * provider snapshots unless they outlive it (`snapshotsOutlive`).
+ */
+export function goneAtTermEnd(provider: CloudProvider): string {
+  return snapshotsOutlive(provider)
+    ? "its disk goes when the term ends"
+    : `its disk and its ${cloudProvider(provider).name} snapshots go when the term ends`;
+}
+
+/**
  * The question before a teardown, asking for the name to type. OpsCrew's servers are named after
  * the app; on a server the user owns the app's name is typed, and the server itself stays; on a
- * server-less target the app's name is typed too.
+ * server-less target the app's name is typed too. Where the provider cancels the server instead
+ * of deleting it, the question says it stays billed to the end of its term.
  */
 export function destroyConfirmPrompt(name: string, provider: DeletionProvider): string {
   if (provider === "portainer") {
@@ -62,9 +89,14 @@ export function destroyConfirmPrompt(name: string, provider: DeletionProvider): 
   if (isServerlessProvider(provider)) {
     return `Type ${name} (the app's name) to remove the app as listed above (anything else cancels)`;
   }
-  return provider === "own"
-    ? `Type ${name} (the app's name) to remove the app as listed above; your server itself stays (anything else cancels)`
-    : `Type ${name} to delete everything listed above (anything else cancels)`;
+  if (provider === "own") {
+    return `Type ${name} (the app's name) to remove the app as listed above; your server itself stays (anything else cancels)`;
+  }
+  if (isCloudProvider(provider) && cancelTerm(provider) !== undefined) {
+    const texts = destroyTexts(provider);
+    return `Type ${name} to cancel the ${texts.company} ${texts.noun}, billed until the end of its term, and delete the rest listed above; ${goneAtTermEnd(provider)} (anything else stops with nothing changed)`;
+  }
+  return `Type ${name} to delete everything listed above (anything else cancels)`;
 }
 
 /** The teardown wording for `provider`, including a server the user owns. */

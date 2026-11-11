@@ -438,6 +438,8 @@ export async function approveCloudflareRemoval(
     notes?: readonly string[];
     /** The app's extra cloud servers' modules the plan may delete too, and their `-var`s. */
     servers?: readonly string[];
+    /** Lines worded from the plan's own changes (the servers it cancels), after `notes`. */
+    planNotes?: (changes: readonly ResourceChange[]) => readonly string[];
     vars?: Readonly<Record<string, string>>;
   },
 ): Promise<CloudflareRemoval | undefined> {
@@ -483,6 +485,7 @@ export async function approveCloudflareRemoval(
             ? `${place} is not part of this plan. ${words.tunnelAfter} so OpsCrew removes the app from ${words.place} first (the next approval) and applies this plan after that.`
             : `${place} is not part of this plan. ${words.tunnelAfter} so OpsCrew applies this plan once Cloudflare reports no active connections for the tunnel.`,
         ...(input.notes ?? []),
+        ...(input.planNotes?.(summary.changes) ?? []),
         words.stays,
         `Plan hash: ${summary.planHash}`,
       ].join("\n"),

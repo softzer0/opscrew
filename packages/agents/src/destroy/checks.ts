@@ -13,7 +13,7 @@ import {
 } from "@opscrew/plan-schema";
 import { z } from "zod";
 import { providerProfile, VPS_PROVIDERS } from "../providers";
-import { destroyTexts } from "./texts";
+import { cancelTerm, destroyTexts, snapshotsOutlive } from "./texts";
 import type { DeletionProvider } from "./types";
 
 /**
@@ -384,9 +384,14 @@ export function dataWarning(
   const lost = serverData({ services: servicesOn(plan, APP_SERVER), storage: plan.storage });
   lost.push(`any files the app stored on the ${texts.noun}`);
   if (target.backups && texts.deletedBackups) lost.push(texts.deletedBackups);
-  const deleted = `Deleting the ${texts.noun} also deletes ${listText(lost)}.`;
+  const deleted =
+    cancelTerm(target.provider) === undefined
+      ? `Deleting the ${texts.noun} also deletes ${listText(lost)}.`
+      : `Cancelling the ${texts.noun} loses ${listText(lost)} when its term ends, and OpsCrew shuts it down now.`;
   if (target.backups && texts.keptBackups) {
     return `${deleted} ${texts.keptBackups}; only a snapshot keeps a copy for longer.`;
   }
-  return `${deleted} Only a snapshot keeps a copy.`;
+  return snapshotsOutlive(target.provider)
+    ? `${deleted} Only a snapshot keeps a copy.`
+    : `${deleted} Only OpsCrew's own data snapshot, with its encrypted copy off the server, keeps a copy.`;
 }

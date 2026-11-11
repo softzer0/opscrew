@@ -57,6 +57,16 @@ import {
 } from "../shared";
 import { connectAndInspectOwnServer, inspectOwnHost } from "../shared/own-server";
 import { extraCloudProviders, extraCloudServers } from "../shared/servers";
+import {
+  cancelDates,
+  cancelFailedHint,
+  cancelledIn,
+  cancelledServers,
+  cancelNotes,
+  dataSnapshotOffer,
+  shutDown,
+  shutdownLines,
+} from "./cancel";
 import { deletesProtectedServer, serverData } from "./checks";
 import {
   applyCloudflareRemoval,
@@ -129,7 +139,7 @@ import {
   failIfBucketListed,
   planBucketDeletion,
 } from "./storage";
-import { destroyConfirmPrompt } from "./texts";
+import { destroyConfirmPrompt, snapshotsOutlive } from "./texts";
 import type { DestroyOptions, DestroyResult } from "./types";
 
 /** Said wherever the teardown of a server the user owns is described (FR-912, FR-913). */
@@ -647,6 +657,8 @@ export async function destroyOwnServer(
     );
     engineSetup = setup;
   }
+  // The extra servers the teardown deletes whose provider cancels them instead (FR-2609).
+  const cancelling = cancelledServers(snapshots);
   // Without its record (deleted on the server) the plan names the app (T931).
   const teardown = removeApp
     ? planTeardown(
@@ -726,6 +738,15 @@ export async function destroyOwnServer(
     else if (keptBucket !== undefined) deps.reporter.info(bucketStays(keptBucket));
     for (const note of checkPauseNote(plan)) deps.reporter.info(note);
     const servers = serverLines(plan, snapshots);
+    // The extra servers a provider cancels: billed to the end of their term (said before the names).
+    if (cancelling.length > 0) deps.reporter.warn(cancelNotes(cancelling, name).join("\n"));
+    const withData = snapshots.filter(
+      (s) => s.inState && !snapshotsOutlive(s.provider) && s.data.serverData,
+    );
+    if (withData.length > 0) {
+      const { flag } = await planWhere(deps.paths.root, plan);
+      deps.reporter.info(dataSnapshotOffer(plan, withData, flag));
+    }
     if (servers.length > 0) deps.reporter.info(["The app's servers:", ...servers].join("\n"));
     const confirmation = {
       name,
@@ -782,6 +803,31 @@ export async function destroyOwnServer(
   // then the server goes first and the Cloudflare plan follows once the tunnel has no connections.
   let destroyed: ResourceChange[] = [];
   let removal: CloudflareRemoval | undefined;
+  // When the cancelled extra servers' contracts end, read back after the apply.
+  const cancelled: string[] = [];
+  /**
+   * Applies the approved removal: the extra servers in it that their provider cancels are shut
+   * down first, and their end dates read back after.
+   */
+  const applyRemoval = async (session: DeletionSession, approved: CloudflareRemoval) => {
+    const inPlan = cancelledIn(cancelling, approved.summary.changes);
+    await shutDown(session, inPlan, services);
+    const deleted = await applyCloudflareRemoval(session, approved, services.sleep).catch(
+      (error: unknown) => {
+        // A provider may have refused the cancel: where to cancel by hand, and that they are off.
+        if (inPlan.length === 0 || !(error instanceof OpsCrewError)) throw error;
+        if (error.code !== "ENGINE_FAILED") throw error;
+        throw new OpsCrewError(error.code, error.message, {
+          hint: cancelFailedHint(inPlan, name, command),
+          cause: error,
+        });
+      },
+    );
+    const lines = await cancelDates(session, inPlan, services);
+    for (const line of lines) deps.reporter.info(line);
+    cancelled.push(...lines);
+    return deleted;
+  };
   const hostPlans: { teardown?: string; undo?: string } = {};
   let teardownApproval: ApprovalRecord | undefined;
   let previewsApproval: ApprovalRecord | undefined;
@@ -836,10 +882,15 @@ export async function destroyOwnServer(
         // The check's pause is said in the typed confirmation it goes under (the host plan's when
         // there is one).
         notes: removeApp && hostSteps.length === 0 ? checkPauseNote(plan) : [],
+        // The extra servers this plan cancels: shut down first, billed to the end of their term.
+        planNotes: (changes) => {
+          const inPlan = cancelledIn(cancelling, changes);
+          return [...shutdownLines(inPlan, name), ...cancelNotes(inPlan, name)];
+        },
       });
     }
     if (iac !== undefined && removal !== undefined && !removal.tunnel) {
-      destroyed = await applyCloudflareRemoval(iac, removal, services.sleep);
+      destroyed = await applyRemoval(iac, removal);
     }
     if (teardown !== undefined && hostSteps.length > 0) {
       const serverFirst = removal?.tunnel === true;
@@ -881,7 +932,7 @@ export async function destroyOwnServer(
       );
     }
     if (iac !== undefined && removal?.tunnel === true) {
-      destroyed = await applyCloudflareRemoval(iac, removal, services.sleep);
+      destroyed = await applyRemoval(iac, removal);
     }
     // The user's own extra servers: OpsCrew's part removed from each, after the app.
     if (removeApp) {
@@ -1024,6 +1075,8 @@ export async function destroyOwnServer(
   });
   // The extra servers OpsCrew deleted: their snapshots and kept backups, by their names.
   remaining.push(...extraServersRemaining(given, snapshotIds));
+  // The cancelled extra servers, billed until their contracts end.
+  remaining.unshift(...cancelled);
   if (removeApp) {
     for (const server of extras) await removeSnapshotRecord(deps, "destroy", server.resource);
   }

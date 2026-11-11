@@ -2,7 +2,7 @@ import { join } from "node:path";
 import type { ApprovalRecord, ResourceChange } from "@opscrew/contracts";
 import { exists, lowerFirst, OpsCrewError, plural, tfstateFile } from "@opscrew/core";
 import { cloudTarget, runnerLabel } from "@opscrew/iac-templates";
-import { APP_SERVER, type DeployPlan, readArtifact } from "@opscrew/plan-schema";
+import { APP_SERVER, type DeployPlan, isCloudProvider, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { destroyLocalhost } from "../localhost/destroy";
 import { acmStaysOn, appZoneDomain } from "../previews/app-zone";
@@ -28,6 +28,17 @@ import {
   tunnelSafeEngine,
   waitForTunnelToClose,
 } from "../shared/tunnel-connections";
+import {
+  cancelDates,
+  cancelFailedHint,
+  cancelledIn,
+  cancelledServers,
+  cancelledText,
+  cancelNotes,
+  dataSnapshotOffer,
+  shutDown,
+  shutdownLines,
+} from "./cancel";
 import {
   dataWarning,
   deletesProtectedServer,
@@ -69,6 +80,7 @@ import {
   previewDeletion,
   remainingAfterDeletion,
   removeSnapshotRecord,
+  type ServerApiInput,
   savePlan,
   snapshotKeptNote,
 } from "./deletion";
@@ -86,6 +98,7 @@ import {
   forgetExtraCloudServers,
   removeExtraOwnServers,
   reopenPublicSsh,
+  type ServerSnapshot,
   serverLines,
   serverSnapshots,
   snapshotServers,
@@ -108,7 +121,13 @@ import {
   failIfBucketListed,
   planBucketDeletion,
 } from "./storage";
-import { type DestroyTexts, destroyConfirmPrompt, destroyTexts } from "./texts";
+import {
+  cancelTerm,
+  type DestroyTexts,
+  destroyConfirmPrompt,
+  destroyTexts,
+  snapshotsOutlive,
+} from "./texts";
 import type { DestroyOptions, DestroyResult } from "./types";
 
 /**
@@ -130,6 +149,12 @@ interface DestroyContext {
   unregisterRunner?: () => Promise<void>;
   /** With extra servers, a line per server (`serverLines`) in the destroy plan's approval. */
   servers?: readonly string[];
+  /**
+   * The app's servers (the extra ones too) whose provider cancels them at the end of their term
+   * instead of deleting them (`cancelledServers`): each is shut down after the destroy plan's
+   * approval and before its apply, through its provider's API (`input`).
+   */
+  cancel?: { servers: readonly ServerSnapshot[]; input: ServerApiInput };
 }
 
 /**
@@ -170,6 +195,8 @@ async function destroyInfrastructure(
   approval?: ApprovalRecord;
   /** The approval of the tunnel-only plan, when Cloudflare refused the tunnel at first. */
   tunnelApproval?: ApprovalRecord;
+  /** The servers cancelled: when each one's contract ends, or that it is not known. */
+  cancelled?: string[];
 }> {
   const { session, plan, texts } = ctx;
   const { deps } = session;
@@ -219,6 +246,13 @@ async function destroyInfrastructure(
               },
     );
     const serverDeleted = deletesServer(summary.changes, session.provider);
+    // The servers whose deletion is their provider's cancel: each is shut down first (after the
+    // approval).
+    const inPlan = cancelledIn(ctx.cancel?.servers ?? [], summary.changes);
+    const cancel =
+      ctx.cancel !== undefined && inPlan.length > 0
+        ? { servers: inPlan, input: ctx.cancel.input, text: cancelledText(inPlan, name) }
+        : undefined;
     const warning = dataWarning(plan, serverDeleted);
     const unrecoverable =
       cloudTarget(plan.target).backups && texts.keptBackups
@@ -227,20 +261,38 @@ async function destroyInfrastructure(
     const snapshotLine =
       snapshotId !== undefined
         ? `Snapshot: ${texts.snapshotRef(snapshotId)} keeps a copy of the ${texts.noun} (${texts.snapshotBilled}; OpsCrew never deletes it).`
-        : serverDeleted
-          ? `Snapshot: none. ${unrecoverable}`
-          : "Snapshot: none.";
+        : serverDeleted && isCloudProvider(session.provider) && !snapshotsOutlive(session.provider)
+          ? `Snapshot: none; ${texts.company} snapshots go with the ${texts.noun}.`
+          : serverDeleted
+            ? `Snapshot: none. ${unrecoverable}`
+            : "Snapshot: none.";
     const providers =
       plan.dns.provider === "cloudflare"
         ? `${texts.displayName} and Cloudflare`
         : texts.displayName;
     const count = summary.changes.length;
+    // After the apply: when the cancelled server's contract ends, as the provider answers it.
+    const done = async (): Promise<string[] | undefined> => {
+      if (cancel === undefined) {
+        deps.reporter.success(`Deleted ${plural(count, "resource")}.`);
+        return undefined;
+      }
+      deps.reporter.success(`Applied the teardown plan (${plural(count, "resource")}).`);
+      const lines = await cancelDates(session, cancel.servers, cancel.input);
+      for (const line of lines) deps.reporter.info(line);
+      return lines;
+    };
     const approval = await deps.approvals.request({
       kind: "iac-apply",
-      title: `Delete ${name} on ${providers} (${plural(count, "resource")} to delete)`,
+      title: cancel
+        ? `Delete ${name} on ${providers} and cancel ${cancel.text} (${plural(count, "resource")} in the plan)`
+        : `Delete ${name} on ${providers} (${plural(count, "resource")} to delete)`,
       details: [
         planHeading(summary, "destroy plan"),
         ...describeChanges(summary.changes),
+        ...(cancel
+          ? [...shutdownLines(cancel.servers, name), ...cancelNotes(cancel.servers, name)]
+          : []),
         ...(ctx.servers ?? []),
         ...(warning ? [warning] : []),
         snapshotLine,
@@ -271,6 +323,7 @@ async function destroyInfrastructure(
     await deps.approvals.assertApprovedPlan(summary.planHash, { allowDestroy: true });
     // The server's runner goes with the server, so GitHub forgets it first.
     if (serverDeleted) await ctx.unregisterRunner?.();
+    if (cancel) await shutDown(session, cancel.servers, cancel.input);
     // Portainer's subdomain: its tunnel connector runs on the server. Deleted with the server, its
     // connections may outlast it and Cloudflare refuses the tunnel (1022); then this run waits
     // until Cloudflare reports no active connections and deletes the tunnel with a plan of its own
@@ -284,13 +337,21 @@ async function destroyInfrastructure(
         ...(ctx.sleep !== undefined ? { options: { sleep: ctx.sleep } } : {}),
       });
     }
-    deps.reporter.step("Deleting the infrastructure (this usually takes a minute or two)");
+    deps.reporter.step(
+      cancel
+        ? `Cancelling ${cancel.text} and deleting the rest (this usually takes a minute or two)`
+        : "Deleting the infrastructure (this usually takes a minute or two)",
+    );
     const engine = tunnelSafeEngine(session.engine);
     try {
       await applyApprovedPlan(tunnel ? { ...session, engine } : session, summary, {
         allowDestroy: true,
-        what: "deleting the infrastructure",
-        hint: CONTINUES_WITH_LEFT,
+        what: cancel
+          ? `cancelling ${cancel.text} and deleting the rest`
+          : "deleting the infrastructure",
+        hint: cancel
+          ? cancelFailedHint(cancel.servers, name, session.command)
+          : CONTINUES_WITH_LEFT,
       });
     } catch (error) {
       if (!engine.refusedBusyTunnel || !(error instanceof OpsCrewError)) throw error;
@@ -303,11 +364,12 @@ async function destroyInfrastructure(
           confirmed: confirmed.addresses,
           snapshotId,
         });
-        deps.reporter.success(`Deleted ${plural(count, "resource")}.`);
+        const cancelled = await done();
         return {
           destroyed: summary.changes,
           approval,
           ...(tunnelApproval !== undefined ? { tunnelApproval } : {}),
+          ...(cancelled !== undefined ? { cancelled } : {}),
         };
       }
       if (engine.onlyBusyTunnel) {
@@ -324,8 +386,12 @@ async function destroyInfrastructure(
         cause: error,
       });
     }
-    deps.reporter.success(`Deleted ${plural(count, "resource")}.`);
-    return { destroyed: summary.changes, approval };
+    const cancelled = await done();
+    return {
+      destroyed: summary.changes,
+      approval,
+      ...(cancelled !== undefined ? { cancelled } : {}),
+    };
   } finally {
     await discardPlan(summary);
   }
@@ -571,7 +637,8 @@ async function destroyDeployment(
   // The server's runner: its registration is deleted through GitHub's API before the server, so
   // a missing token, or a runner GitHub would not delete because it runs a job, stops here, before
   // anything changes.
-  const command = `opscrew destroy${(await planWhere(deps.paths.root, plan)).flag}`;
+  const { flag } = await planWhere(deps.paths.root, plan);
+  const command = `opscrew destroy${flag}`;
   const runnerRepo =
     plan.environment?.runner === "server"
       ? await runnerRepository(deps, services.runnerGitHub)
@@ -655,6 +722,9 @@ async function destroyDeployment(
   const { serverIds } = preview;
   const snapshots = serverSnapshots(plan, preview, options.snapshot);
   const serverInState = snapshots.some((s) => s.server === APP_SERVER && s.inState);
+  // The servers whose provider cancels them at the end of their term instead of deleting them.
+  const cancelling = cancelledServers(snapshots);
+  if (cancelling.length > 0) ctx.cancel = { servers: cancelling, input: services };
   if (preview.changes.length > 0) {
     deps.reporter.info(
       ["The teardown deletes these resources:", ...describeChanges(preview.changes)].join("\n"),
@@ -683,12 +753,28 @@ async function destroyDeployment(
       `A snapshot of server ${snapshot.server} (${snapshot.name}) is taken first too (${extra.snapshotBilling}; \`--no-snapshot\` skips it).`,
     );
   }
-  if (serverInState && !profile.deleteProtection) {
+  if (cancelling.length > 0) {
+    // Said before the prompt: the servers stay billed to the end of their term.
+    deps.reporter.warn(cancelNotes(cancelling, name).join("\n"));
+  }
+  if (serverInState && !profile.deleteProtection && cancelTerm(provider) === undefined) {
     // Said before the prompt: nothing else stands between the typed name and the deletion.
     deps.reporter.warn(
       `${profile.displayName} has no delete protection for ${texts.noun}s, so the only safeguard is OpsCrew's own confirmation: once you confirm with the name ${name}, the ${texts.noun} is deleted as soon as the destroy plan is applied.`,
     );
   }
+  // Where a provider's snapshots go with its server, OpsCrew's own data snapshot is offered instead.
+  const unkept = snapshots.filter((s) => s.inState && !snapshotsOutlive(s.provider));
+  if (options.snapshot === true) {
+    for (const cloud of new Set(unkept.map((s) => s.provider))) {
+      const { company, noun } = destroyTexts(cloud);
+      deps.reporter.info(
+        `No ${company} snapshot: ${company} deletes a ${noun}'s snapshots with the ${noun}, so one would not keep its data.`,
+      );
+    }
+  }
+  const withData = unkept.filter((s) => s.data.serverData);
+  if (withData.length > 0) deps.reporter.info(dataSnapshotOffer(plan, withData, flag));
   for (const note of checkPauseNote(plan)) deps.reporter.info(note);
   const confirmation = {
     name,
@@ -783,7 +869,7 @@ async function destroyDeployment(
   } finally {
     if (bucket !== undefined) await discardBucketDeletion(bucket);
   }
-  const { destroyed, approval: destroyApproval, tunnelApproval } = deleted;
+  const { destroyed, approval: destroyApproval, tunnelApproval, cancelled } = deleted;
   const snapshotId = snapshotIds[APP_SERVER];
 
   // 7c. This app's hostnames leave OpsCrew's shared Cloudflare rules (`cloudflare-apply`)
@@ -839,6 +925,8 @@ async function destroyDeployment(
   // The extra servers' snapshots and kept backups, each by its name at the provider.
   remaining.push(...extraServersRemaining(plan, snapshotIds));
   remaining.push(...bucketStillListed(bucketDeleted));
+  // The cancelled servers, billed until their contracts end.
+  remaining.unshift(...(cancelled ?? []));
   deps.reporter.info(["What remains:", ...remaining.map((item) => `  - ${item}`)].join("\n"));
   failIfBucketListed(bucketDeleted);
   return {

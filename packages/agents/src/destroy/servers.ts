@@ -54,7 +54,7 @@ import {
   snapshotWanted,
   takeSnapshotBeforeDelete,
 } from "./deletion";
-import { destroyTexts } from "./texts";
+import { cancelTerm, destroyTexts, goneAtTermEnd, snapshotsOutlive } from "./texts";
 import type { DestroyOptions, DestroyPreview, DestroyServices } from "./types";
 
 /** The names of the plan's extra servers the user owns, in plan order. */
@@ -99,6 +99,16 @@ export function extraServersRemaining(
   );
 }
 
+/**
+ * What happens to a server at `provider`: deleted, or cancelled where the provider cancels it at
+ * the end of its term (`cancelTerm`).
+ */
+function goes(provider: string): string {
+  return cancelTerm(provider) === undefined
+    ? "is deleted"
+    : "is cancelled, billed to the end of its term";
+}
+
 /** ` with the PostgreSQL database on it`: the data of the services on `server`, or nothing. */
 function dataOn(plan: DeployPlan, server: string): string {
   const data = serverData({ services: servicesOn(plan, server), storage: undefined });
@@ -112,12 +122,17 @@ export interface ServerSnapshot {
   provider: CloudProvider;
   /** An extra server's name at the provider (`<app>-<name>`); none for the app's server. */
   name?: string;
+  /** Its module's address prefix, for example `module.server.`. */
+  module: string;
   /** The preview deletes it, and its ids as the state records them. */
   inState: boolean;
   ids: string[];
   /** What lives only on it: its services' data, and the provider's backups. */
   data: { serverData: boolean; backups: boolean };
-  /** A snapshot is taken first (`--snapshot`, or `auto` with data on it; never `--no-snapshot`). */
+  /**
+   * A snapshot is taken first (`--snapshot`, or `auto` with data on it; never `--no-snapshot`, and
+   * never where the provider's snapshots go with the server).
+   */
   wanted: boolean;
 }
 
@@ -151,7 +166,8 @@ export function serverSnapshots(
     backups: server.backups,
     storage: undefined,
   }));
-  return [...app, ...extras].map(({ module, backups, storage, ...server }) => {
+  return [...app, ...extras].map(({ backups, storage, ...server }) => {
+    const { module } = server;
     const changes = preview.changes.filter((change) => change.address.startsWith(module));
     const inState = deletesServer(changes, server.provider);
     const data = {
@@ -163,7 +179,7 @@ export function serverSnapshots(
       inState,
       ids: serverIdsInPlan(preview.planJson, server.provider, module),
       data,
-      wanted: inState && snapshotWanted(choice, data),
+      wanted: inState && snapshotsOutlive(server.provider) && snapshotWanted(choice, data),
     };
   });
 }
@@ -179,7 +195,8 @@ export async function snapshotServers(
   input: Pick<SnapshotBeforeDeleteInput, "choice" | "servers" | "sleep" | "now">,
 ): Promise<Record<string, string | undefined>> {
   const ids: Record<string, string | undefined> = {};
-  for (const snapshot of snapshots) {
+  // Where the provider's snapshots go with the server, none is taken (`serverSnapshots`).
+  for (const snapshot of snapshots.filter((s) => snapshotsOutlive(s.provider))) {
     ids[snapshot.server] = await takeSnapshotBeforeDelete(
       { ...session, provider: snapshot.provider },
       {
@@ -210,7 +227,7 @@ export function serverLines(plan: DeployPlan, snapshots: readonly ServerSnapshot
   const appLine =
     appTexts === undefined
       ? `Server ${APP_SERVER}: the app, its private network and OpsCrew's records of them are removed; your server stays.`
-      : `Server ${APP_SERVER}: the ${appTexts.displayName} ${appTexts.noun} ${plan.app.name} is deleted${dataOn(plan, APP_SERVER)}; ${snapshot(APP_SERVER)}.`;
+      : `Server ${APP_SERVER}: the ${appTexts.displayName} ${appTexts.noun} ${plan.app.name} ${goes(app)}${dataOn(plan, APP_SERVER)}; ${snapshot(APP_SERVER)}.`;
   const cloud = new Map(extraCloudServers(plan).map((server) => [server.name, server]));
   return [
     appLine,
@@ -220,7 +237,7 @@ export function serverLines(plan: DeployPlan, snapshots: readonly ServerSnapshot
         return `Server ${name}: OpsCrew's services, the private network and OpsCrew's setup are removed; your server stays.`;
       }
       const texts = destroyTexts(server.provider);
-      return `Server ${name}: the ${texts.displayName} ${texts.noun} ${server.resource} is deleted${dataOn(plan, name)}; ${snapshot(name)}.`;
+      return `Server ${name}: the ${texts.displayName} ${texts.noun} ${server.resource} ${goes(server.provider)}${dataOn(plan, name)}; ${snapshot(name)}.`;
     }),
   ];
 }
@@ -246,7 +263,10 @@ export async function confirmExtraServers(
         ...preview,
         name: server.resource,
         server: server.name,
-        confirmPrompt: `Type ${server.resource} to delete server ${server.name} (the ${texts.displayName} ${texts.noun} ${server.resource}) and everything on it (anything else cancels)`,
+        confirmPrompt:
+          cancelTerm(server.provider) === undefined
+            ? `Type ${server.resource} to delete server ${server.name} (the ${texts.displayName} ${texts.noun} ${server.resource}) and everything on it (anything else cancels)`
+            : `Type ${server.resource} to cancel server ${server.name} (the ${texts.displayName} ${texts.noun} ${server.resource}, billed until the end of its term) and everything on it; ${goneAtTermEnd(server.provider)} (anything else stops with nothing changed)`,
       },
       confirm,
     );
