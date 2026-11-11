@@ -210,13 +210,14 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Effort: high
 
 - [ ] T2626 [US4] Advise compares providers on the same basis
-  - Owns: `packages/agents/src/advise/**`
+  - Owns: `packages/agents/src/advise/**`, `docs/guide/advise.md`
   - Reads: T2616's report and review; `packages/agents/src/design/cost.ts` (`offerTerms`, `pricedOffer`)
   - Depends: T2616
   - Accept:
     - advise's move to another provider compares prices on the same VAT basis (both with or both without, as the user's currency shows elsewhere), with or without the provider's backups alike, and names each side's price date.
     - A proposal to move to a provider with terms states the trade-offs plainly: the one-time setup fee, the minimum term and that a removal ends only at the end of it, no size change in place, no automatic backups from the provider (OpsCrew's data snapshots instead).
-    - It is proposed only when the saving is real on that basis; a Hetzner app no longer gets a move to Contabo by an unequal comparison.
+    - It is proposed only when the saving is real on that basis, at least 10% of the current monthly price, and covers any setup fee within 3 months (lead, 2026-11-12); a Hetzner app no longer gets a move to Contabo by an unequal comparison. `overBudget` labels VAT the same way.
+    - `docs/guide/advise.md` says so.
     - Hetzner's and DigitalOcean's proposals to each other are unchanged; one run-level test still yields no proposal for a healthy app (T2616's review N3).
     - T2616's review lists the eight unequal points (VAT, backups, setup fee, terms, price dates, included extras, "the same server", currency): each is either made equal or said plainly.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm lint`
