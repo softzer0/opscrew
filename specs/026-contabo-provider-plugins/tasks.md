@@ -161,7 +161,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
 ## Phase 5: Contabo
 
 - [ ] T2613 The spike (lead)
-  - Accept: once the founder's account exists, free calls only: a token and its lifetime; the images (Ubuntu 24.04's name and id); the data centers; the product ids of Cloud VPS 4, 6, 8 and 12; a `contabo_firewall` and a `contabo_secret` created and deleted alone through the engine; the setup fee from the founder's checkout; and T2614's open points: the error body's shape, the snapshot-limit refusal, whether a snapshot is usable as soon as the create answers, the statuses a revert goes through, that `opscrew-app:<app>` is an accepted tag name and an instance assignment's `resourceType`, the cancel date's value before a cancel, regional prices and which VAT the prices include. And T2615's: **first, the firewall's rule semantics** (does an empty IPv4 or IPv6 source list mean nobody or anybody; outbound traffic; a rule with no ports), since SSH limited to IPv4 networks must not be open over IPv6; Ubuntu 24.04's image id (the definition's `defaultImage` is a placeholder until then); the `unavailable` and `serverLimit` error texts; whether `period` or `default_user` read back differently (drift, provider issue #45); that `contabo_instance` imports by its instance id (the takeover's `import` block, T2612). Recorded as research R6, and fixed in the connector and the definition where they differ.
+  - Accept: once the founder's account exists, free calls only: a token and its lifetime; the images (Ubuntu 24.04's name and id); the data centers; the product ids of Cloud VPS 4, 6, 8 and 12; a `contabo_firewall` and a `contabo_secret` created and deleted alone through the engine; the setup fee from the founder's checkout; and T2614's open points: the error body's shape, the snapshot-limit refusal, whether a snapshot is usable as soon as the create answers, the statuses a revert goes through, that `opscrew-app:<app>` is an accepted tag name and an instance assignment's `resourceType`, the cancel date's value before a cancel, regional prices and which VAT the prices include. And T2615's: **first, the firewall's rule semantics** (does an empty IPv4 or IPv6 source list mean nobody or anybody; outbound traffic; a rule with no ports), since SSH limited to IPv4 networks must not be open over IPv6; Ubuntu 24.04's image id (the definition's `defaultImage` is a placeholder until then); the `unavailable` and `serverLimit` error texts; whether `period` or `default_user` read back differently (drift, provider issue #45); that `contabo_instance` imports by its instance id (the takeover's `import` block, T2612); and for the live test's cleanup (T2619): the field names of firewalls and secrets (`firewallId`, `status`, `instances[].instanceId`, `secretId`, `type`, `value`), the cancel endpoint `POST /v1/compute/instances/{id}/cancel`, and the `name` filter on `/v1/firewalls`, `/v1/secrets` and `/v1/tags`. Recorded as research R6, and fixed in the connector and the definition where they differ.
   - Effort: lead
 
 - [x] T2614 [US1] Contabo's client and connector
@@ -234,6 +234,15 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
     - The runbook's "Server size: run `opscrew design`" bullet, for a provider with `offering.resize: false`, names the two ways design names (T2611's `resizeWaysText`), or points to them.
     - Hetzner and DigitalOcean unchanged.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/iac-templates && pnpm lint`
+  - Effort: medium
+
+- [ ] T2628 [US1] Design prints the chosen option's terms in a script
+  - Owns: `packages/agents/src/design/run.ts` (+ tests)
+  - Depends: T2611
+  - Accept:
+    - Without a terminal (`--option`, answers file), `opscrew design` prints the chosen option's terms as the interactive chooser shows them: the one-time setup fee, the minimum term and that a removal ends at the end of it, "included, up to N" snapshots, and that the provider offers no automatic backups (T2611's `offerTerms` and `noProviderBackupsText`), for a provider with such terms.
+    - Hetzner's and DigitalOcean's script output is unchanged.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm lint`
   - Effort: medium
 
 ## Phase 6: Wave 5 (parallel)
