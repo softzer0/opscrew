@@ -88,7 +88,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm lint`
   - Effort: xhigh
 
-- [ ] T2607 [P] [US3] agents: everything else that reads provider facts
+- [x] T2607 [P] [US3] agents: everything else that reads provider facts
   - Owns: `packages/agents/src/{retarget,provision,destroy,advise,rotate,snapshot,secure,environments,drift,verify,status,serverless,runners,monitoring,logs,localhost}/**`
   - Reads: plan 3
   - Depends: T2602, T2603, T2604
@@ -186,7 +186,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Effort: high
 
 - [ ] T2616 Contabo joins the ids and the registry (lead)
-  - Accept: `contabo` in `ProviderId`, `VpsProviderId`, plan-schema's provider enums and generated schemas, and `CLOUD_PROVIDERS`; `pnpm check` green, any exhaustive switch left over fixed; every message that still names the cloud providers in its text is built from the registry with `orText`/`listText` (T2606's list: `providers/profiles.ts`' two hints, `vpsConnector`'s default hint, `design/servers.ts`, `design/own-servers.ts`, `shared/server-record.ts`, and any other a grep for `Hetzner Cloud or DigitalOcean` and `hetzner, digitalocean` finds).
+  - Accept: `contabo` in `ProviderId`, `VpsProviderId`, plan-schema's provider enums and generated schemas, and `CLOUD_PROVIDERS`; `pnpm check` green, any exhaustive switch left over fixed; every message that still names the cloud providers in its text is built from the registry with `orText`/`listText` (T2606's list: `providers/profiles.ts`' two hints, `vpsConnector`'s default hint, `design/servers.ts`, `design/own-servers.ts`, `shared/server-record.ts`, and any other a grep for `Hetzner Cloud or DigitalOcean` and `hetzner, digitalocean` finds); `runners/cloud.ts`' "the other provider" names the others (`orText`) once there are three.
   - Effort: lead
 
 ## Phase 6: Wave 5 (parallel)
@@ -217,6 +217,6 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
 ## Phase 7: Live, simplify, release (lead)
 
 - [ ] T2620 The live pass on one Cloud VPS 4 (lead; the founder is asked before any rerun that needs another server), recorded on `docs/e2e-coverage.md`.
-- [ ] T2621 Simplify pass over the feature's changes (lead). Noted so far: secops's `PlannedResource` becomes the contract's `PlannedResourceJson`; the definitions' copied module-argument helpers; `profiles.ts`' second parse of the region keys and of `DEFAULT_CLOUD_PROVIDER`; the two agents grep tests become one; agents (`provision/servers.ts`, `rotate/infra.ts`) read the shared resources' addresses with iac-templates' `sharedResources` instead of their own parse of `extraShared`.
+- [ ] T2621 Simplify pass over the feature's changes (lead). Noted so far: secops's `PlannedResource` becomes the contract's `PlannedResourceJson`; the definitions' copied module-argument helpers; `profiles.ts`' second parse of the region keys and of `DEFAULT_CLOUD_PROVIDER`; the two agents grep tests become one; agents (`provision/servers.ts`, `rotate/infra.ts`) read the shared resources' addresses with iac-templates' `sharedResources` instead of their own parse of `extraShared`; `provision/servers.ts`' lift of delete protection fails closed if more than one provider has it (T2607 review N1); the defensive fallbacks T2607's review listed (S2).
 - [ ] T2622 The constitution's provider order (Contabo with the hosting providers, a MINOR bump) and `CLAUDE.md`'s package list (lead).
 - [ ] T2623 The release, following `docs/releasing.md` (lead).
