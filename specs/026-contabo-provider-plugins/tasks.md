@@ -147,7 +147,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew && pnpm lint`
   - Effort: high
 
-- [ ] T2612 [P] [US1] Taking over a lost server, and credentials as a set
+- [x] T2612 [P] [US1] Taking over a lost server, and credentials as a set
   - Owns: `packages/agents/src/{provision,init,rotate,providers}/**`, `packages/iac-templates/src/infra/**`
   - Reads: plan 4.3, 4.4
   - Depends: T2605, T2606, T2607
