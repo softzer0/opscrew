@@ -110,6 +110,7 @@ const terraform = z.object({
   serverResourceType: z.string(),
   firewallResourceType: z.string(),
   mirroredAttributes: z.record(z.string(), lines),
+  lifecycleIgnored: lines,
   module: z.object({ name: z.string(), files: moduleFiles }),
   credentialsComment: z.string(),
   deleteProtectionVariable: z.boolean(),

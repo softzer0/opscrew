@@ -122,6 +122,7 @@ export const definition: CloudProviderDefinition = {
     serverResourceType: "hcloud_server",
     firewallResourceType: "hcloud_firewall",
     mirroredAttributes: { hcloud_firewall: ["apply_to"] },
+    lifecycleIgnored: ["image", "ssh_keys", "user_data"],
     module: { name: "hetzner-vps", files: MODULE_FILES },
     credentialsComment:
       "Token from the HCLOUD_TOKEN environment variable (never stored in files or state).",

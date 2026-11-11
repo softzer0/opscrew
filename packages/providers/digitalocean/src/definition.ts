@@ -124,6 +124,7 @@ export const definition: CloudProviderDefinition = {
     serverResourceType: "digitalocean_droplet",
     firewallResourceType: "digitalocean_firewall",
     mirroredAttributes: {},
+    lifecycleIgnored: ["image", "ssh_keys", "user_data"],
     module: { name: "digitalocean-droplet", files: MODULE_FILES },
     credentialsComment:
       "Token from the DIGITALOCEAN_TOKEN environment variable (never stored in files or state).",

@@ -157,6 +157,12 @@ export interface ProviderTerraform {
    */
   mirroredAttributes: Readonly<Record<string, readonly string[]>>;
   /**
+   * The server's attributes its module's `lifecycle.ignore_changes` lists, because changing them
+   * would rebuild or reinstall the server (and attributes the provider never reads back); drift
+   * doesn't report them.
+   */
+  lifecycleIgnored: readonly string[];
+  /**
    * The vendored server module: its folder name and files (path within the folder → content),
    * without `cloud-init.yaml.tftpl`, which OpsCrew adds to every server module.
    */

@@ -84,7 +84,7 @@ export async function providerReadOnlyAttributes(
 export const LIFECYCLE_IGNORED: AttributesByType = Object.fromEntries(
   CLOUD_PROVIDERS.map(({ terraform }) => [
     terraform.serverResourceType,
-    ["image", "ssh_keys", "user_data"],
+    [...terraform.lifecycleIgnored],
   ]),
 );
 
