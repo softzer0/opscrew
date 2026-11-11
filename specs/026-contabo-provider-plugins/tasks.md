@@ -188,6 +188,16 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Accept: `contabo` in `ProviderId`, `VpsProviderId`, plan-schema's provider enums and generated schemas, and `CLOUD_PROVIDERS`; `pnpm check` green, any exhaustive switch left over fixed; every message that still names the cloud providers in its text is built from the registry with `orText`/`listText` (T2606's list: `providers/profiles.ts`' two hints, `vpsConnector`'s default hint, `design/servers.ts`, `design/own-servers.ts`, `shared/server-record.ts`, and any other a grep for `Hetzner Cloud or DigitalOcean` and `hetzner, digitalocean` finds); `runners/cloud.ts`' "the other provider" names the others (`orText`) once there are three.
   - Effort: lead
 
+- [ ] T2624 [US2] [US4] A move off a provider that cancels
+  - Owns: `packages/agents/src/retarget/**`, `packages/cli/src/commands/retarget*.ts`
+  - Reads: plan 4.1; T2610's `packages/agents/src/destroy/cancel.ts`
+  - Depends: T2610, T2611
+  - Accept:
+    - `opscrew retarget --finish` that removes the old server at a `cancel-at-term-end` provider says, before its approval, that the old server is cancelled and billed to the end of its term; shuts it down after approval and before the apply (audited); reads its end date back and shows and audits it, as destroy does (reuse T2610's code through `../destroy`, no copy).
+    - Hetzner and DigitalOcean moves unchanged.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew && pnpm lint`
+  - Effort: high
+
 ## Phase 6: Wave 5 (parallel)
 
 - [ ] T2617 [P] [US6] The guide
