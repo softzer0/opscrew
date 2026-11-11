@@ -39,7 +39,9 @@ function serversText(noun: string, names: readonly string[]): string {
 }
 
 /** `servers` grouped by provider, in order of first appearance. */
-function byProvider<S extends CancelledServer>(servers: readonly S[]): [CloudProvider, S[]][] {
+export function byProvider<S extends CancelledServer>(
+  servers: readonly S[],
+): [CloudProvider, S[]][] {
   const groups = new Map<CloudProvider, S[]>();
   for (const server of servers) {
     groups.set(server.provider, [...(groups.get(server.provider) ?? []), server]);
@@ -284,12 +286,13 @@ export async function cancelDates(
 /**
  * The hint when the destroy plan's apply fails with cancelled `servers` in it: a provider may have
  * refused the cancel (Contabo refuses one for a server not created through its API), whose reason
- * the log above shows. The servers were shut down before the apply.
+ * the log above shows. The servers were shut down before the apply. Without `command` it leaves out
+ * what to do otherwise, for a caller whose own hint says it (provision's).
  */
 export function cancelFailedHint(
   servers: readonly CancelledServer[],
   app: string,
-  command: string,
+  command?: string,
 ): string {
   const groups = byProvider(servers).map(([provider, group]) => ({
     texts: destroyTexts(provider),
@@ -305,7 +308,11 @@ export function cancelFailedHint(
   );
   return [
     ...refused,
-    `Otherwise fix the cause shown above and run \`${command}\` again; it continues with what is left.`,
+    ...(command !== undefined
+      ? [
+          `Otherwise fix the cause shown above and run \`${command}\` again; it continues with what is left.`,
+        ]
+      : []),
     ...off,
   ].join(" ");
 }

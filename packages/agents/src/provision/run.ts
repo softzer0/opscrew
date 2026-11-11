@@ -113,6 +113,13 @@ import { extraCloudProviders } from "../shared/servers";
 import { connectorFirst, type HostChangeResult, tunnelChange } from "../shared/tunnel-connections";
 import { deployShell } from "../status/certificates";
 import { checkAdditions } from "./additions";
+import {
+  cancelApprovalNotes,
+  cancelFailedNote,
+  cancelledByPlan,
+  showCancelDates,
+  shutDownCancelled,
+} from "./cancel";
 import { checkProvider, setupCloudflare, setupGitHub } from "./credentials";
 import { deploySetupDependabot } from "./dependabot";
 import { requireNoSmallerDisk } from "./disk-guard";
@@ -1106,6 +1113,8 @@ async function provisionFlow(
         ...(services.sleep !== undefined ? { sleep: services.sleep } : {}),
         ...(approvalNotes.length > 0 ? { notes: approvalNotes } : {}),
       });
+  // A server the plan removes at a provider that cancels it at the end of its term.
+  const cancel = { deps, plan, services, command, phase };
   let applied: Awaited<ReturnType<typeof planAndApply>>;
   try {
     applied = await planAndApply(deps, {
@@ -1121,15 +1130,24 @@ async function provisionFlow(
       // A saved plan's servers taken over are named from its imports (it is not planned again).
       approvalNotes: (saved) => [
         ...first.hooks.approvalNotes(saved),
-        ...removalNotes(plan, saved),
+        ...removalNotes(
+          plan,
+          saved,
+          cancelledByPlan(plan, saved).map((s) => s.server),
+        ),
+        ...cancelApprovalNotes(plan, saved),
         ...(approveHash === undefined ? lost.notes : takeoverNotes(plan, saved)),
       ],
       // The marker of an apply under way, with the servers it creates: one that stops leaves it,
-      // for the next run's takeover.
+      // for the next run's takeover. A server the plan cancels is shut down first.
       beforeApply: async (saved) => {
         await first.hooks.beforeApply(saved);
+        await shutDownCancelled(cancel, saved);
         await markApplyStarted(deps, plan, saved);
       },
+      // A server the plan cancels stays billed until its term ends: no cost change is claimed.
+      withoutCostDelta: (saved) => cancelledByPlan(plan, saved).length > 0,
+      failedNote: (saved) => cancelFailedNote(plan, saved),
       confirmPhrase: (saved) => removalConfirmPhrase(plan, saved),
       ...(approveHash !== undefined ? { approvePlanHash: approveHash } : {}),
       ...(options.planOnly ? { planOnly: true } : {}),
@@ -1142,6 +1160,8 @@ async function provisionFlow(
   }
   // Applied, or nothing left to apply: no apply of this environment stopped halfway any more.
   if (options.planOnly !== true) await clearApplyMarker(deps);
+  // The servers the apply cancelled: when each one's contract ends, shown and audited.
+  if (applied.applied && applied.plan !== undefined) await showCancelDates(cancel, applied.plan);
   // After an apply that imported servers the state holds them, so the root's main.tf goes back to
   // what OpsCrew renders without the imports (a plan from it changes nothing; drift compares the
   // files with that render) before anything below commits it.

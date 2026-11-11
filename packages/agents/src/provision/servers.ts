@@ -164,7 +164,7 @@ const SHARED_EXTRA: ReadonlySet<string> = new Set(
 );
 
 /** The extra server whose module holds the resource at `address`: `module.server_<name>.…`. */
-function extraServerOf(address: string): string | undefined {
+export function extraServerOf(address: string): string | undefined {
   return /^module\.server_([a-z][a-z0-9-]*)\./.exec(address)?.[1];
 }
 
@@ -209,11 +209,20 @@ export function removalConfirmPhrase(plan: DeployPlan, saved: Pick<SavedPlan, "c
   );
 }
 
-/** The approval's notes for an infrastructure plan that deletes extra servers the plan dropped. */
-export function removalNotes(plan: DeployPlan, saved: Pick<SavedPlan, "changes">): string[] {
-  return deletions(plan, saved).removed.map(
-    (server) =>
-      `Server ${server} is no longer in servers in opscrew/plan.yaml, so this plan deletes it (${cloudServerName(plan, server)}) with everything on it.`,
+/**
+ * The approval's notes for an infrastructure plan that deletes extra servers the plan dropped; one
+ * whose provider cancels it at the end of its term (`cancelled`, by name) is cancelled instead, as
+ * the plan's cancel notes say.
+ */
+export function removalNotes(
+  plan: DeployPlan,
+  saved: Pick<SavedPlan, "changes">,
+  cancelled: readonly string[] = [],
+): string[] {
+  return deletions(plan, saved).removed.map((server) =>
+    cancelled.includes(server)
+      ? `Server ${server} is no longer in servers in opscrew/plan.yaml, so this plan cancels it (${cloudServerName(plan, server)}).`
+      : `Server ${server} is no longer in servers in opscrew/plan.yaml, so this plan deletes it (${cloudServerName(plan, server)}) with everything on it.`,
   );
 }
 

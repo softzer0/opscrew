@@ -94,6 +94,17 @@ export interface PlanAndApplyOptions {
    */
   costDelta?: Money | null;
   /**
+   * True for a plan whose approval claims no monthly cost change, while its summary still quotes the
+   * cost: a server it cancels at the end of its term stays billed until then, so nothing is saved
+   * before.
+   */
+  withoutCostDelta?: (plan: SavedPlan) => boolean;
+  /**
+   * Added after the hint of a failed apply of `plan` (a server the plan cancels may have been
+   * refused, and is shut down already); none for most plans.
+   */
+  failedNote?: (plan: SavedPlan) => string | undefined;
+  /**
    * The monthly price of what this plan creates alone (a bucket root's), with where it comes
    * from: the summary and the approval show it instead of the deployment's monthly cost.
    */
@@ -734,7 +745,7 @@ export async function planAndApply(
     title,
     details: notes.length > 0 ? `${details}\n\n${notes.join("\n")}` : details,
     planHash: saved.planHash,
-    ...(costDelta !== null ? { costDelta } : {}),
+    ...(costDelta !== null && options.withoutCostDelta?.(saved) !== true ? { costDelta } : {}),
     policy: saved.policy,
     ...(confirmPhrase !== undefined ? { allowDestroy: true, confirmPhrase } : {}),
   });
@@ -775,7 +786,9 @@ export async function planAndApply(
     const fullLog = deps.redactor.redact(result.log);
     options.applyFailed?.(fullLog, saved);
     throw new OpsCrewError("ENGINE_FAILED", `Applying the plan failed:\n${lastLines(fullLog)}`, {
-      hint: applyFailureHint(deps, fullLog, options, command),
+      hint: [applyFailureHint(deps, fullLog, options, command), options.failedNote?.(saved)]
+        .filter((part) => part !== undefined)
+        .join(" "),
     });
   }
   // Its sidecar records the apply, so a script that names the hash again plans afresh.
