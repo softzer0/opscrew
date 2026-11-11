@@ -139,7 +139,8 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Accept:
     - Design, cost and advise add an offer's `setupFee` once (shown as one-time), state the minimum term for `cancel-at-term-end`, and price snapshots as "included, up to N" when `snapshotsIncluded`.
     - `design/storage.ts`: Garage stays opt-in on every cloud provider (`isCloudProvider`), the default provider is `DEFAULT_CLOUD_PROVIDER`, and the provider's own bucket is offered only where it sells one (the bucket providers, plan 3); `storageRegionAt` likewise.
-    - `resize: false` refuses design's and advise's size changes, naming the move to a new server (retarget) as the way.
+    - `resize: false` refuses design's and advise's size changes, naming two ways: a move to another provider with `opscrew retarget`, or a new server at the same provider through a data snapshot, destroy, provision and restore (with downtime; retarget doesn't move within one provider).
+    - `offering.providerBackups: false`: design never turns on or prices the provider's backups and says OpsCrew's own data snapshots cover the data.
     - `snapshot --server` refuses at `includedSnapshots`, naming the oldest to delete; a restore of a snapshot that is not the newest says first that the provider deletes the newer ones (for `snapshots.kind: "included"`).
     - A whole-server snapshot id may hold one colon (`<instance>:<snapshot>`, Contabo's): `snapshot delete` and `restore --server` accept it; data snapshot ids keep letters and digits only.
     - Tested with a fake definition; Hetzner and DigitalOcean unchanged.

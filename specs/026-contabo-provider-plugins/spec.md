@@ -130,7 +130,9 @@ after.
      ones.
 2. **Moves** (`opscrew retarget`) work to and from Contabo like any other server target. A
    change of plan size on Contabo is refused with the reason (its Terraform provider ignores it)
-   and the move to a new server named as the way.
+   and two ways named: a move to another provider, without downtime, or a new Contabo server of
+   the size wanted through a data snapshot, destroy, provision and restore, with downtime
+   (`retarget` doesn't move within one provider).
 3. **Several servers** (018), **previews on a server** (022), **monitoring** (020),
    **logs**, **rollback** and **data snapshots** (019, 024) work on Contabo servers as on the
    others.
