@@ -77,7 +77,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Verify: `PATH="$PWD/.tools/bin:$PATH" pnpm turbo run typecheck test --filter=@opscrew/iac-templates && pnpm lint`
   - Effort: xhigh
 
-- [ ] T2606 [P] [US3] agents: providers, design, interview, init
+- [x] T2606 [P] [US3] agents: providers, design, interview, init
   - Owns: `packages/agents/src/{providers,design,interview,init,shared,testing}/**`
   - Reads: plan 3
   - Depends: T2602, T2603, T2604
@@ -139,6 +139,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Depends: T2606, T2607, T2609
   - Accept:
     - Design, cost and advise add an offer's `setupFee` once (shown as one-time), state the minimum term for `cancel-at-term-end`, and price snapshots as "included, up to N" when `snapshotsIncluded`.
+    - `design/storage.ts`: Garage stays opt-in on every cloud provider (`isCloudProvider`), the default provider is `DEFAULT_CLOUD_PROVIDER`, and the provider's own bucket is offered only where it sells one (the bucket providers, plan 3); `storageRegionAt` likewise.
     - `resize: false` refuses design's and advise's size changes, naming the move to a new server (retarget) as the way.
     - `snapshot --server` refuses at `includedSnapshots`, naming the oldest to delete; a restore of a snapshot that is not the newest says first that the provider deletes the newer ones (for `snapshots.kind: "included"`).
     - A whole-server snapshot id may hold one colon (`<instance>:<snapshot>`, Contabo's): `snapshot delete` and `restore --server` accept it; data snapshot ids keep letters and digits only.
@@ -216,6 +217,6 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
 ## Phase 7: Live, simplify, release (lead)
 
 - [ ] T2620 The live pass on one Cloud VPS 4 (lead; the founder is asked before any rerun that needs another server), recorded on `docs/e2e-coverage.md`.
-- [ ] T2621 Simplify pass over the feature's changes (lead). Noted so far: secops's `PlannedResource` becomes the contract's `PlannedResourceJson`; the definitions' copied module-argument helpers.
+- [ ] T2621 Simplify pass over the feature's changes (lead). Noted so far: secops's `PlannedResource` becomes the contract's `PlannedResourceJson`; the definitions' copied module-argument helpers; `profiles.ts`' second parse of the region keys and of `DEFAULT_CLOUD_PROVIDER`; the two agents grep tests become one.
 - [ ] T2622 The constitution's provider order (Contabo with the hosting providers, a MINOR bump) and `CLAUDE.md`'s package list (lead).
 - [ ] T2623 The release, following `docs/releasing.md` (lead).
