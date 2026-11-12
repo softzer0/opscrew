@@ -45,6 +45,19 @@ get its own [read-only login to a database](database-access.md), off by default.
 | `npx opscrew drift` | changes made outside OpsCrew, on the server, at the provider and at Cloudflare |
 | `npx opscrew status` | each certificate's expiry, the proxy and the recovery copy's state |
 
+For example, `npx opscrew scan` on a test app shaped like a [Lovable](https://lovable.dev/) export, with
+its "Not run" and "Next" lines left out:
+
+```text
+OpsCrew scan of habit-tracker: 2 critical, 2 high, 1 medium, 0 low, 0 info
+  CRITICAL  Committed .env file with 3 values  .env:1
+  CRITICAL  Supabase service-role key in client code  src/lib/admin.ts:4
+  HIGH      Row-level security is not enabled on table "profiles"  supabase/migrations/20260101000000_init.sql:3
+  HIGH      Policy "Anyone can update profiles" lets anyone update "public.profiles"  supabase/migrations/20260101000000_init.sql:9
+  MEDIUM    .env files are not in .gitignore  .gitignore
+Full report: opscrew/SECURITY_SCAN.md
+```
+
 `secure` also warns about:
 
 - a certificate with fewer than 30 days left;

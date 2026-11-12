@@ -65,3 +65,30 @@ an app yet.
 - [The recovery copy of your app's secrets](secrets-recovery.md)
 - [Rotating your app's credentials](credential-rotation.md)
 - [Deeper security checks](deeper-checks.md)
+
+## What OpsCrew adds to your repository
+
+Everything OpsCrew sets up is a plain file in your repository, which you can read, change and keep.
+For an app deployed to a new server, the main ones are:
+
+```text
+your-app/
+├── Dockerfile                          your app's image, when OpsCrew writes one
+├── .github/
+│   ├── workflows/opscrew-deploy.yml    the deploy workflow
+│   ├── workflows/opscrew-check.yml     the scheduled check
+│   └── dependabot.yml                  Dependabot's update proposals
+└── opscrew/
+    ├── architecture.json               what analyze found in your app
+    ├── ARCHITECTURE.md                 the same, for people
+    ├── plan.yaml                       the setup you chose
+    ├── infra/prod/                     the server, firewall and DNS as OpenTofu code
+    ├── runtime/compose.yaml            what runs on the server
+    ├── secrets.sops.json               the recovery copy of your secrets, encrypted to your key
+    ├── SECURITY_REPORT.md              the last security check
+    └── RUNBOOK.md                      how to reach, back up and remove the deployment
+```
+
+Another environment keeps its own plan, runbook, security report, runtime files and recovery copy
+under `opscrew/environments/<env>/`, and its infrastructure code under `opscrew/infra/<env>/`
+([environments](environments.md)).
