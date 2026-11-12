@@ -1,2 +1,16 @@
-/** cPanel adapter: UAPI and API2 client, account facts and the hosting operations (ADR 0030). Filled in by feature 027's tasks. */
-export {};
+/**
+ * @opscrew/connector-cpanel: a cPanel account through UAPI and API2 (feature 027, ADR 0030):
+ * `CpanelPanel` implements the `HostingPanel` contract, and `fakeCpanel` replays the answers the
+ * spikes saw on a real account, for tests.
+ */
+
+export {
+  type FakeCpanel,
+  type FakeCpanelCall,
+  type FakeCpanelCertificate,
+  type FakeCpanelEntry,
+  type FakeCpanelOptions,
+  type FakeCpanelState,
+  fakeCpanel,
+} from "./fake";
+export { CpanelPanel, type CpanelPanelOptions } from "./panel";

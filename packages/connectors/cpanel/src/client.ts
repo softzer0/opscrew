@@ -1,0 +1,302 @@
+import type { FetchLike, HostingPanelAccess } from "@opscrew/contracts";
+import {
+  CONNECTION_HINT,
+  type ErrorCode,
+  isRecord,
+  OpsCrewError,
+  Redactor,
+  zodIssues,
+} from "@opscrew/core";
+import { z } from "zod";
+
+/** Default time one request to cPanel may take. */
+export const CPANEL_REQUEST_TIMEOUT_MS = 60_000;
+
+const TOKEN_HINT =
+  "Make an API token in cPanel under Security → Manage API Tokens, then set OPSCREW_HOSTING_TOKEN to it.";
+const ADDRESS_HINT =
+  "Check that OPSCREW_HOSTING_URL is the panel's address (https://<host>:2083), then try again.";
+const REFUSAL_HINT = "Fix what cPanel names, then run the command again.";
+const CHANGED_HINT = "cPanel's API may have changed; please report this to OpsCrew.";
+
+/**
+ * A call cPanel refused, with its own reason. cPanel answers HTTP 200 for these: UAPI with
+ * `status: 0`, API2 with `event.result: 0`, an `error`, or a `data[]` item whose `result` (or
+ * Cron's `status`) is 0, also when `event.result` is 1 (research R10).
+ */
+export class CpanelRefusal extends OpsCrewError {
+  /** cPanel's reason, redacted. */
+  readonly reason: string;
+
+  constructor(message: string, reason: string) {
+    super("PROVIDER_ERROR", message, { hint: REFUSAL_HINT });
+    this.name = "CpanelRefusal";
+    this.reason = reason;
+  }
+}
+
+export interface CpanelClientOptions {
+  /** Default: the global `fetch`. */
+  fetch?: FetchLike;
+  /** Per request (default {@link CPANEL_REQUEST_TIMEOUT_MS}). */
+  timeoutMs?: number;
+  /** Shared redactor; a private one is used when omitted. The token is always registered. */
+  redactor?: Redactor;
+}
+
+/** One call: its module and function, its parameters and the schema of its answer's `data`. */
+export interface CpanelCall<S extends z.ZodType> {
+  module: string;
+  func: string;
+  params?: Readonly<Record<string, string>>;
+  /** What the call does, to end "… when trying to <what>" in errors. */
+  what: string;
+  schema: S;
+}
+
+/** A file for {@link CpanelClient.upload}. */
+export interface CpanelUpload {
+  name: string;
+  content: Uint8Array;
+}
+
+/** Typed calls to one cPanel account; every answer is validated and no error shows the token. */
+export interface CpanelClient {
+  /** UAPI (`/execute/<Module>/<function>`): a read by GET, a change (`write`) as a POST form. */
+  uapi<S extends z.ZodType>(call: CpanelCall<S> & { write?: boolean }): Promise<z.output<S>>;
+  /** API2 (`/json-api/cpanel`, `cpanel_jsonapi_apiversion=2`), as a POST form. */
+  api2<S extends z.ZodType>(call: CpanelCall<S>): Promise<z.output<S>>;
+  /**
+   * `Fileman::upload_files`: the files into `dir` (an absolute path, made when missing), replacing
+   * a file of the same name, with `permissions` (`0600`).
+   */
+  upload(input: {
+    dir: string;
+    files: readonly CpanelUpload[];
+    permissions: string;
+    what: string;
+  }): Promise<void>;
+  /** Registers a secret with the client's redactor, so no error shows it. */
+  registerSecret(value: string, label: string): void;
+}
+
+const flag = z.union([z.number(), z.string()]).transform(Number);
+
+const UapiResultSchema = z.object({
+  status: flag,
+  data: z.unknown(),
+  errors: z.array(z.string()).nullish(),
+});
+/** cPanel documents the result inside `result`; the spikes read either form. */
+const UapiAnswerSchema = z.union([
+  z.object({ result: UapiResultSchema }).transform((answer) => answer.result),
+  UapiResultSchema,
+]);
+
+const Api2AnswerSchema = z.object({
+  cpanelresult: z.object({
+    data: z.unknown(),
+    event: z.object({ result: flag }).optional(),
+    error: z.string().nullish(),
+  }),
+});
+
+const UploadSchema = z.object({
+  uploads: z
+    .array(z.object({ file: z.string().optional(), status: flag, reason: z.string().nullish() }))
+    .default([]),
+  failed: flag.default(0),
+});
+
+const FORM = { "Content-Type": "application/x-www-form-urlencoded" };
+
+/**
+ * The client for one cPanel account, authenticated with `Authorization: cpanel <user>:<token>`.
+ * The token is registered with the redactor before any request, and every error's text passes
+ * through it.
+ */
+export function cpanelClient(
+  access: HostingPanelAccess,
+  options: CpanelClientOptions = {},
+): CpanelClient {
+  const base = panelBase(access.url);
+  const user = access.user.trim();
+  const token = access.token.trim();
+  if (user === "") {
+    throw new OpsCrewError("CREDENTIALS_MISSING", "OPSCREW_HOSTING_USER is not set.", {
+      hint: "Set OPSCREW_HOSTING_USER to the cPanel account's user name.",
+    });
+  }
+  if (token === "") {
+    throw new OpsCrewError("CREDENTIALS_MISSING", "OPSCREW_HOSTING_TOKEN is not set.", {
+      hint: TOKEN_HINT,
+    });
+  }
+  const redactor = options.redactor ?? new Redactor();
+  redactor.addLiteral(token, "OPSCREW_HOSTING_TOKEN");
+  if (!/^[\x21-\x7e]+$/.test(token)) {
+    throw new OpsCrewError(
+      "CREDENTIALS_INVALID",
+      "OPSCREW_HOSTING_TOKEN isn't a cPanel API token.",
+      {
+        hint: TOKEN_HINT,
+      },
+    );
+  }
+  const fetchFn = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
+  const timeoutMs = options.timeoutMs ?? CPANEL_REQUEST_TIMEOUT_MS;
+  const authorization = `cpanel ${user}:${token}`;
+
+  const fail = (code: ErrorCode, message: string, hint: string) =>
+    new OpsCrewError(code, redactor.redact(message), { hint: redactor.redact(hint) });
+
+  const refusal = (what: string, reasons: readonly string[]) => {
+    const reason = redactor.redact(reasons.join(" ").trim() || "no reason given");
+    return new CpanelRefusal(
+      redactor.redact(`cPanel refused to ${what}: ${reason.replace(/\.$/, "")}.`),
+      reason,
+    );
+  };
+
+  function parse<S extends z.ZodType>(schema: S, value: unknown, what: string): z.output<S> {
+    const parsed = schema.safeParse(value);
+    if (!parsed.success) {
+      throw fail(
+        "PROVIDER_ERROR",
+        `cPanel returned an unexpected answer when trying to ${what}: ${zodIssues(parsed.error)}.`,
+        CHANGED_HINT,
+      );
+    }
+    return parsed.data;
+  }
+
+  /** Sends one request and answers its JSON. */
+  async function send(url: string, init: RequestInit, what: string): Promise<unknown> {
+    const signal = AbortSignal.timeout(timeoutMs);
+    let response: Response;
+    let text: string;
+    try {
+      response = await fetchFn(url, {
+        ...init,
+        headers: { ...(init.headers as Record<string, string>), Authorization: authorization },
+        signal,
+      });
+      text = await response.text();
+    } catch {
+      const why = signal.aborted ? "the request timed out" : "the connection failed";
+      throw fail("PROVIDER_ERROR", `Could not reach cPanel to ${what} (${why}).`, CONNECTION_HINT);
+    }
+    if (response.status === 401 || response.status === 403) {
+      throw fail(
+        "CREDENTIALS_INVALID",
+        `cPanel refused the API token (HTTP ${response.status}) when trying to ${what}.`,
+        `Check OPSCREW_HOSTING_USER and OPSCREW_HOSTING_TOKEN. ${TOKEN_HINT}`,
+      );
+    }
+    if (!response.ok) {
+      throw fail(
+        "PROVIDER_ERROR",
+        `cPanel answered HTTP ${response.status} when trying to ${what}.`,
+        ADDRESS_HINT,
+      );
+    }
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw fail(
+        "PROVIDER_ERROR",
+        `cPanel's answer wasn't JSON when trying to ${what}.`,
+        ADDRESS_HINT,
+      );
+    }
+  }
+
+  /** UAPI's `data` after its `status` is read. */
+  function uapiData(json: unknown, what: string): unknown {
+    const result = parse(UapiAnswerSchema, json, what);
+    if (result.status !== 1) throw refusal(what, result.errors ?? []);
+    return result.data;
+  }
+
+  return {
+    async uapi(call) {
+      const url = `${base}/execute/${call.module}/${call.func}`;
+      const query = new URLSearchParams(call.params).toString();
+      const json = call.write
+        ? await send(url, { method: "POST", headers: FORM, body: query }, call.what)
+        : await send(query === "" ? url : `${url}?${query}`, { method: "GET" }, call.what);
+      return parse(call.schema, uapiData(json, call.what), call.what);
+    },
+
+    async api2(call) {
+      const body = new URLSearchParams({
+        cpanel_jsonapi_user: user,
+        cpanel_jsonapi_apiversion: "2",
+        cpanel_jsonapi_module: call.module,
+        cpanel_jsonapi_func: call.func,
+        ...call.params,
+      });
+      const json = await send(
+        `${base}/json-api/cpanel`,
+        { method: "POST", headers: FORM, body: body.toString() },
+        call.what,
+      );
+      const result = parse(Api2AnswerSchema, json, call.what).cpanelresult;
+      const items = Array.isArray(result.data) ? result.data.filter(isRecord) : [];
+      const failed = items.find((item) => Number(item.result ?? item.status) === 0);
+      if (result.event?.result === 0 || (result.error ?? "") !== "" || failed !== undefined) {
+        const reason = result.error || failed?.reason || failed?.statusmsg;
+        throw refusal(call.what, typeof reason === "string" ? [reason] : []);
+      }
+      return parse(call.schema, result.data, call.what);
+    },
+
+    async upload(input) {
+      const form = new FormData();
+      form.append("dir", input.dir);
+      form.append("overwrite", "1");
+      form.append("permissions", input.permissions);
+      input.files.forEach((file, index) => {
+        form.append(`file-${index + 1}`, new Blob([Buffer.from(file.content)]), file.name);
+      });
+      const json = await send(
+        `${base}/execute/Fileman/upload_files`,
+        { method: "POST", body: form },
+        input.what,
+      );
+      const data = parse(UploadSchema, uapiData(json, input.what), input.what);
+      const failed = data.uploads.find((upload) => upload.status !== 1);
+      if (failed !== undefined || data.failed > 0) {
+        throw refusal(input.what, failed?.reason ? [failed.reason] : []);
+      }
+    },
+
+    registerSecret(value, label) {
+      redactor.addLiteral(value, label);
+    },
+  };
+}
+
+/** The panel's address as `https://<host>:<port>`, without a trailing slash. */
+function panelBase(address: string): string {
+  let url: URL | undefined;
+  try {
+    url = new URL(address.trim());
+  } catch {
+    url = undefined;
+  }
+  if (
+    url === undefined ||
+    url.protocol !== "https:" ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.search !== "" ||
+    url.hash !== "" ||
+    url.pathname !== "/"
+  ) {
+    throw new OpsCrewError("INVALID_INPUT", "OPSCREW_HOSTING_URL isn't a cPanel address.", {
+      hint: "Set it to the panel's address, https://<host>:2083.",
+    });
+  }
+  return url.origin;
+}
