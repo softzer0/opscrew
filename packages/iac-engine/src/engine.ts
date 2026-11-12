@@ -130,7 +130,6 @@ function homeCacheFiles(
   env: Record<string, string | undefined>,
   files: readonly string[],
 ): string[] {
-  if (files.length === 0) return [];
   const home =
     env.HOME || env.USERPROFILE || (env.HOMEDRIVE && env.HOMEPATH && env.HOMEDRIVE + env.HOMEPATH);
   return home ? files.map((file) => path.join(home, file)) : [];

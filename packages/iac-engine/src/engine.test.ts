@@ -632,7 +632,7 @@ describe("homeCacheFiles", () => {
     });
     const engine = cacheEngine(
       runner,
-      { HOME: "/home/me", USERPROFILE: "C:Usersme" },
+      { HOME: "/home/me", USERPROFILE: "/profile/me" },
       async (file) => {
         events.push(file);
       },
@@ -648,18 +648,18 @@ describe("homeCacheFiles", () => {
       removed.push(file);
     };
     const runner = new ScriptedRunner().on("output", { stdout: "{}" });
-    await cacheEngine(runner, { USERPROFILE: "C:Usersme" }, remove).output(dir, {
+    await cacheEngine(runner, { USERPROFILE: "/profile/me" }, remove).output(dir, {
       env: { HOME: "/run/home" },
     });
-    await cacheEngine(runner, { HOME: "", USERPROFILE: "C:Usersme" }, remove).output(dir);
-    await cacheEngine(runner, { HOMEDRIVE: "D:", HOMEPATH: "Usersme" }, remove).output(dir);
+    await cacheEngine(runner, { HOME: "", USERPROFILE: "/profile/me" }, remove).output(dir);
+    await cacheEngine(runner, { HOMEDRIVE: "D:", HOMEPATH: "/drive/me" }, remove).output(dir);
     expect(removed).toEqual([
       path.join("/run/home", TOKEN),
       path.join("/run/home", TOKEN),
-      path.join("C:Usersme", TOKEN),
-      path.join("C:Usersme", TOKEN),
-      path.join("D:Usersme", TOKEN),
-      path.join("D:Usersme", TOKEN),
+      path.join("/profile/me", TOKEN),
+      path.join("/profile/me", TOKEN),
+      path.join("D:/drive/me", TOKEN),
+      path.join("D:/drive/me", TOKEN),
     ]);
   });
 
@@ -700,6 +700,20 @@ describe("homeCacheFiles", () => {
     expect(error.message).toContain(path.join("/home/me", TOKEN));
     expect(error.hint).toContain("Delete");
     expect(runner.calls).toHaveLength(0);
+  });
+
+  it("removes the files after a command that is aborted, and rethrows the abort", async () => {
+    const events: string[] = [];
+    const runner = new ScriptedRunner().on("output", () => {
+      events.push("output");
+      throw Object.assign(new Error("aborted"), { name: "AbortError" });
+    });
+    const engine = cacheEngine(runner, { HOME: "/home/me" }, async (file) => {
+      events.push(file);
+    });
+    await expect(engine.output(dir)).rejects.toMatchObject({ name: "AbortError" });
+    const token = path.join("/home/me", TOKEN);
+    expect(events).toEqual([token, "output", token]);
   });
 
   it("keeps the command's result when the removal after it fails, and says so", async () => {
