@@ -231,7 +231,7 @@ names the change.
 
 ## Phase 3: Wave 2 (parallel)
 
-- [ ] T2710 [US1] [US5] What the app needs, the interview and design for a hosting account
+- [x] T2710 [US1] [US5] What the app needs, the interview and design for a hosting account
   - Owns: `packages/detect/src/php-needs*.ts` (and its export in `packages/detect/src/index.ts`), `packages/agents/src/interview/**`, `packages/agents/src/design/**`, `packages/agents/src/hosting/{facts,fit,record,panels}*.ts`
   - Reads: plan 1, 5, 10; spec US1 (scenarios 1–3), US5 (scenario 2), edge cases; research R10, R11; `agents/src/interview/{serverless,own-server}.ts`, `agents/src/design/{serverless,own,own-servers}.ts`, `detect/src/{runtime-versions,frameworks,services}.ts`
   - Depends: T2702, T2703, T2707, T2708
