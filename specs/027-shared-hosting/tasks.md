@@ -320,7 +320,7 @@ names the change.
 
 ## Phase 5: Wave 4 (parallel)
 
-- [ ] T2713 [US2] [US6] Rollback, destroy, status and logs on a hosting account
+- [x] T2713 [US2] [US6] Rollback, destroy, status and logs on a hosting account
   - Owns: `packages/agents/src/hosting/{rollback,destroy,status,logs}*.ts`, the hosting dispatch in `packages/agents/src/{rollback,destroy,status}/run.ts` and `packages/agents/src/logs/{read,targets}.ts`
   - Reads: plan 6; ADR 0023, ADR 0028, ADR 0030; `agents/src/rollback/{run,database,versions}.ts`, `agents/src/destroy/{common,own,serverless}.ts`
   - Depends: T2711
