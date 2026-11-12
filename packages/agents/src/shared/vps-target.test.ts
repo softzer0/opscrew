@@ -10,8 +10,6 @@ import {
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { checkReachesOverSsh } from "../check/provision";
-import { buildDesignOptions } from "../design";
-import { optionToPlan } from "../design/plan";
 import { runDns } from "../dns/run";
 import { buyDomain, connectDomain } from "../domain";
 import { recordDomain } from "../domain/project";
@@ -25,13 +23,10 @@ import { runRetarget } from "../retarget/run";
 import { tlsStatusReport } from "../status";
 import { readServerContainers } from "../status/run";
 import {
-  autoBuild,
   createTestPhaseDeps,
-  euCatalog,
   FakeCloudflare,
   makeRequirements,
   ScriptedRunner,
-  staticSpaFacts,
   TOKEN,
   testPlan,
 } from "../testing";
@@ -439,24 +434,9 @@ describe("a hosting account in steps that know only servers", () => {
     });
   });
 
-  it("is refused plainly by retarget and design", async () => {
+  it("is refused plainly by retarget", () => {
     expect(refusal(() => moveProvider(hostingPlan().target))).toMatchObject(
       notAvailable("`opscrew retarget`"),
-    );
-    const facts = staticSpaFacts();
-    const requirements = makeRequirements();
-    const [option] = await buildDesignOptions({ facts, requirements, catalog: euCatalog() });
-    if (option === undefined) throw new Error("no option");
-    const hosting = { ...option, target: { ...option.target, provider: "hosting" as const } };
-    const input = {
-      facts,
-      requirements,
-      now: new Date("2026-11-12T10:00:00.000Z"),
-      codeChanges: [],
-      build: autoBuild(facts),
-    };
-    expect(refusal(() => optionToPlan(hosting, input))).toMatchObject(
-      notAvailable("`opscrew design`"),
     );
   });
 

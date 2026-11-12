@@ -433,29 +433,8 @@ export function buildServerlessOption(input: ServerlessOptionInput): DesignOptio
  */
 export function serverlessTargetFor(choice: ServerlessDesignChoice, worker: string) {
   const { site } = choice;
-  const { outputDir } = site;
-  if (outputDir === undefined) {
-    throw new Error("A server-less site needs its folder to publish; serverlessMisfit refuses it.");
-  }
   const ssr = site.render === "ssr" && site.adapter !== undefined;
-  const flags = site.adapter?.compatibilityFlags ?? [];
-  const block: Site = {
-    tool: site.tool,
-    ...(site.tool === "node" && site.packageManager !== undefined
-      ? {
-          packageManager: site.packageManager,
-          ...(choice.nodeVersion === undefined ? {} : { nodeVersion: choice.nodeVersion }),
-        }
-      : {}),
-    ...(site.command === undefined ? {} : { command: site.command }),
-    outputDir,
-    ...(ssr && site.adapter !== undefined
-      ? {
-          entry: site.adapter.entry,
-          ...(flags.length > 0 ? { compatibilityFlags: [...flags] } : {}),
-        }
-      : {}),
-  };
+  const block = siteBlock(choice);
   if (choice.provider === "github-pages") {
     return { provider: "github-pages", mode: "pages-workflow", site: block } as const;
   }
@@ -475,6 +454,38 @@ export function serverlessTargetFor(choice: ServerlessDesignChoice, worker: stri
     previewUrls: false,
     site: block,
   } as const;
+}
+
+/**
+ * The plan's site block of a detected site: how it builds (its tool, package manager and Node.js
+ * version, its command), the folder it publishes, and for server rendering the adapter's Worker
+ * module and flags. A hosting account's static site takes it too.
+ */
+export function siteBlock(choice: Pick<ServerlessDesignChoice, "site" | "nodeVersion">): Site {
+  const { site } = choice;
+  const { outputDir } = site;
+  if (outputDir === undefined) {
+    throw new Error("A site needs its folder to publish; design refuses one without it.");
+  }
+  const ssr = site.render === "ssr" && site.adapter !== undefined;
+  const flags = site.adapter?.compatibilityFlags ?? [];
+  return {
+    tool: site.tool,
+    ...(site.tool === "node" && site.packageManager !== undefined
+      ? {
+          packageManager: site.packageManager,
+          ...(choice.nodeVersion === undefined ? {} : { nodeVersion: choice.nodeVersion }),
+        }
+      : {}),
+    ...(site.command === undefined ? {} : { command: site.command }),
+    outputDir,
+    ...(ssr && site.adapter !== undefined
+      ? {
+          entry: site.adapter.entry,
+          ...(flags.length > 0 ? { compatibilityFlags: [...flags] } : {}),
+        }
+      : {}),
+  };
 }
 
 /**

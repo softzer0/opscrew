@@ -12,6 +12,7 @@ import {
   type ProjectFacts,
   type Question,
   type Requirements,
+  RequirementsSchema,
   readArtifact,
   writeArtifact,
 } from "@opscrew/plan-schema";
@@ -22,6 +23,7 @@ import type { PhaseDeps } from "../context";
 import { serverlessTargetsFor } from "../design/serverless";
 import { defaultBranchOf, remoteEnvironmentBranches } from "../environments/branches";
 import { setupNote } from "../environments/setup";
+import { HOSTING_TOKEN_VAR, hostingReach, SFTP_KEY_VAR } from "../hosting/panels";
 import { PORTAINER_TOKEN_VAR, providerFromTokens } from "../providers";
 import {
   gitClient,
@@ -43,6 +45,13 @@ import {
   splitComponentAnswers,
 } from "./components";
 import { hasFollowUps, splitFollowUps } from "./follow-ups";
+import {
+  HOSTING_FIELDS,
+  type HostingAnswers,
+  type HostingQuestion,
+  hostingAnswers,
+  recordHostingAnswers,
+} from "./hosting";
 import {
   answersToOwnServer,
   buildServerQuestions,
@@ -104,6 +113,13 @@ export interface InterviewOptions {
    */
   askPortainer?: (questions: PortainerQuestion[]) => Promise<InterviewAnswers>;
   /**
+   * Asks the follow-up questions for a hosting account (`provider: hosting`) and returns the
+   * answers keyed by question id (`hosting.hostname`, …). Called once OpsCrew found the panel and
+   * read the account's domains (or, for an SFTP host, before it reads the host's key), only when
+   * `answers` holds no hosting answers.
+   */
+  askHosting?: (questions: HostingQuestion[]) => Promise<InterviewAnswers>;
+  /**
    * How the interview reaches an existing Portainer: the adapter, the certificate confirmation
    * (the user's, never a model's) or a fingerprint given up front. The token comes only from
    * `PORTAINER_API_KEY`.
@@ -140,6 +156,11 @@ export interface InterviewResult {
    * token).
    */
   portainer?: PortainerAnswers;
+  /**
+   * For a hosting account: the hostname (the requirements' `domain`) and how OpsCrew reaches the
+   * account, saved in `.opscrew/hosting.json` (never the token or the key).
+   */
+  hosting?: HostingAnswers;
 }
 
 const errorCode = (error: unknown) =>
@@ -329,8 +350,12 @@ async function environmentSetupNote(
  * `opscrew/requirements.yaml`. For an existing Portainer (`provider: portainer`) it takes the
  * follow-ups (`portainer.*`) from the answers or `options.askPortainer`, confirms Portainer's
  * certificate and lists its environments through `options.portainer`, and saves them in
- * `.opscrew/server.json` (never the token). The questions about the app's components (each hosted
- * service, each worker's command when no convention gives it) come from the answers or
+ * `.opscrew/server.json` (never the token). For a hosting account (`provider: hosting`, offered
+ * when the `OPSCREW_HOSTING_*` or `OPSCREW_SFTP_*` variables are set) it finds the panel, takes the
+ * follow-ups (`hosting.*`) from the answers or `options.askHosting` (the hostname becomes the
+ * `domain`; an SFTP host's key is confirmed) and saves the account in `.opscrew/hosting.json`
+ * (never the token or the key). The questions about the app's components (each hosted service,
+ * each worker's command when no convention gives it) come from the answers or
  * `options.askComponents`. Missing or invalid answers throw `OpsCrewError("INVALID_INPUT")`
  * listing them; nothing is written then.
  */
@@ -355,6 +380,7 @@ export async function runInterview(
     );
     const context = {
       ...(inferredProvider !== undefined ? { inferredProvider } : {}),
+      ...(hostingReach(deps.env) !== undefined ? { hosting: true } : {}),
       ...(options.repositoryPrivate !== undefined
         ? { repositoryPrivate: options.repositoryPrivate }
         : {}),
@@ -368,7 +394,8 @@ export async function runInterview(
     else if (options.ask !== undefined) answers = await options.ask(questions);
     let split = splitFollowUps(answers, "server", SERVER_FIELDS);
     const portainerSplit = splitFollowUps(split.rest, "portainer", PORTAINER_FIELDS);
-    let componentSplit = splitComponentAnswers(portainerSplit.rest, facts);
+    const hostingSplit = splitFollowUps(portainerSplit.rest, "hosting", HOSTING_FIELDS);
+    let componentSplit = splitComponentAnswers(hostingSplit.rest, facts);
 
     let requirements = answersToRequirements(componentSplit.rest, {
       now: deps.clock.now(),
@@ -441,6 +468,23 @@ export async function runInterview(
         "The answers about an existing Portainer (portainer.*) were ignored, because the app does not run in your Portainer.",
       );
     }
+    let hosting: HostingAnswers | undefined;
+    if (requirements.provider === "hosting") {
+      hosting = await hostingAnswers(deps, hostingSplit, {
+        ...(options.askHosting !== undefined ? { askHosting: options.askHosting } : {}),
+        ...(requirements.domain !== undefined ? { domain: requirements.domain } : {}),
+      });
+      // The hostname is the app's domain; its DNS is where the interview said, else the user's.
+      requirements = RequirementsSchema.parse({
+        ...requirements,
+        domain: hosting.hostname,
+        dnsProvider: requirements.dnsProvider === "none" ? "other" : requirements.dnsProvider,
+      });
+    } else if (hasFollowUps(hostingSplit)) {
+      reporter.warn(
+        "The answers about a hosting account (hosting.*) were ignored, because the app does not run on a hosting account.",
+      );
+    }
     // The analysis must describe the chosen app. Re-run it before saving the answers, so an app
     // folder detection rejects is never written to requirements.yaml.
     const reanalyzed =
@@ -475,6 +519,13 @@ export async function runInterview(
         `Saved how to reach your Portainer in .opscrew/server.json, on this computer only. The access token stays in ${PORTAINER_TOKEN_VAR} and is never saved.`,
       );
     }
+    if (hosting !== undefined) {
+      // How OpsCrew reaches the account stays on this computer; the token and the key are never saved.
+      await recordHostingAnswers(paths, hosting);
+      reporter.info(
+        `Saved how to reach your hosting account in .opscrew/hosting.json, on this computer only. ${hosting.record.sftp === undefined ? `The token stays in ${HOSTING_TOKEN_VAR}` : `The key stays in the file ${SFTP_KEY_VAR} names`} and is never saved.`,
+      );
+    }
     await writeArtifact("requirements", paths.files.requirements, requirements);
     reporter.success(`Wrote ${toPosixRelative(paths.root, paths.files.requirements)}.`);
     const publicLog = signingPublicLog(options.repositoryPrivate);
@@ -488,11 +539,13 @@ export async function runInterview(
         ? ", your own server"
         : requirements.provider === "portainer"
           ? ", your Portainer"
-          : isServerlessProvider(requirements.provider)
-            ? `, ${serverlessName(requirements.provider)}`
-            : requirements.region === undefined
-              ? ""
-              : `, ${requirements.region}`;
+          : requirements.provider === "hosting"
+            ? ", your hosting account"
+            : isServerlessProvider(requirements.provider)
+              ? `, ${serverlessName(requirements.provider)}`
+              : requirements.region === undefined
+                ? ""
+                : `, ${requirements.region}`;
     await deps.state.markPhase(
       "interview",
       "ok",
@@ -504,6 +557,7 @@ export async function runInterview(
       reanalyzed,
       ...(ownServer ? { ownServer } : {}),
       ...(portainer ? { portainer } : {}),
+      ...(hosting ? { hosting } : {}),
     };
   });
 }

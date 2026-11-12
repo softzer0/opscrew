@@ -24,7 +24,6 @@ import {
   choosingSettingValue,
   deepDomainProblem,
   FRAMEWORK_ENV,
-  hostingNotAvailable,
   STORAGE_VARIABLES,
   serviceAppVariables,
   serviceUrlKind,
@@ -41,6 +40,7 @@ import {
   healthRouteFor,
 } from "./code-changes";
 import { appNameFor, type Components, designComponents } from "./components";
+import { type HostingDesignChoice, hostingDatabaseVariables } from "./hosting";
 import type { OwnServerAccess, OwnServerServing } from "./own";
 import type { PortainerDesignChoice } from "./portainer";
 import { migrationsInImage } from "./release";
@@ -79,6 +79,8 @@ export interface OptionToPlanInput {
   localhost?: LocalhostDesignChoice;
   /** A server-less target only (required there): the site as detection describes it. */
   serverless?: ServerlessDesignChoice;
+  /** A hosting account only (required there): its target as design filled it. */
+  hosting?: HostingDesignChoice;
   /** Who builds the image (`chooseBuilder`); required on every target with an image. */
   build?: BuilderChoice;
   /** What runs next to the app (`designComponents`); by default designed from the facts. */
@@ -95,11 +97,15 @@ export interface OptionToPlanInput {
  * the option's backups, the user's own server with its architecture and access mode (never its
  * address or login, which stay in local state), the user's Portainer with the environment and
  * the chosen modes (never its address), this computer with its CPU, ports and image source, or a
- * server-less target with its site block (on Cloudflare a Worker named `appName`).
+ * server-less target with its site block (on Cloudflare a Worker named `appName`), or a hosting
+ * account's target as design filled it.
  */
 function targetFor(
   option: DesignOption,
-  input: Pick<OptionToPlanInput, "access" | "portainer" | "localhost" | "build" | "serverless">,
+  input: Pick<
+    OptionToPlanInput,
+    "access" | "portainer" | "localhost" | "build" | "serverless" | "hosting"
+  >,
   components: Components,
   appName: string,
 ) {
@@ -146,7 +152,12 @@ function targetFor(
     }
     return serverlessTargetFor(input.serverless, appName);
   }
-  if (target.provider === "hosting") throw hostingNotAvailable("`opscrew design`");
+  if (target.provider === "hosting") {
+    if (input.hosting === undefined) {
+      throw new Error("A design for a hosting account needs the account's design.");
+    }
+    return input.hosting.target;
+  }
   return {
     provider: target.provider,
     mode: "vps-compose",
@@ -281,9 +292,10 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
   if (components.processes.cron.some((job) => job.enabled && job.route !== undefined)) {
     env.set("CRON_SECRET", { name: "CRON_SECRET", secret: true, source: "generated" });
   }
-  const { build, serverless } = input;
+  const { build, serverless, hosting } = input;
   // A server-less site is published on its domain by Cloudflare (always behind its proxy) or by
-  // GitHub (DNS only), and builds no image.
+  // GitHub (DNS only), and builds no image; so is an app on a hosting account, whose hostname is
+  // DNS only (the account serves it with its own certificate).
   const pages = serverless?.provider === "github-pages";
   // A server the user owns serves directly behind Cloudflare's proxy only with OpsCrew's web
   // filter (the explicit `proxy` choice); otherwise a public server is DNS only.
@@ -293,6 +305,7 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
   // going around Cloudflare's proxy on a host it does not manage, so the other modes are DNS only.
   const dnsOnly =
     pages ||
+    hosting !== undefined ||
     (ownDirect && !webFilter) ||
     (option.target.provider === "portainer" && input.portainer?.web.mode !== "tunnel");
   const onCloudflare = requirements.dnsProvider === "cloudflare" ? requirements.domain : undefined;
@@ -312,6 +325,7 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
 
   let buildContext: string;
   if (serverless !== undefined) buildContext = serverless.site.dir;
+  else if (hosting !== undefined) buildContext = hosting.buildContext;
   else if (build !== undefined) buildContext = buildContextFor(facts, build.builder);
   else throw new Error("A design for a target with an image needs its image builder.");
   const releaseCommand = serverless === undefined ? releaseCommandInImage(facts) : undefined;
@@ -403,17 +417,24 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
         release: tags === "tag-and-release",
       },
     },
-    // cosign signs an image, and a server-less site has none.
-    supplyChain: { sign: serverless === undefined && (requirements.signImages ?? false) },
+    // cosign signs an image, and neither a server-less site nor a hosting account has one.
+    supplyChain: {
+      sign: serverless === undefined && hosting === undefined && (requirements.signImages ?? false),
+    },
   });
   for (const variable of storageEnv(facts, plan)) env.set(variable.name, variable);
   // The SQLite and kept folders' volumes are mounted in the folder the app runs in, which OpsCrew
-  // must know (the user's own Dockerfile needs a literal WORKDIR). A database moved into a folder
-  // of its own: its variable points the app there.
+  // must know (the user's own Dockerfile needs a literal WORKDIR); a hosting account keeps them
+  // beside its releases, with no image. A database moved into a folder of its own: its variable
+  // points the app there.
   const sqlite = components.storage?.sqlite;
   const files = components.storage?.files;
   const move = sqlite === undefined ? undefined : sqliteMove(facts);
-  if ((sqlite !== undefined || files !== undefined) && appRoot(plan) === undefined) {
+  if (
+    hosting === undefined &&
+    (sqlite !== undefined || files !== undefined) &&
+    appRoot(plan) === undefined
+  ) {
     const unknown = `OpsCrew does not know the folder the app runs in, because the last stage of your Dockerfile (${plan.app.dockerfile}) has no WORKDIR with an absolute path. plan.yaml was not changed.`;
     throw new OpsCrewError(
       "INVALID_INPUT",
@@ -432,6 +453,12 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
   const SECRET = "\u0000secret\u0000";
   for (const [name, value] of serviceAppVariables(plan, () => SECRET)) {
     env.set(name, derived(name, value.includes(SECRET)));
+  }
+  // A hosting account's database fills its settings, which provision writes there.
+  if (hosting !== undefined) {
+    for (const [name, secret] of hostingDatabaseVariables(facts, hosting.target)) {
+      env.set(name, derived(name, secret));
+    }
   }
   return DeployPlanSchema.parse({
     ...plan,

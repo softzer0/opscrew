@@ -67,7 +67,8 @@ const USER_NAME = /^[A-Za-z_][A-Za-z0-9_.-]{0,31}$/;
 /** `/…`, `~/…`, `C:\…` or `C:/…`. */
 const ABSOLUTE_PATH = /^(?:\/|~\/|[A-Za-z]:[\\/])[^\0\r\n]*$/;
 
-const HostSchema = z.union([z.ipv4(), z.ipv6(), z.string().regex(HOST_NAME)]);
+/** A server's address: an IP address or a host name (never an `ssh` option). */
+export const HostSchema = z.union([z.ipv4(), z.ipv6(), z.string().regex(HOST_NAME)]);
 
 const OwnServerAnswersSchema = z
   .strictObject({

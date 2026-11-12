@@ -20,9 +20,10 @@ describe("listProjectFiles", () => {
       "a-file.txt": "a",
       "README.md": "r",
     });
-    const { files, truncated } = await listProjectFiles(root);
+    const { files, truncated, bytes } = await listProjectFiles(root);
     expect(files).toEqual(["README.md", "a-file.txt", "src/a/z.ts", "src/b.ts"]);
     expect(truncated).toBe(false);
+    expect(bytes).toBe(4);
     for (const file of files) {
       expect(file).not.toContain("\\");
       expect(file).not.toMatch(/^(?:\/|[A-Za-z]:)/);
@@ -96,6 +97,10 @@ describe("listProjectFiles", () => {
 
   it("returns an empty list for a missing directory", async () => {
     const root = await tree({});
-    expect(await listProjectFiles(`${root}/missing`)).toEqual({ files: [], truncated: false });
+    expect(await listProjectFiles(`${root}/missing`)).toEqual({
+      files: [],
+      truncated: false,
+      bytes: 0,
+    });
   });
 });

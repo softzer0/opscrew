@@ -29,6 +29,7 @@ import {
   EnvironmentSchema,
   infraDirFor,
   isCloudProvider,
+  isHostingTarget,
   isServerlessProvider,
   isServerlessTarget,
   type MonitoringSettings,
@@ -120,6 +121,7 @@ import {
   uncallableRouteJobs,
 } from "./components";
 import { convertMoney, EXCHANGE_RATE_NOTE, offerTerms, priceLabel } from "./cost";
+import { designHosting, type HostingDesignChoice, hostingDeployLine } from "./hosting";
 import { keptEdits } from "./kept-edits";
 import { buildDesignOptionSet, lowHeadroomText, minimumMonthlyCost } from "./options";
 import {
@@ -336,6 +338,8 @@ export interface DesignPreview {
   localhost?: LocalhostDesignChoice;
   /** A server-less target: the site as detection describes it, and the Node.js its build uses. */
   serverless?: ServerlessDesignChoice;
+  /** A hosting account: its target as design filled it, and what design says of it. */
+  hosting?: HostingDesignChoice;
   /** What runs next to the app, with the previous plan's edits kept. */
   components: Components;
   /** One plain sentence per component, licence, storage choice and kept edit. */
@@ -748,6 +752,46 @@ async function priceServerless(
   };
 }
 
+/**
+ * The single option on a hosting account (feature 027): the account the interview recorded, its
+ * facts read through its panel, refused plainly when the app doesn't fit (`designHosting`), at no
+ * price. Nothing runs next to the app there: its database and cron jobs are the target's, so the
+ * components keep no processes or services, and design says what the account gets instead.
+ */
+async function priceHosting(
+  deps: PhaseDeps,
+  { facts, requirements }: DesignInputs,
+  warnings: string[],
+  designed: Designed,
+  previous: DeployPlan | undefined,
+): Promise<DesignPreview> {
+  const warn = warner(deps, warnings);
+  const { choice, option } = await designHosting(deps, {
+    facts,
+    requirements,
+    previous,
+    externalServices: designed.components.externalServices,
+    warn,
+  });
+  // Its price note is among the lines design says of the account.
+  deps.reporter.info(deps.redactor.redact(`${option.title} (${option.id}) — recommended`));
+  appWarnings(facts, designed.components, warn);
+  return {
+    options: [option],
+    priceSource: "live",
+    warnings,
+    facts,
+    requirements,
+    hosting: choice,
+    components: {
+      ...designed.components,
+      processes: { workers: [], cron: [] },
+      services: [],
+    },
+    lines: choice.lines,
+  };
+}
+
 async function priceOptions(
   deps: PhaseDeps,
   inputs: DesignInputs,
@@ -785,10 +829,15 @@ async function priceOptions(
   if (isServerlessProvider(requirements.provider)) {
     return priceServerless(deps, requirements.provider, inputs, warnings, designed, previous);
   }
+  if (requirements.provider === "hosting") {
+    return priceHosting(deps, inputs, warnings, designed, previous);
+  }
   // The server's proxy carries over from the earlier plan (`keepPlanSettings`); a server-less
-  // plan had none.
+  // plan or a hosting account had none.
   const edge =
-    previous === undefined || isServerlessProvider(previous.target.provider)
+    previous === undefined ||
+    isServerlessProvider(previous.target.provider) ||
+    isHostingTarget(previous.target)
       ? "caddy"
       : edgeProxy(previous);
   // The app's server holds what plan.yaml does not place on another server.
@@ -1022,10 +1071,11 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   if (options.choose === undefined || options.optionId !== undefined) {
     for (const line of await chosenTerms(chosen, preview.catalog)) reporter.info(say(line));
   }
-  // A server-less site builds no image, so no builder is chosen for it.
-  const { serverless } = preview;
+  // A server-less site builds no image, nor does an app on a hosting account, so no builder is
+  // chosen for them.
+  const { serverless, hosting } = preview;
   let build: BuilderChoice | undefined;
-  if (serverless === undefined) {
+  if (serverless === undefined && hosting === undefined) {
     const choice = chooseBuilder(
       facts,
       basis?.plan ?? previous,
@@ -1061,6 +1111,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
       ...(preview.portainer !== undefined ? { portainer: preview.portainer } : {}),
       ...(preview.localhost !== undefined ? { localhost: preview.localhost } : {}),
       ...(serverless !== undefined ? { serverless } : {}),
+      ...(hosting !== undefined ? { hosting } : {}),
       ...(build !== undefined ? { build } : {}),
       components: planned,
       placed: edits.placed,
@@ -1131,7 +1182,9 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     requirements,
   );
   // The services placed on other servers, those servers, the private network and a move (018).
-  const edgeMb = serverless === undefined ? edgeMemoryMb(edgeProxy(kept)) : 0;
+  // Neither a server-less site nor a hosting account has a server: no proxy of OpsCrew's runs.
+  const noServer = serverless !== undefined || hosting !== undefined;
+  const edgeMb = noServer ? 0 : edgeMemoryMb(edgeProxy(kept));
   const placement = await designPlacement(
     deps,
     {
@@ -1248,26 +1301,32 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     total.monthly.currency === budget.currency || total.monthly.amount === 0
       ? ""
       : ` (about ${formatMoney(convertMoney(total.monthly, budget.currency))})`;
-  const price = onComputer
-    ? "no server cost (it runs in this computer's Docker)"
-    : inPortainer
-      ? "no server cost (you already run this Portainer)"
-      : unpriced
-        ? `no server cost (you already pay for ${servers.length > 0 ? "these servers" : "this server"})`
-        : `${cost}/month${servers.length > 0 ? ` for its ${servers.length + 1} servers` : ""}${inBudget}`;
+  const price =
+    hosting !== undefined
+      ? "no price (you already pay for this account)"
+      : onComputer
+        ? "no server cost (it runs in this computer's Docker)"
+        : inPortainer
+          ? "no server cost (you already run this Portainer)"
+          : unpriced
+            ? `no server cost (you already pay for ${servers.length > 0 ? "these servers" : "this server"})`
+            : `${cost}/month${servers.length > 0 ? ` for its ${servers.length + 1} servers` : ""}${inBudget}`;
   reporter.success(
     say(
       `${plan === whole ? `${planFile} is up to date` : `Wrote ${planFile}`}: ${chosen.title}, ${price}, ${plural(codeChanges.length, "code change")} to make.`,
     ),
   );
-  // A server-less site has no server: no image builder or strategy, memory, migrations, image
-  // signing or proxy of its own; its secrets get warnings of their own (FR-1605).
+  // A server-less site and a hosting account have no server: no image builder or strategy,
+  // memory, migrations in a container, image signing or proxy of their own; a server-less site's
+  // secrets get warnings of their own (FR-1605).
   const buildLines = (
-    serverless === undefined
-      ? buildStatusLines(plan, fresh.deploy)
-      : [serverlessDeployLine(serverless.provider)]
+    hosting !== undefined
+      ? [hostingDeployLine(hosting.target.panel)]
+      : serverless === undefined
+        ? buildStatusLines(plan, fresh.deploy)
+        : [serverlessDeployLine(serverless.provider)]
   ).map(say);
-  const supplyLines = serverless === undefined ? supplyChainLines(plan) : [];
+  const supplyLines = noServer ? [] : supplyChainLines(plan);
   for (const line of buildLines) reporter.info(line);
   if (serverless !== undefined) for (const warning of serverlessSecretWarnings(plan)) warn(warning);
   // The components, with each one's memory on the chosen server (SC-1308); with extra servers,
@@ -1289,7 +1348,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
           ...(bucketLine !== undefined ? [bucketLine] : []),
           ...(off.length > 0 ? [routeJobsOffText(off, plan)] : []),
         ]),
-    ...(inPortainer || serverless !== undefined || servers.length > 0
+    ...(inPortainer || noServer || servers.length > 0
       ? []
       : [
           cap === undefined
@@ -1315,21 +1374,19 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   for (const line of placementLines) reporter.info(line);
   for (const warning of placement.warnings) warn(warning);
   const headroom = memoryHeadroom(serverMb, onAppMb + (sharedPreviews?.memoryMb ?? 0), edgeMb);
-  if (!ownsServer && serverless === undefined && headroom.low) {
+  if (!ownsServer && !noServer && headroom.low) {
     warn(lowHeadroomText(chosen.target.serverType, headroom.free));
   }
-  const migrations =
-    serverless === undefined
-      ? releaseCommandNote(plan, facts, await appFlag(paths.root, paths.app))
-      : undefined;
+  const migrations = noServer
+    ? undefined
+    : releaseCommandNote(plan, facts, await appFlag(paths.root, paths.app));
   if (migrations?.warning) warn(migrations.text);
   else if (migrations !== undefined) reporter.info(say(migrations.text));
   for (const line of supplyLines) reporter.info(line);
   // vercel.json's routing rules become the app's additions for the server's proxy (FR-1446).
-  const additions =
-    serverless === undefined
-      ? await vercelAdditions(paths.root, plan, facts)
-      : { lines: [], warnings: [] };
+  const additions = noServer
+    ? { lines: [], warnings: [] }
+    : await vercelAdditions(paths.root, plan, facts);
   const additionLines = additions.lines.map(say);
   for (const line of additionLines) reporter.info(line);
   for (const warning of additions.warnings) warn(warning);
@@ -1353,9 +1410,11 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     "design",
     "ok",
     say(
-      unpriced
-        ? `${chosen.id}, no server cost`
-        : `${chosen.id}, ${cost}/month (${priceLabel(total)})`,
+      hosting !== undefined
+        ? `${chosen.id}, no price`
+        : unpriced
+          ? `${chosen.id}, no server cost`
+          : `${chosen.id}, ${cost}/month (${priceLabel(total)})`,
     ),
   );
   return {
@@ -1648,6 +1707,7 @@ function providerSwitchBlock(
     current === "own" ||
     current === "portainer" ||
     current === "localhost" ||
+    current === "hosting" ||
     isServerlessProvider(current);
   const where = deployed
     ? `Your app is deployed ${current === "portainer" ? "in" : "on"} ${from}`
@@ -1656,17 +1716,20 @@ function providerSwitchBlock(
   const keep = `or keep ${from} by answering \`opscrew interview\` again.`;
   const portainer = current === "portainer" || requested === "portainer";
   const localhost = current === "localhost";
+  const hosting = current === "hosting" || requested === "hosting";
   let hint: string;
-  if (portainer || localhost || serverless || current === "own" || requested === "own") {
+  if (portainer || localhost || hosting || serverless || current === "own" || requested === "own") {
     // `opscrew retarget` does not move an app to or from a Portainer, a server the user owns,
-    // this computer or a server-less target.
+    // this computer, a server-less target or a hosting account.
     const what = portainer
       ? "your Portainer"
       : localhost
         ? "this computer"
-        : serverless !== undefined
-          ? serverlessName(serverless)
-          : "a server you already own";
+        : hosting
+          ? "a hosting account"
+          : serverless !== undefined
+            ? serverlessName(serverless)
+            : "a server you already own";
     const there = deployed && !hasServer ? " on the computer that provisioned it" : "";
     hint = `OpsCrew cannot move an app to or from ${what}. Run \`opscrew destroy\`${there} first and then \`opscrew design\`, ${keep}`;
   } else if (hasServer) {
@@ -1825,9 +1888,9 @@ function keepPlanSettings(
   const answeredLater = Date.parse(requirements.answeredAt) > Date.parse(previous.updatedAt);
   const filledBefore = serviceFilledNames(previous);
   const filledNow = serviceFilledNames(fresh);
-  // A server-less site has no image to sign and no server for Portainer CE, and GitHub Pages'
-  // DNS-only hostnames no WAF rules, whatever an earlier plan had.
-  const serverless = isServerlessTarget(fresh.target);
+  // A server-less site and a hosting account have no image to sign and no server for Portainer
+  // CE, and GitHub Pages' DNS-only hostnames no WAF rules, whatever an earlier plan had.
+  const serverless = isServerlessTarget(fresh.target) || isHostingTarget(fresh.target);
   // Design leaves a server it creates behind Cloudflare's proxy; DNS only there is the user's.
   const userProxy =
     isCloudServer(fresh.target) &&

@@ -177,7 +177,8 @@ function keepAnswers(
  * describe a chosen app folder, then from the previous requirements. For a server the user already
  * has (`provider: own`) or an existing Portainer (`provider: portainer`) no region is needed and
  * none is recorded; their follow-up answers (`server.*`, `portainer.*`) are not requirements (see
- * `splitFollowUps`). Cloudflare's hosting and GitHub Pages record no region either. Throws
+ * `splitFollowUps`). Cloudflare's hosting, GitHub Pages and a hosting account record no region
+ * either, and a hosting account's follow-ups (`hosting.*`) are no requirements. Throws
  * `OpsCrewError("INVALID_INPUT")` listing unknown keys, missing required answers or invalid values.
  */
 export function answersToRequirements(
@@ -215,9 +216,11 @@ export function answersToRequirements(
   // This computer has no region, domain or DNS either: the app is served at its .localhost address.
   const localhost = chosenProvider === "localhost";
   // Nor does a server-less target, which has no location; design checks that it fits the app.
+  // Nor does a hosting account, which stays where it is.
   const ownServer =
     chosenProvider === "own" ||
     chosenProvider === "portainer" ||
+    chosenProvider === "hosting" ||
     localhost ||
     isServerlessProvider(chosenProvider);
   const required: readonly QuestionId[] = [
@@ -302,11 +305,13 @@ export function answersToRequirements(
   } else {
     // A Hetzner or DigitalOcean server is always served behind Cloudflare's proxy when its
     // domain is on Cloudflare; a server the user owns or a Portainer is checked with its serving
-    // answer. A Worker's custom domain and GitHub Pages get certificates of their own.
+    // answer. A Worker's custom domain, GitHub Pages and a hosting account (DNS only) get
+    // certificates of their own.
     const { provider: chosen, dnsProvider, domain } = parsed.data;
     const deep =
       chosen !== "own" &&
       chosen !== "portainer" &&
+      chosen !== "hosting" &&
       !isServerlessProvider(chosen) &&
       dnsProvider === "cloudflare" &&
       domain !== undefined

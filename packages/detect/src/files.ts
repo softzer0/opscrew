@@ -41,6 +41,8 @@ export interface ProjectFileList {
   files: string[];
   /** True when the walk stopped at `maxFiles`. */
   truncated: boolean;
+  /** The listed files' total size, in bytes. */
+  bytes: number;
 }
 
 type Ignore = ReturnType<typeof ignore>;
@@ -84,6 +86,7 @@ export async function listProjectFiles(
   const maxFileBytes = options.maxFileBytes ?? 1_000_000;
   const files: string[] = [];
   let truncated = false;
+  let bytes = 0;
 
   const rootMatchers: Matcher[] = [];
   if (options.extraIgnores && options.extraIgnores.length > 0) {
@@ -139,6 +142,7 @@ export async function listProjectFiles(
         return;
       }
       files.push(rel);
+      bytes += size;
     }
     for (const subdirectory of subdirectories) {
       await walk(subdirectory, matchers);
@@ -147,5 +151,5 @@ export async function listProjectFiles(
   }
 
   await walk(".", rootMatchers);
-  return { files: sortStrings(files), truncated };
+  return { files: sortStrings(files), truncated, bytes };
 }

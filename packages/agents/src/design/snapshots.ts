@@ -9,6 +9,7 @@ import {
   type DeployPlan,
   type DeployProvider,
   isCloudProvider,
+  isHostingTarget,
   isServerlessTarget,
   type Requirements,
 } from "@opscrew/plan-schema";
@@ -45,7 +46,8 @@ function ownsData(plan: Pick<DeployPlan, "target">): boolean {
  * - on the same kind of target, the previous plan's (the user's, through `opscrew snapshot
  *   schedule|offsite`);
  * - after a change of target, the previous plan's off-server copy, whose bucket does not depend on
- *   the target, wherever snapshots can be (not this computer, a site or a preview environment);
+ *   the target, wherever snapshots can be (not this computer, a site, a hosting account or a
+ *   preview environment);
  * - and on an own server or a Portainer whose data matters (`dataCriticality` not `none`), with
  *   data to snapshot, design's proposal: weekly, the last 4 kept, and when the plan has no copy,
  *   one kept 90 days in the bucket `<app>-<env>-backups` on Cloudflare R2 when the domain is there
@@ -60,9 +62,11 @@ export function withDesignedSnapshots(
   if (previous !== undefined && previous.target.provider === plan.target.provider) {
     return previous.snapshots === undefined ? rest : { ...rest, snapshots: previous.snapshots };
   }
+  // A hosting account's snapshots are dumps the agent on the account takes (ADR 0030 D5).
   const allowed =
     plan.target.provider !== "localhost" &&
     !isServerlessTarget(plan.target) &&
+    !isHostingTarget(plan.target) &&
     plan.environment?.previews === undefined;
   const kept = allowed ? previous?.snapshots?.offsite : undefined;
   const proposed =

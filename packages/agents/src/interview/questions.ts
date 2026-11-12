@@ -52,6 +52,11 @@ export interface InterviewContext {
    * offers; none without it.
    */
   serverless?: readonly ServerlessProvider[];
+  /**
+   * Whether the environment reaches a hosting account (`hostingReach`: the `OPSCREW_HOSTING_*` or
+   * `OPSCREW_SFTP_*` variables), which the provider question then offers.
+   */
+  hosting?: boolean;
 }
 
 /** The provider question's hints for the server-less targets. */
@@ -73,15 +78,17 @@ export function signingPublicLog(repositoryPrivate: boolean | undefined): string
 
 /**
  * The provider default: the previous answer, else the one inferred from tokens, else Hetzner. A
- * previous server-less target is the default only while the question offers it
- * (`context.serverless`).
+ * previous server-less target or hosting account is the default only while the question offers it
+ * (`context.serverless`, `context.hosting`).
  */
 export function defaultProvider(
   previous: Pick<Requirements, "provider"> | undefined,
   context: InterviewContext = {},
 ): DeployProvider {
   const before = previous?.provider;
-  const offered = !isServerlessProvider(before) || (context.serverless ?? []).includes(before);
+  const offered = isServerlessProvider(before)
+    ? (context.serverless ?? []).includes(before)
+    : before !== "hosting" || context.hosting === true;
   return (offered ? before : undefined) ?? context.inferredProvider ?? DEFAULT_CLOUD_PROVIDER;
 }
 
@@ -125,8 +132,9 @@ function candidateHint(facts: ProjectFacts, dir: string): string | undefined {
  * the user already has (`own`, whose follow-ups come from `buildServerQuestions`) and an existing
  * Portainer (`portainer`, whose follow-ups come from `buildPortainerQuestions`); for both the
  * region is ignored. This computer (`localhost`) ignores the region, the domain and its DNS.
- * Cloudflare's hosting and GitHub Pages are offered where they fit (`context.serverless`); they
- * ignore the region too. It defaults to the previous answer, then `context.inferredProvider`, then
+ * Cloudflare's hosting and GitHub Pages are offered where they fit (`context.serverless`), and a
+ * hosting account when the environment reaches one (`context.hosting`, whose follow-ups come from
+ * `hostingAnswers`); they ignore the region too. It defaults to the previous answer, then `context.inferredProvider`, then
  * `hetzner`. The last two offer image signing (saying what a private repository makes public,
  * from `context.repositoryPrivate`) and deploy tags, both off by default. The questions about the
  * app's components (its hosted services, its workers' commands) come from
@@ -204,6 +212,15 @@ export function buildQuestions(
           label: "My existing Portainer",
           hint: "a Portainer you already run, for example on a NAS or a home server; OpsCrew deploys the app as a stack through Portainer's API and changes nothing else on the host",
         },
+        ...(context.hosting === true
+          ? [
+              {
+                value: "hosting",
+                label: "A hosting account",
+                hint: "a shared hosting account you already pay for (cPanel, Plesk, DirectAdmin, or a host you reach over SFTP); OpsCrew sets the app up there and deploys each release to it, with no server to run",
+              },
+            ]
+          : []),
         {
           value: "localhost",
           label: "This computer",

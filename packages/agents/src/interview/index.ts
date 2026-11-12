@@ -7,6 +7,7 @@ export {
   hostedAdditions,
 } from "./components";
 export { splitFollowUps } from "./follow-ups";
+export { HOSTING_FIELDS, type HostingAnswers, type HostingQuestion } from "./hosting";
 export {
   answersToOwnServer,
   buildServerQuestions,

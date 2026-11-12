@@ -3,7 +3,8 @@
  * reads git metadata without a git binary and detects frameworks, app kind, build/start
  * commands, port, environment variables, services (self-hostable and hosted), workers, cron jobs,
  * SQLite files, object storage, builder platform and Docker files, the seed command, the local
- * workspace packages the app's build uses, and the site a server-less target publishes (`detectSite`).
+ * workspace packages the app's build uses, the site a server-less target publishes (`detectSite`)
+ * and what a PHP app needs from the PHP it runs on (`detectPhpNeeds`).
  * All paths are repo-relative POSIX paths on every platform.
  */
 export { normalizeAppDir } from "./app-dir";
@@ -28,6 +29,7 @@ export {
   SKIPPED_DIRECTORIES,
 } from "./files";
 export { type GitRemote, parseGitRemote, readGitInfo } from "./git";
+export { detectPhpNeeds, PHP_8_EXTENSIONS, type PhpNeeds } from "./php-needs";
 export {
   type CloudflareAdapter,
   type CloudflareFramework,
