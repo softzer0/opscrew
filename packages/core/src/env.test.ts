@@ -23,6 +23,8 @@ const NAMED = [
   "NODE_AUTH_TOKEN",
   "TF_ENCRYPTION",
   "OPSCREW_STATE_PASSPHRASE",
+  "CNTB_OAUTH2_CLIENT_SECRET",
+  "CNTB_OAUTH2_PASS",
 ];
 
 /** Account names that go with a provider secret: kept from the agent, but not secrets. */
@@ -34,6 +36,7 @@ describe("isSecretEnvName", () => {
     "ANTHROPIC_API_KEY",
     "AWS_SECRET_ACCESS_KEY",
     "DJANGO_SECRET_KEY",
+    "SMTP_PASS",
   ])("is true for %s", (name) => {
     expect(isSecretEnvName(name)).toBe(true);
     expect(isSecretEnvName(name.toLowerCase())).toBe(true);
@@ -61,6 +64,9 @@ describe("sanitizeAgentEnv", () => {
     "TF_VAR_hcloud_token",
     "TF_VAR_region",
     "CONTABO_CLIENT_ID",
+    // Contabo's client id and API user (the account's email): parts of its credentials.
+    "CNTB_OAUTH2_CLIENT_ID",
+    "CNTB_OAUTH2_USER",
     "ARM_CLIENT_ID",
     "ARM_SUBSCRIPTION_ID",
     "AZURE_CLIENT_ID",

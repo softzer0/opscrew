@@ -15,6 +15,7 @@ const SECRET_SUFFIXES = [
   "_SECRET",
   "_PASSWORD",
   "_PASSWD",
+  "_PASS",
   "_PRIVATE_KEY",
   "_API_KEY",
   "_SECRET_KEY",
@@ -26,7 +27,7 @@ const SECRET_INFIXES = ["_TOKEN_", "_SECRET_", "_PASSWORD_", "_PRIVATE_KEY_"];
 /**
  * True when the variable `name` holds a secret (compared case-insensitively): `TF_ENCRYPTION`,
  * `OPSCREW_STATE_PASSPHRASE`, and names ending in `_TOKEN`, `_SECRET`, `_PASSWORD`, `_PASSWD`,
- * `_PRIVATE_KEY`, `_API_KEY`, `_SECRET_KEY`, `_ACCESS_KEY` or `_AUTHTOKEN` or containing `_TOKEN_`,
+ * `_PASS` (Contabo's `CNTB_OAUTH2_PASS`), `_PRIVATE_KEY`, `_API_KEY`, `_SECRET_KEY`, `_ACCESS_KEY` or `_AUTHTOKEN` or containing `_TOKEN_`,
  * `_SECRET_`, `_PASSWORD_` or `_PRIVATE_KEY_`. The redactor masks the values of these variables
  * and the agent environment leaves them out.
  */
@@ -53,7 +54,7 @@ const CREDENTIAL_PARTS = new Set([
 ]);
 
 /** Always removed, whatever model provider is configured. */
-const ALWAYS_PREFIXES = ["TF_VAR_", "CONTABO_", "ARM_", "VSCODE_GIT_ASKPASS_"];
+const ALWAYS_PREFIXES = ["TF_VAR_", "CONTABO_", "CNTB_", "ARM_", "VSCODE_GIT_ASKPASS_"];
 
 /** Model credentials the agent SDK needs; never removed. */
 const MODEL_CREDENTIALS = new Set(["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]);
@@ -92,7 +93,7 @@ function isRemoved(name: string, env: Record<string, string | undefined>): boole
 
 /**
  * Returns a new environment for the agent subprocess without secrets ({@link isSecretEnvName}),
- * `TF_VAR_*`, `ARM_*`, `CONTABO_*`, the account names of provider credentials (`CLOUDFLARE_EMAIL`,
+ * `TF_VAR_*`, `ARM_*`, `CONTABO_*`, `CNTB_*` (Contabo's credentials), the account names of provider credentials (`CLOUDFLARE_EMAIL`,
  * `NAMECHEAP_API_USER`) and credential channels such as `SSH_AUTH_SOCK`.
  * `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are kept; `AWS_*`, Google
  * credentials/`CLOUDSDK_*` and `AZURE_*` (plus `ANTHROPIC_FOUNDRY_API_KEY`) are kept only when
