@@ -385,7 +385,19 @@ describe.skipIf(MISSING.length > 0)(
     paidStep(
       "6. restore --server <id> after the server's name typed: the same server and address, the snapshot's data back, and verify again (SC-2601)",
       minutes(45),
-      async () => {
+      async (attempt) => {
+        if (attempt > 1) {
+          // A retry after a fix takes the snapshot again (a Cloud VPS 4 keeps one), so a fix in how
+          // a snapshot is taken is proven on the same server (research R8).
+          await writeValue(site(), before);
+          if ((await listSnapshots(run)).some((listed) => listed.id === snapshot)) {
+            await run.opscrewOk("snapshot", "delete", snapshot, "--confirm", snapshot);
+          }
+          const id = serverSnapshotId((await run.opscrewOk("snapshot", "--server")).output);
+          if (id === undefined) throw new Error("No snapshot id when taking it again.");
+          snapshot = id;
+          log(`observed: the whole-server snapshot taken again, ${id}`);
+        }
         await writeValue(site(), after);
         const restored = await approvedRestore(run, ["--server", snapshot]);
         expect(restored.confirm, "the name the restore asks to type").toBe(app);

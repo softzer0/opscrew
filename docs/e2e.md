@@ -3333,7 +3333,9 @@ waits for a fix and then runs again on the same server, with the run's state, ke
 intact. The log says what failed and names two files in the run's work folder:
 - `retry`: create it once the cause is fixed and the CLI rebuilt (`pnpm --filter opscrew build`),
   and the step runs again. First undo what the failed attempt left that the step cannot take
-  twice: a Cloud VPS 4 keeps one snapshot, so delete the one a failed step 5 took.
+  twice: a Cloud VPS 4 keeps one snapshot, so delete the one a failed step 5 took. Step 6 run again
+  saves the first value again and takes the snapshot again itself, so a fix in how a snapshot is
+  taken is proven on the same server.
 - `give-up`: create it to end the run as a failure.
 
 The wait ends that many hours after step 3 started (600 at most, so the server is cancelled
