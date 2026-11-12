@@ -60,7 +60,7 @@ names the change.
   - Verify: `pnpm check`
   - Effort: xhigh
 
-- [ ] T2703 [P] [US1] [US4] cPanel's connector
+- [x] T2703 [P] [US1] [US4] cPanel's connector
   - Owns: `packages/connectors/cpanel/src/**`
   - Reads: plan 1, 7; research R1, R10, R11; `packages/contracts/src/hosting.ts`; `packages/connectors/portainer/src/` (client, errors, fakes)
   - Depends: T2701
@@ -188,7 +188,7 @@ names the change.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-github && pnpm lint`
   - Effort: medium
 
-- [ ] T2707 [P] [US7] Plesk's connector
+- [x] T2707 [P] [US7] Plesk's connector
   - Owns: `packages/connectors/plesk/src/**`
   - Reads: plan 1, 7; research R2; `packages/contracts/src/hosting.ts`; Plesk's REST and XML API references (official pages only)
   - Depends: T2701
@@ -202,7 +202,7 @@ names the change.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-plesk && pnpm lint`
   - Effort: high
 
-- [ ] T2708 [P] [US7] DirectAdmin's connector
+- [x] T2708 [P] [US7] DirectAdmin's connector
   - Owns: `packages/connectors/directadmin/src/**`
   - Reads: plan 1, 7; research R3; `packages/contracts/src/hosting.ts`; DirectAdmin's API reference (official pages only)
   - Depends: T2701
