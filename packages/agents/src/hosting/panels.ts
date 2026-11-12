@@ -29,8 +29,10 @@ export const SFTP_USER_VAR = "OPSCREW_SFTP_USER";
 /** The path of the SFTP user's private key file (never the key itself). */
 export const SFTP_KEY_VAR = "OPSCREW_SFTP_KEY";
 
-const PANEL_VARS = [HOSTING_URL_VAR, HOSTING_USER_VAR, HOSTING_TOKEN_VAR] as const;
-const SFTP_VARS = [SFTP_HOST_VAR, SFTP_USER_VAR, SFTP_KEY_VAR] as const;
+/** The variables that reach a panel's account. */
+export const PANEL_VARS = [HOSTING_URL_VAR, HOSTING_USER_VAR, HOSTING_TOKEN_VAR] as const;
+/** The variables that reach an SFTP-only host. */
+export const SFTP_VARS = [SFTP_HOST_VAR, SFTP_USER_VAR, SFTP_KEY_VAR] as const;
 
 /** Each panel's name in a sentence. */
 export const PANEL_NAMES: Readonly<Record<HostingPanelKind, string>> = {
@@ -60,6 +62,11 @@ type Env = PhaseDeps["env"];
 
 const isSet = (env: Env, name: string) => (env[name]?.trim() ?? "") !== "";
 
+/** The variables of `names` that are unset or blank in `env`. */
+export function unsetVars(env: Env, names: readonly string[]): string[] {
+  return names.filter((name) => !isSet(env, name));
+}
+
 /**
  * How the environment reaches a hosting account: `panel` when the three `OPSCREW_HOSTING_*`
  * variables are set, else `sftp` when the three `OPSCREW_SFTP_*` are, else `undefined`.
@@ -78,7 +85,7 @@ export const HOSTING_VARS_HINT = `Set ${listText([...PANEL_VARS])} for an accoun
  * `OPSCREW_HOSTING_TOKEN`; the token is registered with the redactor first, so no output shows it.
  */
 export function panelAccess(env: Env, redactor: Redactor): HostingPanelAccess {
-  const missing = PANEL_VARS.filter((name) => !isSet(env, name));
+  const missing = unsetVars(env, PANEL_VARS);
   if (missing.length > 0) {
     throw new OpsCrewError(
       "CREDENTIALS_MISSING",

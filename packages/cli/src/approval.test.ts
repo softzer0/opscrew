@@ -318,6 +318,56 @@ describe("NonInteractiveApprovalHandler with a Pages plan (a GitHub Pages site)"
   });
 });
 
+describe("NonInteractiveApprovalHandler with hosting plans (a hosting account)", () => {
+  const AGENT = "9a".repeat(32);
+  const APP = "9b".repeat(32);
+  const handler = (hashes: string[], assumeYes = false) =>
+    new NonInteractiveApprovalHandler({
+      approvePlanHashes: hashes,
+      ...(assumeYes ? { assumeYes: true } : {}),
+      approver: assumeYes ? "--yes flag" : "--approve flag",
+      clock,
+    });
+  const hostingApply = (planHash: string, overrides: Partial<ApprovalRequest> = {}) =>
+    ({
+      kind: "hosting-apply",
+      title: "Apply hosting plan A to the cPanel account user at panel.example.com (3 changes)",
+      details: `Hosting plan hash: ${planHash}`,
+      planHash,
+      ...overrides,
+    }) satisfies ApprovalRequest;
+
+  it("grants plan A and plan B each only when its own hash is listed with --approve", async () => {
+    const both = handler([AGENT, APP.toUpperCase()]);
+    expect((await both.request(hostingApply(AGENT))).approved).toBe(true);
+    expect((await both.request(hostingApply(APP))).approved).toBe(true);
+    const onlyA = handler([AGENT]);
+    expect((await onlyA.request(hostingApply(AGENT))).approved).toBe(true);
+    const refused = await onlyA.request(hostingApply(APP));
+    expect(refused.approved).toBe(false);
+    expect(refused.reason).toContain("The hosting plan's hash does not match --approve");
+    expect((await both.request(hostingApply(APP, { planHash: undefined }))).approved).toBe(false);
+  });
+
+  it("never grants a hosting plan through --yes, with or without other hashes", async () => {
+    const yes = new NonInteractiveApprovalHandler({ assumeYes: true, approver: "--yes", clock });
+    const refused = await yes.request(hostingApply(AGENT));
+    expect(refused.approved).toBe(false);
+    expect(refused.reason).toContain("No plan hash was approved");
+    expect((await handler([HASH], true).request(hostingApply(AGENT))).approved).toBe(false);
+  });
+
+  it("refuses a hosting plan that deletes (typed hostname) even when its hash is listed", async () => {
+    for (const assumeYes of [false, true]) {
+      const decision = await handler([AGENT], assumeYes).request(
+        hostingApply(AGENT, { allowDestroy: true, confirmPhrase: "app.example.com" }),
+      );
+      expect(decision.approved).toBe(false);
+      expect(decision.reason).toMatch(/typed confirmation/);
+    }
+  });
+});
+
 describe("NonInteractiveApprovalHandler with --yes", () => {
   const handler = new NonInteractiveApprovalHandler({
     assumeYes: true,

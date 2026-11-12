@@ -146,10 +146,16 @@ async function previewDesign(
   });
 }
 
-/** The option's cost in words: never a price for the user's own server or their Portainer. */
+/**
+ * The option's cost in words: never a price for the user's own server, their Portainer or their
+ * hosting account.
+ */
 function costText(option: DesignOption): string {
   if (option.target.provider === "portainer") {
     return "no server price (the user already runs this Portainer)";
+  }
+  if (option.target.provider === "hosting") {
+    return "no price (the user already pays for this hosting account)";
   }
   return option.target.provider === "own"
     ? "no server price (the user already pays for this server)"
@@ -167,7 +173,8 @@ function componentText(preview: Pick<DesignPreview, "lines">): string[] {
 
 /** Plain-text block for one option. */
 function renderOption(option: DesignOption): string {
-  const unpriced = isUnpriced(option);
+  // Nor does a hosting account have a price or a budget to fit.
+  const unpriced = isUnpriced(option) || option.target.provider === "hosting";
   const marks = [
     ...(unpriced ? [] : [option.fitsBudget ? "fits the budget" : "over budget"]),
     ...(option.recommended ? ["RECOMMENDED"] : []),
@@ -178,7 +185,10 @@ function renderOption(option: DesignOption): string {
     `  ${option.summary}`,
     // The user's Portainer (OpsCrew does not size the host) and a site with no server show no
     // sizes at all.
-    ...(t.provider === "portainer" || t.provider === "localhost" || isServerlessProvider(t.provider)
+    ...(t.provider === "portainer" ||
+    t.provider === "localhost" ||
+    t.provider === "hosting" ||
+    isServerlessProvider(t.provider)
       ? []
       : [
           `  Server: ${t.serverType} in ${t.location}, ${t.vcpus} vCPU (${t.cpuType}), ${t.memoryGb} GB RAM, ${t.diskGb} GB ${t.provider === "own" ? "free disk" : "disk"}`,
@@ -265,7 +275,7 @@ export function registerDesignTools(
     "opscrew_design_options",
     {
       title: "Deployment options",
-      description: `Offer 2–3 concrete deployment options on the cloud provider chosen in the interview (${CLOUD_NAMES}) for this app and the saved requirements, each with monthly cost and breakdown, whether it fits the budget and its trade-offs; exactly one is recommended. Prices read from the provider's API (with ${orText(CLOUD_PROVIDERS.flatMap((p) => p.texts.design.livePricesVar ?? []))} set) are live; rates the API does not return (DigitalOcean's backup percentage) are labelled with their published date; without a token the prices come from a dated price list labelled as an estimate. For a server the user already has, it connects over SSH, inspects the server read-only (the first time the user confirms its SSH host key in a dialog) and offers that server as the one option, without a price, warning when it is smaller than the app needs. For a Portainer the user already runs it offers one option, the app's stacks in the environment the user picked, without a price or sizes (OpsCrew does not size or change the host). For a site on Cloudflare's hosting or GitHub Pages it offers that one option, with the price and limits of the provider's published plans, or says why the target does not fit the app. Needs opscrew_save_requirements first. Writes nothing; call opscrew_select_design with the option the user chooses.`,
+      description: `Offer 2–3 concrete deployment options on the cloud provider chosen in the interview (${CLOUD_NAMES}) for this app and the saved requirements, each with monthly cost and breakdown, whether it fits the budget and its trade-offs; exactly one is recommended. Prices read from the provider's API (with ${orText(CLOUD_PROVIDERS.flatMap((p) => p.texts.design.livePricesVar ?? []))} set) are live; rates the API does not return (DigitalOcean's backup percentage) are labelled with their published date; without a token the prices come from a dated price list labelled as an estimate. For a server the user already has, it connects over SSH, inspects the server read-only (the first time the user confirms its SSH host key in a dialog) and offers that server as the one option, without a price, warning when it is smaller than the app needs. For a Portainer the user already runs it offers one option, the app's stacks in the environment the user picked, without a price or sizes (OpsCrew does not size or change the host). For a site on Cloudflare's hosting or GitHub Pages it offers that one option, with the price and limits of the provider's published plans, or says why the target does not fit the app. For the user's hosting account (cPanel, Plesk, DirectAdmin or SFTP) it reads the account (through its panel with OPSCREW_HOSTING_* from the MCP server's environment) and offers that account as the one option, without a price, with what the app gets there (the hostname, its PHP version, the database and the cron jobs), or says why the app doesn't fit a hosting account (workers, queues, Redis, a database engine the account lacks) and which target to choose instead. Needs opscrew_save_requirements first. Writes nothing; call opscrew_select_design with the option the user chooses.`,
       inputSchema: { ...projectDirInput, ...appInput, ...environmentInput },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -304,6 +314,26 @@ export function registerDesignTools(
               recommendedId: recommended?.id,
               ...(unpriced === "own" ? { ownServer: true } : { portainer: true }),
               components: result.components,
+              warnings: result.warnings,
+            },
+          };
+        }
+        // A hosting account: one option, the account, with what it gets there and no price.
+        if (requirements.provider === "hosting") {
+          const text = [
+            "Deployment on the user's hosting account (no price: they already pay for it; OpsCrew changes only what it makes there, each change in a plan the user approves by its hash):",
+            "",
+            ...result.options.map(renderOption),
+            "",
+            ...componentText(result),
+            `After the user agrees, call opscrew_select_design with the option id (${recommended?.id ?? result.options[0]?.id}).`,
+          ].join("\n");
+          return {
+            text,
+            data: {
+              options: result.options,
+              recommendedId: recommended?.id,
+              hosting: true,
               warnings: result.warnings,
             },
           };

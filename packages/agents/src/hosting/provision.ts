@@ -253,10 +253,10 @@ export async function provisionHosting(
     deps.reporter.info(
       "Plan B, the app's part, is built from the agent's first report, so it comes once plan A is applied: run the command without --plan-only.",
     );
-    return { applied: false, outputs: {} };
+    return { applied: false, outputs: {}, ...changingPlans(a) };
   }
   if (stopsForPanelSteps(deps, panel, panelSteps(agentPlan), command)) {
-    return { applied: a.applied.length > 0, outputs: {} };
+    return { applied: a.applied.length > 0, outputs: {}, ...changingPlans(a) };
   }
 
   // 3. The agent's first report.
@@ -351,7 +351,12 @@ export async function provisionHosting(
       }),
   });
   if (planOnly) {
-    return { applied: false, outputs: {}, ...(dns?.planHash ? { planHash: dns.planHash } : {}) };
+    return {
+      applied: false,
+      outputs: {},
+      ...(dns?.planHash ? { planHash: dns.planHash } : {}),
+      ...changingPlans(a, b),
+    };
   }
 
   // 5. GitHub: the agent's deploy key.
@@ -364,7 +369,7 @@ export async function provisionHosting(
   // 6. Steps in the panel.
   if (stopsForPanelSteps(deps, panel, panelSteps(appPlan), command)) {
     await writePlanIfChanged(deps, plan);
-    return { applied: true, outputs: {} };
+    return { applied: true, outputs: {}, ...changingPlans(a, b) };
   }
 
   // 7. The certificate, then the files and the pull request.
@@ -421,6 +426,7 @@ export async function provisionHosting(
   }
   return {
     ...(dns?.planHash ? { planHash: dns.planHash } : {}),
+    ...changingPlans(a, b),
     applied: true,
     outputs: { url: `https://${hostname}` },
     branch: published.published.branch,
@@ -429,6 +435,14 @@ export async function provisionHosting(
     published: published.published.published,
     pushed: published.published.pushed,
   };
+}
+
+/** `hostingPlanHashes`: the hash of each of `outcomes`' plans that changes something, in order. */
+function changingPlans(...outcomes: PlanOutcome[]): Pick<ProvisionResult, "hostingPlanHashes"> {
+  const hashes = outcomes.flatMap((outcome) =>
+    outcome.plan.steps.length > 0 ? [outcome.hash] : [],
+  );
+  return hashes.length > 0 ? { hostingPlanHashes: hashes } : {};
 }
 
 /**

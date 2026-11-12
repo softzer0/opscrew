@@ -4,7 +4,14 @@ import { readArtifact } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { ResolvedMcpDeps } from "../deps";
 import { refuseUnconfirmedOwnServer } from "./elicitation";
-import { appInput, environmentInput, projectDirInput, runTool, toolEnvironment } from "./shared";
+import {
+  appInput,
+  environmentInput,
+  projectDirInput,
+  requireServerTarget,
+  runTool,
+  toolEnvironment,
+} from "./shared";
 
 /** The most lines `opscrew_logs` returns. */
 export const MAX_LOG_LINES = 500;
@@ -87,6 +94,14 @@ export function registerLogsTool(
         const { appKey, name } = await toolEnvironment(call.projectDir, app, environment);
         const phase = await call.phaseDeps({ app: appKey, environment: name });
         const plan = await readArtifact("plan", phase.paths.files.plan);
+        // A hosting account runs no containers: its logs are the agent's last lines.
+        if (service !== undefined || failed === true) {
+          requireServerTarget(
+            plan,
+            `opscrew_logs with ${service !== undefined ? "service" : "failed"}, which reads the app's containers on a server,`,
+            "Call opscrew_logs without it: it reads the agent's last lines on the account (its deploys and their checks). The app's own errors are in the user's panel (cPanel's Errors, or the error_log file in the app's folder).",
+          );
+        }
         await refuseUnconfirmedOwnServer(plan, phase.paths, "logs", "Nothing was read.");
         const read = await readLogs(phase, plan, {
           ...(service === undefined ? {} : { service }),

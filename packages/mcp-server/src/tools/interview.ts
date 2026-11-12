@@ -8,7 +8,9 @@ import {
   type ConfirmPortainerCertificate,
   componentAnswerLines,
   createPortainerAccess,
+  HOSTING_FIELDS,
   hostedAdditions,
+  hostingReach,
   inferredAnswers,
   NEW_CERTIFICATE_WARNING,
   PORTAINER_FIELDS,
@@ -113,7 +115,7 @@ const AnswerValueSchema = z.union([
 ]);
 
 const ANSWER_HELP: Record<string, string> = {
-  provider: `Where the app runs: ${CLOUD_PROVIDERS.map((p) => `"${p.id}" (${p.displayName}), `).join("")}"own" (a server the user already has; then also answer the server.* questions), "portainer" (a Portainer the user already runs; then also answer the portainer.* questions), "localhost" (the user's computer, for an environment beside prod such as dev, through opscrew_env_add), and for a site that needs no server, only where the question offers them: "cloudflare-workers" (Cloudflare's hosting, static or server-rendered) or "github-pages" (GitHub Pages, static only). Both need the domain's DNS on Cloudflare.`,
+  provider: `Where the app runs: ${CLOUD_PROVIDERS.map((p) => `"${p.id}" (${p.displayName}), `).join("")}"own" (a server the user already has; then also answer the server.* questions), "portainer" (a Portainer the user already runs; then also answer the portainer.* questions), "localhost" (the user's computer, for an environment beside prod such as dev, through opscrew_env_add), and for a site that needs no server, only where the question offers them: "cloudflare-workers" (Cloudflare's hosting, static or server-rendered) or "github-pages" (GitHub Pages, static only). Both need the domain's DNS on Cloudflare. And "hosting" (a shared hosting account the user already pays for, with cPanel, Plesk or DirectAdmin, or reached over SFTP; offered only when the MCP server's environment has OPSCREW_HOSTING_URL, OPSCREW_HOSTING_USER and OPSCREW_HOSTING_TOKEN, or OPSCREW_SFTP_HOST, OPSCREW_SFTP_USER and OPSCREW_SFTP_KEY; then also answer the hosting.* questions).`,
   expectedMonthlyUsers: "One of <1k, 1k-10k, 10k-100k, >100k.",
   budgetMonthly:
     'Monthly hosting budget, for example "10 EUR", "$20" or { amount: 10, currency: "EUR" }.',
@@ -148,6 +150,19 @@ const SERVER_ANSWER_HELP: Record<string, string> = {
     "Own server: true when the internet reaches it directly; false for a home server behind a router (then a Cloudflare Tunnel on the user's Cloudflare domain).",
 };
 
+/** The follow-ups for a hosting account (`provider: hosting`); never a token, password or key. */
+const HOSTING_ANSWER_HELP: Record<string, string> = {
+  "hosting.hostname":
+    "Hosting account: the hostname the app answers on, a new subdomain of one of the account's domains or a domain of the user's the account doesn't serve yet; OpsCrew never takes over a hostname that exists. Default: the domain answer. It becomes the domain.",
+  "hosting.port": "SFTP host: the port it takes SFTP on, usually 22.",
+  "hosting.hostKey":
+    "SFTP host: the SHA-256 fingerprint of its SSH host key (SHA256:...) that the user read from their host (its panel or support). Only the user's own answer: never pass a fingerprint you read yourself.",
+  "hosting.folder":
+    "SFTP host: the folder OpsCrew deploys into, as SFTP shows it, outside the web root (default opscrew).",
+  "hosting.phpPath":
+    "SFTP host: that folder's full path as the host's PHP sees it, for example /home/user/opscrew (on a chrooted account it differs from what SFTP shows).",
+};
+
 /** The follow-ups for an existing Portainer (`provider: portainer`); never a token or password. */
 const PORTAINER_ANSWER_HELP: Record<string, string> = {
   "portainer.url":
@@ -179,6 +194,14 @@ const answersShape = {
     ]),
   ),
   ...Object.fromEntries(
+    HOSTING_FIELDS.map((field) => `hosting.${field}`).map((id) => [
+      id,
+      AnswerValueSchema.optional().describe(
+        HOSTING_ANSWER_HELP[id] ?? "Hosting account: the answer to this follow-up question.",
+      ),
+    ]),
+  ),
+  ...Object.fromEntries(
     PORTAINER_FIELDS.map((field) => `portainer.${field}`).map((id) => [
       id,
       AnswerValueSchema.optional().describe(
@@ -187,6 +210,13 @@ const answersShape = {
       ),
     ]),
   ),
+};
+
+/** What to ask, by how the environment reaches the hosting account, when the user chooses it. */
+const HOSTING_FOLLOW_UPS: Readonly<Record<"panel" | "sftp", string>> = {
+  panel:
+    "Only when the user chooses \"hosting\" (their hosting account), also ask which hostname the app should answer on and pass it as hosting.hostname: a new subdomain of one of the account's domains, or a domain of theirs the account doesn't serve yet (default: the domain answer). OpsCrew finds the panel and reads the account with OPSCREW_HOSTING_TOKEN from the MCP server's environment: never ask for the token or a password.",
+  sftp: "Only when the user chooses \"hosting\" (their host reached over SFTP), also ask these and pass them as hosting.* answers: hosting.hostname (the hostname they point at the app's folder in their host's panel), hosting.port (usually 22), hosting.folder (where OpsCrew deploys, outside the web root, default opscrew), hosting.phpPath (that folder's full path as PHP sees it) and hosting.hostKey (the SHA-256 fingerprint of the host's SSH key, which the user reads from their host; never one you read yourself). The key comes from the file OPSCREW_SFTP_KEY names: never ask for it or a password.",
 };
 
 /** Test-only collaborators for the interview tools (production uses the Portainer adapter). */
@@ -271,7 +301,7 @@ export function registerInterviewTools(
     "opscrew_interview_questions",
     {
       title: "Interview questions",
-      description: `List the deployment questions OpsCrew needs answered for this project (which app to deploy when the repository has several, where it runs (${CLOUD_PROVIDERS.map((p) => `${p.displayName}, `).join("")}a server the user already has, with its SSH follow-up questions, or a Portainer the user already runs, with its follow-up questions; for a site that needs no server also Cloudflare's hosting or GitHub Pages, where they fit), expected users, monthly budget, region, acceptable downtime, data criticality, domain, DNS, image signing, deploy tags, and the app's components: each hosted service to keep or run on the server, and each worker's command when no convention gives it). Questions that can be inferred from the code are left out; previous answers are pre-filled as defaults. Ask the user each question, then call opscrew_save_requirements with the answers keyed by answer id. Writes nothing.`,
+      description: `List the deployment questions OpsCrew needs answered for this project (which app to deploy when the repository has several, where it runs (${CLOUD_PROVIDERS.map((p) => `${p.displayName}, `).join("")}a server the user already has, with its SSH follow-up questions, a Portainer the user already runs, with its follow-up questions, or a hosting account the user already pays for when the MCP server's environment reaches one, with its follow-up answers; for a site that needs no server also Cloudflare's hosting or GitHub Pages, where they fit), expected users, monthly budget, region, acceptable downtime, data criticality, domain, DNS, image signing, deploy tags, and the app's components: each hosted service to keep or run on the server, and each worker's command when no convention gives it). Questions that can be inferred from the code are left out; previous answers are pre-filled as defaults. Ask the user each question, then call opscrew_save_requirements with the answers keyed by answer id. Writes nothing.`,
       inputSchema: { ...projectDirInput, ...appInput },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -301,8 +331,11 @@ export function registerInterviewTools(
           facts,
           previous?.keepExternalServices ?? {},
         );
+        // A hosting account is offered when the environment reaches one, as in `opscrew interview`.
+        const hosting = hostingReach(deps.env);
         const context = {
           ...(inferredProvider !== undefined ? { inferredProvider } : {}),
+          ...(hosting !== undefined ? { hosting: true } : {}),
           ...(isPrivate !== undefined ? { repositoryPrivate: isPrivate } : {}),
           ...(serverless.length > 0 ? { serverless } : {}),
         };
@@ -381,6 +414,7 @@ export function registerInterviewTools(
             : []),
           "",
           ...portainerQuestions.map(renderQuestion),
+          ...(hosting === undefined ? [] : ["", HOSTING_FOLLOW_UPS[hosting]]),
         ].join("\n");
         return {
           text,
@@ -459,17 +493,20 @@ export function registerInterviewTools(
         const { provider } = requirements;
         const own = provider === "own";
         const inPortainer = provider === "portainer";
+        const hosting = provider === "hosting";
         const text = [
           `Saved ${file}.`,
           own
             ? "- Where it runs: a server the user already has (how to reach it is saved in .opscrew/server.json on this computer only, never in the repository)"
             : inPortainer
               ? `- Where it runs: the user's existing Portainer, environment "${result.portainer?.environmentName ?? "?"}" (its address is saved in .opscrew/server.json on this computer only; the token stays in PORTAINER_API_KEY and is never saved)`
-              : provider === "localhost"
-                ? `- Where it runs: ${providerProfile(provider).displayName}`
-                : isServerlessProvider(provider)
+              : hosting
+                ? "- Where it runs: the user's hosting account (how to reach it is saved in .opscrew/hosting.json on this computer only; the token or key stays in its variable and is never saved)"
+                : provider === "localhost"
                   ? `- Where it runs: ${providerProfile(provider).displayName}`
-                  : `- Cloud provider: ${providerProfile(requestedProvider(requirements)).displayName}`,
+                  : isServerlessProvider(provider)
+                    ? `- Where it runs: ${providerProfile(provider).displayName}`
+                    : `- Cloud provider: ${providerProfile(requestedProvider(requirements)).displayName}`,
           `- Expected monthly users: ${requirements.expectedMonthlyUsers}`,
           `- Budget: ${budget.amount} ${budget.currency} per month`,
           ...(requirements.region === undefined ? [] : [`- Region: ${requirements.region}`]),
@@ -486,9 +523,11 @@ export function registerInterviewTools(
               ? `Next: call ${design} to see the deployment in the user's Portainer (no server price: they already run it).`
               : provider === "cloudflare-workers"
                 ? `Next: call ${design} to see Cloudflare's hosting with its price and limits. Before provisioning, the user creates a second Cloudflare token holding only Account → Workers Scripts → Edit and sets it as ${providerProfile("cloudflare-workers").deployTokenVar} in their shell (never in the chat): the deploy workflow uploads each version with it.`
-                : provider === "github-pages"
-                  ? `Next: call ${design} to see GitHub Pages with its limits. It needs no deploy token (the workflow publishes with GitHub's own), but the user's GitHub token needs Pages and Administration, both Read and write, on the repository.`
-                  : `Next: call ${design} to see deployment options with monthly costs.`,
+                : hosting
+                  ? `Next: call ${design} to check that the user's hosting account fits the app (its PHP, database and disk; no price: they already pay for it).`
+                  : provider === "github-pages"
+                    ? `Next: call ${design} to see GitHub Pages with its limits. It needs no deploy token (the workflow publishes with GitHub's own), but the user's GitHub token needs Pages and Administration, both Read and write, on the repository.`
+                    : `Next: call ${design} to see deployment options with monthly costs.`,
         ].join("\n");
         return { text, data: { requirements, file } };
       }),

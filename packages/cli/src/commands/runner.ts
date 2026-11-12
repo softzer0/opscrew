@@ -11,11 +11,13 @@ import {
   startLocalRunner,
 } from "@opscrew/agents";
 import { OpsCrewError } from "@opscrew/core";
+import { readArtifact } from "@opscrew/plan-schema";
 import { type Command, Option } from "commander";
 import { checkConfirmName, FlagConfirmation } from "../approval";
 import type { CliContext } from "../context";
 import { createPhaseDeps, servicesOf } from "../deps";
 import { type AppEnvFlags, addEnvOption, chooseEnvironment } from "../ui/environment";
+import { ON_HOSTING_INSTEAD, requireServer } from "../ui/hosting";
 import { textTable } from "../ui/output";
 import { checkApproveFlags } from "./provision";
 
@@ -312,13 +314,16 @@ export function register(program: Command, ctx: CliContext): void {
   addEnvOption(start).action(async (flags: AppEnvFlags) => {
     const { app, name } = await chooseEnvironment(ctx, flags, "runner start");
     const services = servicesOf(ctx).localRunner;
-    const local = await startLocalRunner(
-      createPhaseDeps(ctx, { ai: false, app, environment: name }),
-      {
-        environment: name,
-        ...(services === undefined ? {} : { services }),
-      },
+    const deps = createPhaseDeps(ctx, { ai: false, app, environment: name });
+    requireServer(
+      await readArtifact("plan", deps.paths.files.plan),
+      "`opscrew runner start`",
+      ON_HOSTING_INSTEAD.runners,
     );
+    const local = await startLocalRunner(deps, {
+      environment: name,
+      ...(services === undefined ? {} : { services }),
+    });
     await local.finished;
   });
 

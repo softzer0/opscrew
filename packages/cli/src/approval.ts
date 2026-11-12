@@ -161,8 +161,9 @@ const ASSUME_YES_KINDS: readonly ApprovalRequest["kind"][] = [
 /**
  * Request kinds `--approve <hash>` may grant, each only for its exact hash: infrastructure, the
  * host plan of the user's own server, the stack plan of the user's Portainer, the Cloudflare plan
- * of OpsCrew's shared Cloudflare resources, the Pages plan of a GitHub Pages site, a promotion and
- * the GitHub secrets that hold a user's replaced token (`opscrew rotate <token>`).
+ * of OpsCrew's shared Cloudflare resources, the Pages plan of a GitHub Pages site, the hosting
+ * plans of a hosting account (plan A, the agent; plan B, the app), a promotion and the GitHub
+ * secrets that hold a user's replaced token (`opscrew rotate <token>`).
  */
 export const APPROVE_BY_HASH_KINDS: readonly ApprovalRequest["kind"][] = [
   "iac-apply",
@@ -170,6 +171,7 @@ export const APPROVE_BY_HASH_KINDS: readonly ApprovalRequest["kind"][] = [
   "stack-apply",
   "cloudflare-apply",
   "pages-apply",
+  "hosting-apply",
   "promote",
   "github-secrets",
 ];
@@ -181,10 +183,10 @@ const RUN_INTERACTIVELY =
  * Approves without a human only when the user named the exact plan: an `iac-apply`
  * (infrastructure), `host-apply` (the host plan of the user's own server), `stack-apply` (the
  * stack plan of the user's Portainer), `cloudflare-apply` (the Cloudflare plan of OpsCrew's
- * shared Cloudflare resources), `pages-apply` (the Pages plan of a GitHub Pages site), `promote`
- * (a promotion) or `github-secrets` (a replaced token's copies) whose `planHash` equals one of the
- * `--approve <hash>` values (case-insensitive) and that destroys nothing and needs no typed
- * confirmation. `--yes` grants none of these kinds but `github-secrets`, which it approves without
+ * shared Cloudflare resources), `pages-apply` (the Pages plan of a GitHub Pages site),
+ * `hosting-apply` (a hosting plan of a hosting account), `promote` (a promotion) or
+ * `github-secrets` (a replaced token's copies) whose `planHash` equals one of the `--approve
+ * <hash>` values (case-insensitive) and that destroys nothing and needs no typed confirmation. `--yes` grants none of these kinds but `github-secrets`, which it approves without
  * a hash. Everything else is refused with a reason that says how to approve it.
  */
 export class NonInteractiveApprovalHandler implements ApprovalHandler {
@@ -237,9 +239,11 @@ export class NonInteractiveApprovalHandler implements ApprovalHandler {
               ? "The Cloudflare plan's hash"
               : request.kind === "pages-apply"
                 ? "The Pages plan's hash"
-                : request.kind === "promote"
-                  ? "The promotion's hash"
-                  : "The plan hash";
+                : request.kind === "hosting-apply"
+                  ? "The hosting plan's hash"
+                  : request.kind === "promote"
+                    ? "The promotion's hash"
+                    : "The plan hash";
       return `${what} does not match --approve ${hashes.join(" / ")}; the plan changed since you reviewed it, or it was not approved. ${RUN_INTERACTIVELY}`;
     }
     return undefined;

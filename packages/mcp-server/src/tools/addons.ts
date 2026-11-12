@@ -22,6 +22,7 @@ import {
   environmentInput,
   IDEMPOTENT_WRITE,
   projectDirInput,
+  requireServerTarget,
   runTool,
   type ToolCall,
   toolEnvironment,
@@ -64,7 +65,13 @@ async function planOf(
 ): Promise<{ phase: PhaseDeps; plan: DeployPlan; terminal: string }> {
   const { appKey, name, flag } = await toolEnvironment(call.projectDir, app, environment);
   const phase = await call.phaseDeps({ ...extras, app: appKey, environment: name });
-  return { phase, plan: await readArtifact("plan", phase.paths.files.plan), terminal: flag };
+  const plan = await readArtifact("plan", phase.paths.files.plan);
+  requireServerTarget(
+    plan,
+    "An add-on (Beszel, Grafana Cloud or self-hosted monitoring)",
+    "The user's panel shows the account's traffic and errors (cPanel's Metrics), and opscrew_status shows the release the account runs, the agent's last attempt and the certificate.",
+  );
+  return { phase, plan, terminal: flag };
 }
 
 /** Each add-on's state in words, then the notes on their secrets; never a secret. */

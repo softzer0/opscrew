@@ -10,12 +10,13 @@ import {
   setEnvironment,
 } from "@opscrew/agents";
 import { listText, OpsCrewError } from "@opscrew/core";
-import { type DeployPlan, DeployProviderSchema } from "@opscrew/plan-schema";
+import { type DeployPlan, DeployProviderSchema, readArtifact } from "@opscrew/plan-schema";
 import { CLOUD_PROVIDERS } from "@opscrew/providers";
 import { type Command, Option } from "commander";
 import type { CliContext } from "../context";
 import { createPhaseDeps, promptsOf, servicesOf } from "../deps";
 import { addAppOption, chooseApp, resolveCliApp } from "../ui/app";
+import { ON_HOSTING_INSTEAD, requireServer } from "../ui/hosting";
 import { chooseOption } from "../ui/options";
 import { printNextSteps, textTable } from "../ui/output";
 import { portainerInterviewOptions } from "../ui/portainer";
@@ -276,6 +277,17 @@ async function set(ctx: CliContext, name: string, flags: SetFlags) {
   }
   const app = await chooseApp(ctx, flags.app, "env set");
   const deps = createPhaseDeps(ctx, { ai: false, app: app.key, environment: name });
+  // A hosting account's releases build on GitHub's runners: only `--runner github` fits there.
+  if (flags.runner !== undefined && flags.runner !== "github") {
+    const current = await readArtifact("plan", deps.paths.files.plan).catch(() => undefined);
+    if (current !== undefined) {
+      requireServer(
+        current,
+        `\`opscrew env set --runner ${flags.runner}\``,
+        ON_HOSTING_INSTEAD.runners,
+      );
+    }
+  }
   const plan = await setEnvironment(deps, {
     ...(flags.from === undefined ? {} : { from: flags.from.trim() }),
     ...(flags.branch === undefined ? {} : { branch: flags.branch }),

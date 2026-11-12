@@ -82,6 +82,11 @@ function describe(requirements: Requirements): string[] {
     ...(isServerlessProvider(requirements.provider)
       ? [`Runs on: ${providerProfile(requirements.provider).displayName}`]
       : []),
+    ...(requirements.provider === "hosting"
+      ? [
+          "Runs on: your hosting account (how to reach it is saved on this computer only; the token or key stays in its variable)",
+        ]
+      : []),
     `Monthly users: ${requirements.expectedMonthlyUsers}`,
     `Budget: ${budget.amount} ${budget.currency} per month`,
     ...(requirements.region === undefined ? [] : [`Region: ${requirements.region}`]),
@@ -104,6 +109,8 @@ function nextStep(requirements: Requirements, flag: string): string {
       return `run ${design} to see Cloudflare's hosting with its price and limits. Before \`opscrew provision${flag}\`, create a second Cloudflare token holding only Account → Workers Scripts → Edit and set it as ${providerProfile("cloudflare-workers").deployTokenVar}: the deploy workflow uploads each version with it.`;
     case "github-pages":
       return `run ${design} to see GitHub Pages with its limits. It needs no deploy token (the workflow publishes with GitHub's own), but your GitHub token needs Pages and Administration, both Read and write, on the repository.`;
+    case "hosting":
+      return `run ${design} to check that your hosting account fits the app (its PHP, database and disk; there is no price: you already pay for the account).`;
     default:
       return `run ${design} to compare server options and their monthly cost.`;
   }
@@ -128,7 +135,7 @@ export function register(program: Command, ctx: CliContext): void {
     .addOption(
       new Option(
         "--target <provider>",
-        "Where the app runs, answering that question up front: a cloud provider, your own server or Portainer, or a site with no server (cloudflare-workers, github-pages)",
+        "Where the app runs, answering that question up front: a cloud provider, your own server or Portainer, a site with no server (cloudflare-workers, github-pages), or your hosting account (hosting, with OPSCREW_HOSTING_* or OPSCREW_SFTP_* set)",
       ).choices(DeployProviderSchema.options),
     );
   addAppOption(command).action(async (flags: InterviewFlags) => {
@@ -160,9 +167,10 @@ export function register(program: Command, ctx: CliContext): void {
         "This terminal cannot ask questions, so OpsCrew uses your previous answers, if there are any. Pass --answers <file> to give new ones.",
       );
     }
-    // The follow-ups for a server the user already has (address, SSH port, user, key, reachable)
-    // or an existing Portainer (address, environment, redeploy and web modes) are asked in the
-    // terminal too; they are saved on this computer only, never in the repo.
+    // The follow-ups for a server the user already has (address, SSH port, user, key, reachable),
+    // an existing Portainer (address, environment, redeploy and web modes) or a hosting account
+    // (the hostname; an SFTP host's port, folder and PHP's path) are asked in the terminal too;
+    // they are saved on this computer only, never in the repo.
     const isPrivate = await repositoryPrivate(deps);
     const { requirements } = await runInterview(deps, {
       ...(answers === undefined ? {} : { answers }),
@@ -173,6 +181,7 @@ export function register(program: Command, ctx: CliContext): void {
             ask,
             askServer: askFollowUps,
             askPortainer: askFollowUps,
+            askHosting: askFollowUps,
             askComponents: askFollowUps,
           }),
       portainer: portainerInterviewOptions(ctx, prompts, certFingerprint),

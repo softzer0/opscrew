@@ -33,6 +33,7 @@ import { createPhaseDeps, promptsOf, servicesOf } from "../deps";
 import { CliExit, REFUSED_EXIT_CODE } from "../exit";
 import { collect, runPhaseCommand } from "../ui/deploy";
 import { addEnvOption, type ChosenEnvironment, chooseEnvironment } from "../ui/environment";
+import { ON_HOSTING_INSTEAD, requireServer } from "../ui/hosting";
 import { chooseOption } from "../ui/options";
 import { printNextSteps } from "../ui/output";
 import { checkPortainerCert, PORTAINER_CERT_DESCRIPTION } from "../ui/portainer";
@@ -300,6 +301,15 @@ function checkConfirmNames(given: readonly string[], plan: DeployPlan, command: 
   );
 }
 
+/** The plain refusal of a move to a hosting account (`--to hosting`, or the answers' target). */
+function noMoveToHosting(): OpsCrewError {
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    "`opscrew retarget` doesn't move an app to a hosting account: a move runs the app on a server next to the old one and copies its data, and a hosting account has no server. Nothing was changed.",
+    { hint: ON_HOSTING_INSTEAD.retarget },
+  );
+}
+
 async function runCommand(
   ctx: CliContext,
   flags: RetargetFlags,
@@ -337,6 +347,7 @@ async function runCommand(
     ...servicesOf(ctx).retarget,
   };
   const plan = await readArtifact("plan", deps0.paths.files.plan);
+  requireServer(plan, "`opscrew retarget`", ON_HOSTING_INSTEAD.retarget);
   const command = `opscrew retarget${environment.flag}${mode === "run" ? "" : ` --${mode}`}`;
   checkConfirmNames(flags.confirm ?? [], plan, command);
   // The names given with --confirm, and those typed at the prompts as they come.
@@ -375,6 +386,7 @@ async function runCommand(
     const budget =
       ctx.isInteractive && option === undefined ? requirements?.budgetMonthly : undefined;
     const to = flags.to ?? requirements?.provider;
+    if (to === "hosting") throw noMoveToHosting();
     const side = starting
       ? await newSideAnswers(ctx, deps0, {
           to,
@@ -535,6 +547,8 @@ export function register(program: Command, ctx: CliContext): void {
           "own",
           "portainer",
           ...ServerlessProviderSchema.options,
+          // Offered only to say plainly that a move can't go there.
+          "hosting",
         ])
         .conflicts(["finish", "abort"]),
     )
@@ -628,7 +642,12 @@ export function register(program: Command, ctx: CliContext): void {
         "`opscrew status` shows where a move stands.",
       ].join("\n"),
     )
-    .action(async (flags: RetargetFlags) => {
+    .action(async ({ to, ...rest }: Omit<RetargetFlags, "to"> & { to?: string }) => {
+      if (to === "hosting") throw noMoveToHosting();
+      const flags: RetargetFlags = {
+        ...rest,
+        ...(to === undefined ? {} : { to: to as NonNullable<RetargetFlags["to"]> }),
+      };
       let environment: ChosenEnvironment = { app: undefined, name: "prod", flag: "" };
       const result = await runPhaseCommand(
         ctx,

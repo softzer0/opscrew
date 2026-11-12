@@ -19,6 +19,7 @@ import type { CliContext } from "../context";
 import { createPhaseDeps, promptsOf, servicesOf } from "../deps";
 import { collect, runPhaseCommand } from "../ui/deploy";
 import { addEnvOption, chooseEnvironment } from "../ui/environment";
+import { confirmNameOf } from "../ui/hosting";
 import { printNextSteps } from "../ui/output";
 import { addHostKeyOption, checkApproveFlags, deployAgainStep, engineOption } from "./provision";
 
@@ -108,11 +109,12 @@ export class TypedConfirmationHandler implements ApprovalHandler {
     if (
       request.kind === "stack-apply" ||
       request.kind === "cloudflare-apply" ||
-      request.kind === "pages-apply"
+      request.kind === "pages-apply" ||
+      request.kind === "hosting-apply"
     ) {
       // The user's Portainer's teardown, this app's hostnames leaving OpsCrew's shared Cloudflare
-      // rules, and the GitHub Pages site's removal: only a plan that deletes (allowDestroy) and
-      // asks for the name.
+      // rules, the GitHub Pages site's removal and the app's removal from a hosting account (its
+      // hostname typed): only a plan that deletes (allowDestroy) and asks for the name.
       return request.allowDestroy === true && request.confirmPhrase === this.name;
     }
     return this.approveSecrets && request.kind === "github-secrets";
@@ -177,13 +179,13 @@ export function register(program: Command, ctx: CliContext): void {
   const command = program
     .command("destroy")
     .description(
-      "Delete the deployment's infrastructure, or remove the app from your own server, your Portainer, this computer, Cloudflare's hosting or GitHub Pages (asks for the name)",
+      "Delete the deployment's infrastructure, or remove the app from your own server, your Portainer, this computer, Cloudflare's hosting, GitHub Pages or your hosting account (asks for the name)",
     )
     .option("--snapshot", "Take a snapshot of the server first")
     .option("--no-snapshot", "Do not take a snapshot of the server first")
     .option(
       "--confirm <name>",
-      "The server name (on your own server, in your Portainer, on this computer, Cloudflare's hosting or GitHub Pages, the app's name), to run without prompts (for scripts and CI); with extra servers OpsCrew created, give it again for each one's name (<app>-<server>)",
+      "The server name (on your own server, in your Portainer, on this computer, Cloudflare's hosting or GitHub Pages, the app's name; on a hosting account, the app's hostname), to run without prompts (for scripts and CI); with extra servers OpsCrew created, give it again for each one's name (<app>-<server>)",
       collect,
     )
     .option(
@@ -250,21 +252,23 @@ export async function runDestroyCommand(
       environment: environment.name,
     });
     const plan = await readArtifact("plan", deps0.paths.files.plan);
-    const name = plan.app.name;
+    // A hosting account's removal is confirmed with the app's hostname.
+    const name = confirmNameOf(plan);
     provider = plan.target.provider;
     const own = provider === "own";
     const portainer = provider === "portainer";
     const local = provider === "localhost";
     const site = isServerlessProvider(provider);
-    const app = own || portainer || local || site;
-    const what = app ? "the app's name" : "the server name";
+    const hosting = provider === "hosting";
+    const app = own || portainer || local || site || hosting;
+    const what = hosting ? "the app's hostname" : app ? "the app's name" : "the server name";
     const confirms = (flags.confirm ?? []).map((value) => value.trim());
     const scripted = confirms.length > 0;
     const again = `opscrew destroy${flag}`;
     // Each extra server OpsCrew created is deleted only with its own name at its provider.
     const extras = extraCloudServers(plan).map((server) => server.resource);
     const confirmFlags = [name, ...extras].map((value) => ` --confirm ${value}`).join("");
-    const howTo = `To ${own ? "remove the app from your server" : portainer ? "remove the app from your Portainer" : local ? "remove the app from this computer" : site ? "remove the site" : "delete the deployment"}, run \`${again}${confirmFlags}\`.`;
+    const howTo = `To ${own ? "remove the app from your server" : portainer ? "remove the app from your Portainer" : local ? "remove the app from this computer" : site ? "remove the site" : hosting ? "remove the app from your hosting account" : "delete the deployment"}, run \`${again}${confirmFlags}\`.`;
     // A value that names no server stops; so does a script without the deployment's own name.
     checkConfirmName(
       confirms.find((value) => value !== name && !extras.includes(value)),
@@ -296,6 +300,13 @@ export async function runDestroyCommand(
         {
           hint: `Run \`${again}\` without them${provider === "github-pages" ? " (add --delete-verification to delete GitHub's domain verification record too)" : ""}.`,
         },
+      );
+    }
+    if (hosting && flags.undoHost === true) {
+      throw new OpsCrewError(
+        "INVALID_INPUT",
+        "--undo-host applies only to a server you already own; OpsCrew changes nothing on a hosting account but what it made there, which the removal takes away.",
+        { hint: `Run \`${again}\` without it.` },
       );
     }
     if ((portainer || local) && flags.undoHost === true) {

@@ -125,6 +125,15 @@ export function register(program: Command, ctx: CliContext): void {
     // A missing or unreadable plan simply means nothing is deployed and no move is recorded.
     const plan = await readArtifact("plan", paths.files.plan).catch(() => undefined);
     if (flags.ip === true) {
+      if (plan?.target.provider === "hosting") {
+        throw new OpsCrewError(
+          "PHASE_PRECONDITION",
+          "The app runs on your hosting account, which has no server of OpsCrew's, so there is no server address to print.",
+          {
+            hint: `Run \`opscrew status${flag}\` to see the release the account runs and its certificate.`,
+          },
+        );
+      }
       if (plan !== undefined && isServerlessProvider(plan.target.provider)) {
         throw new OpsCrewError(
           "PHASE_PRECONDITION",
@@ -162,7 +171,8 @@ export function register(program: Command, ctx: CliContext): void {
             "",
             ...imageLines,
             ...(await componentLines(ctx, deps, plan, flags.hostKey?.trim())),
-            ...(await tlsLines(ctx, deps, plan)),
+            // A hosting account's status names its certificate itself; no proxy of OpsCrew's runs.
+            ...(plan.target.provider === "hosting" ? [] : await tlsLines(ctx, deps, plan)),
           ];
     if (Object.keys(state.phases).length === 0) {
       ctx.stdout("No phases have run yet. Start with `opscrew scan`.\n");

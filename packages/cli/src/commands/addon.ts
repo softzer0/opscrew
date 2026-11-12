@@ -25,6 +25,7 @@ import {
   runPhaseCommand,
 } from "../ui/deploy";
 import { type AppEnvFlags, addEnvOption, chooseEnvironment } from "../ui/environment";
+import { ON_HOSTING_INSTEAD, requireServer } from "../ui/hosting";
 import { printNextSteps } from "../ui/output";
 import { cancelled } from "../ui/prompts";
 import { stopSignal } from "../ui/stop";
@@ -181,6 +182,7 @@ async function runChange(
         "plan",
         createPhaseDeps(ctx, { ai: false, ...where }).paths.files.plan,
       );
+      requireServer(plan, `\`opscrew addon ${sub} ${kind}\``, ON_HOSTING_INSTEAD.addons);
       const app = plan.app.name;
       const confirm = flags.confirm?.trim();
       checkConfirmName(
@@ -397,6 +399,7 @@ export function register(program: Command, ctx: CliContext): void {
       ...(json ? { reporter: quietReporter(ctx.reporter) } : {}),
     });
     const plan = await readArtifact("plan", deps.paths.files.plan);
+    requireServer(plan, "`opscrew addon status`", ON_HOSTING_INSTEAD.addons);
     const services = servicesOf(ctx).addon;
     const status = await addonStatus(deps, plan, services === undefined ? {} : { services });
     if (json) ctx.stdout(`${JSON.stringify(status, null, 2)}\n`);
@@ -418,6 +421,7 @@ export function register(program: Command, ctx: CliContext): void {
     const { app, name } = await chooseEnvironment(ctx, flags, `addon open ${kind}`);
     const deps = createPhaseDeps(ctx, { ai: false, app, environment: name });
     const plan = await readArtifact("plan", deps.paths.files.plan);
+    requireServer(plan, `\`opscrew addon open ${kind}\``, ON_HOSTING_INSTEAD.addons);
     const stop = stopSignal(ctx);
     try {
       await addonOpen(deps, plan, kind, {

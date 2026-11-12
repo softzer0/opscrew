@@ -21,6 +21,7 @@ import {
   printPlanHashes,
   runPhaseCommand,
 } from "../ui/deploy";
+import { ON_HOSTING_INSTEAD, requireServer } from "../ui/hosting";
 import { printNextSteps } from "../ui/output";
 import {
   APPROVE_DESCRIPTION,
@@ -86,6 +87,13 @@ async function plannedHashes(deps: PhaseDeps, result: PortainerResult): Promise<
  * steps; `--confirm <app>` the deletion of Portainer's data), runs the change and prints the plans'
  * hashes or the next steps.
  */
+/** Stops `what` before anything runs when the project's plan deploys to a hosting account. */
+async function refuseOnHosting(ctx: CliContext, what: string): Promise<void> {
+  const file = createPhaseDeps(ctx, { ai: false }).paths.files.plan;
+  const plan = await readArtifact("plan", file).catch(() => undefined);
+  if (plan !== undefined) requireServer(plan, what, ON_HOSTING_INSTEAD.portainer);
+}
+
 async function runChange(
   ctx: CliContext,
   sub: "enable" | "disable",
@@ -96,6 +104,7 @@ async function runChange(
   const outcome = await runPhaseCommand(
     ctx,
     async () => {
+      await refuseOnHosting(ctx, `\`opscrew portainer ${sub}\``);
       const hashes = checkApproveFlags(`portainer ${sub}`, flags);
       const hostKey = flags.hostKey?.trim();
       const confirm = flags.confirm?.trim();
@@ -248,6 +257,7 @@ export function register(program: Command, ctx: CliContext): void {
     )
     .option("--json", "Print the status as JSON")
     .action(async (flags: { json?: boolean }) => {
+      await refuseOnHosting(ctx, "`opscrew portainer status`");
       const json = flags.json === true;
       // Progress is dropped for `--json` so stdout holds only the status; problems go to stderr.
       const reporter = json ? { reporter: quietReporter(ctx.reporter) } : {};

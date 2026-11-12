@@ -6,6 +6,7 @@ import type { CliContext } from "../context";
 import { createPhaseDeps, servicesOf } from "../deps";
 import { quietReporter } from "../reporter";
 import { type AppEnvFlags, addEnvOption, chooseEnvironment } from "../ui/environment";
+import { ON_HOSTING_INSTEAD, requireServer } from "../ui/hosting";
 
 interface ListFlags extends AppEnvFlags {
   json?: boolean;
@@ -32,6 +33,7 @@ async function previewRun(
   const { app, name } = await chooseEnvironment(ctx, flags, command);
   const deps = createPhaseDeps(ctx, { ai: false, app, environment: name, ...phase });
   const plan = await readArtifact("plan", deps.paths.files.plan);
+  requireServer(plan, `\`opscrew ${command}\``, ON_HOSTING_INSTEAD.previews);
   const services = servicesOf(ctx).provision;
   return { deps, plan, options: services === undefined ? {} : { services } };
 }

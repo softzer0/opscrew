@@ -153,11 +153,11 @@ function imageChoice(flags: Pick<InfraFlags, "publicImage" | "privateImage">): b
 
 /** Help text of `--yes` for the commands that write files, secrets and pull requests. */
 export const YES_DESCRIPTION =
-  "In a non-interactive run, approve writing the generated files, storing GitHub secrets, pushing and the pull request (infrastructure and host changes still need --approve <hash>)";
+  "In a non-interactive run, approve writing the generated files, storing GitHub secrets, pushing and the pull request (infrastructure, host and hosting plans still need --approve <hash>)";
 
 /** Help text of `--approve <hash>`, which may be given once per plan. */
 export const APPROVE_DESCRIPTION =
-  "Apply exactly the plan with this hash (from an earlier --plan-only run); give it once per plan (the Cloudflare plan of OpsCrew's shared rules and the infrastructure plan; on your own server also the host plan; in your Portainer also the stack plan; on GitHub Pages also the Pages plan and the plan of GitHub's verification record; with a runner machine also its host plan)";
+  "Apply exactly the plan with this hash (from an earlier --plan-only run); give it once per plan (the Cloudflare plan of OpsCrew's shared rules and the infrastructure plan; on your own server also the host plan; in your Portainer also the stack plan; on GitHub Pages also the Pages plan and the plan of GitHub's verification record; on a hosting account its hosting plans A and B; with a runner machine also its host plan)";
 
 /** Adds `--plan-only` and the repeatable `--approve <hash>` to `command`. */
 export function addPlanApproveOptions(command: Command): Command {
@@ -421,6 +421,7 @@ export async function runInfraCommand(
       const plan = await readArtifact("plan", deps.paths.files.plan).catch(() => undefined);
       const own = plan?.target.provider === "own";
       const portainer = plan?.target.provider === "portainer";
+      const hosting = plan?.target.provider === "hosting";
       // Cloudflare's hosting or GitHub Pages: no server.
       const site = plan !== undefined && isServerlessProvider(plan.target.provider);
       const planned: PlannedHash[] = [];
@@ -455,7 +456,10 @@ export async function runInfraCommand(
             for (const name of phrase.split(" ")) confirmNames.add(name);
           }
           planned.push({
-            label: own || portainer || site ? "infrastructure (Cloudflare)" : "infrastructure",
+            label:
+              own || portainer || site || hosting
+                ? "infrastructure (Cloudflare)"
+                : "infrastructure",
             hash: result.planHash,
           });
         }
@@ -488,6 +492,10 @@ export async function runInfraCommand(
             hash: result.pagesVerificationPlanHash,
           });
         }
+        // A hosting account: plan A (the agent), else plan B (the app), each by its own hash.
+        for (const hash of result.hostingPlanHashes ?? []) {
+          planned.push({ label: "hosting plan for your hosting account", hash });
+        }
         // The runner machines: the environment's runner off each machine it left, then on its own.
         for (const hash of result.runnerHostPlanHashes ?? []) {
           if (await planChanges(deps, "host", hash)) {
@@ -518,6 +526,7 @@ export async function runInfraCommand(
         planned,
         own,
         portainer,
+        hosting,
         site,
         plan,
         runbook: toPosixRelative(deps.paths.root, deps.paths.files.runbook),
@@ -581,6 +590,11 @@ export async function runInfraCommand(
             `This plan deletes or replaces resources, so applying it also needs "${names.join(" ")}" typed: type it when the command asks in a terminal, or keep${confirmFlags} in the command above in a script.\n`,
           );
         }
+        if (result.hosting) {
+          ctx.stdout(
+            `A hosting plan is approved only by its hash, never by --yes. In a script, add --yes to the command above for the rest (the release signing key and the agent's deploy key on GitHub, the files and the pull request). Hosting plan B (the app) is built from the agent's first report: when a run stops at it, run \`opscrew ${command}${flag} --approve <its hash> --yes\` with the hash it prints.\n`,
+          );
+        }
         if (result.stackFollows !== undefined) {
           ctx.stdout(
             `The stack plan for your Portainer follows once ${result.stackFollows}. In a script that takes three runs: this one, the command above (it applies these plans and stops at the stack plan, printing its hash), then \`opscrew ${command}${flag} --approve <stack plan hash>\`.\n`,
@@ -597,12 +611,16 @@ export async function runInfraCommand(
       ? "Cloudflare and your server already match the plans"
       : result.portainer
         ? "Cloudflare and your Portainer already match the plans"
-        : "the infrastructure already matches the plan";
+        : result.hosting
+          ? "your hosting account already matches the plans"
+          : "the infrastructure already matches the plan";
     const remaining = result.portainer
       ? "the deploy branch, GitHub secrets and the pull request"
       : result.site
         ? "GitHub secrets and the pull request"
-        : "server readiness, GitHub secrets and the pull request";
+        : result.hosting
+          ? "the certificate, the GitHub keys and the pull request"
+          : "server readiness, GitHub secrets and the pull request";
     ctx.stdout(`\nNothing to apply: ${matched}.\n`);
     printNextSteps(ctx, [
       `run \`opscrew ${command}${flag}${flags.yes === true ? " --yes" : ""}\` to finish the remaining steps (${remaining}).`,
@@ -630,6 +648,15 @@ export async function runInfraCommand(
     printNextSteps(ctx, [
       ...push,
       `run \`opscrew verify${flag}\` to check the app on this computer and write ${result.runbook}.`,
+    ]);
+    return;
+  }
+
+  if (result.hosting) {
+    printNextSteps(ctx, [
+      ...push,
+      verifyStep(flag, result.runbook, deploys),
+      `run \`opscrew status${flag}\` to see the release your hosting account runs and the agent's last attempt.`,
     ]);
     return;
   }
@@ -770,7 +797,7 @@ export function register(program: Command, ctx: CliContext): void {
   const command = program
     .command("provision")
     .description(
-      "Plan and, after your approval, create the servers on your cloud, prepare your own server or set up the app in your Portainer",
+      "Plan and, after your approval, create the servers on your cloud, prepare your own server, or set up the app in your Portainer or on your hosting account",
     );
   addPlanApproveOptions(command);
   addEnvOption(command);

@@ -385,6 +385,12 @@ export interface ProvisionResult {
    * has changes; `planHash` is the site's DNS records. With `--plan-only` it is the hash to approve.
    */
   pagesVerificationPlanHash?: string;
+  /**
+   * A hosting account: the SHA-256 hash of each hosting plan this run showed that changes
+   * something (`hosting-apply`), in order: plan A (the agent), then plan B (the app). With
+   * `--plan-only` they are the hashes to approve, each with its own `--approve <hash>`.
+   */
+  hostingPlanHashes?: string[];
   /** Root-module outputs after the run (server IPs, id, name, url). */
   outputs: Record<string, unknown>;
   /** Pull request with the generated files, when one was opened or already open. */

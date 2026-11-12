@@ -13,10 +13,19 @@ import {
 } from "@opscrew/agents";
 import type { ApprovalHandler, ComputeCatalog } from "@opscrew/contracts";
 import { formatMoney, isUserFacingError, OpsCrewError } from "@opscrew/core";
+import { readArtifact } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { ResolvedMcpDeps } from "../deps";
 import { type CallExtra, dialogHandler, REQUIRES_USER, requireDialogs } from "./elicitation";
-import { andApp, appInput, projectDirInput, runTool, toolApp, withHint } from "./shared";
+import {
+  andApp,
+  appInput,
+  projectDirInput,
+  requireServerTarget,
+  runTool,
+  toolApp,
+  withHint,
+} from "./shared";
 
 /** Test-only collaborators for the environment tools. */
 export interface EnvironmentToolOptions {
@@ -179,6 +188,17 @@ export function registerEnvironmentTools(
         const lines: string[] = [];
         const appKey = await toolApp(call.projectDir, app);
         const phase = await call.phaseDeps({ app: appKey, environment: name });
+        // A hosting account's releases build on GitHub's runners: only runner github fits there.
+        if (runner !== undefined && runner !== "github") {
+          const current = await readArtifact("plan", phase.paths.files.plan).catch(() => undefined);
+          if (current !== undefined) {
+            requireServerTarget(
+              current,
+              `opscrew_env_set with runner ${runner}`,
+              "Nothing to set up: GitHub's own runners build each release, and the agent on the account deploys it.",
+            );
+          }
+        }
         const plan = await setEnvironment(phase, {
           ...(from === undefined ? {} : { from }),
           ...(branch === undefined ? {} : { branch }),

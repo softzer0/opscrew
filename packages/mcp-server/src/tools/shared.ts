@@ -122,6 +122,23 @@ export const IDEMPOTENT_WRITE = {
   openWorldHint: true,
 } as const;
 
+/**
+ * Stops a tool that needs a server (`what`, such as "opscrew_preview_list") when the plan deploys
+ * to a hosting account, with what to use instead (`instead`).
+ */
+export function requireServerTarget(
+  plan: { target: { provider: string } },
+  what: string,
+  instead: string,
+): void {
+  if (plan.target.provider !== "hosting") return;
+  throw new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `${what} doesn't apply to a hosting account: it needs a server, and the app runs on the user's hosting account, which has none. Nothing was read or changed.`,
+    { hint: instead },
+  );
+}
+
 /** The sentence for an applied Cloudflare plan (OpsCrew's shared Cloudflare resources). */
 export function appliedCloudflarePlan(hash: string): string {
   return `Applied the Cloudflare plan ${hash} (OpsCrew's shared Cloudflare resources).`;

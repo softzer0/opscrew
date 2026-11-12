@@ -240,8 +240,8 @@ export function register(program: Command, ctx: CliContext): void {
         "On a server or this computer it asks how to treat the database: restore the snapshot taken",
         "when that version stopped running (the default outside prod, when the environment takes",
         "snapshots), migrate it down, or keep it as it is (the default on prod). Restoring or",
-        "migrating down needs the app's name typed, as destroy does. Settings and secrets stay; the",
-        "release command never runs.",
+        "migrating down needs the app's name typed (on a hosting account, its hostname), as destroy",
+        "does. Settings and secrets stay; the release command never runs.",
       ].join("\n"),
     )
     .option(
@@ -269,7 +269,7 @@ export function register(program: Command, ctx: CliContext): void {
     )
     .option(
       "--confirm <name>",
-      "In a script, with --approve: the app's name, as destroy asks for it, to restore a snapshot or migrate down",
+      "In a script, with --approve: the app's name (on a hosting account, its hostname), as destroy asks for it, to restore a snapshot or migrate down",
     );
   addEnvOption(command)
     .addHelpText(

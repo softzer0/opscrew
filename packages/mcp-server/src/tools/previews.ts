@@ -2,7 +2,14 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { listPreviews, type PreviewServices, previewListLines } from "@opscrew/agents";
 import { readArtifact } from "@opscrew/plan-schema";
 import type { ResolvedMcpDeps } from "../deps";
-import { appInput, environmentInput, projectDirInput, runTool, toolEnvironment } from "./shared";
+import {
+  appInput,
+  environmentInput,
+  projectDirInput,
+  requireServerTarget,
+  runTool,
+  toolEnvironment,
+} from "./shared";
 
 /**
  * `opscrew_preview_list` (spec.md US7): the previews of a preview environment, as
@@ -29,6 +36,11 @@ export function registerPreviewTools(
         const { appKey, name } = await toolEnvironment(call.projectDir, app, environment);
         const phase = await call.phaseDeps({ app: appKey, environment: name });
         const plan = await readArtifact("plan", phase.paths.files.plan);
+        requireServerTarget(
+          plan,
+          "opscrew_preview_list",
+          "Previews need a server of their own: the user adds an environment for them on a server with `npx opscrew env add preview --previews --target <provider>` (or own).",
+        );
         const list = await listPreviews(phase, plan, options);
         return { text: previewListLines(list, phase.clock.now()).join("\n"), data: { ...list } };
       }),

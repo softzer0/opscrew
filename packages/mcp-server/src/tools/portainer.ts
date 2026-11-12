@@ -12,7 +12,23 @@ import { readArtifact } from "@opscrew/plan-schema";
 import { z } from "zod";
 import { CollectingReporter, type ResolvedMcpDeps } from "../deps";
 import { type CallExtra, dialogHandler, REQUIRES_USER, requireDialogs } from "./elicitation";
-import { appliedCloudflarePlan, IDEMPOTENT_WRITE, projectDirInput, runTool } from "./shared";
+import {
+  appliedCloudflarePlan,
+  IDEMPOTENT_WRITE,
+  projectDirInput,
+  requireServerTarget,
+  runTool,
+} from "./shared";
+
+/** What to use instead of Portainer on a hosting account. */
+const HOSTING_INSTEAD =
+  "The user's panel shows the account's files, databases and cron jobs, and opscrew_status shows the release the account runs.";
+
+/** Stops `tool` before anything runs when the project's plan deploys to a hosting account. */
+async function refuseOnHosting(planFile: string, tool: string): Promise<void> {
+  const plan = await readArtifact("plan", planFile).catch(() => undefined);
+  if (plan !== undefined) requireServerTarget(plan, tool, HOSTING_INSTEAD);
+}
 
 /** Test-only collaborators for the Portainer tools (production uses the real ones). */
 export interface PortainerToolOptions {
@@ -68,6 +84,7 @@ export function registerPortainerTools(
     ({ projectDir }) =>
       runTool(deps, "opscrew_portainer_status", projectDir, async (call) => {
         const phase = await call.phaseDeps();
+        await refuseOnHosting(phase.paths.files.plan, "opscrew_portainer_status");
         const status = await portainerStatus({
           ...phase,
           reporter: new CollectingReporter(deps.redactor.redact),
@@ -116,6 +133,10 @@ export function registerPortainerTools(
     },
     ({ projectDir, subdomain, allowEmails }, extra: CallExtra) =>
       runTool(deps, "opscrew_portainer_enable", projectDir, async (call) => {
+        await refuseOnHosting(
+          (await call.phaseDeps()).paths.files.plan,
+          "opscrew_portainer_enable",
+        );
         requireDialogs(server, "npx opscrew portainer enable");
         const handler = dialogHandler(server, deps, extra);
         const phase = await call.phaseDeps({ approvalHandler: handler });
@@ -174,6 +195,10 @@ export function registerPortainerTools(
             },
           );
         }
+        await refuseOnHosting(
+          (await call.phaseDeps()).paths.files.plan,
+          "opscrew_portainer_disable",
+        );
         requireDialogs(server, "npx opscrew portainer disable");
         const handler = dialogHandler(server, deps, extra);
         const phase = await call.phaseDeps({ approvalHandler: handler });

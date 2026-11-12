@@ -622,6 +622,33 @@ describe("provision on a cPanel account", () => {
     expect(made.objects.filter((o) => o.kind === "deploy-key")).toHaveLength(1);
   });
 
+  it("gives the hash of each hosting plan that changes something, for --approve", async () => {
+    const s = await setup();
+    // --plan-only: plan A only (plan B comes from the agent's report), nothing changed.
+    const planned = await s.run({ planOnly: true });
+    expect(planned.error).toBeUndefined();
+    expect(planned.handler.requests).toEqual([]);
+    expect(changes(s.fake)).toEqual([]);
+    const agentHashes = planned.result?.hostingPlanHashes ?? [];
+    expect(agentHashes).toHaveLength(1);
+    expect(said(planned.deps)).toContain(`Hosting plan hash: ${agentHashes[0]}`);
+
+    // The run that applies both gives plan A's hash, then plan B's, as their approvals bound them.
+    const applied = await s.run();
+    expect(applied.error).toBeUndefined();
+    const bound = applied.handler.requests
+      .filter((request) => request.kind === "hosting-apply")
+      .map((request) => request.planHash);
+    expect(applied.result?.hostingPlanHashes).toEqual(bound);
+    expect(bound[0]).toBe(agentHashes[0]);
+
+    // A run again with nothing new names no hosting plan.
+    await s.merge();
+    const again = await s.run({ planOnly: true });
+    expect(again.error).toBeUndefined();
+    expect(again.result?.hostingPlanHashes).toBeUndefined();
+  });
+
   it("changes nothing on a run again with nothing new", async () => {
     const s = await setup();
     expect((await s.run()).error).toBeUndefined();

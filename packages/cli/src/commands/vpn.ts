@@ -7,12 +7,14 @@ import {
   vpnRemove,
   vpnRevoke,
 } from "@opscrew/agents";
+import { readArtifact } from "@opscrew/plan-schema";
 import type { Command } from "commander";
 import { renderUnicodeCompact } from "uqr";
 import type { CliContext } from "../context";
 import { createPhaseDeps, promptsOf, servicesOf } from "../deps";
 import { collect } from "../ui/deploy";
 import { type AppEnvFlags, addEnvOption, chooseEnvironment } from "../ui/environment";
+import { ON_HOSTING_INSTEAD, requireServer } from "../ui/hosting";
 import { checkApproveFlags } from "./provision";
 
 /** Help text of `--approve <hash>` on the `vpn` commands. */
@@ -37,12 +39,18 @@ function addVpnOptions(command: Command): Command {
 async function vpnDeps(ctx: CliContext, flags: VpnFlags, command: string): Promise<PhaseDeps> {
   const hashes = checkApproveFlags(command, { approve: flags.approve ?? [] }, `opscrew ${command}`);
   const { app, name } = await chooseEnvironment(ctx, flags, command);
-  return createPhaseDeps(ctx, {
+  const deps = createPhaseDeps(ctx, {
     ai: false,
     app,
     environment: name,
     approveHashes: hashes,
   });
+  requireServer(
+    await readArtifact("plan", deps.paths.files.plan),
+    `\`opscrew ${command}\``,
+    ON_HOSTING_INSTEAD.vpn,
+  );
+  return deps;
 }
 
 /** The device's configuration as a QR code for the WireGuard app on a phone. */
@@ -142,8 +150,7 @@ export function register(program: Command, ctx: CliContext): void {
         "List the devices with their addresses and when each last connected to each server (changes nothing)",
       ),
   ).action(async (flags: AppEnvFlags) => {
-    const { app, name } = await chooseEnvironment(ctx, flags, "vpn list");
-    const deps = createPhaseDeps(ctx, { ai: false, app, environment: name });
+    const deps = await vpnDeps(ctx, flags, "vpn list");
     await vpnList(deps, { services: servicesOf(ctx).vpn ?? {} });
   });
 

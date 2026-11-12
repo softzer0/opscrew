@@ -5,6 +5,7 @@ import type { Command } from "commander";
 import type { CliContext } from "../context";
 import { createPhaseDeps, servicesOf } from "../deps";
 import { type AppEnvFlags, addEnvOption, chooseEnvironment } from "../ui/environment";
+import { hostingRefusal, ON_HOSTING_INSTEAD } from "../ui/hosting";
 import { endProcess, stopSignal } from "../ui/stop";
 import { addHostKeyOption, checkApproveFlags } from "./provision";
 
@@ -41,12 +42,34 @@ function refuseOnSite(plan: DeployPlan, flags: LogsFlags, flag: string): void {
 }
 
 /**
+ * Refuses `--follow`, `--service` and `--failed` on a hosting account: it runs no containers, and
+ * `logs` shows the agent's last lines there.
+ */
+function refuseOnHosting(plan: DeployPlan, flags: LogsFlags): void {
+  if (plan.target.provider !== "hosting") return;
+  const option =
+    flags.follow === true
+      ? "--follow"
+      : flags.service !== undefined
+        ? "--service"
+        : flags.failed === true
+          ? "--failed"
+          : undefined;
+  if (option === undefined) return;
+  throw hostingRefusal(
+    `\`opscrew logs ${option}\`, which reads the app's containers on a server,`,
+    ON_HOSTING_INSTEAD.logs,
+  );
+}
+
+/**
  * `opscrew logs` (FR-1701): the app's latest lines on its target, newest last, each with its time
  * and part, read-only and masked (FR-1702, FR-1703). `--follow` then shows new lines until Ctrl-C,
  * and the process ends once the follow has stopped and the output has flushed. On GitHub Pages and
  * a static site on Cloudflare, which keep no request logs, it shows the last deploy runs and
  * refuses `--follow` and `--service`. `--failed` shows the lines the deploy kept of the last copy
- * that failed its checks (FR-1910), read-only.
+ * that failed its checks (FR-1910), read-only. On a hosting account, which runs no containers, it
+ * refuses `--follow`, `--service` and `--failed`.
  */
 export function register(program: Command, ctx: CliContext): void {
   const command = program
@@ -70,6 +93,7 @@ export function register(program: Command, ctx: CliContext): void {
     const deps = createPhaseDeps(ctx, { ai: false, app, environment: name });
     const plan = await readArtifact("plan", deps.paths.files.plan);
     refuseOnSite(plan, flags, flag);
+    refuseOnHosting(plan, flags);
     const follow = flags.follow === true;
     const stop = follow ? stopSignal(ctx) : undefined;
     const services = servicesOf(ctx).logs;

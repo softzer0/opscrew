@@ -227,6 +227,56 @@ function planText(
   )?.message;
 }
 
+/** The terminal command that sets up a hosting account, and why it runs there. */
+function hostingTerminal(flag: string): string {
+  return `A hosting account is set up from the user's terminal: hosting plan B (the app) is built from the agent's first report once plan A (the agent) is applied, and each is shown and approved by its own hash there. Ask the user to run \`npx opscrew provision${flag}\` in the project directory.`;
+}
+
+/** `opscrew_apply` on a hosting account: {@link hostingTerminal}. */
+function hostingInTerminal(flag: string): OpsCrewError {
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    "opscrew_apply doesn't set up a hosting account. Nothing was changed.",
+    { hint: hostingTerminal(flag) },
+  );
+}
+
+/**
+ * `opscrew_plan` on a hosting account: the DNS records' plan on Cloudflare (`dns`, saved by the
+ * engine) and each hosting plan that changes something, as OpsCrew described them with their
+ * hashes, and the terminal command that approves them (`--yes` never approves a plan).
+ */
+function hostingPlanReply(
+  messages: readonly { message: string }[],
+  input: { hostingHashes: readonly string[]; dns: SavedPlan | undefined; plan: DeployPlan },
+  flag: string,
+): { text: string; data: Record<string, unknown> } {
+  const { hostingHashes, dns, plan } = input;
+  const hashes = [...hostingHashes, ...(dns === undefined ? [] : [dns.planHash])];
+  if (hashes.length === 0) {
+    return {
+      text: `The user's hosting account and its DNS records already match the plans; nothing would change. ${hostingTerminal(flag)} It finishes the remaining steps (the certificate, the GitHub keys and the pull request).`,
+      data: { upToDate: true },
+    };
+  }
+  const command = applyCommand(`provision${flag}`, hashes, { yes: true });
+  const texts = [
+    ...hostingHashes.map((hash) => planText(messages, "Hosting plan", hash) ?? ""),
+    ...(dns === undefined ? [] : [describePlan(dns, plan, { costUnchanged: true })]),
+  ];
+  return {
+    text: [
+      ...texts.flatMap((text) => [text, ""]),
+      `Nothing on the user's hosting account or in DNS was changed. Show ${hashes.length === 1 ? "this plan" : "these plans"} to the user. ${hostingTerminal(flag)} In a script: \`npx ${command}\` (--yes stores the release signing key and the agent's deploy key on GitHub and opens the pull request; it never approves a plan, which only its hash does). When the run stops at hosting plan B, it prints its hash for the next run.`,
+    ].join("\n"),
+    data: {
+      ...(hostingHashes.length > 0 ? { hostingPlanHashes: [...hostingHashes] } : {}),
+      ...(dns !== undefined ? planData(dns) : {}),
+      applyCommand: command,
+    },
+  };
+}
+
 /**
  * The dialogs of `opscrew_apply`, which show a Cloudflare plan (`cloudflare-apply`) only when its
  * hash is the `cloudflarePlanHash` opscrew_plan returned: any other Cloudflare plan (it changed
@@ -431,7 +481,7 @@ export function registerDeployTools(
     "opscrew_plan",
     {
       title: "Plan the infrastructure",
-      description: `Write the generated deployment files into the repository and make an OpenTofu/Terraform plan for the server on the planned cloud provider (${CLOUD_NAMES}) and Cloudflare DNS when planned, then check it against OpsCrew's security policies. Returns the plan hash, the resource changes, the monthly cost and the policy results. On a server the user already has, it also inspects the server read-only and returns the host plan (every change OpsCrew would make on the server) with its own hash. When other users on that server log in with a password and no SSH key, OpsCrew stops until the user chooses: pass passwordLogins 'off' (turn password logins off anyway) or 'keep' (leave them on), the CLI's --password-logins, and pass the same value to opscrew_apply. In a Portainer the user already runs, it inspects Portainer read-only (with PORTAINER_API_KEY and the certificate the user confirmed in the interview) and returns the stack plan (the app's stacks, the registry entry, the repository access and the redeploy setting, each marked as already in place or a change) with its own hash, next to the Cloudflare infrastructure plan when the app uses a tunnel or Cloudflare redeploys; when the stack plan needs the tunnel's token it follows after the infrastructure apply. When the app uses a Cloudflare zone it also returns the Cloudflare plan (cloudflarePlanHash): what OpsCrew changes in its shared rules in the zone (the probe block and the strict TLS rule, which list the hostnames of every OpsCrew app there; rules OpsCrew did not create are never changed) and in the account's Zero Trust organization and one-time PIN login. It is approved on its own, before the other plans; when only it is returned, the infrastructure plan follows after it is applied. When the app keeps its files in a bucket on Cloudflare R2, DigitalOcean Spaces or Hetzner Object Storage, it also returns the bucket's plan (storagePlanHash, the opscrew/infra/storage root, with its monthly price), approved on its own; the bucket's key is the user's own and comes only from their terminal or OPSCREW_STORAGE_ACCESS_KEY_ID and OPSCREW_STORAGE_SECRET_ACCESS_KEY, and in the user's Portainer the stack plan follows once the bucket exists. For an environment on the user's computer (localhost) it returns the local plan (the containers, networks, volumes and files OpsCrew would create or change there) with its hash, which opscrew_apply takes as planHash. When the environment's deploy job runs on a runner machine of the user's, or leaves one, it also returns each machine's host plan (runnerHostPlanHashes), each approved on its own. For a site on GitHub Pages it returns the Pages plan (pagesPlanHash: the site published by the workflow and its custom domain, set before any DNS record points at GitHub), the site's DNS records (planHash) and GitHub's domain verification record (pagesVerificationPlanHash), each approved on its own; when OpsCrew stops for the verification value, the user copies it from their GitHub account's Pages settings and you pass it as pagesVerification. For a site on Cloudflare's hosting it returns the Worker and its custom domains (planHash) and the www redirect in the Cloudflare plan. Never applies anything: show the plans to the user, then call opscrew_apply with the hashes. Needs the provider's credentials (${CLOUD_CREDENTIALS}; none for the user's own server, whose SSH host key must have been confirmed once; PORTAINER_API_KEY for the user's Portainer) and GitHub access in the MCP server's environment.`,
+      description: `Write the generated deployment files into the repository and make an OpenTofu/Terraform plan for the server on the planned cloud provider (${CLOUD_NAMES}) and Cloudflare DNS when planned, then check it against OpsCrew's security policies. Returns the plan hash, the resource changes, the monthly cost and the policy results. On a server the user already has, it also inspects the server read-only and returns the host plan (every change OpsCrew would make on the server) with its own hash. When other users on that server log in with a password and no SSH key, OpsCrew stops until the user chooses: pass passwordLogins 'off' (turn password logins off anyway) or 'keep' (leave them on), the CLI's --password-logins, and pass the same value to opscrew_apply. In a Portainer the user already runs, it inspects Portainer read-only (with PORTAINER_API_KEY and the certificate the user confirmed in the interview) and returns the stack plan (the app's stacks, the registry entry, the repository access and the redeploy setting, each marked as already in place or a change) with its own hash, next to the Cloudflare infrastructure plan when the app uses a tunnel or Cloudflare redeploys; when the stack plan needs the tunnel's token it follows after the infrastructure apply. When the app uses a Cloudflare zone it also returns the Cloudflare plan (cloudflarePlanHash): what OpsCrew changes in its shared rules in the zone (the probe block and the strict TLS rule, which list the hostnames of every OpsCrew app there; rules OpsCrew did not create are never changed) and in the account's Zero Trust organization and one-time PIN login. It is approved on its own, before the other plans; when only it is returned, the infrastructure plan follows after it is applied. When the app keeps its files in a bucket on Cloudflare R2, DigitalOcean Spaces or Hetzner Object Storage, it also returns the bucket's plan (storagePlanHash, the opscrew/infra/storage root, with its monthly price), approved on its own; the bucket's key is the user's own and comes only from their terminal or OPSCREW_STORAGE_ACCESS_KEY_ID and OPSCREW_STORAGE_SECRET_ACCESS_KEY, and in the user's Portainer the stack plan follows once the bucket exists. For an environment on the user's computer (localhost) it returns the local plan (the containers, networks, volumes and files OpsCrew would create or change there) with its hash, which opscrew_apply takes as planHash. When the environment's deploy job runs on a runner machine of the user's, or leaves one, it also returns each machine's host plan (runnerHostPlanHashes), each approved on its own. For a site on GitHub Pages it returns the Pages plan (pagesPlanHash: the site published by the workflow and its custom domain, set before any DNS record points at GitHub), the site's DNS records (planHash) and GitHub's domain verification record (pagesVerificationPlanHash), each approved on its own; when OpsCrew stops for the verification value, the user copies it from their GitHub account's Pages settings and you pass it as pagesVerification. For a site on Cloudflare's hosting it returns the Worker and its custom domains (planHash) and the www redirect in the Cloudflare plan. For an app on the user's hosting account (cPanel, Plesk, DirectAdmin) it returns hosting plan A (the agent, its files and its cron line) with its hash (hostingPlanHashes) and the terminal command that applies it: hosting plan B (the app) is built from the agent's first report on the account, so a hosting account is set up in the user's terminal, never through opscrew_apply. Never applies anything: show the plans to the user, then call opscrew_apply with the hashes. Needs the provider's credentials (${CLOUD_CREDENTIALS}; none for the user's own server, whose SSH host key must have been confirmed once; PORTAINER_API_KEY for the user's Portainer) and GitHub access in the MCP server's environment.`,
       inputSchema: {
         ...projectDirInput,
         ...appInput,
@@ -481,14 +531,21 @@ export function registerDeployTools(
           ...servicesOption(options),
         });
         const plan = await readArtifact("plan", phase.paths.files.plan);
-        const own = plan.target.provider === "own";
-        const portainer = plan.target.provider === "portainer";
-        const local = plan.target.provider === "localhost";
-        const cost = own || portainer ? undefined : plan.cost;
         const saved =
           result.planHash === undefined
             ? undefined
             : await findSavedPlan(phase.paths.files.plansDir, result.planHash);
+        if (plan.target.provider === "hosting") {
+          return hostingPlanReply(
+            call.reporter.messages,
+            { hostingHashes: result.hostingPlanHashes ?? [], dns: saved, plan },
+            flag,
+          );
+        }
+        const own = plan.target.provider === "own";
+        const portainer = plan.target.provider === "portainer";
+        const local = plan.target.provider === "localhost";
+        const cost = own || portainer ? undefined : plan.cost;
         const hostChanges = async (hash: string) =>
           (await readSavedPlanChanges(phase.paths, "host", hash, PLAN_AGAIN)) === true;
         // A server the user owns: the host plan, approved on its own by its hash.
@@ -700,7 +757,7 @@ export function registerDeployTools(
     "opscrew_apply",
     {
       title: "Apply an approved plan",
-      description: `Apply exactly the plan saved by opscrew_plan (pass its planHash) after the USER approves it in an MCP elicitation dialog that shows the plan summary; the coding agent cannot approve it. Creates or changes real resources on the user's cloud provider account (${CLOUD_NAMES}, and Cloudflare when planned), waits for the server, then commits the generated files on a branch, pushes it and opens a pull request (each also approved in a dialog). On a server the user already has, also pass hostPlanHash: the host plan is shown and approved in its own dialog before OpsCrew changes the server (when only a host plan was returned, pass it as planHash), with the same passwordLogins choice given to opscrew_plan, if any. In a Portainer the user already runs, also pass stackPlanHash: the stack plan is shown and approved in its own dialog before OpsCrew changes anything in Portainer (when only a stack plan was returned, pass it as planHash; when the stack plan followed the infrastructure plan, it is shown in a dialog after that apply), with the same publicImage and replaceTokens given to opscrew_plan, if any. When opscrew_plan returned a Cloudflare plan, also pass its cloudflarePlanHash (only it when opscrew_plan returned nothing else): it is shown and approved in its own dialog first, and a Cloudflare plan with another hash is refused before any dialog. A Cloudflare plan that deletes OpsCrew's rule asks the user to type the app's name in its dialog. When opscrew_plan returned a bucket plan, also pass its storagePlanHash (only it when opscrew_plan returned nothing else): it is shown and approved in its own dialog. On the user's computer (localhost), pass the local plan's hash as planHash: it is shown and approved in its own dialog. When opscrew_plan returned runnerHostPlanHashes, pass them too: each runner machine's host plan is shown and approved in its own dialog. For a site on GitHub Pages, also pass pagesPlanHash and pagesVerificationPlanHash as opscrew_plan returned them (and the same pagesVerification): each is shown and approved in its own dialog, and a Pages plan with another hash is refused before any dialog. Deploy secrets are stored only when OPSCREW_APP_ENV_FILE names the production environment file; otherwise the user finishes with \`opscrew provision\` in a terminal. Refuses when the client cannot show dialogs.`,
+      description: `Apply exactly the plan saved by opscrew_plan (pass its planHash) after the USER approves it in an MCP elicitation dialog that shows the plan summary; the coding agent cannot approve it. Creates or changes real resources on the user's cloud provider account (${CLOUD_NAMES}, and Cloudflare when planned), waits for the server, then commits the generated files on a branch, pushes it and opens a pull request (each also approved in a dialog). On a server the user already has, also pass hostPlanHash: the host plan is shown and approved in its own dialog before OpsCrew changes the server (when only a host plan was returned, pass it as planHash), with the same passwordLogins choice given to opscrew_plan, if any. In a Portainer the user already runs, also pass stackPlanHash: the stack plan is shown and approved in its own dialog before OpsCrew changes anything in Portainer (when only a stack plan was returned, pass it as planHash; when the stack plan followed the infrastructure plan, it is shown in a dialog after that apply), with the same publicImage and replaceTokens given to opscrew_plan, if any. When opscrew_plan returned a Cloudflare plan, also pass its cloudflarePlanHash (only it when opscrew_plan returned nothing else): it is shown and approved in its own dialog first, and a Cloudflare plan with another hash is refused before any dialog. A Cloudflare plan that deletes OpsCrew's rule asks the user to type the app's name in its dialog. When opscrew_plan returned a bucket plan, also pass its storagePlanHash (only it when opscrew_plan returned nothing else): it is shown and approved in its own dialog. On the user's computer (localhost), pass the local plan's hash as planHash: it is shown and approved in its own dialog. When opscrew_plan returned runnerHostPlanHashes, pass them too: each runner machine's host plan is shown and approved in its own dialog. For a site on GitHub Pages, also pass pagesPlanHash and pagesVerificationPlanHash as opscrew_plan returned them (and the same pagesVerification): each is shown and approved in its own dialog, and a Pages plan with another hash is refused before any dialog. Deploy secrets are stored only when OPSCREW_APP_ENV_FILE names the production environment file; otherwise the user finishes with \`opscrew provision\` in a terminal. Refuses when the client cannot show dialogs, and for an app on a hosting account, which the user sets up with \`npx opscrew provision\` in a terminal.`,
       inputSchema: {
         ...projectDirInput,
         ...appInput,
@@ -852,6 +909,14 @@ export function registerDeployTools(
           ...runnerHashes,
         ];
         const { appKey, name, flag } = await toolEnvironment(call.projectDir, app, environment);
+        const paths = resolveProjectPaths(call.projectDir, {
+          env: deps.env,
+          app: appKey,
+          environment: name,
+        });
+        // A hosting account is set up in the terminal, before any dialog.
+        const target = await readArtifact("plan", paths.files.plan).catch(() => undefined);
+        if (target?.target.provider === "hosting") throw hostingInTerminal(flag);
         const terminal = applyCommand(`provision${flag}`, hashes, {
           ...(passwordLogins === undefined ? {} : { passwordLogins }),
           ...(publicImage === undefined ? {} : { publicImage }),
@@ -865,11 +930,7 @@ export function registerDeployTools(
           {
             hash: storageHash,
             backups: backupsHash,
-            plansDir: resolveProjectPaths(call.projectDir, {
-              env: deps.env,
-              app: appKey,
-              environment: name,
-            }).files.plansDir,
+            plansDir: paths.files.plansDir,
           },
           pagesHash,
           deps.clock,

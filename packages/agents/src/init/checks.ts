@@ -50,6 +50,7 @@ import {
   registrarFor,
   registrarLinks,
 } from "../domain/registrars";
+import { HOSTING_TOKEN_VAR } from "../hosting/panels";
 import {
   PORTAINER_TOKEN_VAR,
   planProvider,
@@ -73,6 +74,7 @@ import {
   missingGitignoreEntries,
   readGitignore,
 } from "./gitignore";
+import { checkHostingAccount, checkHostingTools, hostingReachOf } from "./hosting";
 import {
   checkPortainer,
   checkPortainerTokens,
@@ -93,7 +95,8 @@ export type InitCheckId =
   | "ssh"
   /**
    * The cloud provider token (Hetzner Cloud or DigitalOcean), the SSH login of the user's own
-   * server, or the user's Portainer; was `hetzner` before 004.
+   * server, the user's Portainer, or the variables that reach a hosting account; was `hetzner`
+   * before 004.
    */
   | "provider"
   /** Optional, listed only for a Portainer target: the read-only GitHub tokens Portainer pulls with. */
@@ -266,6 +269,7 @@ export async function runInitChecks(
     "GITHUB_TOKEN",
     "GH_TOKEN",
     PORTAINER_TOKEN_VAR,
+    HOSTING_TOKEN_VAR,
     REGISTRY_TOKEN_VAR,
     REPOSITORY_TOKEN_VAR,
     ...registrarSecrets,
@@ -285,6 +289,8 @@ export async function runInitChecks(
   // Read before any check runs, so Portainer's address is registered with the redactor first.
   const portainer: PortainerRecord | undefined =
     choice.provider === "portainer" ? await readPortainerRecord(deps) : undefined;
+  // A hosting account: through its panel's API, or over SFTP alone.
+  const reach = provider === "hosting" ? hostingReachOf(artifacts.plan, env) : undefined;
 
   const cloudflare = cloudflareAccess(deps, offline);
   // A server-rendered app's Worker logs its requests; a static site's runs no code.
@@ -299,27 +305,31 @@ export async function runInitChecks(
     guard("git", "git", true, async () => checkGit((await repoInfo).git)),
     guard("repository", "GitHub repository", true, async () => checkRepository(await repoInfo)),
     guard("engine", "OpenTofu or Terraform", true, () => checkEngine(deps, which)),
-    guard("ssh", "ssh and ssh-keyscan", true, async () =>
-      portainer !== undefined
-        ? {
-            status: "skip",
-            message:
-              "Not needed: OpsCrew deploys to your Portainer through its API and never connects over SSH.",
-          }
-        : checkSsh(which),
-    ),
+    provider === "hosting"
+      ? guard("ssh", "sftp and ssh-keyscan", true, async () => checkHostingTools(which, reach))
+      : guard("ssh", "ssh and ssh-keyscan", true, async () =>
+          portainer !== undefined
+            ? {
+                status: "skip",
+                message:
+                  "Not needed: OpsCrew deploys to your Portainer through its API and never connects over SSH.",
+              }
+            : checkSsh(which),
+        ),
     guard("provider", providerTitle(choice), true, () =>
       withBudget(
         isServerlessProvider(provider)
           ? checkServerlessTarget(deps, offline, provider, artifacts, cloudflare, github)
-          : checkProviderToken(
-              deps,
-              offline,
-              provider === undefined ? { source } : { provider, source },
-              which,
-              portainer,
-              services.portainerClient,
-            ),
+          : provider === "hosting"
+            ? checkHostingAccount(env, reach, deploysTo(source))
+            : checkProviderToken(
+                deps,
+                offline,
+                provider === undefined ? { source } : { provider, source },
+                which,
+                portainer,
+                services.portainerClient,
+              ),
         budget,
         providerService(choice),
         true,
@@ -545,20 +555,21 @@ function checkSsh(which: (name: string) => string | undefined): CheckResult {
 /** Which provider's token the provider check looks at, and why. */
 interface ProviderChoice {
   /** Undefined before a provider is chosen when zero or both tokens are set. */
-  provider?: VpsProviderId | "portainer" | "localhost" | ServerlessProvider;
-  /** The plan, the interview answers, or the only token that is set. */
+  provider?: VpsProviderId | "portainer" | "localhost" | "hosting" | ServerlessProvider;
+  /** The plan, the interview answers, or the only token (or hosting account's variables) set. */
   source: "plan" | "requirements" | "token" | "none";
 }
 
 /** A provider choice whose target has a server, a Portainer or this computer: not server-less. */
 type ServerChoice = Omit<ProviderChoice, "provider"> & {
-  provider?: Exclude<ProviderChoice["provider"], ServerlessProvider | undefined>;
+  provider?: Exclude<ProviderChoice["provider"], ServerlessProvider | "hosting" | undefined>;
 };
 
 /**
- * The planned target, else the requested one, else the provider whose token alone is set. A
- * Portainer target (`portainer`), the localhost target (`localhost`) and the server-less targets
- * are recognised in the plan and in the answers.
+ * The planned target, else the requested one, else the provider whose token alone is set, else a
+ * hosting account when its variables are. A Portainer target (`portainer`), the localhost target
+ * (`localhost`), the server-less targets and a hosting account (`hosting`) are recognised in the
+ * plan and in the answers.
  */
 function providerChoice(
   { plan, requirements }: ProjectArtifacts,
@@ -567,25 +578,42 @@ function providerChoice(
   if (plan !== undefined) {
     const { provider } = plan.target;
     return {
-      provider:
-        provider === "portainer" || provider === "localhost" || isServerlessProvider(provider)
-          ? provider
-          : planProvider(plan),
+      provider: notOnOneServer(provider) ? provider : planProvider(plan),
       source: "plan",
     };
   }
   if (requirements !== undefined) {
     const { provider } = requirements;
     return {
-      provider:
-        provider === "portainer" || provider === "localhost" || isServerlessProvider(provider)
-          ? provider
-          : requestedProvider(requirements),
+      provider: notOnOneServer(provider) ? provider : requestedProvider(requirements),
       source: "requirements",
     };
   }
-  const provider = providerFromTokens(env);
+  const provider =
+    providerFromTokens(env) ??
+    (hostingReachOf(undefined, env) !== undefined ? "hosting" : undefined);
   return provider ? { provider, source: "token" } : { source: "none" };
+}
+
+/** A target that is no one server: a Portainer, this computer, a site, a hosting account. */
+function notOnOneServer(
+  provider: DeployPlan["target"]["provider"],
+): provider is "portainer" | "localhost" | "hosting" | ServerlessProvider {
+  return (
+    provider === "portainer" ||
+    provider === "localhost" ||
+    provider === "hosting" ||
+    isServerlessProvider(provider)
+  );
+}
+
+/** How a check names where the target comes from: the plan, or the interview's answers. */
+function deploysTo(source: ProviderChoice["source"]): string {
+  return source === "plan"
+    ? "The plan deploys"
+    : source === "requirements"
+      ? "Your interview answers deploy"
+      : "Your variables point";
 }
 
 /**
@@ -597,6 +625,7 @@ function providerTitle(choice: ProviderChoice): string {
   if (choice.provider === "own") return "Your own server (SSH login)";
   if (choice.provider === "portainer") return "Your Portainer";
   if (choice.provider === "localhost") return "This computer";
+  if (choice.provider === "hosting") return "Your hosting account";
   if (isServerlessProvider(choice.provider)) return serverlessName(choice.provider);
   if (choice.provider === undefined) return "Cloud provider token";
   const profile = providerProfile(choice.provider);
@@ -607,6 +636,7 @@ function providerTitle(choice: ProviderChoice): string {
 function providerService(choice: ProviderChoice): string {
   if (choice.provider === "portainer") return "Your Portainer";
   if (choice.provider === "localhost") return "This computer";
+  if (choice.provider === "hosting") return "Your hosting account";
   if (isServerlessProvider(choice.provider)) return serverlessName(choice.provider);
   return choice.provider ? providerProfile(choice.provider).displayName : "The cloud provider";
 }
