@@ -350,7 +350,7 @@ names the change.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server && pnpm lint`
   - Effort: high
 
-- [ ] T2716 [P] [US8] OpenLiteSpeed's reach
+- [x] T2716 [P] [US8] OpenLiteSpeed's reach
   - Owns: the files research R9 lists for the proxy choice outside `packages/iac-templates/src/edge/**`:
     - the deploy's switch (`iac-templates/src/workflow/switch.ts`) and the CI check (`edge-check.ts`);
     - the additions check (`agents/src/provision/additions.ts`) and the additions rules (`packages/secops/src/proxy-rules/**`);
