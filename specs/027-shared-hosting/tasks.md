@@ -48,7 +48,7 @@ names the change.
       - `database?` (`{ engine: "mariadb" | "mysql", name }`, the name `[a-z0-9_]` without the account's prefix);
       - `cron` (`{ schedule, command }[]`, default `[]`);
       - `runtime?` (`{ interpreter: "nodejs" | "python", version, startup }`);
-      - `docroot` (`outside` | `public_html`, default `outside`).
+      - `docroot` (`direct` | `link`, default `direct`).
     - **Refinements**, each with a plain message:
       - `sftp` refuses `database`, `cron`, `runtime`, the `node` and `python` apps, and `php.via` other than `account`;
       - `static` refuses `php`, `database` and `runtime`;
@@ -240,6 +240,7 @@ names the change.
     - **`panels.ts`:**
       - builds the panel's connector from `OPSCREW_HOSTING_URL`, `OPSCREW_HOSTING_USER` and `OPSCREW_HOSTING_TOKEN`;
       - finds the panel kind from the answer on 2083, 8443 or 2222 (injected `fetch`);
+      - gives the account's `HostingFiles`: the panel itself when `writeFile` is in its `operations`, otherwise the SFTP connector when `OPSCREW_SFTP_*` are set (it is T2714's; until it merges, the file steps are panel steps);
       - `record.ts` reads and writes `.opscrew/hosting.json` (address, user, panel, every object made with its key), which T2711 extends.
     - **The interview:**
       - offers "a hosting account" when the hosting variables are set, or `OPSCREW_SFTP_HOST`, `OPSCREW_SFTP_USER` and `OPSCREW_SFTP_KEY` (a key file's path);
@@ -247,7 +248,7 @@ names the change.
       - for SFTP, reads the host key with `ssh-keyscan`, has it confirmed, and asks for the folder and the path PHP sees for it.
     - **Design** fills the target (plan 1):
       - `app`, `webRoot`, `site`, `database` when the app uses MySQL or MariaDB, `cron` from the app's scheduled commands, `runtime`;
-      - `docroot` from `inspect()`.
+      - `docroot` from `inspect()`'s `documentRoots` (`anywhere` → `direct`, otherwise `link`).
     - **Design refuses**, each time with the reason and a server target named:
       - workers, queues and Redis;
       - WebSockets from PHP;
@@ -292,7 +293,9 @@ names the change.
       - the app's folder with `AGENT_SH`, `settings.sh`, `keys/release.pub` and `keys/known_hosts`, then the agent's cron line;
       - waits up to 3 minutes for `state/report`; a misfit stops with the reason and what to do, the agent recorded.
       - The signing key pair (ECDSA P-256) is generated at that apply (injected randomness). The private half goes only to the GitHub environment secret in plan B's apply and is never written locally; a lost key means a new pair through provision.
-    - **Plan B:** every step plan 2 lists, built from the facts and the report, with the PHP choice in plan 5's order and the stop text of its step 4. The app's cron lines are rendered as plan 5 says, with a test.
+    - **Plan B:** every step plan 2 lists, built from the facts and the report, with the PHP choice in plan 5's order (Plesk's and DirectAdmin's version as a panel step) and the stop text of its step 4. The app's cron lines are rendered as plan 5 says, with a test.
+    - **The document root** per plan 5: `direct`, or `link` made before the hostname inside `public_html` (restricted cPanel), or replacing the panel's own empty root after `addHostname` answers it (DirectAdmin; refused when that folder holds anything but the panel's default page).
+    - **Files** through the account's `HostingFiles` (T2710's `panels.ts`), never the panel directly.
     - **Values:** the environment file is listed by its keys and a digest of the user's values; the database password is generated at apply and written only into `shared/.env` (or the values file) and `shared/mysql.cnf`, 0600.
     - **Requests** (`requests.ts`, used by T2713, T2717 and T2718):
       - written as key=value under a temporary name, renamed to `requests/<sha256>.req`, with the approved hash and `expires` in UTC epoch seconds;
@@ -377,7 +380,7 @@ names the change.
   - Reads: plan 10; ADR 0011, ADR 0030 (D6); `agents/src/addons/status.ts` (running `ssh` through the runner), `connectors/ssh-host/src/shell.ts`
   - Depends: T2711, T2713
   - Accept:
-    - **The connector:**
+    - **The connector** implements `HostingFiles` (for SFTP-only hosts, and for Plesk when the user gives SFTP access):
       - runs `sftp -b <batch file>` through the injected runner, with `-o BatchMode=yes` and the record's known-hosts file;
       - every path in a batch file is quoted, and one with a newline is refused;
       - operations: `mkdir` (each level), `put`, `ln -s`, `rename`, `rm`, `ls`, `get` (a small file).

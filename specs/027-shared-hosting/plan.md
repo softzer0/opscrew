@@ -82,20 +82,23 @@ third proxy on servers, a separate track.
   - `database`: `mariadb` or `mysql`, the name without the account's prefix;
   - `cron`: the app's scheduled commands;
   - `runtime`: a Node.js or Python app's interpreter, version and startup file;
-  - `docroot`: `outside` (the default) or `public_html` (section 5).
+  - `docroot`: `direct` (the default) or `link` (section 5).
 
   The panel's address and the account's user stay in `.opscrew/hosting.json`, which joins the
   recovery copy's state files; the token comes from `OPSCREW_HOSTING_TOKEN`.
 - **Guards:** `isHostingTarget`; `onServer` stays a positive list. Every exhaustive `switch` on
   `target.provider` gets a branch or a plain refusal (R8's list).
 - **`HostingPanel`** (contract): `inspect()` (the account's domains, its address, quota, database
-  engines and name limits, app selectors and slots, MultiPHP versions, whether document roots may
-  be outside `public_html`), hostnames (a subdomain, or an addon domain for a name outside the
-  account's domains), databases (made with their user and grant; removed and checked), cron lines,
-  files (written atomically with a mode, a tar uploaded and unpacked, read, removed with their
-  contents), certificates (read, requested, removed with a key no other certificate uses) and a
-  hostname's PHP version (MultiPHP). What a panel's API can't do is a `PanelStep`: its exact text,
-  shown in the plan for the user to do in the panel.
+  engines and name limits, app selectors and slots, MultiPHP versions, where a document root can be:
+  `anywhere`, only inside `public_html`, or only where the `panel` puts it), hostnames (a subdomain,
+  or an addon domain; `addHostname` answers the root the panel made), databases (made with their
+  user and grant; removed and checked), cron lines, certificates (read where the panel lets it,
+  requested, removed with a key no other certificate uses) and a hostname's PHP version
+  (MultiPHP). Files are `HostingFiles` (written atomically with a mode, a tar uploaded and
+  unpacked, read, removed with their contents), from the panel's API or, for a panel without file
+  calls (Plesk's customer API), from the SFTP connector when the user gives SFTP access. What a
+  panel's API can't do is a `PanelStep`: its exact text, shown in the plan for the user to do in
+  the panel.
 
 ### 2. Two hosting plans at provision (`hosting-apply`)
 
@@ -204,11 +207,14 @@ CLI validates with zod; it reads no JSON.
 - **Layout:** `~/opscrew/<app>-<env>/`: `agent.sh`, `settings.sh`, `keys/` (0700), `shared/` (0711;
   `.env`, `env.php`, `mysql.cnf` 0600), `releases/` (0711), `current`, `state/`, `requests/`,
   `dumps/` (0700). Folders the web server must cross are 0711, never readable by other accounts.
-- **Document root:** `~/opscrew/<app>-<env>/current/<webRoot>` where the account allows roots
-  outside `public_html` (the test account does). Where it doesn't, the root is a link
-  `public_html/opscrew-<app>-<env>` → that path (cPanel keeps a link's path as the root, R10); the
-  main domain could reach it as a folder, so OpsCrew's block refuses every other hostname. Not
-  testable on the founder's account; fakes and the guide cover it.
+- **Document root** (`docroot`): `direct`, `~/opscrew/<app>-<env>/current/<webRoot>` itself, where
+  the panel takes a root anywhere (the test account). `link` otherwise: the root is where the panel
+  requires it, `public_html/opscrew-<app>-<env>` on a restricted cPanel (the link made before the
+  hostname; cPanel keeps a link's path as the root, R10) or DirectAdmin's own
+  `domains/<name>/public_html` (the empty folder the panel made replaced by the link), and it links
+  to that path. A root inside `public_html` can be reached as a folder of the main domain, so
+  OpsCrew's block refuses every other hostname. Not testable on the founder's account; fakes and
+  the guide cover it.
 - **`.htaccess`,** composed by the agent for each release: OpsCrew's block between `# BEGIN
   OpsCrew` and `# END OpsCrew`, then the blocks the panel and the selector wrote, then the app's
   own `.htaccess`, each kept byte for byte. OpsCrew's block (R4, R10, R11):
@@ -229,7 +235,9 @@ CLI validates with zod; it reads no JSON.
   requirements of `composer.json` and `composer.lock`. The report gives what the account has. Plan
   B picks, in this order:
   1. the account's version, when it fits;
-  2. on cPanel with MultiPHP, the hostname's version through `LangPHP::php_set_vhost_versions`;
+  2. on cPanel with MultiPHP, the hostname's version through `LangPHP::php_set_vhost_versions`; on
+     Plesk and DirectAdmin, whose user APIs can't set it, a panel step naming the version (one the
+     report found), checked by verify;
   3. on CloudLinux with LiteSpeed, the oldest alt-php version that fits whose default extensions
      cover the app, through `AddHandler application/x-httpd-alt-phpXY___lsphp .php`;
   4. otherwise provision stops, naming what the app needs, the account's version, and the two ways
@@ -281,7 +289,11 @@ CLI validates with zod; it reads no JSON.
   renamed (`fileop rename` to a free name); certificates removed with `SSL::delete_cert` and
   `delete_key`.
 - **Plesk and DirectAdmin:** their documented calls only (R2, R3), against fakes; everything else
-  is a panel step. The same provision, rollback and destroy flows run against each fake (SC-2705).
+  is a panel step. Plesk's customer API makes hostnames and databases only (XML API; its REST
+  reference isn't public): the agent's files go over SFTP when the user gives SFTP access, its
+  scheduled task is a panel step, and certificates aren't read. DirectAdmin's API makes everything
+  but the hostname's PHP version, and chooses each subdomain's document root itself. The same
+  provision, rollback and destroy flows run against each fake (SC-2705).
 - **Which panel:** from the answer on 2083, 8443 or 2222, without asking.
 
 ### 8. Node.js and Python apps (P2)
