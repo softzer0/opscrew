@@ -482,7 +482,7 @@ names the change.
   - Verify: `pnpm check` (the gate's order: lint, typecheck, ssh-host alone, the rest, iac-engine last)
   - Effort: high
 
-- [ ] T2729 ClickHouse and Neo4j in the snapshot before each release by default
+- [x] T2729 ClickHouse and Neo4j in the snapshot before each release by default
   - Owns: `deploy.snapshotStop`'s default and its tests in `packages/plan-schema/src/**`; `packages/agents/src/{rollback,design}/**` texts naming what a release snapshot copies; `packages/iac-templates/src/{workflow,portainer-target}/**` snapshot scripts and the expectations that change; `docs/guide/{databases,snapshots,rollback}.md`
   - Reads: ADR 0028 and its 2026-11-12 amendments; `plan-schema/src/plan.ts` (`ONLINE_SNAPSHOT_KINDS`, `deploy.snapshotStop`, `snapshotsOn`), `iac-templates/src/workflow/snapshot-script.ts`
   - Depends: T2728
