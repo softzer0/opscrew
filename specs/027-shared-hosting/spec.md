@@ -228,6 +228,10 @@ one server, and a switch to Caddy and back.
 - **PHP keeps serving the old release** (OPcache without timestamp checks, a long realpath cache):
   the switch makes PHP load the new release before the health check.
 - **The host hides the `Server` header**: OpsCrew asks the account's PHP which server runs it.
+- **OpenLiteSpeed's limits** (research R12, ADR 0031): a hostname the server doesn't serve gets a
+  403 page, not a closed connection; a deploy, rollback or renewal ends WebSockets open longer than
+  five minutes; the long-request limit (300 s) is the same for every app on the server. The guide
+  says so.
 - **The panel's credentials in the app's files or environment**: `opscrew scan` reports them as a
   leaked secret.
 

@@ -213,7 +213,7 @@ names the change.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-directadmin && pnpm lint`
   - Effort: high
 
-- [ ] T2709 [P] [US8] OpenLiteSpeed's container spike, research R12 and ADR 0031 (lead)
+- [x] T2709 [P] [US8] OpenLiteSpeed's container spike, research R12 and ADR 0031 (lead)
   - Owns: research R12, `docs/adr/0031-*.md`
   - Accept:
     - R7's container questions are answered in R12:
@@ -268,9 +268,9 @@ names the change.
   - Reads: plan 11; research R9, R12; ADR 0017, ADR 0031; `iac-templates/src/edge/{nginx,nginx-validate}*.ts`
   - Depends: T2702, T2709
   - Accept:
-    - `openlitespeed` joins `EdgeSchema` and `EDGE_PROXIES`, from the image pinned by digest.
-    - **Its configuration** (R12): a virtual host per app and a listener map; the proxy context and WebSocket proxy; the headers Caddy and nginx send; TLS 1.2 and 1.3 only; a catch-all refusing unknown names; no admin listener.
-    - **Commands:** the check (`openlitespeed -t`), the graceful restart and the cache purge; `edgeMemoryMb` and `vercel-routing.ts` gain it.
+    - `openlitespeed` joins `EdgeSchema` and `EDGE_PROXIES`, from `litespeedtech/openlitespeed` pinned by digest (R12), with `init: true` and OpsCrew's loop as its command (ADR 0031 D1).
+    - **Its configuration** (R12, ADR 0031 D4–D7): a vhost per app with its `extprocessor`, `/` context and `websocket` entry; a listener map; the headers Caddy and nginx send, `showVersionNumber 2`, set error pages, `X-Forwarded-For` reset; TLS 1.2 and 1.3 with the ciphers in every `vhssl`; a catch-all vhost answering 403 behind a placeholder certificate; `disableWebAdmin 1`; the cache off, each app's `storagePath` its own; `connTimeout 300`; the error log in a file.
+    - **Commands:** the check (ADR 0031 D2: `/tmp/lshttpd` made, every named certificate and key checked by OpsCrew, `openlitespeed -t` refusing exit 2), the graceful restart, and the cache purge (the app's cache files removed); `edgeMemoryMb` and `vercel-routing.ts` gain it.
     - **Tests:**
       - snapshots;
       - a Docker test (`OPSCREW_DOCKER_TESTS=1`) as `nginx-validate.test.ts` does: unknown names refused, the HTTPS redirect, HSTS, TLS 1.2/1.3 only, a WebSocket;
@@ -360,7 +360,7 @@ names the change.
   - Depends: T2712
   - Accept:
     - Every place nginx reaches, OpenLiteSpeed reaches too:
-      - the check before every change and the graceful restart;
+      - the check before every change and the graceful restart, also after every switch that moves a backend (ADR 0031 D3);
       - certificates: origin certificates, and its own renewals through certbot's webroot;
       - the cache purge on every deploy and rollback;
       - the additions file checked by OpsCrew's rules and by `openlitespeed -t`;

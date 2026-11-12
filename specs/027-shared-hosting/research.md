@@ -457,3 +457,59 @@ each validation run (inferred). The selector's state and files were unchanged th
 - **cPanel without CloudLinux** chooses a version per domain through MultiPHP (UAPI `LangPHP`,
   with the `multiphp` feature, which the test account lacks); its extensions are the host's
   EasyApache build for that version (*unverified* here, no such account).
+
+## R12. OpenLiteSpeed in a container (spike, 2026-11-12)
+
+Run locally with Docker; the configuration files that worked are kept outside the repository and
+summarised here.
+
+- **Image:** `litespeedtech/openlitespeed`, tags `<OLS>-lsphp82…85` and `latest`; 1.9.4 is the
+  current release. `1.9.4-lsphp84`'s index digest is
+  `sha256:84b5a648789f0c4ba1da9ffe3cb3ba79ae30a9c5c95f1e6a7f9302f8b273f2f8`, for `linux/amd64` and
+  `linux/arm64`. Every tag carries PHP (1.09 GB, Ubuntu); there is no server-only one. OpenLiteSpeed
+  is GPL-3.0 ([repository](https://github.com/litespeedtech/openlitespeed)); the Docker files are
+  MIT. TLS is BoringSSL. Configuration: `/usr/local/lsws/conf/httpd_config.conf` and
+  `conf/vhosts/<vhost>/vhconf.conf`, copied from defaults only when `conf/` is empty; OpenLiteSpeed
+  writes `.txt` copies into that folder on every load, so it must be writable. Idle memory 10.5 MiB.
+- **Not PID 1:** a graceful restart (`SIGUSR1`, `lswsctrl restart`) starts a new main process and
+  the old one exits, so the container needs `init: true` and a loop that starts the daemon and
+  watches it by name (`pgrep -f 'lshttpd - main'`); its pid file is briefly empty during a restart.
+  After the first restart nothing reaches `docker logs`: the error log goes to a file.
+- **As a reverse proxy:** per vhost an `extprocessor <name> { type proxy; address <host>:<port> }`
+  and `context / { type proxy; handler <name> }`, plus `websocket / { address <host>:<port> }`
+  (without it a WebSocket gets an empty reply); listeners on 80 and 443 with `map <vhost>
+  <hostname>`. An extprocessor's hostname is resolved once at load, so a backend that changes its
+  address needs a graceful restart (nginx re-resolves every 10 s); a WebSocket's address is
+  resolved per connection.
+- **The configuration check:** `/usr/local/lsws/bin/openlitespeed -t` exits 0 (clean), 1 (warnings;
+  a correct proxy configuration always warns) or 2 (an error), and exits 0 without checking when
+  `/tmp/lshttpd` is missing. It reports an unknown handler, a broken vhost file, a missing vhost
+  certificate; it only warns about an unknown directive in the server file; it doesn't notice a
+  missing listener certificate, and 443 then serves plain HTTP. A graceful restart applies a
+  broken configuration anyway (nginx keeps the running one).
+- **TLS:** `sslProtocol 24` (TLS 1.2 and 1.3; 1.0 and 1.1 refused), with `ciphers` and
+  `enableECDHE 1` repeated in every vhost's `vhssl` (the listener's line reaches only its own
+  certificate); certificates per vhost by SNI, the listener's for unknown names. A certificate file
+  that changes is served only after a graceful restart; one under load kept a WebSocket and an
+  85 s request and dropped no request.
+- **Headers:** `extraHeaders` in the context (`Header set …`) for HSTS, `X-Content-Type-Options`,
+  `X-Frame-Options`, `Referrer-Policy`, on proxied answers, OpenLiteSpeed's own errors and 101s;
+  `showVersionNumber 2` drops the `Server` header; OpenLiteSpeed's error pages name LiteSpeed in
+  their body unless an error page is set. HTTP to HTTPS: a rewrite with `[R=308,L]`.
+- **Unknown hostnames:** a catch-all vhost mapped `*` with `accessControl { deny ALL }` answers 403
+  on HTTP and HTTPS, behind a placeholder certificate. There is no way to close the connection
+  (nginx's 444) or refuse the handshake (`ssl_reject_handshake`).
+- **WebSockets across a graceful restart** survive until `gracefulRestartTimeout` (300 s by
+  default), when the old process ends; nginx keeps old workers until their connections close.
+- **Admin console:** `disableWebAdmin 1` leaves only 80 and 443 (and UDP 443 for HTTP/3).
+- **LSCache:** with the cache off, an answer is cached only when the backend sends
+  `X-LiteSpeed-Cache-Control` (or a rewrite rule sets it). Turned on for a vhost, it caches every
+  GET, `no-store`, `private`, `Authorization` and `Set-Cookie` answers included. A response header
+  `X-LiteSpeed-Purge: *` empties every vhost's cache, not only its own; `PURGE` from 127.0.0.1
+  empties one URL; removing the files under the cache's `storagePath` takes effect at once.
+- **Long requests:** a 130 s answer reaches the client; the limit is the server-wide `connTimeout`
+  (no per-app timeout).
+- **Forwarded headers:** `X-Forwarded-For` is appended to; `RequestHeader unset X-Forwarded-For`
+  in `extraHeaders` leaves the real address. Client certificates per hostname (Cloudflare's
+  authenticated origin pulls): `clientVerify 2` fails the handshake without one, where nginx answers
+  400.
