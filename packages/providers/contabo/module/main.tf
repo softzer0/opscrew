@@ -4,13 +4,13 @@ locals {
   ssh_key_id = coalesce(var.ssh_key_id, one(contabo_secret.deploy[*].id))
   app_tag_id = coalesce(var.app_tag_id, one(contabo_tag.app[*].id))
 
-  # A Contabo firewall rule lists its IPv4 and IPv6 sources apart. The provider sends an empty list
-  # for a family with no network; whether Contabo reads that as nobody or anybody is unverified
-  # (T2613 checks it first).
-  ssh_ipv4  = [for cidr in var.ssh_allowed_cidrs : cidr if !strcontains(cidr, ":")]
-  ssh_ipv6  = [for cidr in var.ssh_allowed_cidrs : cidr if strcontains(cidr, ":")]
-  http_ipv4 = [for cidr in var.http_allowed_cidrs : cidr if !strcontains(cidr, ":")]
-  http_ipv6 = [for cidr in var.http_allowed_cidrs : cidr if strcontains(cidr, ":")]
+  # A Contabo firewall rule lists its IPv4 and IPv6 sources apart, and Contabo reads an empty list
+  # as any source. So a family with no network gets a source that no packet from the internet
+  # carries: 127.0.0.1/32 or ::1/128.
+  ssh_ipv4  = coalescelist([for cidr in var.ssh_allowed_cidrs : cidr if !strcontains(cidr, ":")], ["127.0.0.1/32"])
+  ssh_ipv6  = coalescelist([for cidr in var.ssh_allowed_cidrs : cidr if strcontains(cidr, ":")], ["::1/128"])
+  http_ipv4 = coalescelist([for cidr in var.http_allowed_cidrs : cidr if !strcontains(cidr, ":")], ["127.0.0.1/32"])
+  http_ipv6 = coalescelist([for cidr in var.http_allowed_cidrs : cidr if strcontains(cidr, ":")], ["::1/128"])
   web_rules = [
     { protocol = "tcp", port = "80" },
     { protocol = "tcp", port = "443" },
@@ -66,67 +66,34 @@ resource "contabo_tag_assignment" "app" {
   resource_id   = contabo_instance.this.id
 }
 
-resource "contabo_firewall" "this" {
-  name         = "${var.name}-firewall"
-  description  = "OpsCrew's firewall of ${var.name}."
-  status       = "active"
-  instance_ids = [tonumber(contabo_instance.this.id)]
-
-  rules {
-    # SSH from the allowed networks; no rule once public SSH is closed (an empty list), when SSH
-    # answers on the app's private network only.
-    dynamic "inbound" {
-      for_each = length(var.ssh_allowed_cidrs) == 0 ? [] : ["22"]
-      content {
-        protocol   = "tcp"
-        dest_ports = [inbound.value]
-        action     = "accept"
-        status     = "active"
-        src_cidr {
-          ipv4 = local.ssh_ipv4
-          ipv6 = local.ssh_ipv6
-        }
-      }
-    }
-
-    # Ports 80 and 443, only on a server that serves the web.
-    dynamic "inbound" {
-      for_each = var.web ? local.web_rules : []
-      content {
-        protocol   = inbound.value.protocol
-        dest_ports = [inbound.value.port]
-        action     = "accept"
-        status     = "active"
-        src_cidr {
-          ipv4 = local.http_ipv4
-          ipv6 = local.http_ipv6
-        }
-      }
-    }
-
-    inbound {
-      protocol = "icmp"
-      action   = "accept"
-      status   = "active"
-      src_cidr {
-        ipv4 = ["0.0.0.0/0"]
-        ipv6 = ["::/0"]
-      }
-    }
-
-    # WireGuard answers nothing without a valid key, and devices roam, so it is open to all.
-    dynamic "inbound" {
-      for_each = var.wireguard_port[*]
-      content {
-        protocol   = "udp"
-        dest_ports = [tostring(inbound.value)]
-        action     = "accept"
-        status     = "active"
-        src_cidr {
-          ipv4 = ["0.0.0.0/0"]
-          ipv6 = ["::/0"]
-        }
-      }
-    }
+# The firewall, which OpsCrew's Contabo connector makes after every apply (ADR 0029, D8): the
+# provider cannot manage a Contabo firewall (it reports Contabo's own "Block all traffic" rule as
+# a change on every plan, and cannot read a firewall that protects a server). The module only
+# describes it here, so the plan, its approval and the security checks cover it, and outputs it
+# as wanted_firewall. Contabo drops all other inbound traffic; outbound traffic is not filtered.
+resource "terraform_data" "firewall" {
+  input = {
+    name        = "${var.name}-firewall"
+    description = "OpsCrew's firewall of ${var.name}."
+    server_ids  = [tostring(contabo_instance.this.id)]
+    rules = concat(
+      # SSH from the allowed networks; no rule once public SSH is closed (an empty list), when SSH
+      # answers on the app's private network only.
+      [
+        for port in length(var.ssh_allowed_cidrs) == 0 ? [] : ["22"] :
+        { protocol = "tcp", ports = [port], ipv4 = local.ssh_ipv4, ipv6 = local.ssh_ipv6 }
+      ],
+      # Ports 80 and 443, only on a server that serves the web.
+      [
+        for rule in var.web ? local.web_rules : [] :
+        { protocol = rule.protocol, ports = [rule.port], ipv4 = local.http_ipv4, ipv6 = local.http_ipv6 }
+      ],
+      [{ protocol = "icmp", ports = [], ipv4 = ["0.0.0.0/0"], ipv6 = ["::/0"] }],
+      # WireGuard answers nothing without a valid key, and devices roam, so it is open to all.
+      [
+        for port in var.wireguard_port[*] :
+        { protocol = "udp", ports = [tostring(port)], ipv4 = ["0.0.0.0/0"], ipv6 = ["::/0"] }
+      ],
+    )
   }
 }

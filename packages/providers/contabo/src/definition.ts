@@ -38,34 +38,37 @@ function httpArguments({ extra }: ModuleCall): (readonly [string, string])[] {
   return extra === undefined ? [["http_allowed_cidrs", "var.http_allowed_cidrs"]] : [];
 }
 
+/**
+ * The firewall the module describes for the connector to apply (ADR 0029, D8): its `input` is the
+ * module's `wanted_firewall` output.
+ */
+const FIREWALL = "terraform_data.firewall";
+
 /** Resource address without `count`/`for_each` keys: `module.a[0].x.y["k"]` becomes `module.a.x.y`. */
 function configAddress(address: string): string {
   return address.replace(/\[[^\]]*\]/g, "");
 }
 
 /**
- * Instance addresses (without instance keys) that each `contabo_firewall` references in its
- * `instance_ids` expression, read from the plan's `configuration` section. Instance ids are
- * unknown before apply, so these references are the only way to see the attachment on a first
- * plan.
+ * Instance addresses (without instance keys) that each `terraform_data.firewall` references in
+ * its `input` (in its `server_ids`), read from the plan's `configuration` section. Instance ids
+ * are unknown before apply, so these references are the only way to see the attachment on a
+ * first plan.
  */
 function firewallInstanceReferences(planJson: unknown): Map<string, Set<string>> {
   const out = new Map<string, Set<string>>();
   const walk = (module: unknown, prefix: string) => {
     if (!isRecord(module)) return;
     for (const resource of Array.isArray(module.resources) ? module.resources : []) {
-      if (!isRecord(resource) || resource.type !== "contabo_firewall") continue;
-      if (typeof resource.address !== "string") continue;
+      if (!isRecord(resource) || resource.address !== FIREWALL) continue;
       const expressions = isRecord(resource.expressions) ? resource.expressions : {};
-      const instanceIds = isRecord(expressions.instance_ids) ? expressions.instance_ids : {};
-      const references = Array.isArray(instanceIds.references) ? instanceIds.references : [];
+      const input = isRecord(expressions.input) ? expressions.input : {};
       const instances = new Set<string>();
-      for (const reference of references) {
-        if (typeof reference !== "string") continue;
+      for (const reference of strings(input.references)) {
         const target = configAddress(reference).replace(/\.id$/, "");
         if (/^contabo_instance\.[^.]+$/.test(target)) instances.add(`${prefix}${target}`);
       }
-      out.set(`${prefix}${resource.address}`, instances);
+      out.set(`${prefix}${FIREWALL}`, instances);
     }
     const calls = isRecord(module.module_calls) ? module.module_calls : {};
     for (const [name, call] of Object.entries(calls)) {
@@ -83,30 +86,37 @@ function strings(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
 }
 
-/**
- * The `rules.inbound` blocks of a `contabo_firewall`, in the Hetzner rule shape: one rule per
- * destination port (none means every port), its IPv4 and IPv6 sources together.
- */
-function contaboInboundRules(resource: PlannedResourceJson): PlannedFirewallRule[] {
-  const rules = Array.isArray(resource.values.rules) ? resource.values.rules : [];
-  return rules.filter(isRecord).flatMap((block) =>
-    (Array.isArray(block.inbound) ? block.inbound : []).filter(isRecord).flatMap((inbound) => {
-      const sources = (Array.isArray(inbound.src_cidr) ? inbound.src_cidr : [])
-        .filter(isRecord)
-        .flatMap((cidr) => [...strings(cidr.ipv4), ...strings(cidr.ipv6)]);
-      const protocol = typeof inbound.protocol === "string" ? inbound.protocol : "";
-      const ports = strings(inbound.dest_ports);
-      return (ports.length === 0 ? [""] : ports).map((port) => ({
-        direction: "in",
-        protocol,
-        port,
-        source_ips: sources,
-      }));
-    }),
-  );
+/** The wanted firewall in a `terraform_data.firewall`'s `input`, as far as the plan knows it. */
+function wantedFirewall(resource: PlannedResourceJson): Record<string, unknown> {
+  return isRecord(resource.values.input) ? resource.values.input : {};
 }
 
-/** SecOps's checks of a plan's Contabo instances and firewalls. */
+/**
+ * The wanted firewall's rules, in the Hetzner rule shape: one rule per port (none means every
+ * port), its IPv4 and IPv6 sources together. Contabo reads an empty list as any source, so an
+ * empty family reads as `0.0.0.0/0` or `::/0`.
+ */
+function contaboInboundRules(resource: PlannedResourceJson): PlannedFirewallRule[] {
+  const rules = wantedFirewall(resource).rules;
+  return (Array.isArray(rules) ? rules : []).filter(isRecord).flatMap((rule) => {
+    const ipv4 = strings(rule.ipv4);
+    const ipv6 = strings(rule.ipv6);
+    const sources = [
+      ...(ipv4.length === 0 ? ["0.0.0.0/0"] : ipv4),
+      ...(ipv6.length === 0 ? ["::/0"] : ipv6),
+    ];
+    const protocol = typeof rule.protocol === "string" ? rule.protocol : "";
+    const ports = strings(rule.ports);
+    return (ports.length === 0 ? [""] : ports).map((port) => ({
+      direction: "in",
+      protocol,
+      port,
+      source_ips: sources,
+    }));
+  });
+}
+
+/** SecOps's checks of a plan's Contabo instances and the firewalls the connector applies. */
 const SECOPS: ProviderSecOps = {
   noun: "server",
   rules: contaboInboundRules,
@@ -115,12 +125,8 @@ const SECOPS: ProviderSecOps = {
     const target = configAddress(server.address);
     const references = firewallInstanceReferences(planJson);
     return firewalls.some((firewall) => {
-      // An inactive firewall filters nothing.
-      if (firewall.values.status === "inactive") return false;
-      const ids = firewall.values.instance_ids;
-      if (id !== undefined && id !== null && id !== "" && Array.isArray(ids)) {
-        if (ids.some((value) => String(value) === String(id))) return true;
-      }
+      const ids = strings(wantedFirewall(firewall).server_ids);
+      if (typeof id === "string" && id !== "" && ids.includes(id)) return true;
       return references.get(configAddress(firewall.address))?.has(target) ?? false;
     });
   },
@@ -199,8 +205,8 @@ export const definition: CloudProviderDefinition = {
   terraform: {
     provider: { name: "contabo", source: "contabo/contabo", version: "~> 0.1.44" },
     serverResourceType: "contabo_instance",
-    firewallResourceType: "contabo_firewall",
-    connectorFirewall: false,
+    firewallResourceType: FIREWALL,
+    connectorFirewall: true,
     homeCacheFiles: [".cache/contabo/terraform/token"],
     mirroredAttributes: {},
     lifecycleIgnored: ["default_user", "image_id", "period", "ssh_keys", "user_data"],

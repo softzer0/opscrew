@@ -29,3 +29,8 @@ output "app_tag_name" {
   description = "Id of the app's tag, for the app's other servers on Contabo."
   value       = local.app_tag_id
 }
+
+output "wanted_firewall" {
+  description = "The firewall OpsCrew's Contabo connector makes after every apply: its name, description, server ids and rules."
+  value       = terraform_data.firewall.input
+}

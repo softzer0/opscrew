@@ -128,7 +128,7 @@ function appServer(instance: ContaboInstance): AppServer {
 }
 
 /** `value` as a Contabo instance id; anything else is refused before calling the API. */
-function instanceId(value: string): number {
+export function instanceId(value: string): number {
   const id = Number(value);
   if (!/^\d+$/.test(value) || !Number.isSafeInteger(id)) {
     throw new OpsCrewError("INVALID_INPUT", `"${value}" is not a Contabo instance id.`, {

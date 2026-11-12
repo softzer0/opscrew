@@ -135,6 +135,70 @@ const assignmentSchema = z.looseObject({ resourceType: z.string(), resourceId: i
 /** A resource a tag is assigned to, as Contabo's API answers it. */
 type ContaboTagAssignment = z.infer<typeof assignmentSchema>;
 
+/**
+ * A list, which Contabo may also answer JSON-encoded in a string: it does so for the `instances`
+ * of a firewall that protects a server (research R6).
+ */
+function listOrEncoded<T extends z.ZodType>(item: T) {
+  return z.preprocess(
+    (value) => (typeof value === "string" ? parseJson(value) : value),
+    z.array(item),
+  );
+}
+
+const firewallRuleSchema = z.looseObject({
+  /** `tcp`, `udp`, `icmp`, or empty for every protocol. */
+  protocol: z.string(),
+  destPorts: z.array(z.string()),
+  /** An empty list means any source of that family. */
+  srcCidr: z.looseObject({ ipv4: z.array(z.string()), ipv6: z.array(z.string()) }),
+  /** `accept`; Contabo's own rule, appended to every firewall, is the only `drop`. */
+  action: z.string(),
+  status: z.string(),
+});
+/** An inbound rule of a firewall, as Contabo's API answers it. */
+export type ContaboFirewallRule = z.infer<typeof firewallRuleSchema>;
+
+const firewallSchema = z.looseObject({
+  /** A UUID. */
+  firewallId: z.string(),
+  name: z.string(),
+  description: z.string().nullable().optional(),
+  /** `active`, or `inactive`, when it filters nothing. */
+  status: z.string(),
+  /** The ids of the instances it protects: objects, numbers, or either JSON-encoded. */
+  instances: listOrEncoded(
+    z
+      .union([z.number(), z.looseObject({ instanceId: z.number() })])
+      .transform((instance) =>
+        String(typeof instance === "number" ? instance : instance.instanceId),
+      ),
+  ),
+  /** Per instance: `ok` once protected, `processing`, `deleting`, or `error_…`. */
+  instanceStatus: listOrEncoded(
+    z.looseObject({
+      instanceId: idSchema,
+      status: z.string(),
+      errorMessage: z.string().nullable().optional(),
+    }),
+  ),
+  rules: z.looseObject({ inbound: z.array(firewallRuleSchema) }),
+});
+/** A firewall, as Contabo's API answers it, with its instances' ids as strings. */
+export type ContaboFirewall = z.infer<typeof firewallSchema>;
+
+/** An inbound rule as OpsCrew writes it: it accepts, and each source list holds a network. */
+export interface FirewallRuleRequest {
+  protocol: "tcp" | "udp" | "icmp";
+  destPorts: readonly string[];
+  srcCidr: { ipv4: readonly string[]; ipv6: readonly string[] };
+  action: "accept";
+  status: "active";
+}
+
+/** The next step when a firewall does not protect a server. */
+const FIREWALL_HINT = "Check the firewall and the server in Contabo's Customer Control Panel.";
+
 /** An answer whose content OpsCrew does not use: it only has to be a JSON object. */
 const acknowledged = z.looseObject({});
 
@@ -319,12 +383,140 @@ export class ContaboClient {
     });
   }
 
-  async #listAll<T>(path: string, item: z.ZodType<T>): Promise<T[]> {
+  /**
+   * The firewalls whose name contains `name` (`GET /v1/firewalls?name=`, every page): Contabo's
+   * filter matches substrings, so the caller compares the exact name.
+   */
+  listFirewalls(name: string): Promise<ContaboFirewall[]> {
+    return this.#listAll("/v1/firewalls", firewallSchema, { name });
+  }
+
+  /** One firewall (`GET /v1/firewalls/{id}`). */
+  async getFirewall(firewallId: string): Promise<ContaboFirewall> {
+    const body = await this.#request(
+      "GET",
+      `/v1/firewalls/${encodeURIComponent(firewallId)}`,
+      z.looseObject({ data: z.array(firewallSchema).length(1) }),
+    );
+    return body.data[0] as ContaboFirewall;
+  }
+
+  /**
+   * Creates a firewall with its inbound rules (`POST /v1/firewalls`). Contabo answers with it,
+   * its own "Block all traffic" rule appended.
+   */
+  async createFirewall(firewall: {
+    name: string;
+    description: string;
+    status: "active";
+    rules: { inbound: readonly FirewallRuleRequest[] };
+  }): Promise<ContaboFirewall> {
+    const body = await this.#request(
+      "POST",
+      "/v1/firewalls",
+      z.looseObject({ data: z.array(firewallSchema).length(1) }),
+      { body: firewall },
+    );
+    return body.data[0] as ContaboFirewall;
+  }
+
+  /** Sets a firewall's inbound rules (`PUT /v1/firewalls/{id}`); Contabo keeps its own rule. */
+  async setFirewallRules(
+    firewallId: string,
+    inbound: readonly FirewallRuleRequest[],
+  ): Promise<void> {
+    await this.#request("PUT", `/v1/firewalls/${encodeURIComponent(firewallId)}`, acknowledged, {
+      body: { rules: { inbound } },
+    });
+  }
+
+  /** Sets a firewall's description and status (`PATCH /v1/firewalls/{id}`). */
+  async updateFirewall(
+    firewallId: string,
+    fields: { description: string; status: "active" },
+  ): Promise<void> {
+    await this.#request("PATCH", `/v1/firewalls/${encodeURIComponent(firewallId)}`, acknowledged, {
+      body: fields,
+    });
+  }
+
+  /** Adds an instance to a firewall (`POST /v1/firewalls/{id}/instances/{instanceId}`). */
+  async assignFirewall(firewallId: string, instanceId: number): Promise<void> {
+    await this.#request(
+      "POST",
+      `/v1/firewalls/${encodeURIComponent(firewallId)}/instances/${instanceId}`,
+      acknowledged,
+    );
+  }
+
+  /** Removes an instance from a firewall (`DELETE /v1/firewalls/{id}/instances/{instanceId}`). */
+  async unassignFirewall(firewallId: string, instanceId: number): Promise<void> {
+    await this.#request(
+      "DELETE",
+      `/v1/firewalls/${encodeURIComponent(firewallId)}/instances/${instanceId}`,
+      acknowledged,
+    );
+  }
+
+  /** Deletes a firewall (`DELETE /v1/firewalls/{id}`; Contabo answers 204). */
+  async deleteFirewall(firewallId: string): Promise<void> {
+    await this.#request("DELETE", `/v1/firewalls/${encodeURIComponent(firewallId)}`, z.undefined());
+  }
+
+  /**
+   * Reads the firewall every 5 seconds until it protects each of `instanceIds` (its
+   * `instanceStatus` is `ok`). An instance in an `error_…` status, and one not protected after
+   * `timeoutMs`, throw `PROVIDER_ERROR` naming it and its status.
+   */
+  waitForFirewall(
+    firewallId: string,
+    instanceIds: readonly string[],
+    options: { timeoutMs: number },
+  ): Promise<ContaboFirewall> {
+    const status = (firewall: ContaboFirewall, id: string) =>
+      firewall.instanceStatus.find((entry) => entry.instanceId === id);
+    return pollAction({
+      read: () => this.getFirewall(firewallId),
+      finished: (firewall) => {
+        for (const id of instanceIds) {
+          const entry = status(firewall, id);
+          if (entry?.status.startsWith("error") !== true) continue;
+          const detail = entry.errorMessage ? `: ${entry.errorMessage}` : ".";
+          throw this.#failure(
+            "PROVIDER_ERROR",
+            `Contabo's firewall ${firewall.name} could not protect server ${id} (${entry.status})${detail}`,
+            { hint: FIREWALL_HINT },
+          );
+        }
+        return instanceIds.every((id) => status(firewall, id)?.status === "ok");
+      },
+      timedOut: (firewall) => {
+        const waiting = instanceIds
+          .filter((id) => status(firewall, id)?.status !== "ok")
+          .map((id) => `server ${id} (${status(firewall, id)?.status ?? "not listed"})`);
+        return this.#failure(
+          "PROVIDER_ERROR",
+          `Contabo's firewall ${firewall.name} did not protect ${listText(waiting)} within ${durationText(options.timeoutMs)}.`,
+          { hint: FIREWALL_HINT },
+        );
+      },
+      timeoutMs: options.timeoutMs,
+      intervalMs: STATUS_INTERVAL_MS,
+      sleep: this.#http.sleep,
+      now: this.#http.now,
+    });
+  }
+
+  async #listAll<T>(
+    path: string,
+    item: z.ZodType<T>,
+    filter: Record<string, string> = {},
+  ): Promise<T[]> {
     const schema = z.looseObject({ data: z.array(item), _pagination: paginationSchema });
     const out: T[] = [];
     for (let page = 1; ; page++) {
       const body = await this.#request("GET", path, schema, {
-        query: { page: String(page), size: String(PAGE_SIZE) },
+        query: { page: String(page), size: String(PAGE_SIZE), ...filter },
       });
       out.push(...body.data);
       if (page >= body._pagination.totalPages) return out;
@@ -332,7 +524,7 @@ export class ContaboClient {
   }
 
   async #request<S extends z.ZodType>(
-    method: "GET" | "POST" | "DELETE",
+    method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
     path: string,
     schema: S,
     options: { query?: Record<string, string>; body?: unknown } = {},
@@ -490,7 +682,7 @@ export class ContaboClient {
             hint:
               status === 401
                 ? CONTABO_CREDENTIALS_HINT
-                : "Check in Contabo's Customer Control Panel that the API user may manage compute instances, snapshots and tags, then try again.",
+                : "Check in Contabo's Customer Control Panel that the API user may manage compute instances, snapshots, tags and firewalls, then try again.",
           },
         );
       case 402:

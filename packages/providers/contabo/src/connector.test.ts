@@ -44,13 +44,15 @@ describe("contaboConnector", () => {
     expect(c.credentials.description).toContain("reach the whole account");
   });
 
-  it("is configured, with a server API, only with all four credentials", () => {
+  it("is configured, with a server API and firewalls, only with all four credentials", () => {
     expect(asVps(connector({}).connector).configured).toBe(true);
     expect(connector({}).connector.servers).toBeDefined();
+    expect(connector({}).connector.firewalls).toBeDefined();
     const { CNTB_OAUTH2_PASS: _, ...three } = CREDENTIALS_ENV;
     const partial = connector({}, three).connector;
     expect(partial.configured).toBe(false);
     expect(partial.servers).toBeUndefined();
+    expect(partial.firewalls).toBeUndefined();
   });
 
   it("names the missing credentials and calls nothing", async () => {

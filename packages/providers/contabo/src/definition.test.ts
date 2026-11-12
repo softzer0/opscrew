@@ -148,49 +148,67 @@ describe("Contabo's cloud provider definition", () => {
     expect(extraShared.sshKeyId).toBe("coalesce(contabo_secret.deploy.id)");
   });
 
-  it("reads a Contabo firewall's inbound rules, one per port", () => {
-    const firewall = resource("module.server.contabo_firewall.this", "contabo_firewall", {
-      rules: [
-        {
-          inbound: [
-            {
-              protocol: "tcp",
-              dest_ports: ["22"],
-              src_cidr: [{ ipv4: ["203.0.113.0/24"], ipv6: null }],
-            },
-            {
-              protocol: "tcp",
-              dest_ports: ["80", "443"],
-              src_cidr: [{ ipv4: ["0.0.0.0/0"], ipv6: ["::/0"] }],
-            },
-            { protocol: "icmp", src_cidr: [{ ipv4: ["0.0.0.0/0"], ipv6: ["::/0"] }] },
-          ],
-        },
-      ],
+  it("describes the firewall in the module, for the connector to apply, and keeps no login", () => {
+    const { terraform } = definition;
+    expect(terraform).toMatchObject({
+      firewallResourceType: "terraform_data.firewall",
+      connectorFirewall: true,
+      homeCacheFiles: [".cache/contabo/terraform/token"],
+    });
+    const main = terraform.module.files["main.tf"] ?? "";
+    expect(main).not.toContain("contabo_firewall");
+    expect(main).toContain('resource "terraform_data" "firewall" {');
+    expect(main).toContain("server_ids  = [tostring(contabo_instance.this.id)]");
+    // A family with no network gets a source that matches nobody, never an empty list.
+    expect(main).toContain('["127.0.0.1/32"]');
+    expect(main).toContain('["::1/128"]');
+    expect(terraform.module.files["outputs.tf"]).toMatch(
+      /output "wanted_firewall" \{[^}]*value\s+= terraform_data\.firewall\.input\n\}/,
+    );
+  });
+
+  it("reads the wanted firewall's rules, one per port, and an empty source list as any source", () => {
+    const firewall = resource("module.server.terraform_data.firewall", "terraform_data", {
+      input: {
+        name: "shop-firewall",
+        description: "OpsCrew's firewall of shop.",
+        server_ids: [null],
+        rules: [
+          { protocol: "tcp", ports: ["22"], ipv4: ["203.0.113.0/24"], ipv6: ["::1/128"] },
+          { protocol: "tcp", ports: ["80", "443"], ipv4: ["0.0.0.0/0"], ipv6: ["::/0"] },
+          { protocol: "icmp", ports: [], ipv4: ["0.0.0.0/0"], ipv6: ["::/0"] },
+          { protocol: "udp", ports: ["8000-8100"], ipv4: [], ipv6: ["::1/128"] },
+        ],
+      },
     });
     expect(definition.texts.secops.rules(firewall)).toEqual([
-      { direction: "in", protocol: "tcp", port: "22", source_ips: ["203.0.113.0/24"] },
+      { direction: "in", protocol: "tcp", port: "22", source_ips: ["203.0.113.0/24", "::1/128"] },
       { direction: "in", protocol: "tcp", port: "80", source_ips: ["0.0.0.0/0", "::/0"] },
       { direction: "in", protocol: "tcp", port: "443", source_ips: ["0.0.0.0/0", "::/0"] },
       { direction: "in", protocol: "icmp", port: "", source_ips: ["0.0.0.0/0", "::/0"] },
+      { direction: "in", protocol: "udp", port: "8000-8100", source_ips: ["0.0.0.0/0", "::1/128"] },
     ]);
   });
 
-  it("sees a firewall attached by a known instance id or by a reference in the configuration", () => {
+  it("sees the firewall attached by the server's id in server_ids or by a reference in the configuration", () => {
     const { attached } = definition.texts.secops;
     const server = resource("module.server.contabo_instance.this", "contabo_instance", {});
-    const firewall = resource("module.server.contabo_firewall.this", "contabo_firewall", {});
-    const planJson = (references: string[]) => ({
+    const firewall = resource("module.server.terraform_data.firewall", "terraform_data", {
+      input: { server_ids: [null] },
+    });
+    // The input's references as a plan's configuration lists them.
+    const planJson = (module: string, references: string[]) => ({
       configuration: {
         root_module: {
           module_calls: {
-            server: {
+            [module]: {
               module: {
                 resources: [
                   {
-                    address: "contabo_firewall.this",
-                    type: "contabo_firewall",
-                    expressions: { instance_ids: { references } },
+                    address: "terraform_data.firewall",
+                    type: "terraform_data",
+                    name: "firewall",
+                    expressions: { input: { references } },
                   },
                 ],
               },
@@ -199,31 +217,23 @@ describe("Contabo's cloud provider definition", () => {
         },
       },
     });
-    expect(
-      attached(server, [firewall], planJson(["contabo_instance.this.id", "contabo_instance.this"])),
-    ).toBe(true);
-    expect(attached(server, [firewall], planJson([]))).toBe(false);
-    const known = resource("contabo_instance.this", "contabo_instance", { id: "100123" });
-    const listing = resource("contabo_firewall.this", "contabo_firewall", {
-      instance_ids: [100123],
-    });
-    expect(attached(known, [listing], {})).toBe(true);
-    expect(attached(known, [], {})).toBe(false);
-  });
+    const references = [
+      "var.name",
+      "contabo_instance.this.id",
+      "contabo_instance.this",
+      "local.ssh_ipv4",
+    ];
+    expect(attached(server, [firewall], planJson("server", references))).toBe(true);
+    expect(attached(server, [firewall], planJson("server", ["var.name"]))).toBe(false);
+    // Another module's firewall references that module's own server.
+    expect(attached(server, [firewall], planJson("server_db", references))).toBe(false);
 
-  it("does not count an inactive firewall as attached", () => {
-    const { attached } = definition.texts.secops;
     const known = resource("contabo_instance.this", "contabo_instance", { id: "100123" });
-    const inactive = resource("contabo_firewall.this", "contabo_firewall", {
-      instance_ids: [100123],
-      status: "inactive",
-    });
-    expect(attached(known, [inactive], {})).toBe(false);
-    const active = resource("contabo_firewall.this", "contabo_firewall", {
-      instance_ids: [100123],
-      status: "active",
-    });
-    expect(attached(known, [active], {})).toBe(true);
+    const listing = (ids: unknown[]) =>
+      resource("terraform_data.firewall", "terraform_data", { input: { server_ids: ids } });
+    expect(attached(known, [listing(["100123"])], {})).toBe(true);
+    expect(attached(known, [listing(["999"])], {})).toBe(false);
+    expect(attached(known, [], {})).toBe(false);
   });
 
   it("embeds the current module, without the shared cloud-init", () => {
