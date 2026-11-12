@@ -227,10 +227,12 @@ const idSchema = z.union([z.number(), z.string()]).transform(String);
 const tokenSchema = z.looseObject({ access_token: z.string().min(1), expires_in: z.number() });
 /** A list answer: only each item's name is read; the rest is kept unread. */
 const listSchema = z.looseObject({ data: z.array(z.looseObject({ name: z.string() })) });
+/** One item's own answer (`GET <path>/{id}`), kept unread. */
+const oneSchema = z.looseObject({ data: z.tuple([z.looseObject({})]) });
 
 /**
  * One of the app's resources at Contabo: its id and name, and everything else Contabo answered,
- * unread (its shape is not verified yet, T2613), for the checks to narrow.
+ * unread, for the checks to narrow.
  */
 export interface ContaboItem {
   id: string;
@@ -297,9 +299,16 @@ export class ContaboAccount {
     return this.named("firewall", app);
   }
 
-  /** The app's SSH key `<app>-deploy`, if Contabo has it. */
-  secret(app: string): Promise<ContaboItem | undefined> {
-    return this.named("secret", app);
+  /**
+   * The app's SSH key `<app>-deploy`, if Contabo has it, with its value: a list answers none, only
+   * the secret's own answer does (research R6).
+   */
+  async secret(app: string): Promise<ContaboItem | undefined> {
+    const listed = await this.named("secret", app);
+    if (listed === undefined) return undefined;
+    const path = `${KINDS.secret.path}/${encodeURIComponent(listed.id)}`;
+    const [fields] = oneSchema.parse(await this.call("GET", path)).data;
+    return { ...listed, fields };
   }
 
   /**

@@ -152,6 +152,29 @@ describe("the cleanup at Contabo", () => {
     calls.map((call) => `${call.method} ${call.path.split("?")[0]}`);
   const log = () => undefined;
 
+  it("reads the SSH key's value from the key's own answer, by its exact name", async () => {
+    const value = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOpsCrewTestKey e2e";
+    const { contabo, calls } = account({
+      "GET /v1/secrets": page([
+        { secretId: 6, name: `${app}-deploy-x`, type: "ssh" },
+        { secretId: 5, name: `${app}-deploy`, type: "ssh" },
+      ]),
+      "GET /v1/secrets/5": {
+        body: { data: [{ secretId: 5, name: `${app}-deploy`, type: "ssh", value }] },
+      },
+    });
+    const key = await contabo.secret(app);
+    expect(key).toMatchObject({ id: "5", name: `${app}-deploy`, fields: { type: "ssh", value } });
+    expect(requests(calls)).toContain("GET /v1/secrets/5");
+  });
+
+  it("finds no SSH key when Contabo has none of that exact name", async () => {
+    const { contabo } = account({
+      "GET /v1/secrets": page([{ secretId: 6, name: `${app}-deploy-x`, type: "ssh" }]),
+    });
+    expect(await contabo.secret(app)).toBeUndefined();
+  });
+
   it("shuts a server destroy did not cancel down, then cancels it", async () => {
     const { contabo, calls } = account({
       "GET /v1/compute/instances?": [

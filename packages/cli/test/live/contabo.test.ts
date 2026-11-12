@@ -297,21 +297,32 @@ describe.skipIf(MISSING.length > 0)(
           if (servers.length !== 1) finding(`Contabo has ${servers.length} servers of the app`);
           if (server.nameOnly === true) finding("the server has no opscrew-app tag");
           if (server.cancelledUntil !== undefined) finding("the server is cancelled already");
-          // Contabo's answers for firewalls and secrets are not verified yet (T2613).
           const firewall = await contabo.firewall(app);
           if (firewall === undefined) {
             finding(`Contabo has no firewall ${app}-firewall`);
           } else {
-            const { status, instances } = firewall.fields;
+            const { status, instanceStatus } = firewall.fields;
             if (status !== "active") finding(`the firewall's status is ${String(status)}`);
+            // Its `instances` may come as a JSON-encoded string; `instanceStatus` is a list
+            // (research R6), and each protected server's status there is `ok`.
             const listed = z
-              .array(z.looseObject({ instanceId: z.union([z.number(), z.string()]) }))
-              .safeParse(instances);
+              .array(
+                z.looseObject({
+                  instanceId: z.union([z.number(), z.string()]),
+                  status: z.string(),
+                }),
+              )
+              .safeParse(instanceStatus);
             if (!listed.success) {
               const fields = Object.keys(firewall.fields).join(", ");
-              finding(`the firewall answer has no list of instances (it has ${fields})`);
-            } else if (listed.data.map((i) => String(i.instanceId)).join() !== serverId) {
-              finding("the firewall does not list exactly the app's server");
+              finding(`the firewall answer has no list of protected servers (it has ${fields})`);
+            } else {
+              const seen = listed.data.map((i) => `${i.instanceId} ${i.status}`).join(", ");
+              if (seen !== `${serverId} ok`) {
+                finding(
+                  `the firewall protects ${seen || "no server"}, not exactly the app's server`,
+                );
+              }
             }
           }
           const key = await contabo.secret(app);
