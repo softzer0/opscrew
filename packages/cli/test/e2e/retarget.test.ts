@@ -730,8 +730,9 @@ describe.skipIf(GIT === undefined)("opscrew retarget for a site between site hos
       expect(plan.target.provider).toBe("github-pages");
       expect(state()).toEqual(new Set([PAGES_RECORD]));
     },
-    // Two moves, there and back: alone about 17 s, past 120 s beside the rest of the suite.
-    2 * STEP_TIMEOUT,
+    // Two moves, there and back: alone about 2 minutes on Windows, past 240 s while other test runs
+    // share the machine.
+    4 * STEP_TIMEOUT,
   );
 
   it("refuses a server move's flags for a site, and a server target for a site", async () => {
