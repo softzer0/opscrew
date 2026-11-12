@@ -2,7 +2,7 @@
   "name": "@opscrew/connector-plesk",
   "version": "0.1.0",
   "private": true,
-  "description": "Plesk adapter: REST and XML API client, account facts and the hosting operations (ADR 0030).",
+  "description": "Plesk adapter: XML API client for a customer, account facts and the hosting operations (ADR 0030).",
   "license": "Apache-2.0",
   "type": "module",
   "exports": {
