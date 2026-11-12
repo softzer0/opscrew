@@ -273,7 +273,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
 
 ## Phase 6b: What the spike found (research R6, R7)
 
-- [ ] T2629 [US1] Contabo's firewall through the connector
+- [x] T2629 [US1] Contabo's firewall through the connector
   - Owns: `packages/providers/contabo/**`
   - Reads: research R6, R7; ADR 0029 D8; `WantedFirewallOutput` (`packages/contracts/src/provider.ts`), `FirewallApi` and `WantedFirewall` (`packages/contracts/src/connector.ts`)
   - Accept:
@@ -284,19 +284,19 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/provider-contabo --filter=@opscrew/providers && pnpm lint`
   - Effort: xhigh
 
-- [ ] T2630 [P] [US1] A provider's login cache never outlives an engine command
+- [x] T2630 [P] [US1] A provider's login cache never outlives an engine command
   - Owns: `packages/iac-engine/src/**`, `packages/agents/src/shared/engine.ts` (+ test)
   - Reads: research R6 ("The provider's login cache"); ADR 0029 D9
   - Accept: `EngineOptions.homeCacheFiles` (paths relative to the home folder). Before and after every engine command, the engine removes each of them under the home folder the command's environment names: `HOME`, else `USERPROFILE`, as the providers' Go code finds it. A missing file is fine. A removal that fails before a command stops it, with a plain error naming the file. Agents' `selectEngine` passes every registered provider's `homeCacheFiles`. The tests inject the removal and never touch a real home folder.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-engine && pnpm turbo run typecheck --filter=@opscrew/agents && pnpm lint`
   - Effort: medium
 
-- [ ] T2631 [US1] [US2] The connector's firewall in the flows
+- [x] T2631 [US1] [US2] The connector's firewall in the flows
   - Owns: `packages/iac-templates/src/**` (the infra rendering, its tests and snapshots), `packages/agents/src/{provision,destroy,drift,retarget,rotate,shared,testing}/**` (the testing fakes name Contabo's firewall), `packages/secops/src/**` (+ tests)
   - Reads: research R7; ADR 0029 D8; the contract's `FirewallApi`
   - Depends: T2629
   - Accept:
-    - iac-templates: a root output `wanted_firewalls`, a map from each server's module name to its module's `wanted_firewall`, written only for servers whose provider has `connectorFirewall`. Hetzner's and DigitalOcean's rendered roots stay byte-identical.
+    - iac-templates: a root output `wanted_firewalls`, a map from each server's module name to its provider and its module's `wanted_firewall` (the provider because a removed server is no longer in the plan, lead 2026-11-12), written only for servers whose provider has `connectorFirewall`. Hetzner's and DigitalOcean's rendered roots stay byte-identical.
     - Provision: after every successful apply, OpsCrew reads `wanted_firewalls` and passes each to its provider's `firewalls.sync`, then says and audits what changed. A failure says the server may not be protected yet and to run provision again; that run plans nothing new and syncs again.
     - Destroy, retarget's `--finish` and `--abort`, and provision's own removals: each wanted firewall of a server they remove is deleted through `firewalls.remove` after its apply, then said and audited.
     - Drift: `firewalls.differences` of each wanted firewall, reported as drift of its `terraform_data.firewall` with the differences in plain English.
@@ -305,11 +305,11 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/secops && pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm lint`
   - Effort: xhigh
 
-- [ ] T2632 The live test after the spike (lead): the SSH key's value from `GET /v1/secrets/{id}`; the firewall checks through the connector's view (`instances` in any of its shapes, each server's `instanceStatus` `ok`, no difference from the wanted firewall); no Contabo login left in the home folder after the run (step 9); the plan guard reads `terraform_data.firewall`. To see live (T2620): deleting a firewall that protects a cancelled server, adding a server while it is still provisioning, and whether Contabo rewrites a source it stores (a sync would then repeat and drift would never settle).
+- [x] T2632 The live test after the spike (lead): the SSH key's value from `GET /v1/secrets/{id}`; the firewall checks through the connector's view (`instances` in any of its shapes, each server's `instanceStatus` `ok`, no difference from the wanted firewall); no Contabo login left in the home folder after the run (step 9); the plan guard reads `terraform_data.firewall`. To see live (T2620): deleting a firewall that protects a cancelled server, adding a server while it is still provisioning, and whether Contabo rewrites a source it stores (a sync would then repeat and drift would never settle).
 
 ## Phase 7: Live, simplify, release (lead)
 
 - [ ] T2620 The live pass on one Cloud VPS 4 (lead; the founder is asked before any rerun that needs another server), recorded on `docs/e2e-coverage.md`.
-- [x] T2621 Simplify pass over the feature's changes (lead; done 2026-11-12 except where noted). Kept on purpose: each provider package keeps its own copies of the module-argument helpers and its SecOps reading code (a provider stays self-contained for 028), the takeover's import blocks stay appended after rendering and the plan's imports parsed in agents (no contract change for no gain). Noted: secops's `PlannedResource` becomes the contract's `PlannedResourceJson`; the definitions' copied module-argument helpers; `profiles.ts`' second parse of the region keys and of `DEFAULT_CLOUD_PROVIDER`; the two agents grep tests become one; agents (`provision/servers.ts`, `rotate/infra.ts`) read the shared resources' addresses with iac-templates' `sharedResources` instead of their own parse of `extraShared`; `provision/servers.ts`' lift of delete protection fails closed if more than one provider has it (T2607 review N1); the defensive fallbacks T2607's review listed (S2); the takeover's import blocks become a `RenderContext` field instead of an append to the rendered `main.tf`, and whether the plan's imports belong in iac-engine's plan summary (T2612's report); one "is/are not set" helper for the three copies (T2612's review); one helper for "Nothing is saved on … until its term ends" (destroy and provision, T2625's review); one credential-list helper for mcp-server's `CLOUD_CREDENTIALS` and `retarget`'s help (T2618's report); the `OPSCREW_IT` infra and cloud-init engine loop limited to fewer move directions (17.5 minutes with Contabo, T2616's report); Contabo's fixture plans in iac-templates with `pricesIncludeVat: true` as its catalog; the iac-templates shell-script tests' timeouts under load (`workflow/snapshots.test.ts`' rollback cases).
+- [x] T2621 Simplify pass over the feature's changes (lead; done 2026-11-12 except where noted). Kept on purpose: each provider package keeps its own copies of the module-argument helpers and its SecOps reading code (a provider stays self-contained for 028), the takeover's import blocks stay appended after rendering and the plan's imports parsed in agents (no contract change for no gain). Noted: secops's `PlannedResource` becomes the contract's `PlannedResourceJson`; the definitions' copied module-argument helpers; `profiles.ts`' second parse of the region keys and of `DEFAULT_CLOUD_PROVIDER`; the two agents grep tests become one; agents (`provision/servers.ts`, `rotate/infra.ts`) read the shared resources' addresses with iac-templates' `sharedResources` instead of their own parse of `extraShared`; `provision/servers.ts`' lift of delete protection fails closed if more than one provider has it (T2607 review N1); the defensive fallbacks T2607's review listed (S2); the takeover's import blocks become a `RenderContext` field instead of an append to the rendered `main.tf`, and whether the plan's imports belong in iac-engine's plan summary (T2612's report); one "is/are not set" helper for the three copies (T2612's review); one helper for "Nothing is saved on … until its term ends" (destroy and provision, T2625's review); one credential-list helper for mcp-server's `CLOUD_CREDENTIALS` and `retarget`'s help (T2618's report); the `OPSCREW_IT` infra and cloud-init engine loop limited to fewer move directions (17.5 minutes with Contabo, T2616's report); Contabo's fixture plans in iac-templates with `pricesIncludeVat: true`, which its catalog no longer says (prices before VAT since 2026-11-12); the iac-templates shell-script tests' timeouts under load (`workflow/snapshots.test.ts`' rollback cases).
 - [x] T2622 The constitution's provider order (Contabo with the hosting providers, a MINOR bump) and `CLAUDE.md`'s package list (lead).
 - [ ] T2623 The release, following `docs/releasing.md` (lead).
