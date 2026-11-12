@@ -349,7 +349,8 @@ source (v0.1.44) and with the provider through OpenTofu.
 
 **The firewall**
 - Free with every VPS and VDS (contabo.com/en-us/firewall, help article 103000390430). The API's
-  "firewalling add-on" is a leftover name.
+  "firewalling add-on" is real: Contabo attaches it to a new instance by itself shortly after
+  creating it, and refuses an assignment until then (R8, run 4).
 - Inbound traffic no rule accepts is dropped; outbound traffic is not filtered. Only `accept`
   rules can be written.
 - Contabo appends its own rule to every firewall: protocol `""`, no ports, empty IPv4 and IPv6
@@ -410,6 +411,10 @@ for a fix on the same server (R5 item 3).
   So a live whole-server snapshot now runs `sync` on the server first (as the deploy user,
   through the access `opscrew logs` uses), on every provider; a failure is said and the snapshot
   taken anyway.
+- **The firewall add-on:** Contabo attaches an add-on, 1501, to a new instance by itself shortly
+  after creating it, and answers HTTP 402 "does not have firewall add-on product" to a firewall
+  assignment until then (run 4 assigned it within seconds of the apply). The connector waits for it,
+  up to 10 minutes, and the module ignores `add_ons`.
 - **`createdDate` an hour early:** a snapshot taken at 08:11:24Z was answered with `createdDate`
   07:11:24Z (its `autoDeleteDate`, its id `snap1794471084` and Contabo's own audit say 08:11).
   OpsCrew reads the time from the stamp it ends each description with.
