@@ -150,8 +150,9 @@ function phpBuild(plan: DeployPlan, target: HostingDeployTarget, dir: string): s
       "# The PHP image has neither unzip nor PHP's zip extension, one of which Composer unpacks with.",
       // apt checks the packages' signatures. The 7.4 and 8.0 images are Debian bullseye: should
       // its sources move to archive.debian.org, their apt-get update fails and they need a fix.
-      'docker run --rm -e COMPOSER_ALLOW_SUPERUSER=1 -v "$PWD:/app" -v "$RUNNER_TEMP/composer:/usr/local/bin/composer:ro" -w /app "$PHP_IMAGE" \\',
-      "  bash -c 'apt-get update -qq && apt-get install -y -qq --no-install-recommends unzip > /dev/null && composer install --no-dev --optimize-autoloader --no-interaction --no-progress --ignore-platform-req=\"ext-*\"'",
+      "# The container runs as root: vendor/ goes back to the runner's user, so a self-hosted runner's next checkout can clean it.",
+      'docker run --rm -e COMPOSER_ALLOW_SUPERUSER=1 -e OWNER="$(id -u):$(id -g)" -v "$PWD:/app" -v "$RUNNER_TEMP/composer:/usr/local/bin/composer:ro" -w /app "$PHP_IMAGE" \\',
+      '  bash -c \'apt-get update -qq && apt-get install -y -qq --no-install-recommends unzip > /dev/null && composer install --no-dev --optimize-autoloader --no-interaction --no-progress --ignore-platform-req="ext-*" && chown -R "$OWNER" vendor\'',
     ]),
     ...setupNode(RUNTIME_DEFAULTS.node),
     ...assetBuild(dir, "Build the app's assets"),
