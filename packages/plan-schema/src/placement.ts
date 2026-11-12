@@ -196,6 +196,7 @@ const TARGET_NAMES: Record<string, string> = {
   localhost: "the localhost target",
   "cloudflare-workers": "Cloudflare hosting",
   "github-pages": "GitHub Pages",
+  hosting: "a hosting account",
 };
 
 /**

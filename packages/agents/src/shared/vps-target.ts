@@ -103,6 +103,16 @@ export function serverlessNoPortainer(what: string, provider: ServerlessProvider
   );
 }
 
+/**
+ * The plain error of a step that is not available for a hosting account; `what` names the step,
+ * for example "`opscrew retarget`".
+ */
+export function hostingNotAvailable(what: string): OpsCrewError {
+  return new OpsCrewError("PHASE_PRECONDITION", `${what} isn't available for a hosting account.`, {
+    hint: "Choose another target for the app: run `opscrew interview`, then `opscrew design`.",
+  });
+}
+
 /** The plain error of `opscrew retarget` for a server-less target, which does not move yet. */
 export function serverlessTargetNoMove(provider: ServerlessProvider): OpsCrewError {
   return new OpsCrewError(
@@ -117,12 +127,14 @@ export function serverlessTargetNoMove(provider: ServerlessProvider): OpsCrewErr
 /**
  * The provider of a target taking part in a move (`opscrew retarget`); throws
  * {@link portainerTargetNoMove} for a Portainer target, {@link localhostTargetNoMove} for the
- * localhost target and {@link serverlessTargetNoMove} for a server-less one.
+ * localhost target, {@link serverlessTargetNoMove} for a server-less one and
+ * {@link hostingNotAvailable} for a hosting account.
  */
 export function moveProvider(target: Pick<DeployTarget, "provider">): VpsProviderId {
   const { provider } = target;
   if (provider === "portainer") throw portainerTargetNoMove();
   if (provider === "localhost") throw localhostTargetNoMove();
   if (isServerlessProvider(provider)) throw serverlessTargetNoMove(provider);
+  if (provider === "hosting") throw hostingNotAvailable("`opscrew retarget`");
   return provider;
 }

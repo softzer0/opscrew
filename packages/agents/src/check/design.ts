@@ -79,6 +79,8 @@ function noDiskReason(plan: DeployPlan): string | undefined {
       return "Cloudflare's hosting has no server of the app's";
     case "github-pages":
       return "GitHub Pages has no server of the app's";
+    case "hosting":
+      return "a hosting account has no server disk for the check to read";
     default:
       return checkDiskVia(plan) === undefined
         ? "your server is reached through a Cloudflare Tunnel, and the check's SSH can't pass the tunnel's Cloudflare Access login. With the server's own runner (environment.runner: server) the check reads the disk there"

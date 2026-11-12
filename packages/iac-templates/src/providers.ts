@@ -21,7 +21,8 @@ export function wrongTarget(message: string): OpsCrewError {
 /**
  * `target` when OpsCrew creates the server on one of its cloud providers: a plan's target, a
  * server of a move layout, or just `{ provider }`. Throws {@link wrongTarget} for every other
- * target: a server the user owns, a Portainer, the localhost target and the server-less ones.
+ * target: a server the user owns, a Portainer, the localhost target, the server-less ones and a
+ * hosting account.
  */
 export function cloudTarget<T extends Pick<DeployTarget, "provider">>(
   target: T,
@@ -42,6 +43,7 @@ const NOT_CLOUD = {
   localhost: "an app on this computer (the localhost target)",
   "cloudflare-workers": "an app on Cloudflare's hosting",
   "github-pages": "a site on GitHub Pages",
+  hosting: "an app on a hosting account",
 } as const satisfies Record<Exclude<DeployTarget["provider"], CloudProvider>, string>;
 
 /**

@@ -9,7 +9,7 @@ import {
   type RenderedFile,
   tunnelMode,
 } from "@opscrew/iac-templates";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { type DeployPlan, isHostingTarget } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import type { GitHubSetup } from "../provision/credentials";
 import type { ProvisionServices } from "../provision/types";
@@ -31,7 +31,10 @@ import { repositoryCheckSettings } from "./settings";
  */
 export function checkReachesOverSsh(plan: DeployPlan): boolean {
   return (
-    plan.target.mode === "vps-compose" && plan.environment?.runner !== "server" && !tunnelMode(plan)
+    !isHostingTarget(plan.target) &&
+    plan.target.mode === "vps-compose" &&
+    plan.environment?.runner !== "server" &&
+    !tunnelMode(plan)
   );
 }
 

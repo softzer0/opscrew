@@ -42,7 +42,8 @@
         "portainer",
         "localhost",
         "cloudflare-workers",
-        "github-pages"
+        "github-pages",
+        "hosting"
       ]
     },
     "region": {

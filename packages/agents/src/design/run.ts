@@ -1612,6 +1612,7 @@ function providerName(id: DeployProvider): string {
   if (id === "portainer") return "your Portainer";
   if (id === "localhost") return "this computer";
   if (isServerlessProvider(id)) return serverlessName(id);
+  if (id === "hosting") return "a hosting account";
   return providerProfile(id).displayName;
 }
 

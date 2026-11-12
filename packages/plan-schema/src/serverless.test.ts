@@ -681,6 +681,7 @@ describe("onServer: the runners that deploy on or to a server", () => {
     image: "registry",
   } as const;
   const noDns = { provider: "none", proxied: false, www: false } as const;
+  const hosting = { provider: "hosting", panel: "cpanel", app: "php", webRoot: "public" } as const;
 
   /** A staging plan of `target` (its DNS as the target needs it) with `environment`. */
   async function staging(target: string, environment: Record<string, unknown>) {
@@ -699,7 +700,9 @@ describe("onServer: the runners that deploy on or to a server", () => {
                     ? portainer
                     : target === "localhost"
                       ? localhost
-                      : { ...server.target, provider: target },
+                      : target === "hosting"
+                        ? hosting
+                        : { ...server.target, provider: target },
               ...(target === "portainer" || target === "localhost" ? { dns: noDns } : {}),
             };
     return {
@@ -720,6 +723,7 @@ describe("onServer: the runners that deploy on or to a server", () => {
       "localhost",
       "cloudflare-workers",
       "github-pages",
+      "hosting",
     ]);
     const onServer = new Set(["hetzner", "digitalocean", "contabo", "own"]);
     const runnerHost = { name: "home-box", arch: "amd64" };

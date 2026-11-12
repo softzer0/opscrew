@@ -23,6 +23,7 @@ import {
   ImageBuilderSchema,
   IsoDateTimeSchema,
   isCloudProvider,
+  isHostingProvider,
   isServerlessProvider,
   MemoryMbSchema,
   onOneServer,
@@ -337,9 +338,161 @@ export const GithubPagesTargetSchema = z
     }
   });
 
+/** How OpsCrew reaches a hosting account: its control panel's API, or SFTP on a host with none. */
+export const HostingPanelSchema = z.enum(["cpanel", "plesk", "directadmin", "sftp"]);
+
+/** A Node.js or Python version, such as `22` or `3.12`. */
+const RuntimeVersionSchema = z.string().regex(/^\d+(?:\.\d+){0,2}$/, {
+  message: "must be a version such as `22` or `3.12`",
+});
+
+/** The interpreter a Node.js or Python app on a hosting account needs. */
+const HOSTING_INTERPRETERS = { node: "nodejs", python: "python" } as const;
+
+/**
+ * A shared hosting account the user already pays for (ADR 0030): OpsCrew sets it up through the
+ * panel's API, or over SFTP on a host with no panel, and serves the app on `dns.domain`. Nothing is
+ * created, priced or hardened as a server. The panel's address and the account's user are never
+ * committed: they live in OpsCrew's local state (`.opscrew/hosting.json`), the token only in the
+ * environment (`OPSCREW_HOSTING_TOKEN`).
+ */
+export const HostingTargetSchema = z
+  .strictObject({
+    provider: z.literal("hosting"),
+    panel: HostingPanelSchema,
+    /** What the account runs: files only, PHP, or a Node.js or Python app through the panel. */
+    app: z.enum(["static", "php", "node", "python"]),
+    /**
+     * The folder inside a release the hostname serves: `public` for Laravel and a PHP app with
+     * `public/index.php`, `.` for a static site (its release is the build's output) and a PHP app
+     * without `public/`.
+     */
+    webRoot: RepoPathSchema,
+    /** A static site's build. */
+    site: SiteSchema.optional(),
+    /**
+     * The hostname's PHP version and how it gets it: the account's own (`account`), cPanel's
+     * MultiPHP (`multiphp`) or CloudLinux's handler line (`handler`). Set by the second hosting
+     * plan from the agent's report.
+     */
+    php: z
+      .strictObject({
+        version: z.string().regex(/^\d+\.\d+$/, { message: "must be a PHP version such as `8.3`" }),
+        via: z.enum(["account", "multiphp", "handler"]),
+      })
+      .optional(),
+    /** The app's database, its name without the account's prefix (the panel adds it). */
+    database: z
+      .strictObject({
+        engine: z.enum(["mariadb", "mysql"]),
+        name: z.string().regex(/^[a-z0-9_]+$/, {
+          message:
+            "must be lower-case letters, digits and underscores, without the account's prefix (the panel adds it)",
+        }),
+      })
+      .optional(),
+    /** The app's scheduled commands, as cron lines on the account. */
+    cron: z
+      .array(
+        z.strictObject({
+          /** Five fields, as the panel takes them. */
+          schedule: z.string().regex(/^\S+(?: +\S+){4}$/, {
+            message: "must be a cron schedule of five fields such as `*/15 * * * *`, on one line",
+          }),
+          command: CommandLineSchema,
+        }),
+      )
+      .default(() => []),
+    /** A Node.js or Python app's interpreter, its version and its startup file. */
+    runtime: z
+      .strictObject({
+        interpreter: z.enum(["nodejs", "python"]),
+        version: RuntimeVersionSchema,
+        startup: RepoPathSchema,
+      })
+      .optional(),
+    /**
+     * The hostname's document root. `direct` (the default): the release folder itself,
+     * `~/opscrew/<app>-<env>/current/<webRoot>`. `link`: where the panel requires it (inside
+     * `public_html` on a restricted cPanel, DirectAdmin's own `domains/<name>/public_html`), a
+     * link to the release.
+     */
+    docroot: z.enum(["direct", "link"]).default("direct"),
+  })
+  .superRefine((target, ctx) => {
+    const issue = (path: string[], message: string) =>
+      ctx.addIssue({ code: "custom", path, message });
+    const interpreter =
+      target.app === "node" || target.app === "python"
+        ? HOSTING_INTERPRETERS[target.app]
+        : undefined;
+    const sftp = target.panel === "sftp";
+    if (sftp) {
+      const why = "an SFTP host has no panel for OpsCrew to set it up through";
+      if (interpreter !== undefined) {
+        issue(
+          ["app"],
+          `can be "static" or "php" with panel "sftp": a Node.js or Python app runs through a panel's app support, and ${why}; choose a hosting account with a panel, or a server target`,
+        );
+      }
+      if (target.database !== undefined) {
+        issue(
+          ["database"],
+          `is refused with panel "sftp": ${why}; make the database in your host's control panel, give the app its values as settings, and remove target.database`,
+        );
+      }
+      if (target.cron.length > 0) {
+        issue(
+          ["cron"],
+          `must be empty with panel "sftp": ${why}; add the app's scheduled commands in your host's control panel, and remove target.cron`,
+        );
+      }
+      if (target.runtime !== undefined) {
+        issue(
+          ["runtime"],
+          `is refused with panel "sftp": a Node.js or Python app runs through a panel's app support, and ${why}; remove target.runtime`,
+        );
+      }
+      if (target.php !== undefined && target.php.via !== "account") {
+        issue(
+          ["php", "via"],
+          `must be "account" with panel "sftp": ${why}, so the hostname runs the account's own PHP version; set target.php.via to "account"`,
+        );
+      }
+    }
+    if (target.app === "static") {
+      const refused = [
+        ["php", "runs no PHP"],
+        ["database", "uses no database"],
+        ["runtime", "runs no Node.js or Python app"],
+      ] as const;
+      for (const [field, what] of refused) {
+        if (target[field] === undefined) continue;
+        issue(
+          [field],
+          `is refused with app "static": a static site ${what}; remove target.${field}`,
+        );
+      }
+    }
+    if (interpreter !== undefined && !sftp) {
+      if (target.runtime === undefined) {
+        issue(
+          ["runtime"],
+          `is required with app "${target.app}": the interpreter (${interpreter}), its version and the startup file the panel runs the app with`,
+        );
+      } else if (target.runtime.interpreter !== interpreter) {
+        issue(
+          ["runtime", "interpreter"],
+          `must be "${interpreter}" with app "${target.app}"; set target.runtime.interpreter to "${interpreter}"`,
+        );
+      }
+    }
+  });
+
 /**
  * Where the app runs: a server OpsCrew creates (Hetzner, DigitalOcean), the user's own server, the
- * user's existing Portainer, the user's own computer, Cloudflare's hosting or GitHub Pages.
+ * user's existing Portainer, the user's own computer, Cloudflare's hosting, GitHub Pages or a
+ * shared hosting account.
  */
 export const DeployTargetSchema = z.discriminatedUnion("provider", [
   CloudTargetSchema,
@@ -348,7 +501,15 @@ export const DeployTargetSchema = z.discriminatedUnion("provider", [
   LocalhostTargetSchema,
   CloudflareWorkersTargetSchema,
   GithubPagesTargetSchema,
+  HostingTargetSchema,
 ]);
+
+/** True for a shared hosting account's target, narrowing it to one. */
+export function isHostingTarget<T extends { provider: string }>(
+  target: T,
+): target is Extract<T, { provider: "hosting" }> {
+  return isHostingProvider(target.provider);
+}
 
 /** True for a server-less target (Cloudflare's hosting, GitHub Pages), narrowing it to them. */
 export function isServerlessTarget<T extends { provider: string }>(
@@ -1068,6 +1229,18 @@ function checkLocalhostTarget(plan: DeployPlanFields, ctx: z.RefinementCtx): voi
       code: "custom",
       path: ["retarget"],
       message: "moving an app to or from the localhost target is not available",
+    });
+  }
+}
+
+/** The rules of a hosting account's target: the app's hostname is `dns.domain`. */
+function checkHostingTarget(plan: DeployPlanFields, ctx: z.RefinementCtx): void {
+  if (plan.dns.domain === undefined) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["dns", "domain"],
+      message:
+        "is required with a hosting account: it is the hostname the account serves the app on; set dns.domain to it",
     });
   }
 }
@@ -2012,7 +2185,9 @@ const DeployPlanObjectSchema = DeployPlanFieldsSchema.superRefine((plan, ctx) =>
   if (
     plan.dns.provider === "cloudflare" &&
     plan.dns.domain === undefined &&
-    environment?.previews === undefined
+    environment?.previews === undefined &&
+    // A hosting account has its own refusal (checkHostingTarget).
+    !isHostingTarget(plan.target)
   ) {
     ctx.addIssue({
       code: "custom",
@@ -2057,6 +2232,7 @@ const DeployPlanObjectSchema = DeployPlanFieldsSchema.superRefine((plan, ctx) =>
   if (plan.target.provider === "portainer") checkPortainerTarget(plan.target, plan, ctx);
   if (plan.target.provider === "localhost") checkLocalhostTarget(plan, ctx);
   if (isServerlessTarget(plan.target)) checkServerlessTarget(plan.target, plan, ctx);
+  if (isHostingTarget(plan.target)) checkHostingTarget(plan, ctx);
   if (environment !== undefined) checkEnvironment(environment, plan, ctx);
   if (environment?.previews !== undefined) {
     checkPreviews(environment, environment.previews, plan, ctx);
@@ -2379,6 +2555,8 @@ export type CloudflareWorkersDeployTarget = Extract<
 >;
 /** GitHub Pages. */
 export type GithubPagesDeployTarget = Extract<DeployTarget, { provider: "github-pages" }>;
+/** A shared hosting account, with its defaults filled in. */
+export type HostingDeployTarget = Extract<DeployTarget, { provider: "hosting" }>;
 /** How the deploy job builds a server-less site. */
 export type Site = z.output<typeof SiteSchema>;
 /**

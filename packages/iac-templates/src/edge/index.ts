@@ -7,10 +7,10 @@
  * target) the same edge listens on 127.0.0.1 with leaf certificates from OpsCrew's local CA.
  */
 import { sha256Hex } from "@opscrew/core";
-import { type DeployPlan, isServerlessTarget } from "@opscrew/plan-schema";
+import { type DeployPlan, isHostingTarget, isServerlessTarget } from "@opscrew/plan-schema";
 import { stringify } from "yaml";
 import { IMAGES } from "../pins";
-import { notOnServer } from "../providers";
+import { notOnServer, wrongTarget } from "../providers";
 import { memoryLimit } from "../runtime/components";
 import { CATCH_ALL_SITES, composeLiteral, hardened } from "../runtime/services";
 import { artefactsFolder, runtimeDir } from "../runtime-dir";
@@ -95,11 +95,14 @@ export const EDGE_PROXIES: Record<
 
 /**
  * The plan's proxy: `target.edge` (a Portainer stack, which has no server edge, runs Caddy). A
- * server-less target has none: throws.
+ * server-less target and a hosting account have none: throws.
  */
 export function edgeProxy(plan: DeployPlan): EdgeProxy {
   if (isServerlessTarget(plan.target)) {
     throw notOnServer(plan.target.provider, "reverse proxy of OpsCrew's");
+  }
+  if (isHostingTarget(plan.target)) {
+    throw wrongTarget("OpsCrew's reverse proxy isn't available for a hosting account.");
   }
   return plan.target.provider === "portainer" ? "caddy" : plan.target.edge;
 }

@@ -156,15 +156,16 @@ export type ServerlessProvider = z.infer<typeof ServerlessProviderSchema>;
 /**
  * Every place OpsCrew can deploy to, as `opscrew/requirements.yaml` and design options name it: a
  * single server ({@link VpsProviderSchema}), a Portainer the user already runs (`portainer`), the
- * user's own computer (`localhost`, its Docker) or a server-less target
- * ({@link ServerlessProviderSchema}). Only the single servers have a server for OpsCrew to
- * create, size or price.
+ * user's own computer (`localhost`, its Docker), a server-less target
+ * ({@link ServerlessProviderSchema}) or a shared hosting account the user already pays for
+ * (`hosting`). Only the single servers have a server for OpsCrew to create, size or price.
  */
 export const DeployProviderSchema = z.enum([
   ...VpsProviderSchema.options,
   "portainer",
   "localhost",
   ...ServerlessProviderSchema.options,
+  "hosting",
 ]);
 export type DeployProvider = z.infer<typeof DeployProviderSchema>;
 
@@ -181,6 +182,11 @@ export function isCloudProvider(provider: string | undefined): provider is Cloud
 /** True for a server-less target's provider: Cloudflare's hosting or GitHub Pages. */
 export function isServerlessProvider(provider: string | undefined): provider is ServerlessProvider {
   return ServerlessProviderSchema.safeParse(provider).success;
+}
+
+/** True for a shared hosting account's provider (`hosting`, ADR 0030). */
+export function isHostingProvider(provider: string | undefined): provider is "hosting" {
+  return provider === "hosting";
 }
 
 /** Registrars OpsCrew can buy domains with. */

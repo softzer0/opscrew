@@ -87,6 +87,7 @@ describe("JSON Schema export", () => {
               },
               required: ["provider", "mode", "site"],
             },
+            { properties: { provider: { const: "hosting" } } },
           ],
         },
         environment: {

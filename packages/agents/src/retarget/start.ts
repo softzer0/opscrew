@@ -40,6 +40,7 @@ import {
   boundHostAdapter,
   designOptionLine,
   hasState,
+  hostingNotAvailable,
   readPortainerConnection,
   readServerAddresses,
   restoreOldConnection,
@@ -722,6 +723,7 @@ async function newTargetId(
   }
   const { provider } = await requireRequirements(deps);
   if (provider === "localhost") throw thisComputerNoMove();
+  if (provider === "hosting") throw hostingNotAvailable("`opscrew retarget`");
   if (isServerlessProvider(provider)) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",

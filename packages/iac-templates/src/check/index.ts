@@ -4,6 +4,7 @@ import { OpsCrewError } from "@opscrew/core";
 import {
   credentialMaxAgeDaysOf,
   type DeployPlan,
+  isHostingTarget,
   isServerlessTarget,
   snapshotScheduleOf,
 } from "@opscrew/plan-schema";
@@ -314,11 +315,11 @@ function scheduledSnapshots(
  * How the check reads the disk of `plan`'s server: where the environment's deploys run, over SSH
  * with the check key from GitHub's machines (`github`) or its runner machine (`runner-host`), or
  * on the server's own runner (`own-runner`). `undefined` when it reads none: no server of the
- * app's (Portainer, the server-less targets), or an own server in tunnel mode deployed over SSH,
- * which the check's SSH can't reach through the tunnel's Cloudflare Access login.
+ * app's (Portainer, the server-less targets, a hosting account), or an own server in tunnel mode
+ * deployed over SSH, which the check's SSH can't reach through the tunnel's Cloudflare Access login.
  */
 export function checkDiskVia(plan: DeployPlan): CheckServer["via"] | undefined {
-  if (plan.target.mode !== "vps-compose") return undefined;
+  if (isHostingTarget(plan.target) || plan.target.mode !== "vps-compose") return undefined;
   if (deploysInPlace(plan)) return "own-runner";
   if (tunnelMode(plan)) return undefined;
   return selfHosted(plan) ? "runner-host" : "github";

@@ -30,8 +30,8 @@ export const RequirementsSchema = z
     /**
      * Where most users are; picks the provider's location. Required only for a server OpsCrew
      * creates (`hetzner`, `digitalocean`): a server the user owns or runs Portainer on and the
-     * user's own computer stay where they are, and the server-less targets have no location, so a
-     * region given for them is ignored.
+     * user's own computer and hosting account stay where they are, and the server-less targets
+     * have no location, so a region given for them is ignored.
      */
     region: RegionSchema.optional(),
     uptime: UptimeSchema,

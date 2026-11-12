@@ -328,7 +328,7 @@ export function providerProfile(
 
 /**
  * `provider` when the app runs on one server; any other target here (a Portainer, this computer,
- * a server-less target) is a bug in OpsCrew.
+ * a server-less target, a hosting account) is a bug in OpsCrew.
  */
 function serverProvider(provider: DeployProvider): VpsProviderId {
   if (onOneServer(provider)) return provider;
@@ -343,6 +343,7 @@ const NOT_ON_SERVER = {
   localhost: "an app on this computer (the localhost target)",
   "cloudflare-workers": "an app on Cloudflare's hosting",
   "github-pages": "a site on GitHub Pages",
+  hosting: "an app on a hosting account",
 } as const satisfies Record<Exclude<DeployProvider, VpsProviderId>, string>;
 
 /** The provider of a plan whose app runs on one server. */

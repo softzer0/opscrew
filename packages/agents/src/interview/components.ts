@@ -252,8 +252,9 @@ export async function hostedAdditions(
     for (const choice of choices) additions.set(choice.kind, `, which ${where} must have room for`);
     return additions;
   }
-  // A server-less target has no server to run a service on, so there is no price to name.
-  if (isServerlessProvider(provider)) return additions;
+  // A server-less target or a hosting account has no server to run a service on, so there is no
+  // price to name.
+  if (isServerlessProvider(provider) || provider === "hosting") return additions;
   const catalog = vpsConnector(provider, {
     env: {},
     fetch: deps.fetch,

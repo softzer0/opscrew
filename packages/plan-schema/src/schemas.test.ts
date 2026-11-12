@@ -1223,6 +1223,7 @@ describe("DeployPlan target on an existing Portainer", () => {
       "localhost",
       "cloudflare-workers",
       "github-pages",
+      "hosting",
     ]);
     expect(DesignOptionSchema.shape.target.shape.provider.options).toEqual(
       DeployProviderSchema.options,

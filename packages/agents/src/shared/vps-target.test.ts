@@ -1,7 +1,7 @@
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cloudTarget, edgeProxy } from "@opscrew/iac-templates";
+import { checkDiskVia, cloudTarget, edgeProxy } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
   DeployPlanSchema,
@@ -9,6 +9,9 @@ import {
   writeArtifact,
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { checkReachesOverSsh } from "../check/provision";
+import { buildDesignOptions } from "../design";
+import { optionToPlan } from "../design/plan";
 import { runDns } from "../dns/run";
 import { buyDomain, connectDomain } from "../domain";
 import { recordDomain } from "../domain/project";
@@ -22,10 +25,13 @@ import { runRetarget } from "../retarget/run";
 import { tlsStatusReport } from "../status";
 import { readServerContainers } from "../status/run";
 import {
+  autoBuild,
   createTestPhaseDeps,
+  euCatalog,
   FakeCloudflare,
   makeRequirements,
   ScriptedRunner,
+  staticSpaFacts,
   TOKEN,
   testPlan,
 } from "../testing";
@@ -396,5 +402,66 @@ describe.each([
       zone: "example.org",
       proxied: !github,
     });
+  });
+});
+
+// Feature 027: a hosting account is in the schema (T2702) before its flows.
+describe("a hosting account in steps that know only servers", () => {
+  function hostingPlan(): DeployPlan {
+    return DeployPlanSchema.parse({
+      ...testPlan({ deployed: true }),
+      target: { provider: "hosting", panel: "cpanel", app: "php", webRoot: "public" },
+      services: [],
+      dns: { provider: "none", domain: "app.example.com", proxied: false },
+    });
+  }
+  const notAvailable = (what: string) => ({
+    code: "PHASE_PRECONDITION",
+    message: `${what} isn't available for a hosting account.`,
+    hint: "Choose another target for the app: run `opscrew interview`, then `opscrew design`.",
+  });
+
+  it("is a bug in OpsCrew where a server's provider or proxy is needed", () => {
+    const plan = hostingPlan();
+    for (const attempt of [
+      () => planProvider(plan),
+      () => requestedProvider({ provider: "hosting" }),
+      () => cloudTarget(plan.target),
+    ]) {
+      expect(refusal(attempt)).toMatchObject({
+        ...BUG,
+        message: expect.stringContaining("not to an app on a hosting account."),
+      });
+    }
+    expect(refusal(() => edgeProxy(plan))).toMatchObject({
+      ...BUG,
+      message: "OpsCrew's reverse proxy isn't available for a hosting account.",
+    });
+  });
+
+  it("is refused plainly by retarget and design", async () => {
+    expect(refusal(() => moveProvider(hostingPlan().target))).toMatchObject(
+      notAvailable("`opscrew retarget`"),
+    );
+    const facts = staticSpaFacts();
+    const requirements = makeRequirements();
+    const [option] = await buildDesignOptions({ facts, requirements, catalog: euCatalog() });
+    if (option === undefined) throw new Error("no option");
+    const hosting = { ...option, target: { ...option.target, provider: "hosting" as const } };
+    const input = {
+      facts,
+      requirements,
+      now: new Date("2026-11-12T10:00:00.000Z"),
+      codeChanges: [],
+      build: autoBuild(facts),
+    };
+    expect(refusal(() => optionToPlan(hosting, input))).toMatchObject(
+      notAvailable("`opscrew design`"),
+    );
+  });
+
+  it("has no server disk for the scheduled check to read", () => {
+    expect(checkDiskVia(hostingPlan())).toBeUndefined();
+    expect(checkReachesOverSsh(hostingPlan())).toBe(false);
   });
 });

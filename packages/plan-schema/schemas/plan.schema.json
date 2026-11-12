@@ -600,6 +600,140 @@
           },
           "required": ["provider", "mode", "site"],
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "provider": {
+              "type": "string",
+              "const": "hosting"
+            },
+            "panel": {
+              "type": "string",
+              "enum": ["cpanel", "plesk", "directadmin", "sftp"]
+            },
+            "app": {
+              "type": "string",
+              "enum": ["static", "php", "node", "python"]
+            },
+            "webRoot": {
+              "type": "string",
+              "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
+            },
+            "site": {
+              "type": "object",
+              "properties": {
+                "tool": {
+                  "type": "string",
+                  "enum": ["node", "hugo", "none"]
+                },
+                "packageManager": {
+                  "type": "string",
+                  "enum": ["npm", "pnpm", "yarn", "bun"]
+                },
+                "nodeVersion": {
+                  "type": "string",
+                  "pattern": "^\\d+(?:\\.\\d+){0,2}$"
+                },
+                "command": {
+                  "type": "string",
+                  "pattern": "^[^\\r\\n\\0]*\\S[^\\r\\n\\0]*$"
+                },
+                "outputDir": {
+                  "type": "string",
+                  "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
+                },
+                "entry": {
+                  "type": "string",
+                  "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
+                },
+                "compatibilityFlags": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[a-z0-9_]+$"
+                  }
+                }
+              },
+              "required": ["tool", "outputDir"],
+              "additionalProperties": false
+            },
+            "php": {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "type": "string",
+                  "pattern": "^\\d+\\.\\d+$"
+                },
+                "via": {
+                  "type": "string",
+                  "enum": ["account", "multiphp", "handler"]
+                }
+              },
+              "required": ["version", "via"],
+              "additionalProperties": false
+            },
+            "database": {
+              "type": "object",
+              "properties": {
+                "engine": {
+                  "type": "string",
+                  "enum": ["mariadb", "mysql"]
+                },
+                "name": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9_]+$"
+                }
+              },
+              "required": ["engine", "name"],
+              "additionalProperties": false
+            },
+            "cron": {
+              "default": [],
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "schedule": {
+                    "type": "string",
+                    "pattern": "^\\S+(?: +\\S+){4}$"
+                  },
+                  "command": {
+                    "type": "string",
+                    "pattern": "^[^\\r\\n\\0]*\\S[^\\r\\n\\0]*$"
+                  }
+                },
+                "required": ["schedule", "command"],
+                "additionalProperties": false
+              }
+            },
+            "runtime": {
+              "type": "object",
+              "properties": {
+                "interpreter": {
+                  "type": "string",
+                  "enum": ["nodejs", "python"]
+                },
+                "version": {
+                  "type": "string",
+                  "pattern": "^\\d+(?:\\.\\d+){0,2}$"
+                },
+                "startup": {
+                  "type": "string",
+                  "pattern": "^(?!\\/)(?![A-Za-z]:)(?!.*\\\\)(?!(?:.*\\/)?\\.\\.(?:\\/|$)).+$"
+                }
+              },
+              "required": ["interpreter", "version", "startup"],
+              "additionalProperties": false
+            },
+            "docroot": {
+              "default": "direct",
+              "type": "string",
+              "enum": ["direct", "link"]
+            }
+          },
+          "required": ["provider", "panel", "app", "webRoot"],
+          "additionalProperties": false
         }
       ]
     },

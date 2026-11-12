@@ -24,6 +24,7 @@ import {
   choosingSettingValue,
   deepDomainProblem,
   FRAMEWORK_ENV,
+  hostingNotAvailable,
   STORAGE_VARIABLES,
   serviceAppVariables,
   serviceUrlKind,
@@ -145,6 +146,7 @@ function targetFor(
     }
     return serverlessTargetFor(input.serverless, appName);
   }
+  if (target.provider === "hosting") throw hostingNotAvailable("`opscrew design`");
   return {
     provider: target.provider,
     mode: "vps-compose",
