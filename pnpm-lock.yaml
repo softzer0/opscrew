@@ -328,6 +328,9 @@ importers:
       '@opscrew/core':
         specifier: workspace:*
         version: link:../../core
+      fast-xml-parser:
+        specifier: ^5.11.2
+        version: 5.11.2
       zod:
         specifier: ^4.6.5
         version: 4.6.5
