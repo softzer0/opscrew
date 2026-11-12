@@ -43,9 +43,9 @@ founder's account, its domains or its user.
   reason in `errors`, even for a module that doesn't exist. API2 answers
   `{cpanelresult: {…, data, error?}}` with `event.result`. A client must read the status, never
   the HTTP code alone.
-- **Tokens can be limited:** `Tokens::list` gives each token's `features` (a list),
-  `whitelist_ips`, `expires_at`, `has_full_access` and `readonly`. The test token has full access
-  and no expiry. The call that makes a limited token is *unverified*.
+- **Tokens:** `Tokens::list` gives each token's `features` (a list), `whitelist_ips`,
+  `expires_at`, `has_full_access` and `readonly`. The test token has full access and no expiry.
+  A token can't be limited to features or addresses after all, only given an expiry (R10).
 - **Cron is API2 only here:** UAPI `Cron` doesn't exist on this server ("Failed to load module");
   API2 `Cron::listcron` works.
 - **SSH keys are API2 only here:** UAPI `SSH::list_keys` doesn't exist; API2 `SSH::listkeys`
@@ -69,11 +69,11 @@ founder's account, its domains or its user.
   (`alt-svc: h3`). Neither UAPI nor `get_server_information` names the web server; the Apache
   port fields are there regardless.
 
-**Unverified (the spike settles these, R7):** a symlink, rename or move through Fileman (API2
-`fileop`); whether a document root can be changed after creation (`SubDomain::changedocroot`) or
-point at a symlink; a single database's dump without SSH; the call that creates a limited token;
-whether `cloudlinux-selector` runs for the user over SSH (inside CageFS); a private GitHub
-repository in VersionControl.
+**Unverified at first, settled by the spike (R10):** a symlink, rename or move through Fileman
+(API2 `fileop`); whether a document root can be changed after creation (`SubDomain::changedocroot`)
+or point at a symlink; a single database's dump without SSH; the call that creates a limited
+token; whether `cloudlinux-selector` runs for the user (inside CageFS). Still *unverified*: a
+private GitHub repository in VersionControl.
 
 ## R2. Plesk's API, as a customer
 
@@ -141,8 +141,8 @@ repository in VersionControl.
     (inference). The cache folder's default place is *unverified*.
 - **PHP processes:** lsphp runs detached by default, so PHP processes (and their OPcache) live on
   across a deploy. [PHP how-to](https://docs.litespeedtech.com/lsws/extapp/php/how-to/)
-  - A user restarts their own lsphp with `touch ~/.lsphp_restart.txt` (*unverified*: forum and
-    third-party posts only).
+  - A user restarts their own lsphp with `touch ~/.lsphp_restart.txt` (forum and third-party
+    posts only; it works on the test account, R10).
 - **Node.js and Python apps:** LiteSpeed runs CloudLinux selector apps from the Passenger-style
   lines the selector writes into `.htaccess` (`PassengerAppRoot`, `PassengerStartupFile`, …), on
   a Unix socket (the app's own port is ignored), with WebSockets proxied. An app restarts when
@@ -167,9 +167,11 @@ repository in VersionControl.
 - **Over SFTP alone:** OpenSSH's SFTP server offers `symlink` and the `posix-rename@openssh.com`
   extension, so a new link can be made beside the old one and renamed over it in one step, without
   a shell. [OpenSSH PROTOCOL](https://github.com/openssh/openssh-portable/blob/master/PROTOCOL)
-- **Over a panel's API:** no panel's documented API makes a symbolic link (cPanel's API2 `fileop`
-  is *unverified*). So deploys upload and switch over SFTP or SSH on every kind of account, and
-  the panel's API makes the rest (domains, databases, cron, certificates, apps, keys).
+- **Over a panel's API:** no panel's documented API makes a symbolic link. cPanel's `fileop`
+  makes none either, but a tar that holds one does, and it replaces an existing link by removing
+  it first, so not atomically (R10).
+- **On an account SSH doesn't reach** (the test account, R10): the switch has to run on the
+  account itself, as the account's user: PHP's `symlink()` and `rename()`, or a cron job's shell.
 
 ## R6. OpenLiteSpeed as the server's proxy
 
@@ -286,3 +288,100 @@ nginx came with 014 (ADR 0017; T1407 alone touched 30 files, and about 156 files
   pass `packages/cli/test/live/own-nginx.test.ts` (the switch between proxies, renewals under load,
   a failed first certificate); docs `docs/guide/reverse-proxy.md` and the pages it links.
 - **No cache purge exists today**: OpsCrew empties no proxy cache, so OpenLiteSpeed's is new.
+
+## R10. The spike on the cPanel test account (2026-11-12)
+
+Three passes on the founder's account, every object named `e2e-…` and removed in each pass's
+cleanup. Three traces the cleanup missed were removed afterwards with the founder's go-ahead: a
+section in `~/.cl.selector/htaccess_cache` (the file is back to its original bytes), LiteSpeed's
+test files in `~/lscache`, and the certificate AutoSSL had issued, with its key.
+The account is ordinary **shared hosting**: CageFS, no root, lfd and Imunify360 on the host, and
+SSH unreachable from outside (`SSH::get_port` answers 9000, which is filtered; port 22 refuses).
+That is the account most users of this feature have, so its limits are the design's default.
+
+**R7's questions, in order.**
+1. **Tokens can't be limited.** UAPI `Tokens` has only `create_full_access`, `list`, `rename` and
+   `revoke`. `create_full_access` accepts `features` and `whitelist_ips` and drops both without an
+   error (`Tokens::list` then shows `has_full_access: 1`, `features: []`); only `expires_at` is
+   kept. A cPanel token is the whole account.
+2. **A document root on a symbolic link works.** With `e2e-…/current → releases/1` made first,
+   `SubDomain::addsubdomain dir=e2e-…/current/public` answers status 1, cPanel keeps the link's
+   path as the document root, and LiteSpeed serves it with no 403 (owner match). The hostname
+   answered 26–28 s after creation (before that, a 301 to the host's own page); its A record was
+   public within about 30 s. API2 `SubDomain::changedocroot` works too (about 4 s; the new root
+   served 18–20 s later).
+   - **The panel's API has no atomic switch.** API2 `Fileman::fileop`: `symlink` is unknown,
+     `link` makes a hard link (refused on a folder), `rename` refuses an existing destination,
+     and `move` onto a link to a folder moves the entry into that folder. A tar holding a link,
+     uploaded with `Fileman::upload_files` and unpacked with `fileop op=extract`, makes the link,
+     and replaces an existing one by removing it first (181 ms, not one rename).
+   - **PHP's `symlink()` then `rename()` over the old link** switches atomically.
+   - `upload_files` takes dotfiles; `Fileman::save_file_content` writes a file only into a folder
+     that exists.
+   - SFTP: not tested, since SSH doesn't answer.
+3. **PHP after a switch.** PHP 7.0.33 under lsphp (`php_sapi_name()` `litespeed`), OPcache not
+   loaded, `realpath_cache_ttl` 120, `LSWS_EDITION` unset, no function disabled. The lsphp process
+   that made the switch served the new release within 0.8 s; the other kept serving the old one
+   for the whole 15 s watched, so answers alternated. The cause is PHP's realpath cache, kept per
+   process; `clearstatcache(true)` in one request fixes only that process. **Writing
+   `~/.lsphp_restart.txt`** (through `save_file_content`) started new lsphp processes within 0.6 s,
+   and every request served the new release after it. One request hung for 15 s around the second
+   restart.
+4. **`.htaccess`.** cPanel writes `.htaccess` (a MultiPHP INI block), `.user.ini` and `php.ini`
+   into a new document root, through the link into the release folder, and a `.well-known/`
+   folder later. A release must keep them (the first pass's upload overwrote cPanel's
+   `.htaccess`). On LiteSpeed:
+
+   | Rule | Seen |
+   |---|---|
+   | `RewriteRule` to HTTPS `[R=301]` | `http://` answers 301 to `https://` |
+   | `<FilesMatch "^\.">` `Require all denied` | `/.env`, `/.htaccess`, `/shared/.env` answer 403; 200 without the rule |
+   | `Header always set` (nosniff, HSTS) | present on 200, 301 and 403 answers |
+   | `/../shared/.env` (`--path-as-is`) | 400 |
+
+   **Directory listing is on by default** ("Index of /…"), so OpsCrew writes `Options -Indexes`.
+   The AutoSSL certificate validates without `-k`.
+5. **LSCache.** A PHP answer with `X-LiteSpeed-Cache-Control: public,max-age=60` alone is never
+   cached; with `<IfModule LiteSpeed>CacheLookup on</IfModule>` in `.htaccess` the next requests
+   hit. `X-LiteSpeed-Purge: *` from a PHP script empties it (a miss with the new body, then hits).
+   The cache lives in `~/lscache`, owned by `nobody` (group the user, mode 2770); the account can
+   remove LiteSpeed's files there through `fileop op=unlink`.
+6. **SSH key and shell.** API2 `SSH::importkey` and `SSH::authkey action=authorize` work.
+   `SSH::listkeys` shows public keys only with `pub=1`; removal is `authkey action=deauthorize`,
+   then `SSH::delkey name=… pub=1` (with `key=` it answers "Invalid filename" and still
+   `event.result: 1`). Shell facts, read through a cron line: CageFS (`/` shows a skeleton, one
+   entry in `/home`, 5 processes visible); cron's `PATH` is `/usr/bin:/bin`; present are `mysql`
+   and `mysqldump` (MariaDB 10.11 client), `php` CLI 7.0.33, `git` 2.56, `python3` 3.6, `curl` and
+   `/usr/sbin/cloudlinux-selector`; missing are composer, node, npm, rsync and wp-cli.
+   `mysqldump --defaults-extra-file=<0600 file> --single-transaction --no-tablespaces` works as the
+   user. UAPI `Mysql::dump_database_schema` exists (schema only, not tried on data).
+7. **Database, cron, certificate.** `Mysql::create_database`, `create_user` and
+   `set_privileges_on_database` answer status 1 in about 1 s each; PDO with `host=localhost` works.
+   **A deleted database came back** in `list_databases` minutes later (0 bytes, no users, and
+   "does not control" on delete); a create then a delete removed it for good. API2 `Cron::add_line`
+   answers a `linekey`, jobs run at the next minute, `remove_line linekey=` works, and `listcron`
+   ends with a `{count: N}` entry. **AutoSSL ran by itself** when the subdomain was made; the
+   certificate stays in the account's store after the subdomain is removed (`SSL::delete_cert`).
+8. **CloudLinux's Node.js selector** runs for the user: `cloudlinux-selector get --json
+   --interpreter nodejs` lists 13 versions (6.17 to 24.22). `create --version 24 --app-root …
+   --app-uri node --app-mode production --domain … --startup-file app.js` succeeded in about
+   11 s, made `~/nodevenv/<app root>/24`, and wrote the Passenger lines into
+   `<document root>/node/.htaccess`, **inside the current release**, so a switch loses them unless
+   each release carries them. `/node/` answered from the app (about 1 s cold); `tmp/restart.txt`
+   or `cloudlinux-selector restart` gave a new process. `PassengerApps::list_applications` doesn't
+   list it. `destroy` left an empty `~/nodevenv/<app root>`, the `.htaccess` lines, and a section in
+   `~/.cl.selector/htaccess_cache` that only editing the file removes.
+
+**Also seen.** API2 reports `event.result: 1` when the operation failed (`fileop`, `delkey`), so a
+client reads `data[].result` and `error`. No rate limit across about 400 calls. `~/.cache` appears
+in the home folder while the API is used. The `multiphp` feature is off, yet cPanel writes the
+MultiPHP INI files.
+
+**What it changes.**
+- The token can't go to GitHub Actions (FR-2703): it is the whole account, not one app.
+- GitHub Actions can't reach such an account over SFTP or SSH, and the panel's API can't switch
+  atomically, so on a panel account the release is switched by code running on the account.
+- PHP 7.0 is too old for the example Laravel app. **Still open, for a second, shorter spike:**
+  a newer PHP for one hostname without changing the account's (a handler in `.htaccess`, the PHP
+  selector), the CLI's alternative PHP binaries, and whether the account reaches GitHub (HTTPS,
+  and SSH on ports 22 and 443).
