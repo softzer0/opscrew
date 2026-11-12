@@ -832,7 +832,7 @@ describe.skipIf(MISSING.server.length > 0)(
           run.opscrewOk("snapshot", "--server"),
         );
         for (const text of [
-          "A live snapshot may not be consistent",
+          "OpsCrew first writes what the server holds in memory to its disk",
           "are not included",
           "per GB per month",
         ]) {

@@ -14,6 +14,7 @@ import { localPlan } from "../localhost/__fixtures__/computer";
 import { networked, splitPlan } from "../network/__fixtures__/plans";
 import { inEnvironment } from "../promote/__fixtures__/world";
 import { ownPlan, portainerPlan, SERVER_IPV4, testPlan } from "../testing";
+import type { FakeSnapshotServer } from "./__fixtures__/server";
 import {
   DATA_IPV4,
   everythingShown,
@@ -180,16 +181,40 @@ describe("opscrew snapshot --server", () => {
     });
     expect(provider.requests[0]?.name).toMatch(/^opscrew-shop-staging-\d{8}T\d{6}Z$/);
     const text = world.deps.reporter.text();
-    expect(text).toContain("A live snapshot may not be consistent");
+    expect(text).toContain(
+      "OpsCrew first writes what the server holds in memory to its disk, so the data the app saved is in it; data being written at that very moment can still be incomplete.",
+    );
     expect(text).toContain(
       "It costs up to €0.44 a month: the server's 40 GB disk at €0.011 per GB per month, excl. VAT.",
     );
     expect(text).toContain("volumes attached to it at Hetzner Cloud are not included");
     expect(text).toContain("(2.5 GB, €0.03 a month excl. VAT)");
+    // An instant snapshot (Contabo's) holds only what reached the disk (026 research R8).
+    expect(world.servers.app?.commands).toEqual(["sync"]);
     expect(world.deps.audit.entries.map((entry) => entry.action)).toEqual([
+      "write data to disk",
       "create snapshot",
       "snapshot ready",
     ]);
+  });
+
+  it("takes the live snapshot with a warning when the server's data can't be written to disk first", async () => {
+    const world = await snapshotWorld(stagingPlan([]));
+    const app = world.servers.app as FakeSnapshotServer;
+    app.answer = () => ({ exitCode: 255, stdout: "", stderr: "ssh: connect to host: timed out" });
+    const provider = fakeServerApi();
+    const taken = await takeServerSnapshot(world.deps, {
+      services: services(world, provider.api),
+    });
+
+    expect(taken.id).toBe("880022");
+    expect(provider.events).toEqual(["snapshot 42"]);
+    expect(world.deps.reporter.text()).toContain(
+      "OpsCrew could not write what the server shop-staging holds in memory to its disk first",
+    );
+    expect(world.deps.reporter.text()).toContain(
+      "the snapshot may miss the data the app saved in the last seconds",
+    );
   });
 
   it("with --stop, approves the downtime first, then shuts down, snapshots and starts again", async () => {

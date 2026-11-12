@@ -49,8 +49,10 @@ import {
 import { codeOf } from "../shared/errors";
 import { cloudServerName } from "../shared/servers";
 import { pollUntil } from "../shared/wait";
+import { serverShell } from "../status/servers";
 import { checkHealth, siteUrl, type VerifyCheckContext } from "../verify/checks";
 import { defaultDnsResolver, defaultTlsConnect } from "../verify/net";
+import { READ_TIMEOUT_MS } from "./hosts";
 import { cloudProviders, type ProviderSnapshot, providerSnapshots, serverApi } from "./provider";
 import {
   NOTHING_TAKEN,
@@ -304,15 +306,55 @@ function priceLine(
 }
 
 /**
+ * Writes what the server `which` holds in memory to its disk (`sync`) before its live snapshot: a
+ * provider whose snapshot is instant (Contabo's) keeps only what reached the disk, and the data
+ * the app saved in the last seconds may not have (026 research R8). A failure is said, and the
+ * snapshot is taken anyway.
+ */
+async function writeToDisk(
+  run: SnapshotRun,
+  which: string,
+  server: AppServer,
+  noun: string,
+): Promise<void> {
+  const { deps, plan } = run;
+  const failed = (reason: string) =>
+    deps.reporter.warn(
+      `OpsCrew could not write what the ${noun} ${server.name} holds in memory to its disk first (${reason}): the snapshot may miss the data the app saved in the last seconds.`,
+    );
+  await deps.audit.append({
+    kind: "remote-exec",
+    actor: "opscrew",
+    action: "write data to disk",
+    target: `${noun} ${server.name}`,
+    detail: `sync on ${server.name}, before its snapshot`,
+  });
+  try {
+    const { remote } = await serverShell(deps, plan, which, run.services);
+    const result = await remote.run("sync", { timeoutMs: READ_TIMEOUT_MS });
+    if (result.exitCode !== 0) failed(`exit code ${result.exitCode}`);
+  } catch (error) {
+    failed(deps.redactor.redact(errorText(error)));
+  }
+}
+
+/**
  * Takes the snapshot, shutting the server down first and starting it again after with `stop`.
  * The start is tried whatever happened before it; a failure says what state the server is in.
  */
 async function snapshotWith(
   run: SnapshotRun,
-  input: { provider: CloudProvider; api: ServerSnapshotApi; server: AppServer; stop: boolean },
+  input: {
+    provider: CloudProvider;
+    api: ServerSnapshotApi;
+    server: AppServer;
+    /** Its name in the plan: `app` or an extra server's. */
+    which: string;
+    stop: boolean;
+  },
 ): Promise<string> {
   const { deps, plan, environment } = run;
-  const { provider, api, server, stop } = input;
+  const { provider, api, server, which, stop } = input;
   const { noun, console: where } = destroyTexts(provider);
   const stamp = snapshotIdAt(deps.clock.now());
   const request = {
@@ -331,6 +373,8 @@ async function snapshotWith(
       detail: deps.redactor.redact(detail),
     });
   if (!stop) {
+    deps.reporter.step(`Writing what the ${noun} ${server.name} holds in memory to its disk`);
+    await writeToDisk(run, which, server, noun);
     deps.reporter.step(`Taking the snapshot of the ${noun} ${server.name} while it runs`);
     await audit("create snapshot", `snapshot ${request.name} of ${server.name}, live`);
     const { snapshotId } = await api.snapshotServer(server.id, request);
@@ -390,7 +434,7 @@ async function snapshotWith(
  * Portainer, this computer and while a deploy or a move runs; otherwise shows what it costs (at
  * most the server's disk at the provider's snapshot rate) and that attached volumes are not in it,
  * then takes the provider's snapshot of the app's server (or `--server-name`'s), while it runs
- * with a warning that it may not be consistent, or with `--stop` shut down after approving that
+ * after writing its memory to its disk, or with `--stop` shut down after approving that
  * downtime and started again. The result has its billed size and monthly price, once known.
  * @throws OpsCrewError `PHASE_PRECONDITION` for each refusal, `INVALID_INPUT` for an unknown
  * `--server-name`, `CREDENTIALS_MISSING` without the provider's token, `APPROVAL_REFUSED` when the
@@ -418,7 +462,7 @@ export async function takeServerSnapshot(
     `A snapshot of the whole ${noun} ${server.name} of ${environment} at ${profile.displayName}:`,
     stop
       ? `- The ${noun} is shut down for it and started again after: the app is offline meanwhile, usually a few minutes (up to 5 minutes to shut down cleanly, then as long as the snapshot takes).`
-      : `- It is taken while the ${noun} runs. A live snapshot may not be consistent: data being written at that moment can be incomplete in it. \`opscrew snapshot --server --stop${flags}\` shuts the ${noun} down for it instead.`,
+      : `- It is taken while the ${noun} runs. OpsCrew first writes what the ${noun} holds in memory to its disk, so the data the app saved is in it; data being written at that very moment can still be incomplete. \`opscrew snapshot --server --stop${flags}\` shuts the ${noun} down for it instead.`,
     `- ${priceLine(provider, extras, diskGb, includedSnapshots)}`,
     `- It holds the ${noun}'s own disk only: volumes attached to it at ${profile.displayName} are not included.`,
     `- It stays at ${profile.displayName} until you delete it (\`opscrew snapshot delete <id>${flags}\`).`,
@@ -436,7 +480,7 @@ export async function takeServerSnapshot(
       });
     }
   }
-  const id = await snapshotWith(run, { provider, api, server, stop });
+  const id = await snapshotWith(run, { provider, api, server, which, stop });
   const sizeGb = (await api.listSnapshots(server.id)).find((s) => s.id === id)?.sizeGb;
   const rate = extras.snapshotPerGbMonth;
   const monthly = sizeGb === undefined || rate === undefined ? undefined : priceOf(sizeGb, rate);

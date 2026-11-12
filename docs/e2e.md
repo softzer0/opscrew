@@ -2818,9 +2818,9 @@ reads the bucket with rclone from its pinned image, and so does the test.
   server's id at Hetzner is kept for the cleanup.
 - **W2** (US4): `snapshot --server --stop` without `--allow-downtime` must exit 1, naming that
   flag, and the app must still answer. `snapshot --server` then runs under load with no failed
-  request. Its summary must say "A live snapshot may not be consistent", that attached volumes
-  "are not included", and the price "per GB per month". The list must show it as kind `server` of
-  the app's server.
+  request. Its summary must say "OpsCrew first writes what the server holds in memory to its
+  disk", that attached volumes "are not included", and the price "per GB per month". The list must
+  show it as kind `server` of the app's server.
 - **W3** (SC-2405): a second value is written. `restore --server <id>` asks for the server's name,
   and its result must say "and the app answers". Hetzner must then list the same server id, IPv4
   address and delete and rebuild protection as before. The app must answer through Cloudflare and

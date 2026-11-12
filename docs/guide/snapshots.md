@@ -165,9 +165,10 @@ npx opscrew snapshot --server --server-name data   # one of the app's other serv
 npx opscrew restore --server <id>                  # rebuild the server from it
 ```
 
-- **Taken live by default.** A live snapshot may not be consistent: data being written at that
-  moment can be incomplete in it. `--stop` shuts the server down first and starts it after; you
-  approve that downtime first (`--allow-downtime` in a script).
+- **Taken live by default.** OpsCrew first writes what the server holds in memory to its disk, so
+  the data your app saved is in the snapshot; data being written at that very moment can still be
+  incomplete. `--stop` shuts the server down first and starts it after; you approve that downtime
+  first (`--allow-downtime` in a script).
 - **Its price:** the summary shows the provider's rate and the most the snapshot can cost a month.
   After it is taken, OpsCrew shows its billed size and monthly price. It stays at the provider
   until you delete it.
