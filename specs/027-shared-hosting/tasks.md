@@ -264,7 +264,7 @@ names the change.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/detect && pnpm lint`
   - Effort: xhigh
 
-- [ ] T2712 [P] [US8] OpenLiteSpeed's configuration and checks
+- [x] T2712 [P] [US8] OpenLiteSpeed's configuration and checks
   - Owns: `packages/iac-templates/src/edge/**`, `packages/iac-templates/src/pins.ts`, `EdgeSchema` in `packages/plan-schema/src/plan.ts` and the generated schemas, and the `openlitespeed` entry (a plain "not yet" refusal) of each exhaustive `Record<EdgeProxy, …>`: `iac-templates/src/workflow/switch.ts`, `agents/src/retarget/server-ops.ts`, `cli/test/live/tls-support.ts`
   - Reads: plan 11; research R9, R12; ADR 0017, ADR 0031; `iac-templates/src/edge/{nginx,nginx-validate}*.ts`
   - Depends: T2702, T2709
