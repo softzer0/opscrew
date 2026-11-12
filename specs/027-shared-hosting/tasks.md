@@ -35,7 +35,7 @@ names the change.
 
 ## Phase 2: Wave 1 (parallel)
 
-- [ ] T2702 [P] [US1] The `hosting` target in the plan, and a plain refusal everywhere else
+- [x] T2702 [P] [US1] The `hosting` target in the plan, and a plain refusal everywhere else
   - Owns: `packages/plan-schema/src/**`, `schemas/**`; in `packages/{agents,iac-templates,secops,cli,mcp-server}/src/**`, only the branches the new union member needs (never `packages/iac-templates/src/hosting/**`)
   - Reads: plan 1; research R8; ADR 0019, ADR 0030; `plan-schema/src/plan.ts` (`DeployTargetSchema`, `GithubPagesTargetSchema`, `SiteSchema`, the `dns` block), `plan-schema/src/enums.ts`, `plan-schema/src/placement.ts`
   - Depends: T2701
