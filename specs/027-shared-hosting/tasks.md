@@ -466,6 +466,21 @@ names the change.
   - Verify: `pnpm turbo run typecheck --filter=opscrew && pnpm lint`
   - Effort: high
 
+## Phase 8b: The snapshot default (founder, 2026-11-12)
+
+- [ ] T2728 The snapshot before each release: on in every environment but previews
+  - Owns: `snapshotsOn` and its tests in `packages/plan-schema/src/**`; the snapshot expectations and snapshots of `packages/iac-templates/src/{workflow,portainer-target}/**` that change with it; `packages/agents/src/rollback/**` comments and tests naming the default; `packages/cli/src/commands/rollback.ts`'s help text; `packages/cli/test/live/{rollback,snapshots}.test.ts`; `docs/guide/{databases,environments,rollback,snapshots,when-a-deploy-fails}.md`
+  - Reads: ADR 0028 (D7 and its 2026-11-12 amendment); `plan-schema/src/plan.ts` (`snapshotsOn`, `deploy.snapshots`, `CloudTargetSchema.backups`)
+  - Depends: T2702
+  - Accept:
+    - `snapshotsOn(plan)`, when `deploy.snapshots` is absent: true in every environment, prod included whatever the provider's backups; previews always false; `deploy.snapshots` true or false still decides when set. Everything else in `snapshotsOn` (what gets copied, the targets it applies to) stays.
+    - A shared helper gives the same default to hosting targets (T2711's agent settings use it).
+    - Rollback's default database choice is unchanged (prod keeps its database; elsewhere the snapshot when there is one); its comments and the CLI's help say "when the environment takes snapshots".
+    - Every snapshot and expectation that changes shows only the release snapshot step appearing for prod plans; nothing else in any generated file moves.
+    - The guide's pages say the new default.
+  - Verify: `pnpm check` (the gate's order: lint, typecheck, ssh-host alone, the rest, iac-engine last)
+  - Effort: high
+
 ## Phase 9: Live passes and release (lead)
 
 - [ ] T2722 The cPanel live pass (lead): `docs/e2e-coverage.md` row and results.

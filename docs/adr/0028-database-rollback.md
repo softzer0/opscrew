@@ -43,3 +43,12 @@ dump works for every tool and can't stop halfway, but loses what was written sin
 - Deploys on environments with snapshots take as long as the dump, and the server keeps up to 3
   dumps of each database. Too little free space skips the snapshot with a warning.
 - The release command still never runs on a rollback.
+
+## Amendments
+
+- **2026-11-12, prod too (founder).** D7's default changes: the snapshot before each release is on
+  in every environment, prod included, and off only in previews. The cloud provider's daily server
+  backups don't replace it: a rollback restores the dump taken just before the release, which a
+  day-old image of the whole server can't. `deploy.snapshots` still sets it either way, and
+  hosting accounts follow the same default. A rollback's default database choice stays as it was:
+  keep prod's database (the restore is offered), restore the snapshot elsewhere when there is one.
