@@ -230,6 +230,28 @@ describe("the cleanup at Contabo", () => {
     ]);
   });
 
+  it("takes the servers off a leftover firewall before deleting it, as the connector does", async () => {
+    // A direct delete answered 409 while a cancelled server was on the firewall (research R8).
+    const firewall = {
+      firewallId: "fw-1",
+      name: `${app}-firewall`,
+      status: "active",
+      instances: [42],
+      instanceStatus: [{ instanceId: 42, status: "ok" }],
+      rules: { inbound: [], outbound: [] },
+    };
+    const { contabo, calls } = account({
+      "GET /v1/firewalls": [page([firewall]), page([firewall]), page([])],
+      "DELETE /v1/firewalls/fw-1/instances/42": gone,
+      "DELETE /v1/firewalls/fw-1": gone,
+    });
+    expect(await contabo.cleanUp(app, false, log)).toEqual([]);
+    const made = requests(calls);
+    const unassign = made.indexOf("DELETE /v1/firewalls/fw-1/instances/42");
+    expect(unassign).toBeGreaterThan(-1);
+    expect(made.indexOf("DELETE /v1/firewalls/fw-1")).toBeGreaterThan(unassign);
+  });
+
   it("names two servers of the app as a problem", async () => {
     const { contabo } = account({
       "GET /v1/compute/instances?": page([

@@ -3,8 +3,8 @@
  * and variables, the four credentials as OpsCrew reads them, what OpsCrew's output says on
  * Contabo, a failed step's wait for a fix, and the test's own reads and deletions at Contabo for
  * its checks and its cleanup. The
- * app's servers and their snapshots go through OpsCrew's connector; the firewall, SSH key and tag,
- * which the connector does not cover, and a cancel when OpsCrew's destroy failed, through
+ * app's servers, their snapshots and the firewall go through OpsCrew's connector; the SSH key and
+ * tag, which the connector does not cover, and a cancel when OpsCrew's destroy failed, through
  * Contabo's API. The test never creates anything at Contabo itself, and no value of a credential
  * is ever printed.
  */
@@ -12,7 +12,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { access, rm } from "node:fs/promises";
 import { join } from "node:path";
-import type { AppServer, FetchLike, ServerSnapshotApi } from "@opscrew/contracts";
+import type { AppServer, FetchLike, FirewallApi, ServerSnapshotApi } from "@opscrew/contracts";
 import { Redactor } from "@opscrew/core";
 import { contaboConnector } from "@opscrew/provider-contabo";
 import { z } from "zod";
@@ -288,6 +288,7 @@ type Kind = keyof typeof KINDS;
  */
 export class ContaboAccount {
   #servers: ServerSnapshotApi | undefined;
+  #firewalls: FirewallApi | undefined;
   #token: { value: string; expiresAt: number } | undefined;
 
   constructor(
@@ -296,14 +297,21 @@ export class ContaboAccount {
   ) {}
 
   /** OpsCrew's own server API for Contabo. */
+  private connector() {
+    return contaboConnector({ env: this.env, redactor: new Redactor(), fetch: this.fetch });
+  }
+
   private servers(): ServerSnapshotApi {
-    this.#servers ??= contaboConnector({
-      env: this.env,
-      redactor: new Redactor(),
-      fetch: this.fetch,
-    }).servers;
+    this.#servers ??= this.connector().servers;
     if (this.#servers === undefined) throw new Error("The four Contabo credentials are not set.");
     return this.#servers;
+  }
+
+  /** OpsCrew's own firewalls API for Contabo (ADR 0029, D8). */
+  private firewalls(): FirewallApi {
+    this.#firewalls ??= this.connector().firewalls;
+    if (this.#firewalls === undefined) throw new Error("The four Contabo credentials are not set.");
+    return this.#firewalls;
   }
 
   /** The app's servers, as OpsCrew finds them (by its tag, or by the app's name untagged). */
@@ -401,7 +409,10 @@ export class ContaboAccount {
       await tryTo(`delete ${what} ${name(app)}`, async () => {
         const item = await this.named(kind, app);
         if (item === undefined) return;
-        await this.call("DELETE", `${path}/${encodeURIComponent(item.id)}`);
+        // A firewall with a server on it answers 409 to a delete (research R8): OpsCrew's
+        // connector takes its servers off first.
+        if (kind === "firewall") await this.firewalls().remove(name(app));
+        else await this.call("DELETE", `${path}/${encodeURIComponent(item.id)}`);
         log(`deleted ${what} ${name(app)}`);
         if (destroyed) problems.push(`destroy left ${what} ${name(app)}; the cleanup deleted it`);
       });
