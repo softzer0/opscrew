@@ -309,7 +309,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
 
 ## Phase 6c: What the live pass found (research R8)
 
-- [ ] T2633 [US2] A Contabo server removed through the connector (ADR 0029 D10)
+- [x] T2633 [US2] A Contabo server removed through the connector (ADR 0029 D10)
   - Owns: `packages/iac-engine/src/**`, `packages/providers/contabo/src/**`, `packages/agents/src/{provision,destroy,retarget,shared,testing}/**` (+ tests)
   - Reads: research R8; ADR 0029 D8 and D10; the contract's `connectorRemoval` and `ServerSnapshotApi.cancelServer`; T2631's `shared/firewalls.ts` (the same apply paths)
   - Depends: T2631
@@ -325,7 +325,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
 - [x] T2635 A live whole-server snapshot runs `sync` on the server first, on every provider (lead; `76b6aaf2`).
 - [x] T2636 A Contabo snapshot's time comes from OpsCrew's stamp, not Contabo's hour-early `createdDate` (lead; `d21ad684`).
 - [x] T2637 Contabo's module outputs the IPv6 address shortened (the AAAA record never looks changed) and ignores `add_ons` (lead; `a447ae31`).
-- [ ] T2638 The live test (lead): its cleanup removes a leftover Contabo firewall through the connector (servers taken off it first; a direct delete answered 409 with a cancelled server on it).
+- [x] T2638 The live test (lead): its cleanup removes a leftover Contabo firewall through the connector (servers taken off it first; a direct delete answered 409 with a cancelled server on it).
 
 ## Phase 7: Live, simplify, release (lead)
 
