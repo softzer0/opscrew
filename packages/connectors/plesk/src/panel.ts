@@ -369,6 +369,10 @@ export class PleskPanel implements HostingPanel {
     throw noFileCalls();
   }
 
+  async list(_folder: string): Promise<string[] | undefined> {
+    throw noFileCalls();
+  }
+
   async remove(_path: string): Promise<void> {
     throw noFileCalls();
   }

@@ -20,8 +20,11 @@ async function failure(promise: Promise<unknown>, code: string): Promise<OpsCrew
   return error as OpsCrewError;
 }
 
-/** A ustar archive of files, folders (names ending in `/`) and links (`-> target`). */
-function tar(entries: Record<string, string>): Uint8Array {
+/**
+ * A ustar archive of files, folders (names ending in `/`) and links (`-> target`); `modes` by name
+ * (0644 otherwise).
+ */
+function tar(entries: Record<string, string>, modes: Record<string, number> = {}): Uint8Array {
   const blocks: Uint8Array[] = [];
   const encoder = new TextEncoder();
   for (const [name, value] of Object.entries(entries)) {
@@ -31,7 +34,7 @@ function tar(entries: Record<string, string>): Uint8Array {
     const data = dir || link !== undefined ? new Uint8Array() : encoder.encode(value);
     const put = (text: string, at: number) => header.set(encoder.encode(text), at);
     put(name, 0);
-    put("0000644\0", 100);
+    put(`${(modes[name] ?? 0o644).toString(8).padStart(7, "0")}\0`, 100);
     put(`${data.length.toString(8).padStart(11, "0")}\0`, 124);
     put(dir ? "5" : link !== undefined ? "2" : "0", 156);
     if (link !== undefined) put(link, 157);
@@ -312,6 +315,49 @@ describe("DirectAdminPanel", () => {
       expect([...fake.files.keys()].filter((key) => key.endsWith(".tar"))).toEqual([]);
     });
 
+    it('unpacks a tar into the home folder for ".", making the app\'s folder in one go', async () => {
+      const { fake, panel } = setup();
+      await panel.uploadTar(
+        ".",
+        tar(
+          {
+            "opscrew/shop-prod/": "",
+            "opscrew/shop-prod/shared/": "",
+            "opscrew/shop-prod/shared/.env": "A=1",
+            "opscrew/shop-prod/agent.sh": "#!/bin/bash",
+          },
+          { "opscrew/shop-prod/shared/.env": 0o600, "opscrew/shop-prod/agent.sh": 0o700 },
+        ),
+      );
+      const upload = fake.calls.find((call) =>
+        call.path.startsWith("/api/filemanager-actions/upload"),
+      );
+      expect(upload?.path).toMatch(/dir=\.&name=\.opscrew-[0-9a-f]{12}\.tar&perm=0600/);
+      expect(fake.files.get("opscrew/shop-prod/shared")).toEqual({ type: "dir" });
+      expect(fake.text("opscrew/shop-prod/shared/.env")).toBe("A=1");
+      expect(fake.files.get("opscrew/shop-prod/shared/.env")).toMatchObject({ mode: 0o600 });
+      expect(fake.files.get("opscrew/shop-prod/agent.sh")).toMatchObject({ mode: 0o700 });
+      expect([...fake.files.keys()].filter((key) => key.endsWith(".tar"))).toEqual([]);
+    });
+
+    it("lists a folder's names, hidden ones included, or undefined when it doesn't exist", async () => {
+      const { fake, panel } = setup();
+      await panel.uploadTar(
+        ".",
+        tar({
+          "opscrew/app/shared/.env": "A=1",
+          "opscrew/app/agent.sh": "x",
+          "opscrew/app/r/": "",
+        }),
+      );
+      expect((await panel.list("opscrew/app"))?.sort()).toEqual(["agent.sh", "r", "shared"]);
+      expect(await panel.list("opscrew/app/shared")).toEqual([".env"]);
+      expect(fake.calls.at(-1)?.path).toBe(
+        "/api/filemanager/list?path=opscrew%2Fapp%2Fshared&limit=0",
+      );
+      expect(await panel.list("opscrew/missing")).toBeUndefined();
+    });
+
     it("removes the tar when unpacking fails", async () => {
       const { fake, panel } = setup();
       await failure(
@@ -341,7 +387,13 @@ describe("DirectAdminPanel", () => {
       for (const path of ["", "/etc/passwd", "a/../b", "./a", "a/", "a//b"]) {
         await failure(panel.remove(path), "INVALID_INPUT");
         await failure(panel.readFile(path), "INVALID_INPUT");
+        await failure(panel.list(path), "INVALID_INPUT");
+        await failure(panel.uploadTar(path, tar({})), "INVALID_INPUT");
       }
+      await failure(panel.writeFile(".", new Uint8Array(), 0o644), "INVALID_INPUT");
+      await failure(panel.readFile("."), "INVALID_INPUT");
+      await failure(panel.remove("."), "INVALID_INPUT");
+      await failure(panel.list("."), "INVALID_INPUT");
       await failure(panel.writeFile("a", new Uint8Array(), 0o1000), "INVALID_INPUT");
     });
   });

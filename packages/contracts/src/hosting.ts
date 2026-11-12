@@ -124,10 +124,18 @@ export interface HostingFiles {
    * temporary name, then renamed. A new name appears whole; an existing file is replaced.
    */
   writeFile(path: string, content: Uint8Array, mode: number): Promise<void>;
-  /** Uploads a tar and unpacks it into `folder`, then removes the tar. */
+  /**
+   * Uploads a tar and unpacks it into `folder`, then removes the tar. `folder` may be `"."`, the
+   * home folder itself (the only path that may name it), so one tar makes a new folder tree.
+   */
   uploadTar(folder: string, tar: Uint8Array): Promise<void>;
   /** A small text file's content, or undefined when it doesn't exist. */
   readFile(path: string): Promise<string | undefined>;
+  /**
+   * The names directly in `folder` (files, folders and links, hidden ones included, without `.`
+   * and `..`), or undefined when the folder doesn't exist.
+   */
+  list(folder: string): Promise<string[] | undefined>;
   /** Removes a file, or a folder with everything in it. */
   remove(path: string): Promise<void>;
 }

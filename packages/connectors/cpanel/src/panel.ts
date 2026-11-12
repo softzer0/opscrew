@@ -499,9 +499,13 @@ export class CpanelPanel implements HostingPanel {
     }
   }
 
-  /** Uploads the tar into `folder` (made when missing), unpacks it there (`fileop extract`), then removes it. */
+  /**
+   * Uploads the tar into `folder` (made when missing; `"."` is the home folder), unpacks it there
+   * (`fileop extract`), then removes it.
+   */
   async uploadTar(folder: string, tar: Uint8Array): Promise<void> {
-    const parts = checkPath(folder, "A folder's path");
+    const parts = folder === "." ? [] : checkPath(folder, "A folder's path");
+    const where = folder === "." ? "the home folder" : folder;
     const dir = await this.#absolute(parts);
     const name = `.opscrew-${this.#randomName()}.tar`;
     const archive = `${dir}/${name}`;
@@ -509,15 +513,15 @@ export class CpanelPanel implements HostingPanel {
       dir,
       files: [{ name, content: tar }],
       permissions: "0600",
-      what: `upload the files for ${folder}`,
+      what: `upload the files for ${where}`,
     });
     try {
-      await this.#fileop("extract", archive, `unpack the files into ${folder}`, dir);
+      await this.#fileop("extract", archive, `unpack the files into ${where}`, dir);
     } catch (error) {
       await this.#fileop("unlink", archive, "remove the uploaded archive").catch(() => undefined);
       throw error;
     }
-    await this.#fileop("unlink", archive, `remove the uploaded archive from ${folder}`);
+    await this.#fileop("unlink", archive, `remove the uploaded archive from ${where}`);
   }
 
   async readFile(path: string): Promise<string | undefined> {
@@ -532,6 +536,17 @@ export class CpanelPanel implements HostingPanel {
         schema: ContentSchema,
       });
       return answer.content;
+    } catch (error) {
+      if (error instanceof CpanelRefusal && MISSING_FILE.test(error.reason)) return undefined;
+      throw error;
+    }
+  }
+
+  /** `Fileman::list_files` with hidden names; a folder that isn't there answers undefined. */
+  async list(folder: string): Promise<string[] | undefined> {
+    const parts = checkPath(folder, "A folder's path");
+    try {
+      return (await this.#list(await this.#absolute(parts), folder)).map((entry) => entry.file);
     } catch (error) {
       if (error instanceof CpanelRefusal && MISSING_FILE.test(error.reason)) return undefined;
       throw error;

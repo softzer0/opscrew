@@ -318,6 +318,24 @@ export class FakeDirectAdmin {
         info: { name: path.split("/").pop(), type: entry.type },
       });
     }
+    if (route === "GET /api/filemanager/list") {
+      const path = clean(query.get("path") ?? ".");
+      if (this.files.get(path)?.type !== "dir") return opError(path, "NOT_FOUND");
+      const prefix = path === "" ? "" : `${path}/`;
+      const files = [...this.files]
+        .filter(
+          ([key]) =>
+            key.startsWith(prefix) && key !== path && !key.slice(prefix.length).includes("/"),
+        )
+        .map(([key, entry]) => ({ name: key.slice(prefix.length), type: entry.type }));
+      return json(200, {
+        canonicalPath: path,
+        files,
+        filesLimit: Number(query.get("limit") ?? 1000),
+        filesMatched: files.length,
+        filesTotal: files.length,
+      });
+    }
     if (route === "GET /api/filemanager/download") {
       const entry = this.files.get(clean(query.get("path") ?? ""));
       if (entry?.type !== "file") return json(404, { type: "NOT_FOUND" });

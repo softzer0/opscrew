@@ -46,7 +46,13 @@ const text = (value: string) => new TextEncoder().encode(value);
 
 /** A ustar archive of files, folders and symbolic links. */
 function tar(
-  entries: { name: string; type: "0" | "2" | "5"; content?: string; target?: string }[],
+  entries: {
+    name: string;
+    type: "0" | "2" | "5";
+    content?: string;
+    target?: string;
+    mode?: number;
+  }[],
 ) {
   const blocks: Uint8Array[] = [];
   for (const entry of entries) {
@@ -54,7 +60,7 @@ function tar(
     const put = (offset: number, value: string) => header.set(text(value), offset);
     const body = text(entry.content ?? "");
     put(0, entry.name);
-    put(100, "0000644\0");
+    put(100, `${(entry.mode ?? 0o644).toString(8).padStart(7, "0")}\0`);
     put(124, `${body.length.toString(8).padStart(11, "0")}\0`);
     put(156, entry.type);
     if (entry.target) put(157, entry.target);
@@ -476,6 +482,38 @@ describe("files", () => {
     expect(fake.state.files.has("public_html/.opscrew-r1.tar")).toBe(false);
   });
 
+  it('unpacks a tar into the home folder for ".", making the app\'s folder in one go', async () => {
+    const { fake, panel } = setup();
+    const archive = tar([
+      { name: `${APP}/`, type: "5" },
+      { name: `${APP}/shared/`, type: "5" },
+      { name: `${APP}/shared/.env`, type: "0", content: "A=1\n", mode: 0o600 },
+      { name: `${APP}/agent.sh`, type: "0", content: "#!/bin/bash\n", mode: 0o700 },
+    ]);
+    await panel.uploadTar(".", archive);
+    expect(lastCall(fake, "Fileman::upload_files")).toMatchObject({
+      params: { dir: "/home/acct", permissions: "0600" },
+      files: [".opscrew-r1.tar"],
+    });
+    expect(fake.calls.filter((call) => call.func === "fileop").map((call) => call.params)).toEqual([
+      {
+        op: "extract",
+        sourcefiles: "/home/acct/.opscrew-r1.tar",
+        destfiles: "/home/acct",
+        doubledecode: "0",
+      },
+      { op: "unlink", sourcefiles: "/home/acct/.opscrew-r1.tar", doubledecode: "0" },
+    ]);
+    expect(fake.state.folders.has(`${APP}/shared`)).toBe(true);
+    expect(fake.state.files.get(`${APP}/shared/.env`)).toEqual({
+      kind: "file",
+      content: text("A=1\n"),
+      mode: 0o600,
+    });
+    expect(fake.state.files.get(`${APP}/agent.sh`)).toMatchObject({ mode: 0o700 });
+    expect(fake.state.files.has(".opscrew-r1.tar")).toBe(false);
+  });
+
   it("removes the tar when unpacking it fails", async () => {
     const { fake, panel } = setup();
     fake.failNext("Fileman", "fileop", "The archive could not be read.");
@@ -526,8 +564,37 @@ describe("files", () => {
     for (const bad of ["", "/etc/passwd", "a/../b", "a//b", "./a", "a,b", "a\\b", "a\nb", "a/"]) {
       expect((await failure(panel.remove(bad))).code).toBe("INVALID_INPUT");
       expect((await failure(panel.readFile(bad))).code).toBe("INVALID_INPUT");
+      expect((await failure(panel.list(bad))).code).toBe("INVALID_INPUT");
+      expect((await failure(panel.uploadTar(bad, tar([])))).code).toBe("INVALID_INPUT");
+    }
+    for (const call of [
+      panel.writeFile(".", text("x"), 0o644),
+      panel.readFile("."),
+      panel.remove("."),
+      panel.list("."),
+    ]) {
+      expect((await failure(call)).code).toBe("INVALID_INPUT");
     }
     expect(fake.calls).toEqual([]);
+  });
+
+  it("lists a folder's names, hidden ones included, and answers undefined for a missing folder", async () => {
+    const { fake, panel } = setup();
+    fake.writeText(`${APP}/shared/.env`, "A=1\n", 0o600);
+    fake.writeText(`${APP}/agent.sh`, "#!/bin/bash\n");
+    fake.writeText(`${APP}/releases/1/index.php`, "<?php");
+    expect((await panel.list(APP))?.sort()).toEqual(["agent.sh", "releases", "shared"]);
+    expect(lastCall(fake, "Fileman::list_files")?.params).toEqual({
+      dir: `/home/acct/${APP}`,
+      types: "dir|file|link",
+      show_hidden: "1",
+      include_mime: "0",
+    });
+    await expect(panel.list(`${APP}/shared`)).resolves.toEqual([".env"]);
+    await expect(panel.list(`${APP}/missing`)).resolves.toBeUndefined();
+    fake.failNext("Fileman", "list_files", "Permission denied");
+    const error = await failure(panel.list(APP));
+    expect(error.message).toBe(`cPanel refused to list ${APP}: Permission denied.`);
   });
 });
 
@@ -723,6 +790,7 @@ describe("every call's refusal", () => {
     ["writeFile", "Fileman::list_files", (panel) => panel.writeFile("a/b", text("x"), 0o644)],
     ["uploadTar", "Fileman::fileop", (panel) => panel.uploadTar("a", tar([]))],
     ["readFile", "Fileman::get_file_content", (panel) => panel.readFile("a/b")],
+    ["list", "Fileman::list_files", (panel) => panel.list("a")],
     ["certificate", "SSL::installed_hosts", (panel) => panel.certificate(host)],
     ["certificate", "SSL::is_autossl_check_in_progress", (panel) => panel.certificate(host)],
     ["certificate", "SSL::get_autossl_problems", (panel) => panel.certificate(host)],

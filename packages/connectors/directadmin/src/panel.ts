@@ -60,6 +60,7 @@ const databaseListSchema = z.array(z.object({ database: z.string() }));
 /** `web.dbFullConnectionResponse` without its `password`, which is never kept. */
 const createdDatabaseSchema = z.object({ database: z.string(), dbuser: z.string() });
 const statSchema = z.object({ canonicalPath: z.string() });
+const listSchema = z.object({ files: z.array(z.object({ name: z.string() })) });
 const certsSchema = z.object({
   certs: z.array(
     z.object({
@@ -429,22 +430,23 @@ export class DirectAdminPanel implements HostingPanel {
   }
 
   /**
-   * Uploads the tar into `folder` (0600), unpacks it there with the file manager
+   * Uploads the tar into `folder` (`"."` is the home folder) with mode 0600, unpacks it there with the file manager
    * (`POST /api/filemanager-actions/extract-archive`, every member, existing files replaced), then
    * removes it.
    */
   async uploadTar(folder: string, tar: Uint8Array): Promise<void> {
-    checkPath(folder);
+    if (folder !== ".") checkPath(folder);
+    const where = folder === "." ? "the home folder" : folder;
     const name = `.opscrew-${randomBytes(6).toString("hex")}.tar`;
     await this.client.upload(
-      `upload an archive into ${folder}`,
+      `upload an archive into ${where}`,
       { dir: folder, name, perm: "0600" },
       tar,
     );
     const archive = joinPath(folder, name);
     try {
       await this.client.json({
-        what: `unpack the archive into ${folder}`,
+        what: `unpack the archive into ${where}`,
         method: "POST",
         path: "/api/filemanager-actions/extract-archive",
         body: { source: archive, destinationDir: folder, members: [], mergeAndOverwrite: true },
@@ -455,6 +457,27 @@ export class DirectAdminPanel implements HostingPanel {
       throw error;
     }
     await this.remove(archive);
+  }
+
+  /**
+   * `GET /api/filemanager/list` without its limit; undefined when the file manager reports
+   * `NOT_FOUND`.
+   */
+  async list(folder: string): Promise<string[] | undefined> {
+    checkPath(folder);
+    try {
+      const answer = await this.client.json({
+        what: `list ${folder}`,
+        method: "GET",
+        path: "/api/filemanager/list",
+        query: { path: folder, limit: "0" },
+        schema: listSchema,
+      });
+      return answer.files.map((file) => file.name);
+    } catch (error) {
+      if (isOnly(error, "NOT_FOUND")) return undefined;
+      throw error;
+    }
   }
 
   /** `GET /api/filemanager/download`; undefined on 404. */

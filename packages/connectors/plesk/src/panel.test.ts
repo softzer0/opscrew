@@ -299,6 +299,7 @@ describe("PleskPanel outside the customer API", () => {
       () => panel.writeFile("a", new Uint8Array(), 0o600),
       () => panel.uploadTar("a", new Uint8Array()),
       () => panel.readFile("a"),
+      () => panel.list("a"),
       () => panel.remove("a"),
     ]) {
       const error = await failure(call());
