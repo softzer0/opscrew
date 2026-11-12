@@ -317,3 +317,74 @@ references, MCP and skills.
    only when the pass ends. A new run cannot take the kept server over instead: the takeover needs
    the checkout that bought it, with its state and deploy key. On a postpaid account (four weeks'
    notice, R2) the server is cancelled at once as before, since a later cancel would add a month.
+
+## R6. The spike (T2613, 2026-11-12)
+
+Free calls only, on the founder's empty account: no instance was created. Read from the API, from
+Contabo's API reference (the OpenAPI document embedded in api.contabo.com), from the provider's
+source (v0.1.44) and with the provider through OpenTofu.
+
+**Confirmed as built**
+- Login: the password grant answers `expires_in` 300 (5 minutes) and `refresh_expires_in` 1800.
+  The client's 30-second margin is enough.
+- Ubuntu 24.04 is the standard image `ubuntu-24.04`, id `d64d5c6c-9dda-4e38-8174-0ee282474d8a`.
+  It replaces the placeholder in the definition and in plan-schema's `DEFAULT_IMAGES`.
+- Regions (`/v1/data-centers`): `EU`, `US-central`, `US-east`, `US-west`, `SIN`, `UK`, `AUS`,
+  `JPN` and `IND`, each with VPS. The four OpsCrew maps to exist.
+- Products: the API reference lists V153 to V156 as Cloud VPS 4, 6, 8 and 12 (SSD).
+- Errors: `{statusCode, message}`, the message a string or a list of strings.
+- Lists: `{data, _links, _pagination: {size, totalElements, totalPages, page}}`.
+- The `name` filter on `/v1/tags`, `/v1/secrets` and `/v1/firewalls` matches substrings, so every
+  lookup compares the exact name afterwards.
+- Tags may hold letters, digits, colons, dashes and underscores (255 at most):
+  `opscrew-app:<app>` is accepted. A tag assignment's `resourceType` is one of `instance`,
+  `image` and `object-storage`.
+- Secrets: a list answers no `value`; only `GET /v1/secrets/{id}` does.
+- Cancel: `POST /v1/compute/instances/{id}/cancel`, with an optional `cancelDate`; the answer
+  holds the instance's `cancelDate`.
+- The provider reads `CNTB_OAUTH2_CLIENT_ID`, `_CLIENT_SECRET`, `_USER` and `_PASS` from the
+  environment: `provider "contabo" {}` works.
+
+**The firewall**
+- Free with every VPS and VDS (contabo.com/en-us/firewall, help article 103000390430). The API's
+  "firewalling add-on" is a leftover name.
+- Inbound traffic no rule accepts is dropped; outbound traffic is not filtered. Only `accept`
+  rules can be written.
+- Contabo appends its own rule to every firewall: protocol `""`, no ports, empty IPv4 and IPv6
+  lists, action `drop`, "Block all traffic". Its preset rules carry empty lists too. So **an empty
+  source list means any source**, not none. A family with no network therefore gets a source that
+  matches nobody: `127.0.0.1/32` or `::1/128` (accepted by the API), which no packet from the
+  internet carries. SecOps reads an empty list as any source.
+- `0.0.0.0/0` and `AnyIPv4` are stored alike, as `0.0.0.0/0`; ICMP takes `destPorts: []`.
+- A firewall answers `firewallId` (a UUID string), `status`, `instances` and `instanceStatus`
+  (`instanceId`, `status` ok|processing|deleting|error_processing|error_deleting, `errorMessage`).
+- **The provider cannot manage a Contabo firewall (v0.1.44, the latest).** Its read reports
+  Contabo's own drop rule, so every plan after the first wants to delete it (seen through
+  OpenTofu); declaring that rule crashes the provider, which fails on an empty `src_cidr`
+  (issue #56). A third party's fix (pull request #61, unmerged) also reports that the API
+  answers a protected firewall's `instances` as a JSON-encoded string, which the provider cannot
+  decode, so reading, importing and creating a firewall with an instance fail. Hence decision R7.
+
+**The provider's login cache.** The provider keeps its token, with the refresh token, in
+`<home>/.cache/contabo/terraform/token` and reuses it while the refresh token lasts (30 minutes),
+whatever account the credentials name. A fake token left there by an experiment on 2026-11-11
+(valid until 2100) made every call fail with "Unexpected API error, no http response", and a real
+run leaves the account's token behind. OpsCrew removes that file before and after every engine
+command (T2630).
+
+**Left for the live pass (T2620):** the snapshot-limit refusal, whether a snapshot is usable as
+soon as the create answers, a revert's statuses, the cancel date before a cancel, whether
+`period` or `default_user` read back differently, an import by instance id, the `unavailable`
+and `serverLimit` texts, and the firewall's `instances` shape with an instance. The setup fee
+comes from the founder's checkout; whether prices differ by region and which VAT they include,
+from Contabo's order page.
+
+## R7. Contabo's firewall through the connector (lead, 2026-11-12)
+
+The plan still carries the firewall, so the approval and SecOps cover it: the `contabo-vps`
+module writes the firewall it wants into a `terraform_data.firewall` (its name, its rules and the
+server's id) and outputs it as `wanted_firewall`. After every successful apply, OpsCrew's Contabo
+connector makes Contabo's firewall of that name exactly that (creates it, sets its rules, adds and
+removes servers) and waits until the server's status is `ok`. Destroy deletes it, and drift
+compares it, ignoring Contabo's own drop rule. ADR 0029, D8. When the provider can manage it,
+the firewall can move back into the module.
