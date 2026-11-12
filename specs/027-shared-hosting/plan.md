@@ -141,7 +141,9 @@ A bash script, the same for every app, its body in `main() { …; }; main "$@"; 
 never breaks a running copy. It reads `settings.sh` (quoted assignments OpsCrew renders) and runs
 under `flock -n`. Each run:
 
-1. **First run:** generates its deploy key and writes the report (section 2).
+1. **First run:** generates its deploy key, writes the report (section 2), and makes an empty
+   placeholder release `releases/0-0/<webRoot>/` with `current` pointing at it, so the hostname's
+   document root exists before plan B adds the hostname.
 2. **Requests** (section 6).
 3. **A new release?** `git ls-remote` on `opscrew/release/<env>` with its key (`IdentitiesOnly`,
    `-F /dev/null`, its known-hosts file), over SSH on 22, or on `ssh.github.com:443` when 22 fails.
@@ -160,14 +162,16 @@ under `flock -n`. Each run:
    (`php artisan migrate --force`, then Laravel's caches, the cached config made 0600). A failure
    leaves the running release untouched.
 7. **Switch:** `ln -s releases/<id> current.next && mv -T current.next current`.
-8. **Make it serve:** write `~/.lsphp_restart.txt` (LiteSpeed's per-user PHP restart, R10; harmless
-   elsewhere); for a PHP app, empty LSCache through a one-time PHP file with a random name that
+8. **Make it serve:** for a PHP app only (a static site's deploy restarts nothing), write
+   `~/.lsphp_restart.txt` (LiteSpeed's per-user PHP restart, R10; harmless elsewhere) and empty
+   LSCache through a one-time PHP file with a random name that
    answers `X-LiteSpeed-Purge: *`, removed right after; a Node.js or Python app's `tmp/restart.txt`.
-9. **Check** `https://<hostname><health path>` from the account (R11) until it answers 2xx or 3xx
-   with the release's `X-OpsCrew-Release`: up to 60 s on LiteSpeed; on Apache, past
-   `realpath_cache_ttl` (120 s), since a switch reaches every PHP process only then. Otherwise
-   switch back, make it serve again, and record the failure. The header shows the web server's
-   view; on LiteSpeed the restart is what makes PHP follow.
+9. **Check** `https://<hostname><health path>` from the account (R11; `http://` until it has seen a
+   valid certificate there) until it answers 2xx or 3xx with `X-OpsCrew-Release: <run
+   id>-<attempt>`: up to 60 s on LiteSpeed; on Apache, past `realpath_cache_ttl` (120 s), since a
+   switch reaches every PHP process only then. Otherwise switch back, make it serve again, and
+   record the failure. The header shows the web server's view; on LiteSpeed the restart is what
+   makes PHP follow.
 10. **Keep** the last 3 releases besides the running one; write `state/status` (running, previous,
     last attempt and its reason); keep `state/agent.log` to its last 1,000 lines.
 
@@ -186,9 +190,9 @@ CLI validates with zod; it reads no JSON.
     `node_modules` and `opscrew/`; signed with `openssl dgst -sha256 -sign` by the environment
     secret `OPSCREW_RELEASE_SIGNING_KEY` (ECDSA P-256); force-pushed to `opscrew/release/<env>`
     after a shallow fetch of the previous release, so only changed files are sent;
-  - **wait:** until `https://<hostname>/` answers with this run's `X-OpsCrew-Release`, up to 10
-    minutes; otherwise it fails with "The account didn't switch to this release: run `opscrew
-    status --env <env>` to see why."
+  - **wait:** until `https://<hostname>/` answers with `X-OpsCrew-Release: <run id>-<attempt>`,
+    up to 10 minutes; otherwise it fails with "The account didn't switch to this release: run
+    `opscrew status --env <env>` to see why."
 - A re-run of an old run is refused by the agent (its run id is lower); a new run deploys.
 - Whoever can run the deploy environment's workflow can deploy, as on servers. A pull request's
   workflow can push the branch but has no signing key where GitHub limits environments to the
