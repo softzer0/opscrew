@@ -17,8 +17,8 @@ governs every specification, plan, task and line of code in this repository.
   owns, OpsCrew's host adapter; for changes in a Portainer the user already runs, OpsCrew's
   Portainer adapter; for Cloudflare resources several OpsCrew apps share, such as a zone's rules
   or the account's Zero Trust organization, OpsCrew's Cloudflare shared-resources adapter; for a
-  repository's GitHub Pages site, OpsCrew's GitHub Pages adapter) refuses to apply a plan whose
-  hash differs.
+  repository's GitHub Pages site, OpsCrew's GitHub Pages adapter; for a shared hosting account,
+  OpsCrew's hosting adapter, the panel's connector) refuses to apply a plan whose hash differs.
 - Destructive operations (destroy, delete, replace with data loss, DNS zone deletion, server
   rebuild) are denied by default. They require an approval flagged `allowDestroy` plus a typed
   confirmation of the affected resource name.
@@ -146,12 +146,15 @@ human sees and approves every change.
   non-commercial dependency may be linked into the CLI; such tools may only be invoked as optional
   external binaries. Semgrep-maintained rules are never used in the hosted control plane.
 - Provider order: hosting on Hetzner Cloud, DigitalOcean, Contabo, servers the user already owns
-  (over SSH) and a Portainer the user already runs (through its API), with Cloudflare DNS, then AWS,
-  Google Cloud and Azure; domains through Cloudflare Registrar first, then Namecheap, Porkbun and
+  (over SSH), a Portainer the user already runs (through its API) and shared hosting accounts the
+  user already pays for (through cPanel's, Plesk's or DirectAdmin's API, or SFTP), with Cloudflare
+  DNS, then AWS, Google Cloud and Azure; domains through Cloudflare Registrar first, then Namecheap, Porkbun and
   GoDaddy. Prices and availability are read live from provider APIs whenever possible; any static
   fallback is labelled with its date.
 - CI/CD: GitHub Actions with OIDC federation for hyperscalers; per-repository deploy keys for VPS
-  targets; third-party actions avoided or pinned by commit SHA.
+  targets; on a hosting account with a panel, no credential for the account in CI, only a release
+  key that signs the releases the account's agent fetches with a read-only deploy key (ADR 0030);
+  third-party actions avoided or pinned by commit SHA.
 
 ## Development Workflow and Quality Gates
 
@@ -185,4 +188,4 @@ human sees and approves every change.
 - Every plan includes a Constitution Check; violations are either fixed or justified in the plan's
   Complexity Tracking table. Every reviewer pass checks constitution compliance.
 
-**Version**: 1.9.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-11-11
+**Version**: 1.10.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-11-12

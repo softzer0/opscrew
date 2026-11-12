@@ -18,8 +18,9 @@ harden, or a platform with its own API (Cloudflare, GitHub Pages).
 
 This feature adds a new kind of target, **a hosting account**, reached through the panel's API
 (cPanel, Plesk, DirectAdmin) or through SFTP alone. OpsCrew sets up what the app needs in the
-panel, deploys releases from GitHub Actions with an atomic switch, rolls back by switching back,
-and checks the account's security, with every change in a plan approved by its hash.
+panel, builds releases in GitHub Actions and switches the account to each one atomically, rolls
+back by switching back, and checks the account's security, with every change in a plan approved
+by its hash.
 
 Most shared hosts run LiteSpeed in place of Apache under the same panels (the founder's test
 account does), so OpsCrew handles both. And since LiteSpeed's free edition, OpenLiteSpeed, suits
@@ -31,9 +32,10 @@ PHP and WordPress apps on servers too, it becomes a third proxy next to Caddy an
 
 **Why this priority**: it is the feature's point, and cPanel is the panel most hosts run.
 
-**Independent Test**: the live pass on the founder's cPanel account deploys `examples/laravel-app`
-and a static site to `e2e-…` subdomains: interview, design, provision, deploy, verify, a second
-release, rollback and destroy, with nothing outside the `e2e-…` objects touched.
+**Independent Test**: the live pass on the founder's cPanel account deploys
+`examples/php-plain-mysql` and a static site to `e2e-…` subdomains: interview, design,
+provision, deploy, verify, a second release, rollback and destroy, with nothing outside the
+`e2e-…` objects touched.
 
 **Acceptance Scenarios**:
 
@@ -43,8 +45,9 @@ release, rollback and destroy, with nothing outside the `e2e-…` objects touche
    asking.
 2. **When** the user runs `opscrew design`, **Then** the plan says what the account offers and what
    the app gets there:
-   - the web server (Apache or LiteSpeed), the PHP versions, the database engine, the disk quota
-     left and the app slots left;
+   - the web server (Apache or LiteSpeed), the database engine, the disk quota left and the app
+     slots left (the PHP versions and their extensions are read on the account at provision, which
+     shows them and the version the app gets);
    - the hostname and its document root, the database and its user, the cron jobs;
    - no price: the user already pays for the account.
 3. **Given** an app that doesn't fit a hosting account (a long-running worker, Redis or a queue,
@@ -54,14 +57,18 @@ release, rollback and destroy, with nothing outside the `e2e-…` objects touche
    makes, through the panel's API:
    - the hostname (a subdomain or addon domain) with its document root on the release OpsCrew
      switches;
-   - the database and its user, with a generated password kept as a deploy secret;
+   - the database and its user, with a generated password kept only in the app's environment
+     file on the account;
    - the cron jobs the app declares;
    - the free certificate (AutoSSL) for the hostname, or says why the panel can't issue it;
-   - the deploy key GitHub Actions uploads with, and the GitHub secrets and workflow.
-5. **When** a commit reaches the deploy branch, **Then** the workflow builds the app, uploads it to
-   a new release folder, keeps the app's secrets outside the web root, runs the app's release
-   steps (migrations), switches the hostname to the new release in one step, and checks that the
-   app answers. A failed check switches back.
+   - the agent that deploys on the account and its cron line, the read-only GitHub key it
+     fetches releases with, the key that signs releases as a GitHub secret, and the workflow
+     (ADR 0030).
+5. **When** a commit reaches the deploy branch, **Then** the workflow builds the app and publishes
+   it signed; the agent on the account fetches it into a new release folder, keeps the app's
+   secrets outside the web root, runs the app's release steps (migrations), switches the hostname
+   to the new release in one step, and checks that the app answers. A failed check switches back.
+   The workflow reports when the account serves the release.
 6. **When** the user runs `opscrew verify`, **Then** OpsCrew checks that the app answers over
    HTTPS, that plain HTTP redirects, and that the app's secrets and the release folders can't be
    read from the web.
@@ -90,8 +97,9 @@ and `opscrew destroy` leaves the account as it was before provision.
 **Why this priority**: the plainest target; it reaches hosts with no panel API or a panel OpsCrew
 doesn't know.
 
-**Independent Test**: the live pass deploys a static site and a plain PHP app over SFTP to the
-founder's account (it has SSH), switches and rolls back.
+**Independent Test**: the live pass deploys a static site and a plain PHP app over SFTP to an
+SFTP-only host the harness sets up on a Hetzner server (the founder's account takes no SSH from
+outside, research R10), switches and rolls back.
 
 **Acceptance Scenarios**:
 
@@ -149,8 +157,8 @@ deployed app.
 2. **When** the user runs `opscrew drift`, **Then** it reports what changed in the panel since
    provision: the hostname's document root, the database, the cron jobs, the deploy key.
 3. **When** the user runs `opscrew snapshot`, **Then** OpsCrew takes a dump of the app's database
-   and a copy of its files (the encrypted copy off the account as 024 does), and `opscrew restore`
-   puts them back after the user's approval.
+   and a copy of its shared files on the account, and `opscrew restore` puts them back after the
+   user's approval. A copy off the account is left for later.
 
 ### User Story 7 - Plesk and DirectAdmin (Priority: P2)
 
@@ -196,16 +204,21 @@ one server, and a switch to Caddy and back.
 
 ### Edge Cases
 
-- **A token without the features OpsCrew needs, or a host that turned the API, SSH or cron off**:
-  OpsCrew names what is missing and what the user can do (create a token with those features, ask
-  the host), before any change.
-- **The account's disk quota or app slots are nearly full**: design shows what is left; provision
-  and deploy stop before an upload that wouldn't fit.
+- **A host that turned the API or cron off, or blocks the account from reaching GitHub**: OpsCrew
+  names what is missing and what the user can do (ask the host, add the cron line in the panel),
+  before the hostname or the database is made.
+- **A release on the branch that isn't signed by the deploy environment's key, or an older release
+  pushed again** (a pull request's workflow pushed it): the agent refuses it, and status says so.
+- **The account's disk quota or app slots are nearly full**: design shows what is left and refuses
+  an app that doesn't fit; a release whose upload fails is never switched to.
 - **A hostname that already exists with content OpsCrew didn't put there**: never taken over; the
   plan stops and names it.
-- **The app needs a PHP version the account doesn't offer, or the panel can't set it** (no
-  MultiPHP, a CloudLinux PHP Selector with no API): design names the version and where to set it
-  in the panel; verify checks the version the app gets.
+- **The app needs a PHP version or extensions the account can't give one hostname** (research R11:
+  on CloudLinux without per-site PHP, a hostname's own newer version loads only the base
+  extensions): provision stops before the hostname and names the version and extensions the app
+  needs, the account's version, and the ways out (the panel's PHP selector, which changes every
+  site on the account, or per-site PHP from the host). OpsCrew never changes the account's version
+  itself; verify checks the version the app gets.
 - **AutoSSL can't cover the hostname** (its DNS doesn't point at the host): provision says why, and
   the deploy waits for a certificate before forcing HTTPS.
 - **The domain's DNS is on Cloudflare**: OpsCrew points the hostname at the account's address
@@ -231,16 +244,19 @@ one server, and a switch to Caddy and back.
   (ADR 0011).
 - **FR-2703**: The panel's credentials MUST be read from the environment, redacted everywhere,
   used only on the user's computer, and never written to the plan, state, generated files or CI.
-  The deploy key is the only credential GitHub Actions gets.
-- **FR-2704**: Design MUST read the account's facts (web server, PHP versions, database engine,
-  quota, app slots, SSH access) and refuse apps that don't fit, with the reason and a server target
-  named.
+  On a panel account GitHub Actions gets only the key that signs releases; on an SFTP host, a key
+  limited to that host.
+- **FR-2704**: Design MUST read the account's facts (web server, database engine, quota, app slots)
+  and refuse apps that don't fit, with the reason and a server target named. Provision MUST read
+  what only the account itself shows (PHP versions and their extensions, GitHub reachable) before
+  it makes the hostname or the database, and stop the same way when they don't fit.
 - **FR-2705**: Provision MUST make only what the plan lists (hostname and document root, database
   and user, cron jobs, certificate, deploy key, GitHub secrets and workflow), mark what it made, and
   never change or delete anything it didn't make.
-- **FR-2706**: Deploys MUST upload each release into its own folder and switch the hostname to it
-  atomically, over SFTP when the panel's API can't (research R5), keep the app's secrets outside
-  the web root, and switch back when the health check fails.
+- **FR-2706**: Deploys MUST put each release into its own folder and switch the hostname to it
+  atomically: on a panel account by the agent on the account, which deploys only releases signed
+  by the deploy environment's key (research R10, ADR 0030); on an SFTP host over SFTP. They MUST
+  keep the app's secrets outside the web root and switch back when the health check fails.
 - **FR-2707**: Rollback MUST switch back to the previous release; destroy MUST remove only what
   OpsCrew made, after the offered dump and the typed hostname.
 - **FR-2708**: OpsCrew MUST say which web server serves the account. On LiteSpeed it MUST empty
@@ -269,7 +285,10 @@ one server, and a switch to Caddy and back.
   marked as OpsCrew's.
 - **Hosting plan**: the changes to the account, its SHA-256 hash and approval, as a host plan.
 - **Release**: a folder per deploy with the app's files, the one the hostname points at, and the
-  ones kept for rollback.
+  ones kept for rollback; on a panel account, built in GitHub Actions and published signed on the
+  environment's release branch.
+- **Agent**: the deploy script OpsCrew installs on a panel account, run by cron as the account's
+  user; it deploys signed releases and carries out the one-time requests the user approves.
 
 ## Success Criteria *(mandatory)*
 
@@ -277,7 +296,8 @@ one server, and a switch to Caddy and back.
 
 - **SC-2701**: The live pass on the founder's cPanel account completes interview, design,
   provision, deploy, verify, a second release, rollback, secure, drift, snapshot, restore and
-  destroy for a Laravel app and a static site, each on an `e2e-…` subdomain.
+  destroy for a plain PHP app with a database and a static site, each on an `e2e-…` subdomain;
+  for a Laravel app too where the account's PHP fits it (research R11).
 - **SC-2702**: An inventory of the account (domains, databases, users, cron jobs, keys, files)
   before and after the live pass differs only in `e2e-…` objects, and none is left after destroy.
 - **SC-2703**: On the LiteSpeed-served account, the first request after a switch or rollback
@@ -291,10 +311,10 @@ one server, and a switch to Caddy and back.
 ## Assumptions
 
 - The founder's cPanel account (`OPSCREW_E2E_CPANEL_*` in `.env.e2e`) is the live test account;
-  every test object on it is named `e2e-…` (founder, 2026-11-07). It is served by LiteSpeed and has
-  SSH. Apache-served accounts, Plesk and DirectAdmin are covered by fakes until accounts exist.
-- The facts research R7 lists are settled by a spike on that account before the connectors are
-  built.
+  every test object on it is named `e2e-…` (founder, 2026-11-07). It is ordinary shared hosting
+  served by LiteSpeed, and its SSH isn't reachable from outside (research R10). Apache-served
+  accounts, Plesk and DirectAdmin are covered by fakes until accounts exist.
+- The facts research R7 lists were settled by two spikes on that account (research R10, R11).
 - Not in scope:
   - WHM, reseller and server-admin access; email accounts; the panel's own backups;
   - WordPress installers (Softaculous) and managing WordPress itself beyond deploying it;
