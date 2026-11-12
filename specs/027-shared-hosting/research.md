@@ -381,7 +381,79 @@ MultiPHP INI files.
 - The token can't go to GitHub Actions (FR-2703): it is the whole account, not one app.
 - GitHub Actions can't reach such an account over SFTP or SSH, and the panel's API can't switch
   atomically, so on a panel account the release is switched by code running on the account.
-- PHP 7.0 is too old for the example Laravel app. **Still open, for a second, shorter spike:**
-  a newer PHP for one hostname without changing the account's (a handler in `.htaccess`, the PHP
-  selector), the CLI's alternative PHP binaries, and whether the account reaches GitHub (HTTPS,
-  and SSH on ports 22 and 443).
+- PHP 7.0 is too old for the example Laravel app. A second, shorter spike (R11) looked at a newer
+  PHP for one hostname without changing the account's, the CLI's alternative PHP binaries, and
+  whether the account reaches GitHub.
+
+## R11. The second spike: PHP versions, GitHub and the agent's tools (2026-11-12)
+
+Two short passes on the same account, every object named `e2e-spike2…` and removed in each pass's
+cleanup, the certificates AutoSSL issued and their keys included. The inventory afterwards matched
+the one before except the zone's `_cpanel-dcv-test-record` TXT value, which AutoSSL rewrites on
+each validation run (inferred). The selector's state and files were unchanged throughout.
+
+- **PHP on the account.** `/opt/alt` holds CloudLinux's alt-php builds; the CLI binaries
+  `/opt/alt/php80…85/usr/bin/php` answer 8.0.30 to 8.5.12. `/usr/local/bin/php` (CLI) and
+  `/usr/bin/php` (cgi-fcgi) are the account's 7.0.33. `cloudlinux-selector get --json --interpreter
+  php` answers `selected_version` 7.0, `default_version` 7.4, `domains_tab_is_hidden` false and
+  4.4 to 8.5 enabled; `get --domain <hostname>` is accepted (7.0, no extensions for it).
+- **One hostname on a newer PHP:** `AddHandler application/x-httpd-alt-php85___lsphp .php` in the
+  hostname's `.htaccess`, above cPanel's block, gives PHP 8.5.12 under LiteSpeed (`litespeed`
+  SAPI, 200, `application/json`); `alt-php82___lsphp` gives 8.2.35. The account's version is
+  untouched, and removing the line goes back to 7.0 within 3 s.
+  - A changed handler takes 1.4 to 8 s to apply (8.2 still answered 3 s after a change to 8.5);
+    then it is stable. A deploy checks for the version it expects instead of assuming it.
+  - **Only the base extensions load** that way: PDO, `pdo_mysql`, `mysqli`, `curl`, `openssl`,
+    `json`, `session`, `tokenizer`, `xml`, `ctype`, `filter`, `iconv`, OPcache and the like, but
+    no `mbstring`, `dom`, `fileinfo`, `intl`, `gd` or `zip`, whatever the selector lists for 8.5.
+    The account's selected 7.0 has them all. Laravel needs `mbstring` and `fileinfo`, so the
+    handler alone doesn't run it (inferred: the selector's extension choices apply to the
+    selected version only).
+  - **OPcache is on under 8.5** (`opcache.enable` 1; not loaded under 7.0), so the switch's lsphp
+    restart (R10) clears it too. `memory_limit` 128M, `max_execution_time` 30, `upload_max_filesize`
+    2M, `post_max_size` 8M, `realpath_cache_ttl` 120, nothing disabled, as under 7.0.
+  - **`.user.ini` isn't read:** a marker setting written before any request didn't apply under 7.0
+    or 8.5. cPanel's `php_value` lines in `.htaccess` do apply under both, so OpsCrew's PHP settings
+    (`auto_prepend_file`) go in `.htaccess`.
+  - The CLI binaries have the same base set: `/opt/alt/php85/usr/bin/php` loads `pdo_mysql`, not
+    `mbstring`.
+- **GitHub from the account:** `https://github.com` and `https://api.github.com` answer 200;
+  `git ls-remote` over HTTPS works (cron's `git` is `/usr/bin/git` 2.43.7); OpenSSH 8.0p1 reaches
+  both `git@github.com` (22) and `git@ssh.github.com` (443): "Permission denied (publickey)" with
+  no key offered (`-F /dev/null`, `IdentitiesOnly`, no agent).
+- **The account reaches its own hostname** over HTTPS by its public name, with a valid certificate
+  (`ssl_verify_result` 0).
+- **Tools:** GNU coreutils 8.30 (`mv -T`, `ln`, `sha256sum`, `timeout`), GNU tar 1.30, gzip 1.9,
+  util-linux `flock` 2.32.1, OpenSSL 1.1.1k (`openssl dgst -sha256 -hmac` gives the right HMAC),
+  `ssh-keygen`. `ulimit`: 1024 open files, no CPU or file size limit. Cron's time zone is CET.
+- **Cron runs long jobs:** a job that slept 150 s finished and wrote its marker.
+- **A new hostname:** it answered HTTP about 29 s after creation; AutoSSL issued its certificate by
+  itself within 11 to 45 s, and HTTPS answered 404 for about 12 s after it was installed. The
+  certificate stays in the account's store after the hostname is removed.
+
+**What CloudLinux documents (read 2026-11-12).**
+- **The selector's version is the account's:** without Isolates, PHP Selector sets one version per
+  account, for all its sites. A version per site comes with CloudLinux Isolates (beta, cPanel and
+  LiteSpeed supported): root allows site isolation, the user isolates a domain, then
+  `selectorctl --set-user-current=<version> --domain <domain>` and
+  `selectorctl --enable-user-extensions=<list> --version <v> --domain <domain>` apply to that domain
+  only. [Isolates](https://docs.cloudlinux.com/cloudlinuxos/isolates/)
+  - `cloudlinux-selector`'s `--domain` is documented for Node.js and Python only; that the PHP
+    `get --domain` answers (above) is undocumented.
+- **A handler line loads the version's default modules:** the extensions chosen in PHP Selector
+  load only for the selected version; another alt-php version reached by a handler line loads
+  `/opt/alt/phpXX/etc/php.d/default.ini`'s set, and the fix (a `symlinks.rules` file and
+  `selectorctl --apply-symlinks-rules`) needs root. *From search summaries of CloudLinux's
+  knowledge base; the articles answered 403:*
+  [selected modules are not used](https://cloudlinux.zendesk.com/hc/en-us/articles/4412353451676-Different-PHP-Version-per-domain-folder-selected-modules-are-not-used),
+  [changing modules per domain](https://cloudlinux.zendesk.com/hc/en-us/articles/4411475922450-How-to-change-PHP-modules-when-using-different-PHP-versions-per-domain).
+  This matches what the account showed.
+- **So, on a CloudLinux account without Isolates:** an app that needs only the base extensions
+  (`pdo_mysql`, `curl`, `openssl`, `json`, `ctype`, `tokenizer`, `xml`…) can run on a newer PHP
+  through its hostname's handler line; an app that needs more (Laravel's `mbstring` and
+  `fileinfo`) needs the account's version, which changes every site on the account.
+  `examples/php-plain-mysql` (PHP 8.3 or newer, `pdo_mysql`) fits the test account as it is;
+  `examples/laravel-app` (PHP 8.4, `mbstring`) doesn't.
+- **cPanel without CloudLinux** chooses a version per domain through MultiPHP (UAPI `LangPHP`,
+  with the `multiphp` feature, which the test account lacks); its extensions are the host's
+  EasyApache build for that version (*unverified* here, no such account).
