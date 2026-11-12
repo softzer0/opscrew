@@ -6,7 +6,11 @@
 import type { HostingFacts, HostingFiles, HostingPanel } from "@opscrew/contracts";
 import { OpsCrewError, sha256Hex } from "@opscrew/core";
 import { AGENT_SH, releaseBranch, renderAgentSettings } from "@opscrew/iac-templates";
-import type { DeployPlan, HostingDeployTarget } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  type HostingDeployTarget,
+  snapshotsByDefault,
+} from "@opscrew/plan-schema";
 import { signingKeyId } from "./apply";
 import { AGENT_SCHEDULE, agentCronCommand, appCronCommand, type PhpChoice } from "./php";
 import type { AgentPlan, AgentStep, AppPlan, AppStep } from "./plan";
@@ -54,7 +58,7 @@ export function hostnameOf(plan: DeployPlan): string {
  * environment but previews.
  */
 export function hostingSnapshots(plan: DeployPlan): boolean {
-  return plan.deploy.snapshots ?? plan.environment?.previews === undefined;
+  return plan.deploy.snapshots ?? snapshotsByDefault(plan);
 }
 
 /** The database's full names, the account's prefix included; the user is named the same. */
