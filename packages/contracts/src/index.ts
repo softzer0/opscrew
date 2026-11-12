@@ -1,5 +1,6 @@
 export * from "./common";
 export * from "./connector";
+export * from "./hosting";
 export * from "./iac";
 export * from "./io";
 export * from "./provider";

@@ -44,6 +44,11 @@ export type ApprovalKind =
   /** Applying a host plan to a server the user owns; bound to the host plan's SHA-256 hash. */
   | "host-apply"
   /**
+   * Applying a hosting plan to a hosting account through its panel's API (hostnames, databases, cron,
+   * the agent's files, settings); bound to the hosting plan's SHA-256 hash, never granted by `--yes`.
+   */
+  | "hosting-apply"
+  /**
    * Applying a stack plan to a Portainer the user runs (stacks, registry entry, volumes); bound to
    * the stack plan's SHA-256 hash, never granted by `--yes`.
    */

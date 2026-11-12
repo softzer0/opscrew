@@ -24,7 +24,7 @@ names the change.
 
 ## Phase 1: Contract and packages (lead)
 
-- [ ] T2701 The contract, ADR 0030, constitution 1.10.0 and the packages (lead)
+- [x] T2701 The contract, ADR 0030, constitution 1.10.0 and the packages (lead)
   - Owns: `packages/contracts/src/**`, `docs/adr/0030-*.md`, `.specify/memory/constitution.md`, `packages/connectors/{cpanel,plesk,directadmin,sftp}/*` (package files and `src/index.ts`), `packages/iac-templates/src/hosting/index.ts` and its placeholder modules, `packages/iac-templates/src/index.ts`, the consumers' `package.json`, `pnpm-lock.yaml`
   - Accept:
     - `packages/contracts/src/hosting.ts` as plan 1 says (`HostingPanel`, `HostingFacts`, `HostingPanelKind`, `HostingOperation`, `PanelStep`, `HostingCronJob`, `HostingCertificate`), exported from the root; `ApprovalKind` gains `hosting-apply`.

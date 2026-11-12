@@ -35,6 +35,7 @@ export {
   type VercelRoutingContext,
   type VercelRoutingTranslation,
 } from "./edge/vercel-routing";
+export * from "./hosting";
 export * from "./infra";
 export { CAA_ISSUERS } from "./infra/cloudflare";
 export * from "./monitoring";
