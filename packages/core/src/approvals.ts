@@ -35,6 +35,7 @@ const APPROVAL_KINDS = [
   "stack-apply",
   "cloudflare-apply",
   "pages-apply",
+  "hosting-apply",
   "promote",
   "github-settings",
 ] as const satisfies readonly ApprovalKind[];
@@ -58,6 +59,7 @@ type HashBoundKind =
   | "stack-apply"
   | "cloudflare-apply"
   | "pages-apply"
+  | "hosting-apply"
   | "promote";
 /** Hash-bound kinds whose approval may also allow deleting; a promotion deletes nothing. */
 type DestroyingKind = Exclude<HashBoundKind, "promote">;
@@ -167,6 +169,25 @@ const HASH_BOUND: {
         "This Pages plan removes the site's custom domain or deletes the GitHub Pages site, but the approval did not allow deleting them.",
       hint: "Run the command interactively and type the confirmation phrase to approve deleting them.",
       audit: "Pages plan removes the custom domain or the site; deleting them was not approved",
+    },
+  },
+  "hosting-apply": {
+    noHash: {
+      message:
+        "A change to a hosting account can only be approved for a specific hosting plan, but no valid plan hash was given.",
+      hint: "Pass the hosting plan's SHA-256 hash (64 hexadecimal characters) with the request.",
+    },
+    notApproved: (planHash) => ({
+      message:
+        "This hosting plan has not been approved, so OpsCrew will not change the hosting account.",
+      hint: `Review the hosting plan, then approve it when asked or re-run with --approve ${planHash}.`,
+      audit: "no approval recorded for this hosting plan",
+    }),
+    destroyNotApproved: {
+      message:
+        "This hosting plan deletes what OpsCrew made on the hosting account, but the approval did not allow deleting it.",
+      hint: "Run the command interactively and type the confirmation phrase to approve deleting it.",
+      audit: "hosting plan deletes objects on the account; deleting them was not approved",
     },
   },
   promote: {
@@ -383,6 +404,18 @@ export class ApprovalGate {
     options: { allowDestroy?: boolean } = {},
   ): Promise<ApprovalRecord> {
     return this.assertApproved("pages-apply", planHash, options);
+  }
+
+  /**
+   * {@link assertApprovedPlan} for the `hosting-apply` approval of a hosting plan (ADR 0030;
+   * `allowDestroy` for a plan that deletes what OpsCrew made on the account). Call before every
+   * hosting apply.
+   */
+  assertApprovedHostingPlan(
+    planHash: string,
+    options: { allowDestroy?: boolean } = {},
+  ): Promise<ApprovalRecord> {
+    return this.assertApproved("hosting-apply", planHash, options);
   }
 
   /**

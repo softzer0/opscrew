@@ -1119,6 +1119,41 @@ describe("pages-apply approvals", () => {
     });
   });
 
+  it("keeps hosting-apply records in the JSONL store", async () => {
+    const store = new JsonlApprovalStore(join(root, "hosting", "approvals.jsonl"));
+    await store.append(record({ id: "h", kind: "hosting-apply", planHash: HASH_A }));
+    expect((await store.list()).map((r) => r.kind)).toEqual(["hosting-apply"]);
+  });
+
+  describe.each([
+    ["MemoryApprovalStore", () => new MemoryApprovalStore()],
+    ["JsonlApprovalStore", () => new JsonlApprovalStore(join(root, "approvals.jsonl"))],
+  ])("assertApprovedHostingPlan with %s", (_name, makeStore) => {
+    it("returns the latest approved hosting-apply record, and refuses another kind's or hash", async () => {
+      const store = makeStore();
+      await store.append(record({ id: "1", kind: "hosting-apply", planHash: HASH_A }));
+      await store.append(record({ id: "2", kind: "pages-apply", planHash: HASH_B }));
+      expect((await gateOver(store).assertApprovedHostingPlan(HASH_A)).id).toBe("1");
+      const error = await gateOver(store)
+        .assertApprovedHostingPlan(HASH_B)
+        .catch((e: unknown) => e);
+      expect(error).toMatchObject({
+        code: "PLAN_NOT_APPROVED",
+        message:
+          "This hosting plan has not been approved, so OpsCrew will not change the hosting account.",
+        hint: `Review the hosting plan, then approve it when asked or re-run with --approve ${HASH_B}.`,
+      });
+    });
+
+    it("refuses deleting unless the approval allowed it", async () => {
+      const store = makeStore();
+      await store.append(record({ id: "k", kind: "hosting-apply", planHash: HASH_A }));
+      await expect(
+        gateOver(store).assertApprovedHostingPlan(HASH_A, { allowDestroy: true }),
+      ).rejects.toMatchObject({ code: "DESTROY_NOT_APPROVED" });
+    });
+  });
+
   it("never lets a pages-apply approval authorise another kind, nor another kind a Pages plan", async () => {
     const { gate } = makeGate();
     await gate.request({ ...pagesRequest, planHash: HASH_A });
