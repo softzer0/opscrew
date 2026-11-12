@@ -394,6 +394,9 @@ the firewall can move back into the module.
 
 ## R8. The live pass (T2620, 2026-11-12)
 
+Run 4, on a second Cloud VPS 4, passed all nine steps after the fixes below (two of them made
+while it waited on the same server).
+
 Run 3 bought one Cloud VPS 4 (runs 1 and 2 stopped before buying: the design text below, and
 OpenTofu missing from the run's `PATH`). Steps 1 to 5 passed; step 6 failed, and the run waited
 for a fix on the same server (R5 item 3).
