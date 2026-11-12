@@ -42,7 +42,7 @@ export function planHeading(
 
 /** True when a deletion happens on a server (one OpsCrew created, or the user's own). */
 export function onServer(provider: DeletionProvider): provider is VpsProviderId {
-  return provider !== "portainer" && !isServerlessProvider(provider);
+  return provider !== "portainer" && provider !== "hosting" && !isServerlessProvider(provider);
 }
 
 /**

@@ -4,6 +4,7 @@ import { exists, lowerFirst, OpsCrewError, plural, tfstateFile } from "@opscrew/
 import { cloudTarget, runnerLabel } from "@opscrew/iac-templates";
 import { APP_SERVER, type DeployPlan, isCloudProvider, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { destroyHosting } from "../hosting/destroy";
 import { destroyLocalhost } from "../localhost/destroy";
 import { acmStaysOn, appZoneDomain } from "../previews/app-zone";
 import { requireNoSharedPreviews } from "../previews/host";
@@ -577,7 +578,8 @@ function remainingAfterDestroy(input: {
  *
  * A server the user owns is never deleted, rebuilt or snapshotted: see `destroyOwnServer` (the
  * Cloudflare resources, then a teardown host plan, then optionally the undo host plan). The
- * server-less targets have their own flows: `destroyCloudflareWorkers` and `destroyGithubPages`.
+ * server-less targets have their own flows: `destroyCloudflareWorkers` and `destroyGithubPages`;
+ * so does a hosting account: `destroyHosting`.
  *
  * Previews below the app's zone: their pack goes with the root, and Advanced Certificate Manager
  * stays on, which the result's `remaining` and the reporter say (spec.md US10 #4).
@@ -619,6 +621,7 @@ async function destroyDeployment(
   if (plan.target.provider === "github-pages") return destroyGithubPages(deps, plan, options);
   if (plan.target.provider === "own") return destroyOwnServer(deps, plan, options);
   if (plan.target.provider === "portainer") return destroyPortainer(deps, plan, options);
+  if (plan.target.provider === "hosting") return destroyHosting(deps, plan, options);
   const name = plan.app.name;
   const provider = planProvider(plan);
   const profile = providerProfile(provider);

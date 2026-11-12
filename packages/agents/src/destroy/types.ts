@@ -9,8 +9,9 @@ import type { PortainerServices } from "../provision/types";
 /**
  * The GitHub calls the cleanup needs (a `GitHubClient` or a test fake): the deploy secrets, the
  * GitHub environment that holds them when they live in one, the scheduled check's pause, and for
- * the user's Portainer its deploy branch (without `deleteBranch` the branch stays and is listed
- * under what remains).
+ * the user's Portainer its deploy branch, for a hosting account its release branch and the
+ * agent's deploy key (without `deleteBranch` or `removeDeployKey` they stay and are listed under
+ * what remains).
  */
 export type DestroyGitHubApi = Pick<
   GitHubClient,
@@ -21,7 +22,7 @@ export type DestroyGitHubApi = Pick<
   | "setRepoVariable"
   | "deleteRepoVariable"
 > &
-  Partial<Pick<GitHubClient, "deleteBranch">>;
+  Partial<Pick<GitHubClient, "deleteBranch" | "removeDeployKey">>;
 
 /** The Cloudflare call the credential check needs (a `CloudflareClient` or a test fake). */
 export type DestroyCloudflareApi = Pick<CloudflareClient, "verifyToken">;
@@ -108,10 +109,10 @@ export interface DestroyOptions {
 }
 
 /**
- * Where a deletion happens: a provider's server, a server the user owns, the user's Portainer, or
- * a server-less target (Cloudflare's hosting, GitHub Pages).
+ * Where a deletion happens: a provider's server, a server the user owns, the user's Portainer, a
+ * server-less target (Cloudflare's hosting, GitHub Pages), or a hosting account.
  */
-export type DeletionProvider = VpsProviderId | "portainer" | ServerlessProvider;
+export type DeletionProvider = VpsProviderId | "portainer" | ServerlessProvider | "hosting";
 
 /** What the teardown would delete, shown before the user confirms. */
 export interface DestroyPreview {

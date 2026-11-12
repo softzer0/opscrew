@@ -8,6 +8,7 @@ import { OpsCrewError } from "@opscrew/core";
 import { type DeployPlan, isServerlessProvider } from "@opscrew/plan-schema";
 import { formatUtc } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
+import { hostingLogs } from "../hosting/logs";
 import { registerAppSecrets } from "../shared/app-secrets";
 import { hasExtraServers } from "../shared/servers";
 import { cloudflareLogs } from "./cloudflare";
@@ -75,6 +76,7 @@ function firstLine(oldest: string | undefined, since: string | undefined, note?:
  * - **A server-rendered app on Cloudflare:** the Worker's requests from Workers Logs, and its live
  *   tail when following (`cloudflareLogs`).
  * - **GitHub Pages and a static site on Cloudflare:** no request logs; the last deploy runs.
+ * - **A hosting account:** the agent's last lines, through the panel's files (`hostingLogs`).
  *
  * With `failed`, the lines the deploy kept of the last failed copy instead (`readFailedLogs`).
  *
@@ -94,6 +96,9 @@ export async function readLogs(
     throw new OpsCrewError("INVALID_INPUT", "--tail takes a positive whole number of lines.", {
       hint: `For example \`--tail 50\`. Without it, \`opscrew logs\` shows the last ${DEFAULT_TAIL}.`,
     });
+  }
+  if (plan.target.provider === "hosting") {
+    return hostingLogs(deps, plan, { ...options, tail });
   }
   if (options.failed === true) {
     return readFailedLogs(deps, plan, options);

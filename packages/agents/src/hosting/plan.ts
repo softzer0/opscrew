@@ -20,7 +20,7 @@ import { type AdapterPlanItem, describeAdapterPlan } from "../shared";
 import { PANEL_NAMES } from "./panels";
 
 /** A path below the home folder (or the app's folder): names of `[A-Za-z0-9._-]`, never `.` or `..`. */
-const PathSchema = z
+export const PathSchema = z
   .string()
   .regex(/^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/)
   .refine((path) => path.split("/").every((part) => part !== "." && part !== ".."), {
@@ -28,7 +28,8 @@ const PathSchema = z
   });
 const Sha256Schema = z.string().regex(/^[0-9a-f]{64}$/);
 const ModeSchema = z.int().min(0).max(0o777);
-const HostnameSchema = z.string().regex(/^[a-z0-9.-]+$/);
+/** A hostname, lower-case. */
+export const HostnameSchema = z.string().regex(/^[a-z0-9.-]+$/);
 const ScheduleSchema = z.string().regex(/^\S+(?: \S+){4}$/);
 const CommandSchema = z
   .string()
@@ -37,7 +38,8 @@ const CommandSchema = z
   // biome-ignore lint/suspicious/noControlCharactersInRegex: a cron line's command has none.
   .regex(/^[^\u0000-\u001f\u007f]+$/);
 
-const OPERATIONS = [
+/** The changes a panel's API can make (`HostingOperation`). */
+export const OPERATIONS = [
   "addHostname",
   "removeHostname",
   "addDatabase",
@@ -53,7 +55,7 @@ const OPERATIONS = [
 ] as const satisfies readonly HostingOperation[];
 
 /** A step the user takes in the panel, as the panel's connector words it (`panelStep`). */
-const PanelStepSchema = z.strictObject({
+export const PanelStepSchema = z.strictObject({
   operation: z.enum(OPERATIONS),
   what: z.string().min(1),
   where: z.string().min(1),

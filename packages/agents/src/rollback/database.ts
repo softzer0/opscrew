@@ -780,7 +780,7 @@ function snapshotOffer(taken: string, words: string): DatabaseOffer {
  * `--database`, refused with its reason when not offered (`PHASE_PRECONDITION`, nothing changed);
  * else, with several offers, the terminal's `chooseDatabase`; else the default, `fallback`.
  */
-async function choose(
+export async function choose(
   run: RollbackRun,
   offers: readonly DatabaseOffer[],
   why: Partial<Record<DatabaseChoice, string>>,

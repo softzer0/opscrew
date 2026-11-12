@@ -18,6 +18,7 @@ import {
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { environmentPaths } from "../environments";
+import { hostingTestPlan } from "../hosting/__fixtures__/account";
 import { allocateNetwork } from "../network";
 import { credentialsRecordFile } from "../rotate/record";
 import { tokenDatesFile } from "../rotate/record-tokens";
@@ -1035,6 +1036,15 @@ describe("deploySecretNames on the server-less targets", () => {
     // GitHub Pages publishes with the workflow's own token: only the app's values are secrets.
     expect(deploySecretNames(pagesTestPlan({ env: ["API_KEY"] }))).toEqual(["OPSCREW_ENV_API_KEY"]);
     expect(deploySecretNames(pagesTestPlan())).toEqual([]);
+  });
+});
+
+describe("deploySecretNames on a hosting account", () => {
+  it("names the release signing key, the one secret its workflow reads, with its environment's prefix", () => {
+    expect(deploySecretNames(hostingTestPlan())).toEqual(["OPSCREW_RELEASE_SIGNING_KEY"]);
+    expect(deploySecretNames(hostingTestPlan({ environment: "staging" }))).toEqual([
+      "OPSCREW_STAGING_RELEASE_SIGNING_KEY",
+    ]);
   });
 });
 

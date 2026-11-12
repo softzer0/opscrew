@@ -34,6 +34,7 @@ import {
   type DeployPlan,
   EnvironmentSchema,
   environmentsOf,
+  isHostingTarget,
   isServerlessProvider,
   snapshotOffsiteOf,
 } from "@opscrew/plan-schema";
@@ -387,26 +388,28 @@ export function serviceEnvFiles(
  * address and known hosts and, on a server the user owns, the tunnel's service token. In the user's
  * Portainer: the build values and the webhook's.
  * On a server-less target: those its workflow reads (`deploySecretNamesFor`: on Cloudflare the
- * deploy token and the account id, and the app's values). Destroy deletes them all.
+ * deploy token and the account id, and the app's values). On a hosting account: the release
+ * signing key (`deploySecretNamesFor`). Destroy deletes them all.
  */
 export function deploySecretNames(plan: DeployPlan): string[] {
-  const names = isServerlessProvider(plan.target.provider)
-    ? deploySecretNamesFor(plan)
-    : plan.target.provider === "portainer"
-      ? [
-          DEPLOY_SECRETS.buildEnv,
-          DEPLOY_SECRETS.buildSecrets,
-          ...Object.values(PORTAINER_DEPLOY_SECRETS),
-        ]
-      : [
-          ...Object.values(DEPLOY_SECRETS),
-          ...plan.services.map((service) => serviceEnvSecret(service.name)),
-          ...(snapshotOffsiteOf(plan) !== undefined ? [OFFSITE_ENV_SECRET] : []),
-          ...(plan.servers ?? []).flatMap((server) =>
-            Object.values(serverDeploySecrets(server.name)),
-          ),
-          ...(plan.target.provider === "own" ? Object.values(TUNNEL_DEPLOY_SECRETS) : []),
-        ];
+  const names =
+    isServerlessProvider(plan.target.provider) || isHostingTarget(plan.target)
+      ? deploySecretNamesFor(plan)
+      : plan.target.provider === "portainer"
+        ? [
+            DEPLOY_SECRETS.buildEnv,
+            DEPLOY_SECRETS.buildSecrets,
+            ...Object.values(PORTAINER_DEPLOY_SECRETS),
+          ]
+        : [
+            ...Object.values(DEPLOY_SECRETS),
+            ...plan.services.map((service) => serviceEnvSecret(service.name)),
+            ...(snapshotOffsiteOf(plan) !== undefined ? [OFFSITE_ENV_SECRET] : []),
+            ...(plan.servers ?? []).flatMap((server) =>
+              Object.values(serverDeploySecrets(server.name)),
+            ),
+            ...(plan.target.provider === "own" ? Object.values(TUNNEL_DEPLOY_SECRETS) : []),
+          ];
   return [...new Set(names.map((name) => deploySecretName(plan, name)))];
 }
 

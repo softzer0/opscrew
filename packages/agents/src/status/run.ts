@@ -8,6 +8,7 @@ import {
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
+import { hostingStatusReport } from "../hosting/status";
 import { localComponentStatus } from "../localhost/status";
 import type { MonitoringReading } from "../monitoring/status";
 import type { NetworkLink, ReadNetworkServices } from "../network";
@@ -244,7 +245,8 @@ function readingLines(
  * has it on (FR-1708). A site on Cloudflare's hosting
  * or GitHub Pages has no components: its running version, custom domains or Pages site instead
  * (`siteStatusReport`), and the figures it cannot give. A preview environment shows its server's
- * figures and its previews instead (`previewStatusReport`).
+ * figures and its previews instead (`previewStatusReport`). An app on a hosting account shows its
+ * releases, certificate and disk instead (`hostingStatusReport`).
  */
 export async function componentStatusReport(
   deps: PhaseDeps,
@@ -252,6 +254,7 @@ export async function componentStatusReport(
   options: ComponentStatusOptions & { check?: () => Promise<void> } = {},
 ): Promise<ComponentStatusReport> {
   if (plan.environment?.previews !== undefined) return previewStatusReport(deps, plan, options);
+  if (plan.target.provider === "hosting") return hostingStatusReport(deps, plan);
   let report: Omit<ComponentStatusReport, "check" | "deploys">;
   let versions: Pick<DeployState, "running" | "previous"> = {};
   let deploys: Awaited<ReturnType<typeof deployStateReport>> = { lines: [] };

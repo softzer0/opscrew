@@ -6,6 +6,7 @@
 import type { GitHubClient } from "@opscrew/connector-github";
 import { isServerlessProvider } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { rollbackHosting } from "../hosting/rollback";
 import type { LocalhostServices } from "../localhost/services";
 import type { PromoteServices } from "../promote/types";
 import type { PortainerServices, ProvisionServices } from "../provision/types";
@@ -36,7 +37,8 @@ export type {
  * the pause a rollback set ({@link resumeDeploys}); otherwise, once its plan shows it can roll
  * back ({@link requireRollbackable}), lists its versions (`list`) or goes back to one, by its
  * target: a site on Cloudflare's hosting or GitHub Pages ({@link rollbackSite}), this computer
- * ({@link rollbackLocal}), or a server or the user's Portainer ({@link rollbackServer}).
+ * ({@link rollbackLocal}), a hosting account ({@link rollbackHosting}), or a server or the user's
+ * Portainer ({@link rollbackServer}).
  * @throws OpsCrewError `PHASE_PRECONDITION` for each refusal, `PLAN_NOT_APPROVED` when
  * `approveHash` names another rollback, `APPROVAL_REFUSED` when the user does not approve, and
  * `COMMAND_FAILED` when the deploy run does not succeed.
@@ -48,6 +50,7 @@ export async function rollback(deps: PhaseDeps, options: RollbackOptions): Promi
   const provider = run.plan.target.provider;
   if (isServerlessProvider(provider)) return rollbackSite(run);
   if (provider === "localhost") return rollbackLocal(run);
+  if (provider === "hosting") return rollbackHosting(run);
   return rollbackServer(run);
 }
 
@@ -130,10 +133,10 @@ export type RollbackResult =
       /** Whether its automatic deploys are paused now. */
       paused: boolean;
       /**
-       * How it went back: an image by its digest, a Worker version, a GitHub Pages re-run, or
-       * this computer's earlier image.
+       * How it went back: an image by its digest, a Worker version, a GitHub Pages re-run, this
+       * computer's earlier image, or a release a hosting account keeps.
        */
-      how: "image" | "worker" | "pages" | "local";
+      how: "image" | "worker" | "pages" | "local" | "release";
       /** What it did with the database (a server's or this computer's rollback). */
       database?: DatabaseRecord;
     }
