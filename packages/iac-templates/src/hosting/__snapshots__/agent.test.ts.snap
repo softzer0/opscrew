@@ -1,0 +1,41 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`renderAgentSettings > renders a PHP app's settings, one quoted assignment per line 1`] = `
+"# OpsCrew's agent settings for notes in prod, rendered by OpsCrew. No secret.
+APP='notes'
+ENVIRONMENT='prod'
+HOST_NAME='notes.example.com'
+REPOSITORY='acme/notes'
+RELEASE_BRANCH='opscrew/release/prod'
+WEB_ROOT='public'
+HEALTH_PATH='/up'
+APP_KIND='php'
+PHP_CLI='/opt/alt/php85/usr/bin/php'
+PHP_HANDLER='application/x-httpd-alt-php85___lsphp'
+RELEASE_COMMAND='php artisan migrate --force'
+SHARED_PATHS='.env storage'
+KEEP='3'
+SNAPSHOTS='no'
+DATABASE='acct_notes'
+"
+`;
+
+exports[`renderAgentSettings > renders a static site's, with no PHP and no database 1`] = `
+"# OpsCrew's agent settings for site in staging, rendered by OpsCrew. No secret.
+APP='site'
+ENVIRONMENT='staging'
+HOST_NAME='staging.example.org'
+REPOSITORY='acme/site'
+RELEASE_BRANCH='opscrew/release/site-staging'
+WEB_ROOT='.'
+HEALTH_PATH='/'
+APP_KIND='static'
+PHP_CLI=''
+PHP_HANDLER=''
+RELEASE_COMMAND=''
+SHARED_PATHS=''
+KEEP='3'
+SNAPSHOTS='yes'
+DATABASE=''
+"
+`;

@@ -1,0 +1,35 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`renderEnvPhp > renders the loader with the names it loads 1`] = `
+"<?php
+// OpsCrew: loads this app's settings from .env beside this file (0600) into getenv(), $_ENV and
+// $_SERVER, before each request and cron job (auto_prepend_file). Rendered by OpsCrew; no value in it.
+(function () {
+    $file = __DIR__ . '/.env';
+    $lines = is_readable($file) ? file($file, FILE_IGNORE_NEW_LINES) : false;
+    if ($lines === false) {
+        http_response_code(500);
+        exit(1);
+    }
+    $names = array(
+        'APP_KEY' => true,
+        'DB_PASSWORD' => true,
+    );
+    foreach ($lines as $line) {
+        if (!preg_match('/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s', rtrim($line, "\\r"), $match) || !isset($names[$match[1]])) {
+            continue;
+        }
+        $value = $match[2];
+        $length = strlen($value);
+        if ($length >= 2 && $value[0] === '"' && $value[$length - 1] === '"') {
+            $value = strtr(substr($value, 1, -1), array('\\\\\\\\' => '\\\\', '\\\\"' => '"', '\\\\n' => "\\n", '\\\\r' => "\\r", '\\\\t' => "\\t", '\\\\$' => '$'));
+        } elseif ($length >= 2 && $value[0] === "'" && $value[$length - 1] === "'") {
+            $value = substr($value, 1, -1);
+        }
+        putenv($match[1] . '=' . $value);
+        $_ENV[$match[1]] = $value;
+        $_SERVER[$match[1]] = $value;
+    }
+})();
+"
+`;
