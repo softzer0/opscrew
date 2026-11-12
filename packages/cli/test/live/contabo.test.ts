@@ -21,10 +21,10 @@
  */
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { readServerAddresses } from "@opscrew/agents";
+import { readServerAddresses, wantedFirewalls } from "@opscrew/agents";
 import { cloudTarget } from "@opscrew/iac-templates";
 import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
-import { definition, STATIC_PRICES_AS_OF } from "@opscrew/provider-contabo";
+import { contaboConnector, definition, STATIC_PRICES_AS_OF } from "@opscrew/provider-contabo";
 import { describe, expect } from "vitest";
 import { z } from "zod";
 import { minutes } from "./cloud";
@@ -335,6 +335,18 @@ describe.skipIf(MISSING.length > 0)(
             const deployKey = (await readFile(run.paths().files.deployKeyPub, "utf8")).trim();
             if (typeof value !== "string") finding("the SSH key answer has no value to compare");
             else if (value.trim() !== deployKey) finding("the SSH key is not OpsCrew's deploy key");
+          }
+          // The firewall as OpsCrew's connector reads it, against the one the state wants (ADR 0029,
+          // D8): no difference, or a later sync would change it again and drift never settle.
+          const wanted = wantedFirewalls(await run.infraOutputs()).filter(
+            (firewall) => firewall.provider === "contabo",
+          );
+          if (wanted.length !== 1) finding(`the infrastructure wants ${wanted.length} firewalls`);
+          const firewalls = contaboConnector({ env: credentials }).firewalls;
+          for (const { wanted: one } of wanted) {
+            for (const difference of (await firewalls?.differences(one)) ?? ["no firewall API"]) {
+              finding(`the firewall differs from the one wanted: ${difference}`);
+            }
           }
         } catch (error) {
           finding(`Contabo's checks: ${error instanceof Error ? error.message : String(error)}`);

@@ -691,7 +691,8 @@ export class LiveRun {
     }
   }
 
-  private async infraOutputs(): Promise<Record<string, unknown>> {
+  /** The infrastructure root's outputs, read from its state with the passphrase it has now. */
+  async infraOutputs(): Promise<Record<string, unknown>> {
     const plan = await this.readPlan();
     const engine = await selectEngine("auto", { env: this.env, runner: this.runner });
     const engineEnv = { ...this.env };

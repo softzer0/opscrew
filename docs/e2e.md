@@ -3295,7 +3295,9 @@ Each step below is one numbered test, so a run reads as "N of 9 steps":
    step 9 without stopping the run (the month is paid either way):
    - provision's output has no takeover note (FR-2607);
    - Contabo has exactly one server of the app, tagged `opscrew-app:<app>` and not cancelled;
-   - the firewall `<app>-firewall` is active and lists that server (FR-2606);
+   - the firewall `<app>-firewall` is active and protects exactly that server, with Contabo's status
+     `ok` (FR-2606), and OpsCrew's connector finds no difference from the firewall the state wants
+     (ADR 0029, D8);
    - the SSH key `<app>-deploy` is OpsCrew's deploy key.
 4. **Deploy and verify.** The deploy-setup pull request is merged and its deploy run must succeed.
    The app must answer on its hostname through Cloudflare, and `verify` must pass. A value is

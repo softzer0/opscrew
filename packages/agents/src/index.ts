@@ -133,6 +133,7 @@ export * from "./shared";
 export { previousEntries } from "./shared/app-secrets";
 export * from "./shared/apply-command";
 export * from "./shared/approval-text";
+export { type ModuleFirewall, wantedFirewalls } from "./shared/firewalls";
 export * from "./shared/own-server-design";
 export * from "./shared/phase-deps";
 export * from "./shared/phase-status";
