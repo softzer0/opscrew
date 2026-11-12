@@ -292,7 +292,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Effort: medium
 
 - [ ] T2631 [US1] [US2] The connector's firewall in the flows
-  - Owns: `packages/iac-templates/src/infra/**`, `packages/agents/src/{provision,destroy,drift,retarget}/**`, `packages/secops/src/policies/plan.ts` (+ tests)
+  - Owns: `packages/iac-templates/src/**` (the infra rendering, its tests and snapshots), `packages/agents/src/{provision,destroy,drift,retarget,rotate,shared,testing}/**` (the testing fakes name Contabo's firewall), `packages/secops/src/**` (+ tests)
   - Reads: research R7; ADR 0029 D8; the contract's `FirewallApi`
   - Depends: T2629
   - Accept:
@@ -305,7 +305,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/secops && pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm lint`
   - Effort: xhigh
 
-- [ ] T2632 The live test after the spike (lead): the SSH key's value from `GET /v1/secrets/{id}`; the firewall checks through the connector's view (`instances` in any of its shapes, each server's `instanceStatus` `ok`, the rules the module wants).
+- [ ] T2632 The live test after the spike (lead): the SSH key's value from `GET /v1/secrets/{id}`; the firewall checks through the connector's view (`instances` in any of its shapes, each server's `instanceStatus` `ok`, no difference from the wanted firewall); no Contabo login left in the home folder after the run (step 9); the plan guard reads `terraform_data.firewall`. To see live (T2620): deleting a firewall that protects a cancelled server, adding a server while it is still provisioning, and whether Contabo rewrites a source it stores (a sync would then repeat and drift would never settle).
 
 ## Phase 7: Live, simplify, release (lead)
 
