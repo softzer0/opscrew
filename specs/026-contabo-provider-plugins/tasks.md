@@ -160,7 +160,7 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
 
 ## Phase 5: Contabo
 
-- [ ] T2613 The spike (lead)
+- [x] T2613 The spike (lead; done 2026-11-12, research R6 and R7; what needs an instance goes to T2620)
   - Accept: once the founder's account exists, free calls only: a token and its lifetime; the images (Ubuntu 24.04's name and id); the data centers; the product ids of Cloud VPS 4, 6, 8 and 12; a `contabo_firewall` and a `contabo_secret` created and deleted alone through the engine; the setup fee from the founder's checkout; and T2614's open points: the error body's shape, the snapshot-limit refusal, whether a snapshot is usable as soon as the create answers, the statuses a revert goes through, that `opscrew-app:<app>` is an accepted tag name and an instance assignment's `resourceType`, the cancel date's value before a cancel, regional prices and which VAT the prices include. And T2615's: **first, the firewall's rule semantics** (does an empty IPv4 or IPv6 source list mean nobody or anybody; outbound traffic; a rule with no ports), since SSH limited to IPv4 networks must not be open over IPv6; Ubuntu 24.04's image id (the definition's `defaultImage` is a placeholder until then); the `unavailable` and `serverLimit` error texts; whether `period` or `default_user` read back differently (drift, provider issue #45); that `contabo_instance` imports by its instance id (the takeover's `import` block, T2612); and for the live test's cleanup (T2619): the field names of firewalls and secrets (`firewallId`, `status`, `instances[].instanceId`, `secretId`, `type`, `value`), the cancel endpoint `POST /v1/compute/instances/{id}/cancel`, and the `name` filter on `/v1/firewalls`, `/v1/secrets` and `/v1/tags`. Recorded as research R6, and fixed in the connector and the definition where they differ.
   - Effort: lead
 
@@ -270,6 +270,42 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
   - Accept: `contabo.test.ts` gated by `OPSCREW_E2E_CONTABO=1` and the four `OPSCREW_E2E_CONTABO_*` values: interview, design, provision, deploy, verify, a whole-server snapshot and its restore, secure, drift, destroy (the end date shown), then a scan of every output, log, audit entry, state file and committed file for the four values; skipped with a clear message without them; `docs/e2e.md` says how to run it and that each run buys a month.
   - Verify: `pnpm turbo run typecheck --filter=opscrew && pnpm lint`
   - Effort: high
+
+## Phase 6b: What the spike found (research R6, R7)
+
+- [ ] T2629 [US1] Contabo's firewall through the connector
+  - Owns: `packages/providers/contabo/**`
+  - Reads: research R6, R7; ADR 0029 D8; `WantedFirewallOutput` (`packages/contracts/src/provider.ts`), `FirewallApi` and `WantedFirewall` (`packages/contracts/src/connector.ts`)
+  - Accept:
+    - `module/main.tf` has no `contabo_firewall`. A `terraform_data "firewall"` takes as `input` the firewall the module wants, in `WantedFirewallOutput`'s shape: `<name>-firewall`, its description, `server_ids = [tostring(contabo_instance.this.id)]`, and the rules the module writes today (SSH from the allowed networks and none when there are none, the web ports on a server that serves the web, ICMP, WireGuard). `output "wanted_firewall"` is that input. A family with no network gets `127.0.0.1/32` or `::1/128`, never an empty list.
+    - The definition: `connectorFirewall: true`, `firewallResourceType: "terraform_data.firewall"`, `homeCacheFiles` as now. SecOps's `rules` and `attached` read the `terraform_data`'s `input` (attached: its `server_ids` hold the server's id, or the configuration references the server). An empty source list reads as any source.
+    - The connector has `firewalls` when the credentials are set, as the contract says, through Contabo's API (R6). It compares the exact name after the substring filter. It creates a firewall with its rules and status `active`, sets the description and rules of one that differs (the API reference says whether by `PUT` or `PATCH`), and adds and removes servers (`POST` and `DELETE /v1/firewalls/{id}/instances/{instanceId}`). It waits, bounded and with a plain error, until each server's `instanceStatus` is `ok`. It never compares, writes or deletes Contabo's own drop rule. It reads `instances` as a list of objects, a list of numbers or a JSON-encoded string, and `instanceStatus` too. Every answer is checked with zod, and errors take the client's redacted path.
+    - `pnpm gen:provider-modules` regenerated.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/provider-contabo --filter=@opscrew/providers && pnpm lint`
+  - Effort: xhigh
+
+- [ ] T2630 [P] [US1] A provider's login cache never outlives an engine command
+  - Owns: `packages/iac-engine/src/**`, `packages/agents/src/shared/engine.ts` (+ test)
+  - Reads: research R6 ("The provider's login cache"); ADR 0029 D9
+  - Accept: `EngineOptions.homeCacheFiles` (paths relative to the home folder). Before and after every engine command, the engine removes each of them under the home folder the command's environment names: `HOME`, else `USERPROFILE`, as the providers' Go code finds it. A missing file is fine. A removal that fails before a command stops it, with a plain error naming the file. Agents' `selectEngine` passes every registered provider's `homeCacheFiles`. The tests inject the removal and never touch a real home folder.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-engine && pnpm turbo run typecheck --filter=@opscrew/agents && pnpm lint`
+  - Effort: medium
+
+- [ ] T2631 [US1] [US2] The connector's firewall in the flows
+  - Owns: `packages/iac-templates/src/infra/**`, `packages/agents/src/{provision,destroy,drift,retarget}/**`, `packages/secops/src/policies/plan.ts` (+ tests)
+  - Reads: research R7; ADR 0029 D8; the contract's `FirewallApi`
+  - Depends: T2629
+  - Accept:
+    - iac-templates: a root output `wanted_firewalls`, a map from each server's module name to its module's `wanted_firewall`, written only for servers whose provider has `connectorFirewall`. Hetzner's and DigitalOcean's rendered roots stay byte-identical.
+    - Provision: after every successful apply, OpsCrew reads `wanted_firewalls` and passes each to its provider's `firewalls.sync`, then says and audits what changed. A failure says the server may not be protected yet and to run provision again; that run plans nothing new and syncs again.
+    - Destroy, retarget's `--finish` and `--abort`, and provision's own removals: each wanted firewall of a server they remove is deleted through `firewalls.remove` after its apply, then said and audited.
+    - Drift: `firewalls.differences` of each wanted firewall, reported as drift of its `terraform_data.firewall` with the differences in plain English.
+    - SecOps: a `firewallResourceType` of the form `<type>.<name>` matches the resources of that type and name.
+    - Other providers' flows are unchanged.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/secops && pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm lint`
+  - Effort: xhigh
+
+- [ ] T2632 The live test after the spike (lead): the SSH key's value from `GET /v1/secrets/{id}`; the firewall checks through the connector's view (`instances` in any of its shapes, each server's `instanceStatus` `ok`, the rules the module wants).
 
 ## Phase 7: Live, simplify, release (lead)
 
