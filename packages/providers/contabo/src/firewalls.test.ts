@@ -259,6 +259,22 @@ describe("firewalls.sync", () => {
     },
   );
 
+  it.each([
+    ["the documented body", { status: 201, ...LINKS }, LINKS],
+    ["no body", { status: 204 }, { status: 204 }],
+  ])("adds and removes servers when Contabo answers with %s", async (_, assigned, unassigned) => {
+    const { api } = setup({
+      "GET /v1/firewalls?": page([firewall({ instances: [999], instanceStatus: [] })]),
+      [`POST /v1/firewalls/${ID}/instances/101`]: assigned,
+      [`DELETE /v1/firewalls/${ID}/instances/999`]: unassigned,
+      [`GET /v1/firewalls/${ID}`]: one(firewall()),
+    });
+    expect(await api.sync(WANTED)).toEqual([
+      "Added server 101 to Contabo's firewall shop-firewall.",
+      "Removed server 999 from Contabo's firewall shop-firewall.",
+    ]);
+  });
+
   it("uses only the firewall with the exact name, since Contabo's name filter matches substrings", async () => {
     const { api, calls } = setup({
       "GET /v1/firewalls?": page([firewall({ firewallId: OTHER_ID, name: `${NAME}-db` })]),
@@ -342,12 +358,36 @@ describe("firewalls.sync", () => {
 });
 
 describe("firewalls.remove", () => {
-  it("deletes the firewall with the exact name", async () => {
+  it("removes every server the firewall with the exact name protects, then deletes it", async () => {
     const { api, calls } = setup({
       "GET /v1/firewalls?": page([
         firewall({ firewallId: OTHER_ID, name: `${NAME}-db` }),
-        firewall(),
+        // Server 102 is listed only in the statuses.
+        firewall({
+          instances: "[101]",
+          instanceStatus: [
+            { instanceId: 101, status: "ok" },
+            { instanceId: 102, status: "processing" },
+          ],
+        }),
       ]),
+      // The documented answer, and an empty one.
+      [`DELETE /v1/firewalls/${ID}/instances/101`]: LINKS,
+      [`DELETE /v1/firewalls/${ID}/instances/102`]: { status: 204 },
+      [`DELETE /v1/firewalls/${ID}`]: { status: 204 },
+    });
+    expect(await api.remove(NAME)).toBe(true);
+    expect(calls()).toEqual([
+      LIST,
+      `DELETE /v1/firewalls/${ID}/instances/101`,
+      `DELETE /v1/firewalls/${ID}/instances/102`,
+      `DELETE /v1/firewalls/${ID}`,
+    ]);
+  });
+
+  it("deletes a firewall that protects no server at once", async () => {
+    const { api, calls } = setup({
+      "GET /v1/firewalls?": page([firewall({ instances: [], instanceStatus: "[]" })]),
       [`DELETE /v1/firewalls/${ID}`]: { status: 204 },
     });
     expect(await api.remove(NAME)).toBe(true);

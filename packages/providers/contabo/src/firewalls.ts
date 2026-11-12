@@ -118,9 +118,20 @@ export function contaboFirewallApi(client: ContaboClient): FirewallApi {
       ];
     },
 
+    /**
+     * Removes every server the firewall protects first (Contabo may refuse to delete a firewall
+     * that still protects one, and a cancelled server lives until its term ends), then deletes it.
+     */
     async remove(name: string): Promise<boolean> {
       const firewall = await find(name);
       if (firewall === undefined) return false;
+      const servers = new Set([
+        ...firewall.instances,
+        ...firewall.instanceStatus.map((entry) => entry.instanceId),
+      ]);
+      for (const server of servers) {
+        await client.unassignFirewall(firewall.firewallId, instanceId(server));
+      }
       await client.deleteFirewall(firewall.firewallId);
       return true;
     },

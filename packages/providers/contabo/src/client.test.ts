@@ -203,6 +203,22 @@ describe("ContaboClient login and requests", () => {
     expect(error.code).toBe("PROVIDER_ERROR");
     expect(error.message).toContain("unexpected answer");
   });
+
+  it.each([
+    ["a body", { status: 200, body: { _links: { self: "/v1/x" } } }],
+    ["no body", { status: 204 }],
+  ])("takes any success with %s for a call whose answer it does not use", async (_, reply) => {
+    const { client } = setup({ "/v1/": reply });
+    const firewall = "0f6c1d2e-0000-4000-8000-000000000001";
+    await client.instanceAction(101, "start");
+    await client.rollbackSnapshot(101, "snap1");
+    await client.deleteSnapshot(101, "snap1");
+    await client.setFirewallRules(firewall, []);
+    await client.updateFirewall(firewall, { description: "d", status: "active" });
+    await client.assignFirewall(firewall, 101);
+    await client.unassignFirewall(firewall, 101);
+    await client.deleteFirewall(firewall);
+  });
 });
 
 describe("ContaboClient errors", () => {

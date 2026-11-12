@@ -199,8 +199,11 @@ export interface FirewallRuleRequest {
 /** The next step when a firewall does not protect a server. */
 const FIREWALL_HINT = "Check the firewall and the server in Contabo's Customer Control Panel.";
 
-/** An answer whose content OpsCrew does not use: it only has to be a JSON object. */
-const acknowledged = z.looseObject({});
+/**
+ * The answer of a call whose content OpsCrew does not use: any success, with no body (a 204) or a
+ * JSON object, which is all that is checked.
+ */
+const acknowledged = z.looseObject({}).optional();
 
 // --- Client -------------------------------------------------------------------------------------
 
@@ -312,12 +315,12 @@ export class ContaboClient {
     return body.data[0] as ContaboSnapshot;
   }
 
-  /** Deletes a snapshot (`DELETE …/snapshots/{id}`; Contabo answers 204). */
+  /** Deletes a snapshot (`DELETE …/snapshots/{id}`). */
   async deleteSnapshot(instanceId: number, snapshotId: string): Promise<void> {
     await this.#request(
       "DELETE",
       `/v1/compute/instances/${instanceId}/snapshots/${encodeURIComponent(snapshotId)}`,
-      z.undefined(),
+      acknowledged,
     );
   }
 
@@ -458,9 +461,9 @@ export class ContaboClient {
     );
   }
 
-  /** Deletes a firewall (`DELETE /v1/firewalls/{id}`; Contabo answers 204). */
+  /** Deletes a firewall (`DELETE /v1/firewalls/{id}`). */
   async deleteFirewall(firewallId: string): Promise<void> {
-    await this.#request("DELETE", `/v1/firewalls/${encodeURIComponent(firewallId)}`, z.undefined());
+    await this.#request("DELETE", `/v1/firewalls/${encodeURIComponent(firewallId)}`, acknowledged);
   }
 
   /**
