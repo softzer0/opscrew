@@ -221,6 +221,42 @@ describe("ContaboClient login and requests", () => {
   });
 });
 
+describe("ContaboClient.assignFirewall on a new server", () => {
+  const firewall = "0f6c1d2e-0000-4000-8000-000000000001";
+  const path = `/v1/firewalls/${firewall}/instances/101`;
+  // Contabo attaches the firewall add-on to a new instance by itself, shortly after creating it
+  // (research R8); until then it answers this.
+  const noAddOn = {
+    status: 402,
+    body: {
+      statusCode: 402,
+      message: "Payment required. Instance 101 does not have firewall add-on product.",
+    },
+  };
+
+  it("waits until Contabo has attached the firewall add-on, then puts the server on it", async () => {
+    const { client, calls } = setup({ [path]: [noAddOn, noAddOn, { status: 204 }] });
+    await client.assignFirewall(firewall, 101);
+    expect(apiCalls(calls).filter((call) => call.url.endsWith(path))).toHaveLength(3);
+  });
+
+  it("stops after 10 minutes without the add-on, saying Contabo attaches it", async () => {
+    const { client, time } = setup({ [path]: noAddOn });
+    const error = await failure(client.assignFirewall(firewall, 101));
+    expect(error.message).toContain("does not have firewall add-on product");
+    expect(error.hint).toContain("Contabo attaches its firewall add-on to a new server by itself");
+    expect(time.waits.reduce((sum, ms) => sum + ms, 0)).toBeGreaterThanOrEqual(10 * 60_000);
+  });
+
+  it("passes another payment refusal on at once", async () => {
+    const other = { status: 402, body: { statusCode: 402, message: "Payment required." } };
+    const { client, calls } = setup({ [path]: other });
+    const error = await failure(client.assignFirewall(firewall, 101));
+    expect(error.message).toContain("needs a paid service");
+    expect(apiCalls(calls).filter((call) => call.url.endsWith(path))).toHaveLength(1);
+  });
+});
+
 describe("ContaboClient errors", () => {
   const cases: {
     status: number;

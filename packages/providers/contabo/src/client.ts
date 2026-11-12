@@ -198,6 +198,12 @@ export interface FirewallRuleRequest {
 
 /** The next step when a firewall does not protect a server. */
 const FIREWALL_HINT = "Check the firewall and the server in Contabo's Customer Control Panel.";
+/** Contabo's answer to a firewall assignment before its firewall add-on is on the instance. */
+const NO_FIREWALL_ADD_ON = /HTTP 402.*does not have firewall add-on/is;
+/** How long a new instance may take to get the firewall add-on (10 minutes). */
+const ADD_ON_TIMEOUT_MS = 10 * 60_000;
+const NO_ADD_ON_HINT =
+  "Contabo attaches its firewall add-on to a new server by itself, usually within a minute of creating it. Check the server's add-ons in Contabo's Customer Control Panel, then run the command again.";
 
 /**
  * The answer of a call whose content OpsCrew does not use: any success, with no body (a 204) or a
@@ -462,11 +468,26 @@ export class ContaboClient {
 
   /** Adds an instance to a firewall (`POST /v1/firewalls/{id}/instances/{instanceId}`). */
   async assignFirewall(firewallId: string, instanceId: number): Promise<void> {
-    await this.#request(
-      "POST",
-      `/v1/firewalls/${encodeURIComponent(firewallId)}/instances/${instanceId}`,
-      acknowledged,
-    );
+    const until = this.#http.now() + ADD_ON_TIMEOUT_MS;
+    for (;;) {
+      try {
+        await this.#request(
+          "POST",
+          `/v1/firewalls/${encodeURIComponent(firewallId)}/instances/${instanceId}`,
+          acknowledged,
+        );
+        return;
+      } catch (error) {
+        // Contabo attaches its firewall add-on to a new instance by itself shortly after creating
+        // it, and answers HTTP 402 until then (026 research R8).
+        const noAddOn = error instanceof OpsCrewError && NO_FIREWALL_ADD_ON.test(error.message);
+        if (!noAddOn) throw error;
+        if (this.#http.now() >= until) {
+          throw new OpsCrewError(error.code, error.message, { hint: NO_ADD_ON_HINT });
+        }
+        await this.#http.sleep(STATUS_INTERVAL_MS);
+      }
+    }
   }
 
   /** Removes an instance from a firewall (`DELETE /v1/firewalls/{id}/instances/{instanceId}`). */

@@ -266,7 +266,7 @@ describe("Contabo's cloud provider definition", () => {
 
   it("ignores the instance's attributes whose change would reinstall it, and says so to drift", () => {
     expect(definition.terraform.lifecycleIgnored).toEqual([
-      // Contabo lists add-ons OpsCrew never ordered (1501 after a snapshot, research R8).
+      // Contabo attaches its firewall add-on (1501) by itself after creating the instance (R8).
       "add_ons",
       "default_user",
       "image_id",
