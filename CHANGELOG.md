@@ -4,6 +4,60 @@ What changed in each release of OpsCrew: the `opscrew` CLI on npm and the Claude
 installs the same version. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Until 1.0, a release can change the files OpsCrew writes and the commands' flags.
 
+## [0.2.7] - 2026-11-12
+
+Nothing to redo: projects on Hetzner Cloud and DigitalOcean keep their files as they are. A PHP
+app that Railpack builds gets `intl` and `zip` at its next `npx opscrew provision` and deploy.
+
+### Added
+
+- **Contabo.** OpsCrew deploys your app to a Contabo Cloud VPS on your own account, as it does on
+  Hetzner Cloud and DigitalOcean: the same hardened server, deploys, checks and rollback. See
+  [Deploy to Contabo](docs/guide/contabo.md).
+  - Contabo's four API credentials (`CNTB_OAUTH2_CLIENT_ID`, `CNTB_OAUTH2_CLIENT_SECRET`,
+    `CNTB_OAUTH2_USER`, `CNTB_OAUTH2_PASS`) stay on your computer. When only they are set, the
+    interview chooses Contabo without asking.
+  - `opscrew design` prices Cloud VPS 4 to 12 from Contabo's price list and shows its date, the
+    monthly price before VAT, Cloud VPS 4's one-time €2.00 setup fee and the one-month minimum term.
+  - `opscrew provision` makes the server with Ubuntu 24.04, its SSH key and a Contabo firewall with
+    the same rules as elsewhere, after you approve the plan by its hash. A create that stopped
+    halfway is found and taken over by the next provision, never bought twice.
+  - `opscrew destroy` says that Contabo cancels the server at the end of its term and bills it
+    until then, shuts it down at once, removes its DNS records, firewall and SSH key, and shows and
+    records the day its contract ends.
+  - Whole-server snapshots are included in the server's price, up to the plan's limit;
+    `opscrew restore --server` puts the server back to one.
+  - `opscrew retarget --to contabo` moves an app there, and `opscrew rotate contabo` replaces its
+    credentials. A new size is refused with the two ways to get one.
+- **`opscrew advise` compares providers on the same basis:** the same data protection on both
+  sides, prices before VAT, and a move proposed only when it pays any setup fee back within three
+  months.
+- **The chosen option's terms in a script:** `opscrew design` prints the setup fee, the minimum
+  term and the included snapshots of the option it chose, not only in its chooser.
+- **The Claude Code plugin** covers Contabo in its skills and tools.
+
+### Changed
+
+- **Whole-server snapshots keep the app's last saves.** `opscrew snapshot --server` first writes
+  what the server holds in memory to its disk, so a snapshot taken while the server runs holds the
+  data the app saved, on every provider.
+- **PHP images:** every PHP image Railpack builds has the `intl` and `zip` extensions, which many
+  apps use when present without requiring them.
+
+### Fixed
+
+- A provision whose run stopped after its apply (for example when setting a firewall failed) is
+  recorded by the next `npx opscrew provision`, so `drift` and the other commands see the
+  deployment again.
+- A second `opscrew analyze` no longer reads OpsCrew's own files in the repository.
+
+### Security
+
+- Contabo's API password, and any variable whose name ends in `_PASS`, is a secret: OpsCrew masks
+  it everywhere, and the agent that edits your code never gets Contabo's credentials.
+- A provider's cached login is deleted before and after every OpenTofu or Terraform command:
+  Contabo's provider keeps one in `~/.cache/contabo/terraform/token`.
+
 ## [0.2.6] - 2026-11-09
 
 Every deploy workflow changes, a site's too. Run `npx opscrew provision` for each environment
@@ -566,6 +620,7 @@ deployment on your own account:
 - `destroy`, `retarget`, `status` and `drift` after the first deploy.
 - The MCP server (`opscrew mcp`) and the Claude Code plugin.
 
+[0.2.7]: https://github.com/softzer0/opscrew/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/softzer0/opscrew/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/softzer0/opscrew/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/softzer0/opscrew/compare/v0.2.3...v0.2.4
