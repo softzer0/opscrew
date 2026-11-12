@@ -469,7 +469,7 @@ names the change.
 
 ## Phase 8b: The snapshot default (founder, 2026-11-12)
 
-- [ ] T2728 The snapshot before each release: on in every environment but previews
+- [x] T2728 The snapshot before each release: on in every environment but previews
   - Owns: `snapshotsOn` and its tests in `packages/plan-schema/src/**`; the snapshot expectations and snapshots of `packages/iac-templates/src/{workflow,portainer-target}/**` that change with it; `packages/agents/src/rollback/**` comments and tests naming the default; `packages/cli/src/commands/rollback.ts`'s help text; `packages/cli/test/live/{rollback,snapshots}.test.ts`; `docs/guide/{databases,environments,rollback,snapshots,when-a-deploy-fails}.md`
   - Reads: ADR 0028 (D7 and its 2026-11-12 amendment); `plan-schema/src/plan.ts` (`snapshotsOn`, `deploy.snapshots`, `CloudTargetSchema.backups`)
   - Depends: T2702
