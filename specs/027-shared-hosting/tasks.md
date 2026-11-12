@@ -102,7 +102,7 @@ names the change.
   - Depends: T2701
   - Accept:
     - **`AGENT_SH`** is the agent, a constant the same for every app: `#!/bin/bash`, `set -eu`, its body in `main() { …; }; main "$@"; exit`.
-    - **`renderAgentSettings(settings)`** renders `settings.sh`, one quoted assignment per line with no secret, validated by zod:
+    - **`renderAgentSettings(settings)`** renders `settings.sh`, one quoted assignment per line with no secret, each field checked against its expected form (a plain `INVALID_INPUT` naming the field otherwise):
       - the app, environment, hostname and repository (`owner/name`);
       - the web root, the health path and the app kind;
       - the PHP CLI path and the handler (empty unless `handler`);
@@ -172,7 +172,7 @@ names the change.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates && pnpm lint`
   - Effort: high
 
-- [ ] T2706 [P] [US1] GitHub: deploy keys and GitHub's host keys
+- [x] T2706 [P] [US1] GitHub: deploy keys and GitHub's host keys
   - Owns: `packages/connectors/github/src/deploy-keys*.ts`, and the methods it adds to `packages/connectors/github/src/{github,connector,index}.ts`
   - Reads: plan 2, 6; `connectors/github/src/github.ts`
   - Depends: T2701
