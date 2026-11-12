@@ -337,7 +337,7 @@ names the change.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm lint`
   - Effort: xhigh
 
-- [ ] T2715 [P] [US1] [US9] CLI and MCP for hosting accounts
+- [x] T2715 [P] [US1] [US9] CLI and MCP for hosting accounts
   - Owns: `packages/cli/src/**`, `packages/mcp-server/src/**`
   - Reads: plan 12; `cli/src/approval.ts`; the commands' hints research R8 lists
   - Depends: T2711
