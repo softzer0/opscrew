@@ -5,6 +5,7 @@ import {
   keepSnapshotsOf,
   snapshotOffsiteOf,
   snapshotScheduleOf,
+  snapshotStopOf,
   targetArch,
 } from "@opscrew/plan-schema";
 import { offsiteExpires } from "../infra/storage";
@@ -268,7 +269,7 @@ function pruneScheduled(keep: number): string[] {
  *   hours, or once that slot is taken, it does nothing; its output goes to {@link SCHEDULED_LOG}),
  *   and the time for `manual` (a manual one never replaces another);
  * - it copies every part but those `--skip` names, and of the stop-only ones only those named for
- *   its kind (`deploy.snapshotStop`, `snapshots.schedule.stop`) or with `--stop`; the others it
+ *   its kind (`snapshotStopOf`, `snapshots.schedule.stop`) or with `--stop`; the others it
  *   lists as left out.
  * While a credential rotation holds the app, one by hand is refused and a scheduled one is skipped
  * with a warning in its log (T2514): the services' data may be part-way between two values.
@@ -284,7 +285,7 @@ function takeCommand(plan: DeployPlan, server: string): string[] {
     '  case "$_kind" in manual | release | scheduled) shift ;; *) snapshot_usage; return 1 ;; esac',
     `  if [ "$_kind" = manual ] && snapshot_rotation_held ${shellQuote("OpsCrew took no snapshot: ")}; then return 1; fi`,
     '  case "$_kind" in',
-    `    release) _stop=${shellQuote(stopOnly(plan, server, plan.deploy.snapshotStop ?? []))} ;;`,
+    `    release) _stop=${shellQuote(stopOnly(plan, server, snapshotStopOf(plan)))} ;;`,
     `    scheduled) _stop=${shellQuote(stopOnly(plan, server, schedule?.stop ?? []))} ;;`,
     '    *) _stop="" ;;',
     "  esac",

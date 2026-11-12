@@ -176,10 +176,13 @@ the moment just before the release:
 - **What:** everything a [snapshot by hand](snapshots.md#what-a-snapshot-holds-and-where-it-is)
   copies while it runs: each [PostgreSQL](https://www.postgresql.org/), [MySQL](https://www.mysql.com/), [MariaDB](https://mariadb.org/) and [MongoDB](https://www.mongodb.com/) database with its own image's
   dump tool, Valkey, Redis and Dragonfly, and the app's [SQLite](databases.md#sqlite) files, on the
-  app's server and on [its other servers](split-placement.md). A service that must stop for its
-  copy (Kafka, OpenSearch, Meilisearch …) is included only when `deploy.snapshotStop` names it; it
-  then stops alone while it is copied. The snapshot is filed under the version that was running,
-  so it holds the data as it was when that version stopped running.
+  app's server and on [its other servers](split-placement.md). The services that must stop for
+  their copy are included when `deploy.snapshotStop` names them, and each stops alone, for a
+  moment, while it is copied. When `deploy.snapshotStop` is absent, it names the
+  [ClickHouse](https://clickhouse.com/) and [Neo4j](https://neo4j.com/) services, which hold an
+  app's data as a database does; Kafka, OpenSearch, Meilisearch and the others are included only
+  when you name them. The snapshot is filed under the version that was running, so it holds the
+  data as it was when that version stopped running.
 - **Where:** in `.snapshots` in the app's folder on each server, for example
   `/srv/apps/shop/.snapshots`, in the app's folder on your computer, or in the stack's
   `snapshots` volume in your Portainer. Only the deploy user can read the files. No password is
@@ -203,13 +206,19 @@ merge its pull request:
 ```yaml
 deploy:
   keepSnapshots: 5         # the snapshots of the last 5 versions stay
-  snapshotStop: [kafka]    # also copy kafka, stopped alone meanwhile
+  snapshotStop: [kafka]    # copy kafka, stopped alone meanwhile, and no other such service
 ```
+
+A set `deploy.snapshotStop` replaces the default, so name your ClickHouse or Neo4j service there
+too to keep copying it; `snapshotStop: []` keeps every service running at each deploy, and the
+snapshot then holds no copy of them. `opscrew design` says which services stop for the snapshot.
+A rollback that restores the snapshot puts back every service it holds, ClickHouse and Neo4j
+included.
 
 `deploy.snapshots: false` turns them off on any environment. Preview environments never take
 snapshots. In your Portainer, `deploy.snapshotStop` doesn't apply: only the services copied while
-they run are included. They stay on the server, so they are not backups: for those, see
-[Snapshots and restores](snapshots.md).
+they run are included, so ClickHouse and Neo4j are left out there. The snapshots stay on the
+server, so they are not backups: for those, see [Snapshots and restores](snapshots.md).
 
 ### Down migrations
 

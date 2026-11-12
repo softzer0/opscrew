@@ -1762,7 +1762,8 @@ export const DeploySettingsSchema = z.strictObject({
   keepSnapshots: z.int().min(1).max(10).optional(),
   /**
    * Services of the stop-only kinds (every kind but {@link ONLINE_SNAPSHOT_KINDS}) the pre-release
-   * snapshot also copies, each stopped while it is copied. Absent: none.
+   * snapshot also copies, each stopped while it is copied. Absent: the enabled ClickHouse and Neo4j
+   * services, outside Portainer (read it with `snapshotStopOf`).
    */
   snapshotStop: z.array(ComponentNameSchema).optional(),
 });
@@ -1784,9 +1785,28 @@ export const DATABASE_KINDS = ["postgres", "mysql", "mariadb", "mongodb"] as con
 
 /**
  * The kinds a snapshot copies while they run. Every other kind is stop-only: a snapshot includes
- * it only when named in `deploy.snapshotStop` or `snapshots.schedule.stop`, and stops it meanwhile.
+ * it only when the release's list ({@link snapshotStopOf}) or `snapshots.schedule.stop` names it,
+ * and stops it meanwhile.
  */
 export const ONLINE_SNAPSHOT_KINDS = [...DATABASE_KINDS, ...REDIS_PROTOCOL_KINDS] as const;
+
+/** The stop-only kinds the pre-release snapshot copies when `deploy.snapshotStop` is absent. */
+const STOPPED_DATABASE_KINDS = ["clickhouse", "neo4j"] as const;
+
+/**
+ * The services the snapshot before each release stops and copies: `deploy.snapshotStop` when set
+ * (even empty), else the enabled ClickHouse and Neo4j services, which count as databases (ADR 0028,
+ * 2026-11-12), in the plan's order; none in the user's Portainer, which stops no service.
+ */
+export function snapshotStopOf(plan: Pick<DeployPlan, "target" | "services" | "deploy">): string[] {
+  if (plan.deploy.snapshotStop !== undefined) return plan.deploy.snapshotStop;
+  if (plan.target.provider === "portainer") return [];
+  return plan.services
+    .filter(
+      (service) => service.enabled && STOPPED_DATABASE_KINDS.some((kind) => kind === service.kind),
+    )
+    .map((service) => service.name);
+}
 
 /**
  * `plan.snapshots`: snapshots on a schedule and an encrypted copy of each off the server. Absent
@@ -1872,7 +1892,7 @@ export function snapshotsByDefault(plan: Pick<DeployPlan, "environment">): boole
  * computer or the user's Portainer, outside a preview environment, with `deploy.snapshots` true or
  * absent ({@link snapshotsByDefault}), and something a release snapshot copies, on the
  * app's server or an extra one: the `sqlite` or kept-files volume, an enabled service of the
- * {@link ONLINE_SNAPSHOT_KINDS}, or one of a stop-only kind named in `deploy.snapshotStop`.
+ * {@link ONLINE_SNAPSHOT_KINDS}, or one of a stop-only kind {@link snapshotStopOf} names.
  */
 export function snapshotsOn(
   plan: Pick<DeployPlan, "target" | "environment" | "services" | "deploy" | "storage">,
@@ -1880,7 +1900,7 @@ export function snapshotsOn(
   const { provider } = plan.target;
   if (!onOneServer(provider) && provider !== "localhost" && provider !== "portainer") return false;
   if (plan.environment?.previews !== undefined) return false;
-  const stop = plan.deploy.snapshotStop ?? [];
+  const stop = snapshotStopOf(plan);
   const copied = plan.services.some(
     (service) =>
       service.enabled &&

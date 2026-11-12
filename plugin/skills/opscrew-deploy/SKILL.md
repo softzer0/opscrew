@@ -469,8 +469,9 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   `deploy.snapshots` is on (every environment but previews, prod included, by default;
   `deploy.keepSnapshots` versions are kept), and need this computer to reach the server. The
   snapshot taken before each release holds every service with data, the app's SQLite files and
-  the databases on other servers; a service that must stop for its copy (Kafka, RabbitMQ, a search
-  engine…) only when `deploy.snapshotStop` names it. Uploads in object storage are never in a
+  the databases on other servers; of the services that must stop for their copy, ClickHouse and
+  Neo4j when `deploy.snapshotStop` is absent, and when it is set, the ones it names (Kafka,
+  RabbitMQ, a search engine…). Uploads in object storage are never in a
   snapshot. To put data back without changing the version, or to take a snapshot before a risky
   change, follow the `opscrew-snapshots` skill.
 - **This computer.** An environment can run on the user's computer (`localhost`, in Docker, at

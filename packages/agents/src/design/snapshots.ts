@@ -4,6 +4,8 @@
  * up, design proposes scheduled snapshots with the encrypted copy off the server when the interview
  * says the data matters, as it turns on a cloud provider's backups.
  */
+import { listText } from "@opscrew/core";
+import { serviceSpec } from "@opscrew/iac-templates";
 import {
   type CloudProvider,
   type DeployPlan,
@@ -12,8 +14,11 @@ import {
   isHostingTarget,
   isServerlessTarget,
   type Requirements,
+  snapshotStopOf,
+  snapshotsOn,
 } from "@opscrew/plan-schema";
 import { providerProfile } from "../providers";
+import { planFile } from "../runners/words";
 import { dataServers } from "../snapshot/hosts";
 import { backupsBucketName, offsitePriceText, offsiteText } from "../snapshot/offsite";
 import { scheduleText } from "../snapshot/schedule";
@@ -88,15 +93,33 @@ export function withDesignedSnapshots(
 }
 
 /**
- * What design says of the plan's snapshots: the schedule and the off-server copy with its expected
- * cost, and on an own server or Portainer with a schedule but no copy, how to add one; its
- * commands carry `flags` (` --app …`/` --env …`).
+ * The services the snapshot before each release stops while it copies them ({@link snapshotStopOf},
+ * by default ClickHouse and Neo4j), and how to keep them running; undefined when there are none.
+ */
+function stoppedForReleaseText(plan: DeployPlan): string | undefined {
+  if (!snapshotsOn(plan)) return undefined;
+  const stop = snapshotStopOf(plan);
+  const stopped = plan.services.filter((service) => stop.includes(service.name));
+  if (stopped.length === 0) return undefined;
+  const names = listText(
+    stopped.map((service) => `${service.name} (${serviceSpec(service.kind).title})`),
+  );
+  const [verb, them] = stopped.length === 1 ? ["stops", "it"] : ["stop", "them"];
+  return `${names} ${verb} for a moment on each deploy while the snapshot before the release copies ${them}, so a rollback can restore ${them}. To keep one running, set \`deploy.snapshotStop\` in ${planFile(plan)} to the services to keep copying (\`[]\` keeps them all running); the snapshot then holds no copy of the others.`;
+}
+
+/**
+ * What design says of the plan's snapshots: the services the snapshot before each release stops
+ * ({@link stoppedForReleaseText}), the schedule and the off-server copy with its expected cost, and
+ * on an own server or Portainer with a schedule but no copy, how to add one; its commands carry
+ * `flags` (` --app …`/` --env …`).
  */
 export function snapshotDesignLines(plan: DeployPlan, flags: string): string[] {
+  const stopped = stoppedForReleaseText(plan);
+  const lines: string[] = stopped === undefined ? [] : [stopped];
   const { snapshots } = plan;
-  if (snapshots === undefined) return [];
+  if (snapshots === undefined) return lines;
   const where = plan.target.provider === "portainer" ? "the Portainer host" : "the server";
-  const lines: string[] = [];
   if (snapshots.schedule !== undefined) {
     lines.push(
       `Scheduled snapshots of the app's data (snapshots.schedule): ${scheduleText(plan)}, on ${where}; \`opscrew snapshot schedule off${flags}\` turns them off.`,

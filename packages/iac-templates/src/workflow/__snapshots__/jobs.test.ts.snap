@@ -437,15 +437,22 @@ jobs:
           snapshot_tar() {
             _ran="$(docker compose ps -q "$1")"
             _copied=1
+            if [ -n "$_ran" ]; then
+              _tar_service="$1"
+              trap 'snapshot_start "$_tar_service"' EXIT
+              trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
+            fi
             if ! snapshot_stop "$1"; then
               printf '%s did not stop cleanly within 120 seconds (Docker killed it when the time ran out, or it ran out of memory), so OpsCrew did not copy its files.\\n' "$1" >&2
             elif snapshot_box ro "$1" "tar -C / -cf - $3" < /dev/null > .snapshots/"$2"/"$1".tar; then
               _copied=0
             fi
             if [ -n "$_ran" ] && ! snapshot_start "$1"; then
+              trap - EXIT HUP INT TERM
               printf '%s did not start again after its copy. Its output is in %s/.snapshots/snapshot.log; start it with docker compose up -d %s in %s.\\n' "$1" "$APPS_DIR"/shop "$1" "$APPS_DIR"/shop >&2
               return 1
             fi
+            trap - EXIT HUP INT TERM
             return "$_copied"
           }
           snapshot_untar() {

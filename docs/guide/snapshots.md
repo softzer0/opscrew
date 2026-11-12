@@ -320,8 +320,10 @@ Then revoke the bucket's key in the same console.
 With `deploy.snapshots` on (every environment but previews, prod included, by default), each
 deploy takes a snapshot before its release command, so that
 [a rollback can restore it](rollback.md#the-database).
-`opscrew snapshot list` lists them as `before a release`. What they hold, how many stay and how
-`deploy.snapshotStop` adds a service that stops for its copy are in
+`opscrew snapshot list` lists them as `before a release`. Besides what is copied while it runs,
+they hold the ClickHouse and Neo4j services by default, each stopped for a moment while it is
+copied. What they hold, how many stay and how `deploy.snapshotStop` chooses the services that stop
+for their copy are in
 [Snapshots before each release](rollback.md#snapshots-before-each-release); how a rollback
 restores one in your Portainer is in [In your Portainer](rollback.md#in-your-portainer).
 

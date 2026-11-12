@@ -273,7 +273,40 @@ describe.skipIf(!SH_AVAILABLE)("the database step on a server", () => {
       serverPlan({ environment: "staging", extra: { services: [kafka] } }),
     );
     expect((await failure(step({ database: "snapshot" }))).message).toBe(
-      "staging has nothing a snapshot before each release copies: no PostgreSQL, MySQL, MariaDB, MongoDB, Valkey, Redis or Dragonfly, no SQLite files, no kept folder, and no other service named in deploy.snapshotStop, so OpsCrew takes no snapshots there. Nothing was changed.",
+      "staging has nothing a snapshot before each release copies: no PostgreSQL, MySQL, MariaDB, MongoDB, Valkey, Redis or Dragonfly, no SQLite files, no kept folder, and no service named in deploy.snapshotStop (when it is absent, the ClickHouse and Neo4j services), so OpsCrew takes no snapshots there. Nothing was changed.",
+    );
+  });
+
+  it("restores the ClickHouse and Neo4j services the snapshot holds by default with the rest, and names one deploy.snapshotStop leaves out", async () => {
+    const base = serverPlan({ environment: "staging" });
+    const service = (name: string, kind: string) => ({ ...base.services[0], name, kind });
+    const services = [base.services[0], service("events", "clickhouse"), service("graph", "neo4j")];
+    const db = { name: "db", kind: "postgres", file: "db.dump", size: 4 };
+    const graph = { name: "graph", kind: "neo4j", skipped: true };
+    const held = await world(serverPlan({ environment: "staging", extra: { services } }));
+    await held.folder.snapshot(hex(TARGET), TAKEN, [
+      db,
+      { name: "events", kind: "clickhouse", file: "events.tar", size: 4 },
+      graph,
+    ]);
+    const chosen = await held.step();
+    expect(chosen.choice).toBe("snapshot");
+    expect(chosen.lines[1]).toBe(
+      "Kept as they are, since the snapshot holds no copy of them: graph (it had no container yet).",
+    );
+
+    const none = serverPlan({
+      environment: "staging",
+      extra: { services, deploy: { snapshotStop: [] } },
+    });
+    const left = await world(none);
+    await left.folder.snapshot(hex(TARGET), TAKEN, [
+      db,
+      { name: "events", kind: "clickhouse", skipped: true },
+      graph,
+    ]);
+    expect((await left.step()).lines[1]).toBe(
+      "Kept as they are, since the snapshot holds no copy of them: events (it must stop for its copy, and deploy.snapshotStop doesn't name it) and graph (it must stop for its copy, and deploy.snapshotStop doesn't name it).",
     );
   });
 

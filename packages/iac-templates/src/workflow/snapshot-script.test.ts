@@ -186,6 +186,8 @@ const FAKE_DOCKER = [
   '        rm -f "$WORK/running/$s"',
   '        case " ${UNCLEAN:-} " in *" $s "*) echo 137 > "$WORK/exit-$s" ;; *) echo 0 > "$WORK/exit-$s" ;; esac',
   "      fi",
+  // A cancelled run's hangup once HANGUP has stopped: the script and the shell that stopped it.
+  '      if [ "$s" = "${HANGUP:-}" ]; then kill -HUP "$SNAP_PID" "$PPID"; fi',
   "    done ;;",
   '  "compose start") for s in "$@"; do case "$s" in compose | start) ;; *) touch "$WORK/running/$s" ;; esac; done ;;',
   '  "compose up")',
@@ -301,7 +303,7 @@ function snap(args: string[], env: Record<string, string> = {}, plan: DeployPlan
     "sh",
     [
       "-c",
-      'PATH="$(cd "$WORK/bin" && pwd):$PATH"; export PATH; exec sh "$0" "$@"',
+      'PATH="$(cd "$WORK/bin" && pwd):$PATH"; SNAP_PID=$$; export PATH SNAP_PID; exec sh "$0" "$@"',
       `${appDir(plan)}/snapshot.sh`,
       ...args,
     ],
@@ -630,6 +632,50 @@ describe.skipIf(!shWorks())("snapshot.sh", { timeout: 300_000 }, () => {
       expect(callAt(`.snapshots/${A}.partial:/snapshot:rw`)).toBeGreaterThan(-1);
       // The newest two release snapshots stay; a snapshot by hand is never pruned.
       expect(snapshots()).toEqual(["2".repeat(64), "20201101T100000Z", A].sort());
+    });
+
+    it("stops and copies the ClickHouse and Neo4j services before a release when deploy.snapshotStop is absent, and none when it is set", () => {
+      const plan = DeployPlanSchema.parse({
+        ...BASE,
+        services: [
+          ...BASE.services,
+          ...withServices([
+            { kind: "clickhouse", name: "events" },
+            { kind: "neo4j", name: "graph" },
+          ]).services,
+        ],
+      });
+      server(plan);
+      for (const service of ["events", "graph"]) write(`${work}/running/${service}`, "");
+      const result = snap(["take", "release"], {}, plan);
+      expect(result.status, result.output).toBe(0);
+      expect(read(at(`.snapshots/${A}/events.tar`))).toBe("events rows of before");
+      expect(read(at(`.snapshots/${A}/graph.tar`))).toBe("graph rows of before");
+      expect(calls().filter((call) => call.includes("compose stop"))).toEqual([
+        "docker compose stop -t 120 events",
+        "docker compose stop -t 120 graph",
+      ]);
+      expect(running("events") && running("graph")).toBe(true);
+      expect(result.stderr).toContain("kafka was left out of the snapshot before this release");
+
+      const none = withSnapshots(plan, { snapshotStop: [] });
+      server(none);
+      const left = snap(["take", "release", "--version", `sha256:${"b".repeat(64)}`], {}, none);
+      expect(left.status, left.output).toBe(0);
+      expect(left.stderr).toContain(
+        "events was left out of the snapshot before this release: it must stop for its copy. Name it in deploy.snapshotStop",
+      );
+      expect(left.stderr).toContain("graph was left out of the snapshot before this release");
+    });
+
+    it("starts a stopped service again when a hangup ends the run between its stop and its copy", () => {
+      const plan = withSnapshots(BASE, { snapshotStop: ["kafka"] });
+      server(plan);
+      const result = snap(["take", "release"], { HANGUP: "kafka" }, plan);
+      expect(calls()).toContain("docker compose stop -t 120 kafka");
+      expect(calls().filter((call) => call.includes("--volumes-from c-kafka"))).toEqual([]);
+      expect(running("kafka"), result.output).toBe(true);
+      expect(existsSync(at(`.snapshots/${A}`))).toBe(false);
     });
 
     it("refuses a release snapshot without a running digest", () => {

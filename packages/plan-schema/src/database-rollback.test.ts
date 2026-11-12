@@ -9,6 +9,7 @@ import {
   DeploySettingsSchema,
   keepSnapshotsOf,
   parseArtifact,
+  snapshotStopOf,
   snapshotsByDefault,
   snapshotsOn,
 } from "./index";
@@ -175,6 +176,14 @@ describe("snapshotsOn", () => {
     expect(
       snapshotsOn(parse({ ...plan, services: [kafka], deploy: { snapshotStop: ["kafka"] } })),
     ).toBe(true);
+    // ClickHouse and Neo4j count unless a set deploy.snapshotStop leaves them out.
+    for (const kind of ["clickhouse", "neo4j"]) {
+      const services = [{ ...db, name: "graph", kind, options: {} }];
+      expect(snapshotsOn(parse({ ...plan, services })), kind).toBe(true);
+      expect(snapshotsOn(parse({ ...plan, services, deploy: { snapshotStop: [] } })), kind).toBe(
+        false,
+      );
+    }
   });
 
   it("counts the data on an extra server as on the app's server", async () => {
@@ -183,6 +192,50 @@ describe("snapshotsOn", () => {
     expect(snapshotsOn({ ...parsed, services: elsewhere })).toBe(true);
     const off = { ...parsed.deploy, snapshots: false };
     expect(snapshotsOn({ ...parsed, services: elsewhere, deploy: off })).toBe(false);
+  });
+});
+
+describe("snapshotStopOf", () => {
+  it("is deploy.snapshotStop when set, even empty", async () => {
+    const plan = await devPlan();
+    const db = plan.services[0];
+    const services = [db, { ...db, name: "events", kind: "clickhouse", options: {} }];
+    expect(snapshotStopOf(parse({ ...plan, services, deploy: { snapshotStop: [] } }))).toEqual([]);
+    const mq = { ...db, name: "mq", kind: "rabbitmq", options: {} };
+    expect(
+      snapshotStopOf(
+        parse({ ...plan, services: [...services, mq], deploy: { snapshotStop: ["mq"] } }),
+      ),
+    ).toEqual(["mq"]);
+  });
+
+  it("is the enabled ClickHouse and Neo4j services when absent, in the plan's order", async () => {
+    const plan = await devPlan();
+    const db = plan.services[0];
+    const service = (name: string, kind: string, enabled = true) => ({
+      ...db,
+      name,
+      kind,
+      enabled,
+      options: {},
+    });
+    const services = [
+      service("graph", "neo4j"),
+      db,
+      service("mq", "rabbitmq"),
+      service("events", "clickhouse"),
+      service("old", "clickhouse", false),
+      service("other", "neo4j", false),
+    ];
+    expect(snapshotStopOf(parse({ ...plan, services }))).toEqual(["graph", "events"]);
+    expect(snapshotStopOf(parse(plan))).toEqual([]);
+  });
+
+  it("is empty in Portainer, which stops no service", async () => {
+    const plan = await targetPlan("portainer");
+    const db = plan.services[0];
+    const services = [...plan.services, { ...db, name: "events", kind: "clickhouse", options: {} }];
+    expect(snapshotStopOf(parse({ ...plan, services }))).toEqual([]);
   });
 });
 

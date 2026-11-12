@@ -31,6 +31,7 @@ import {
   type Migrations,
   ONLINE_SNAPSHOT_KINDS,
   onOneServer,
+  snapshotStopOf,
   snapshotsByDefault,
   snapshotsOn,
 } from "@opscrew/plan-schema";
@@ -340,12 +341,12 @@ function countGrew(tool: Migrations["tool"], target: string, current: string): b
 /**
  * The services a snapshot holds no copy of on each server (`abouts`, by server), which its restore
  * keeps as they are, each with its reason: the SQLite volume was empty; its copy failed; a
- * stop-only service `deploy.snapshotStop` doesn't name; or any other had no container yet. In the
- * user's Portainer, also a stop-only service the snapshot doesn't list: the snapshot before a
- * release there copies only what it can copy while it runs (D3).
+ * stop-only service the release snapshot doesn't stop ({@link snapshotStopOf}); or any other had no
+ * container yet. In the user's Portainer, also a stop-only service the snapshot doesn't list: the
+ * snapshot before a release there copies only what it can copy while it runs (D3).
  */
 function leftOutLines(plan: DeployPlan, abouts: ReadonlyMap<string, About>): string[] {
-  const stop = plan.deploy.snapshotStop ?? [];
+  const stop = snapshotStopOf(plan);
   const items = [...abouts].flatMap(([server, about]) =>
     about.services
       .filter((service) => "skipped" in service || "failed" in service)
@@ -841,7 +842,7 @@ function unreadReason(run: RollbackRun, choice: "snapshot" | "migrations"): stri
   }
   // On, as snapshotsOn reads deploy.snapshots, but with nothing to copy.
   if (plan.deploy.snapshots ?? snapshotsByDefault(plan)) {
-    return `${environment} has nothing a snapshot before each release copies: no PostgreSQL, MySQL, MariaDB, MongoDB, Valkey, Redis or Dragonfly, no SQLite files, no kept folder, and no other service named in deploy.snapshotStop, so OpsCrew takes no snapshots there.`;
+    return `${environment} has nothing a snapshot before each release copies: no PostgreSQL, MySQL, MariaDB, MongoDB, Valkey, Redis or Dragonfly, no SQLite files, no kept folder, and no service named in deploy.snapshotStop${plan.target.provider === "portainer" ? "" : " (when it is absent, the ClickHouse and Neo4j services)"}, so OpsCrew takes no snapshots there.`;
   }
   return `${environment} takes no snapshots before its releases: its plan turns them off (deploy.snapshots: false).`;
 }

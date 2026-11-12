@@ -63,3 +63,41 @@ describe("withDesignedSnapshots", () => {
     );
   });
 });
+
+describe("snapshotDesignLines: the services stopped for the snapshot before each release", () => {
+  /** `plan` with `kind` services named `names` next to its database. */
+  const withKind = (plan: DeployPlan, kind: string, names: string[], deploy: object = {}) =>
+    DeployPlanSchema.parse({
+      ...plan,
+      services: [
+        ...plan.services,
+        ...names.map((name) => ({ ...plan.services[0], name, kind, options: {} })),
+      ],
+      deploy: { ...plan.deploy, ...deploy },
+    });
+
+  it("says ClickHouse and Neo4j stop for a moment on each deploy, and how to keep them running", () => {
+    const plan = withKind(withKind(testPlan(), "clickhouse", ["events"]), "neo4j", ["graph"]);
+    expect(snapshotDesignLines(plan, "")).toEqual([
+      "events (ClickHouse) and graph (Neo4j Community) stop for a moment on each deploy while the snapshot before the release copies them, so a rollback can restore them. To keep one running, set `deploy.snapshotStop` in opscrew/plan.yaml to the services to keep copying (`[]` keeps them all running); the snapshot then holds no copy of the others.",
+    ]);
+    const one = withKind(testPlan(), "neo4j", ["graph"]);
+    expect(snapshotDesignLines(one, "")[0]).toMatch(
+      /^graph \(Neo4j Community\) stops for a moment on each deploy while the snapshot before the release copies it, so a rollback can restore it\./,
+    );
+  });
+
+  it("names what deploy.snapshotStop names, and nothing when it is empty or the release takes no snapshot", () => {
+    const named = withKind(testPlan(), "clickhouse", ["events"], { snapshotStop: [] });
+    expect(snapshotDesignLines(named, "")).toEqual([]);
+    const off = withKind(testPlan(), "clickhouse", ["events"], { snapshots: false });
+    expect(snapshotDesignLines(off, "")).toEqual([]);
+    expect(snapshotDesignLines(withKind(previewTestPlan(), "clickhouse", ["events"]), "")).toEqual(
+      [],
+    );
+    const kafka = withKind(testPlan(), "kafka", ["stream"], { snapshotStop: ["stream"] });
+    expect(snapshotDesignLines(kafka, "")[0]).toMatch(
+      /^stream \(Apache Kafka\) stops for a moment/,
+    );
+  });
+});

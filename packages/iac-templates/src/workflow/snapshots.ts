@@ -679,7 +679,8 @@ function partCase(
  * - `snapshot_start <service>`: its own container started again, once healthy (at once for one
  *   `SNAPSHOT_NO_WAIT` names: its health check may log in with values it gets only then);
  * - `snapshot_tar` and `snapshot_untar`: a stop-only service's copy (stopped cleanly alone, its
- *   volumes tarred, started again when it ran, or a message how to start it) and restore (stopped,
+ *   volumes tarred, started again when it ran, also when a hangup or kill ends the copy, or a
+ *   message how to start it) and restore (stopped,
  *   emptied, its folders untarred, started);
  * - `part_take <part> <folder>` (3: nothing to copy), `part_restore <part> <folder>`
  *   ({@link partCommands});
@@ -756,15 +757,24 @@ export function snapshotFunctions(plan: DeployPlan, server: string, folder: stri
     ...shellFunction("snapshot_tar", [
       '  _ran="$(docker compose ps -q "$1")"',
       "  _copied=1",
+      // A cancelled run (its SSH session's HUP) or a kill between the stop and the start still
+      // starts the service again; part_take runs in a subshell, so these traps end with it.
+      '  if [ -n "$_ran" ]; then',
+      '    _tar_service="$1"',
+      `    trap 'snapshot_start "$_tar_service"' EXIT`,
+      "    trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM",
+      "  fi",
       '  if ! snapshot_stop "$1"; then',
       `    printf ${printfFormat(`%s did not stop cleanly within 120 seconds (Docker killed it when the time ran out, or it ran out of memory), so OpsCrew did not copy its files.`)} "$1" >&2`,
       `  elif snapshot_box ro "$1" "tar -C / -cf - $3" < /dev/null > ${SNAPSHOTS_DIR}/"$2"/"$1".tar; then`,
       "    _copied=0",
       "  fi",
       '  if [ -n "$_ran" ] && ! snapshot_start "$1"; then',
+      "    trap - EXIT HUP INT TERM",
       `    printf ${printfFormat(`%s did not start again after its copy. Its output is in %s/${SNAPSHOT_LOG}; start it with docker compose up -d %s in %s.`)} "$1" ${folder} "$1" ${folder} >&2`,
       "    return 1",
       "  fi",
+      "  trap - EXIT HUP INT TERM",
       '  return "$_copied"',
     ]),
     ...shellFunction("snapshot_untar", [

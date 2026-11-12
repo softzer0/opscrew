@@ -124,13 +124,17 @@ databases, SQLite, the other services with data, and a database on another serve
 snapshots stay in `.snapshots` in the app's folder, for example `/srv/apps/shop/.snapshots`,
 readable only by the deploy user:
 
+- [ClickHouse](https://clickhouse.com/) and [Neo4j](https://neo4j.com/) are copied too, except
+  in your Portainer, each stopped for a moment at every deploy while it is copied; the services
+  named in `deploy.snapshotStop` replace them (`snapshotStop: []` keeps them running, out of the
+  snapshot; see [Snapshots before each release](rollback.md#snapshots-before-each-release));
 - `deploy.snapshots: false` in an environment's plan turns them off there;
 - `deploy.keepSnapshots` (1 to 10, default 3) says how many versions' snapshots stay. Each takes
   about as much disk as the database's data; with too little free space a deploy skips its snapshot
   with a warning.
 
-Run `npx opscrew provision` after changing either. They live on the same server as the database,
-so keep a copy elsewhere too: the server backups, the dumps above, or
+Run `npx opscrew provision` after changing any of them. They live on the same server as the
+database, so keep a copy elsewhere too: the server backups, the dumps above, or
 [the encrypted copy off the server](snapshots.md#an-encrypted-copy-off-the-server).
 
 ## SQLite
