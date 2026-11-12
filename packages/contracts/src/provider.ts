@@ -148,8 +148,22 @@ export interface ProviderTerraform {
   provider: ProviderRequirement;
   /** Resource type of the server, for example `hcloud_server`. */
   serverResourceType: string;
-  /** Resource type of the cloud firewall. */
+  /**
+   * Resource type of the cloud firewall, or `<type>.<name>` for a general type: with
+   * {@link connectorFirewall}, `terraform_data.firewall`.
+   */
   firewallResourceType: string;
+  /**
+   * Whether the module only describes the firewall it wants and the connector applies it (ADR
+   * 0029, D8): a `terraform_data.firewall` whose `input` is the module's `wanted_firewall` output
+   * ({@link WantedFirewallOutput}). The connector then has `firewalls`.
+   */
+  connectorFirewall: boolean;
+  /**
+   * Files the provider caches its login in, relative to the user's home folder. The engine
+   * removes them before and after every command (ADR 0029, D9). Empty for most providers.
+   */
+  homeCacheFiles: readonly string[];
   /**
    * Attributes the provider fills in from a relationship OpsCrew manages on the other resource
    * (Hetzner mirrors the server's `firewall_ids` into the firewall's `apply_to`); drift ignores
@@ -184,6 +198,25 @@ export interface ProviderTerraform {
    * each extra server's module gets.
    */
   extraShared: { resources: readonly string[]; sshKeyId: string; appTag?: string };
+}
+
+/**
+ * A server module's `wanted_firewall` output with {@link ProviderTerraform.connectorFirewall}, as
+ * HCL writes it: the firewall the connector makes (ADR 0029, D8).
+ */
+export interface WantedFirewallOutput {
+  name: string;
+  description: string;
+  /** The servers it protects, by the provider's server id. */
+  server_ids: string[];
+  rules: {
+    protocol: "tcp" | "udp" | "icmp";
+    /** Ports or ranges (`"80"`, `"8000-8100"`); none for ICMP. */
+    ports: string[];
+    /** Sources; a family with no network holds one that matches nobody (`::1/128`). */
+    ipv4: string[];
+    ipv6: string[];
+  }[];
 }
 
 /** A firewall rule in the plan, in Hetzner's shape (other providers' rules are read into it). */

@@ -123,6 +123,8 @@ export const definition: CloudProviderDefinition = {
     },
     serverResourceType: "digitalocean_droplet",
     firewallResourceType: "digitalocean_firewall",
+    connectorFirewall: false,
+    homeCacheFiles: [],
     mirroredAttributes: {},
     lifecycleIgnored: ["image", "ssh_keys", "user_data"],
     module: { name: "digitalocean-droplet", files: MODULE_FILES },

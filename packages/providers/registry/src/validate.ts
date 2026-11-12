@@ -102,6 +102,9 @@ const moduleFiles = z.record(z.string(), z.string()).superRefine((files, ctx) =>
   }
 });
 
+/** The firewall a module describes for its connector to apply (ADR 0029, D8). */
+const CONNECTOR_FIREWALL = "terraform_data.firewall";
+
 /** A resource's opening line in `extraShared.resources`: `resource "<type>" "<name>" {`. */
 const RESOURCE_LINE = /^resource "(\w+)" "(\w+)" \{$/;
 
@@ -109,6 +112,16 @@ const terraform = z.object({
   provider: z.object({ name: z.string(), source: z.string(), version: z.string() }),
   serverResourceType: z.string(),
   firewallResourceType: z.string(),
+  connectorFirewall: z.boolean(),
+  homeCacheFiles: z.array(
+    z
+      .string()
+      .refine(
+        (path) =>
+          path !== "" && !/^([/\\]|[A-Za-z]:)/.test(path) && !/(^|[/\\])\.\.([/\\]|$)/.test(path),
+        "must be a path within the home folder, without ..",
+      ),
+  ),
   mirroredAttributes: z.record(z.string(), lines),
   lifecycleIgnored: lines,
   module: z.object({ name: z.string(), files: moduleFiles }),
@@ -221,6 +234,14 @@ const definitionSchema: z.ZodType<Definition> = z
     texts,
   })
   .superRefine((definition, ctx) => {
+    const { connectorFirewall, firewallResourceType } = definition.terraform;
+    if (connectorFirewall && firewallResourceType !== CONNECTOR_FIREWALL) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["terraform", "firewallResourceType"],
+        message: `must be ${CONNECTOR_FIREWALL} with connectorFirewall`,
+      });
+    }
     if (definition.offering.resize !== (definition.texts.resizeOffline !== undefined)) {
       ctx.addIssue({
         code: "custom",

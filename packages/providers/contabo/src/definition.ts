@@ -16,8 +16,8 @@ const SECURITY_PAGE = `${PANEL} (${CONTABO_CREDENTIALS_URL}, Account → Securit
 
 /**
  * Ubuntu 24.04's image id at Contabo. The Terraform provider takes an image by id only (its
- * `contabo_image` data source needs the id too). Unverified: no official page lists it, and the
- * spike (T2613) reads it from `GET /v1/compute/images` and corrects it here.
+ * `contabo_image` data source needs the id too). `GET /v1/compute/images` lists it as the standard
+ * image `ubuntu-24.04` (research R6).
  */
 const UBUNTU_24_04_IMAGE_ID = "d64d5c6c-9dda-4e38-8174-0ee282474d8a";
 
@@ -200,6 +200,8 @@ export const definition: CloudProviderDefinition = {
     provider: { name: "contabo", source: "contabo/contabo", version: "~> 0.1.44" },
     serverResourceType: "contabo_instance",
     firewallResourceType: "contabo_firewall",
+    connectorFirewall: false,
+    homeCacheFiles: [".cache/contabo/terraform/token"],
     mirroredAttributes: {},
     lifecycleIgnored: ["default_user", "image_id", "period", "ssh_keys", "user_data"],
     module: { name: "contabo-vps", files: MODULE_FILES },

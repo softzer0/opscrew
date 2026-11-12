@@ -167,6 +167,43 @@ export interface ServerSnapshotApi {
   powerOn(serverId: string): Promise<void>;
 }
 
+/** An inbound rule the connector writes into a firewall: it accepts. */
+export interface WantedFirewallRule {
+  protocol: "tcp" | "udp" | "icmp";
+  /** Ports or ranges (`"80"`, `"8000-8100"`); none for ICMP. */
+  ports: readonly string[];
+  /** Sources; a family with no network holds one that matches nobody (`::1/128`). */
+  ipv4: readonly string[];
+  ipv6: readonly string[];
+}
+
+/** The firewall a server module wants (its `wanted_firewall` output, ADR 0029 D8). */
+export interface WantedFirewall {
+  name: string;
+  description: string;
+  /** The servers it protects, by the provider's server id. */
+  serverIds: readonly string[];
+  rules: readonly WantedFirewallRule[];
+}
+
+/**
+ * A provider's firewalls, applied through the connector because its Terraform provider cannot
+ * manage them (ADR 0029, D8). The provider's own rules (Contabo's "Block all traffic") are never
+ * compared, written or deleted.
+ */
+export interface FirewallApi {
+  /**
+   * Makes the firewall named `wanted.name` exactly `wanted`: creates it, or sets its description
+   * and rules and adds and removes servers, then waits until each server is protected. Returns
+   * what it changed, in plain English; none when nothing differed.
+   */
+  sync(wanted: WantedFirewall): Promise<string[]>;
+  /** How the firewall named `wanted.name` differs from `wanted`, in plain English; none if alike. */
+  differences(wanted: WantedFirewall): Promise<string[]>;
+  /** Deletes the firewall named `name`; false when there was none. Destroy-grade. */
+  remove(name: string): Promise<boolean>;
+}
+
 /** A VPS provider connector: credentials, price catalogue and server API. */
 export interface VpsConnector extends Connector {
   /** True when a token is set (it may still be invalid). */
@@ -174,4 +211,9 @@ export interface VpsConnector extends Connector {
   catalog(): ComputeCatalog;
   /** Undefined when no token is set. */
   readonly servers: ServerSnapshotApi | undefined;
+  /**
+   * The firewalls, for a provider with `terraform.connectorFirewall` (ADR 0029, D8); undefined
+   * when no token is set and for every other provider.
+   */
+  readonly firewalls?: FirewallApi | undefined;
 }

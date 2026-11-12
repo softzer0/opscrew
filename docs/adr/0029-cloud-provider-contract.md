@@ -60,6 +60,20 @@ kinds, not on which cloud.
   npm provenance against OpsCrew's repository and release workflow. Loading it with `import()`
   behind a version check. A contract shaped by AWS's managed services, which are not a VPS.
   The Claude Code side splits into one plugin per provider that depends on the core plugin.
+- **D8: a firewall the provider's Terraform cannot manage goes through the connector**
+  (`terraform.connectorFirewall`, research R6 and R7). The module still describes the firewall it
+  wants, in a `terraform_data.firewall` (its `firewallResourceType` is then
+  `terraform_data.firewall`), and outputs it as `wanted_firewall`. So the plan's hash, its
+  approval and SecOps cover it. After every successful apply, OpsCrew passes each wanted firewall
+  to the connector's `firewalls.sync`, which makes the provider's firewall exactly that. Destroy
+  calls `firewalls.remove`, and drift calls `firewalls.differences`. Contabo is the first such
+  provider: its Terraform provider reports Contabo's own drop rule as a change on every plan and
+  cannot read a firewall that protects an instance.
+- **D9: a provider's login cache never outlives an engine command** (`terraform.homeCacheFiles`).
+  The engine removes the files a provider caches its login in under the user's home folder
+  before and after every command. No command reuses another account's or an earlier run's login,
+  and no token stays on disk (Contabo's provider keeps its token in
+  `.cache/contabo/terraform/token`, research R6).
 
 ## Consequences
 

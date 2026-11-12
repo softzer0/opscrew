@@ -121,6 +121,8 @@ export const definition: CloudProviderDefinition = {
     provider: { name: "hcloud", source: "hetznercloud/hcloud", version: "~> 1.70" },
     serverResourceType: "hcloud_server",
     firewallResourceType: "hcloud_firewall",
+    connectorFirewall: false,
+    homeCacheFiles: [],
     mirroredAttributes: { hcloud_firewall: ["apply_to"] },
     lifecycleIgnored: ["image", "ssh_keys", "user_data"],
     module: { name: "hetzner-vps", files: MODULE_FILES },

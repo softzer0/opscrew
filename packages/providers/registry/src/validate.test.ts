@@ -135,6 +135,24 @@ describe("validateCloudProvider", () => {
     expect(message).toContain("credentials.envVars:");
   });
 
+  it("wants a firewall the connector applies described as terraform_data.firewall", () => {
+    const wanted = { ...terraform, connectorFirewall: true };
+    expect(failure({ ...hetzner, terraform: wanted })).toContain(
+      "terraform.firewallResourceType: must be terraform_data.firewall with connectorFirewall",
+    );
+    const described = { ...wanted, firewallResourceType: "terraform_data.firewall" };
+    expect(validateCloudProvider({ ...hetzner, terraform: described })).toBeDefined();
+  });
+
+  it("wants login caches within the home folder", () => {
+    for (const path of ["", "/etc/token", "C:/token", "..\\token", ".cache/../../token"]) {
+      const homeCacheFiles = [path];
+      expect(failure({ ...hetzner, terraform: { ...terraform, homeCacheFiles } })).toContain(
+        "terraform.homeCacheFiles.0: must be a path within the home folder, without ..",
+      );
+    }
+  });
+
   it("wants the shared resources readable and the deploy key among them", () => {
     const shared = (extraShared: Partial<typeof terraform.extraShared>) => ({
       ...hetzner,
