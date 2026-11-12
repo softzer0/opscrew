@@ -38,7 +38,9 @@ export CNTB_OAUTH2_CLIENT_ID=… CNTB_OAUTH2_CLIENT_SECRET=… CNTB_OAUTH2_USER=
 - **They reach your whole account.** Contabo has no keys limited to some servers or some actions.
 - **They stay on your computer.** OpsCrew uses them only there, to plan and change your servers.
   They never go to the server or to GitHub, and OpsCrew masks them in every message, log, audit
-  entry and report.
+  entry and report. Contabo's Terraform provider saves its login in
+  `~/.cache/contabo/terraform/token`; OpsCrew deletes that file before and after each OpenTofu or
+  Terraform command, so no run uses another account's login and none stays on disk.
 - **Keep them out of your app.** `npx opscrew scan` reports them as a leaked secret when they turn
   up in your app's files or environment.
 
