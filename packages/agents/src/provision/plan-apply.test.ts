@@ -9,6 +9,7 @@ import {
   FakeEngine,
   type FakeEngineScenario,
   FakeFirewalls,
+  FakeServers,
   fakeWantedFirewall,
   portainerPlan,
   ScriptedApprovalHandler,
@@ -457,7 +458,10 @@ describe("planAndApply hooks", () => {
 describe("planAndApply and the firewalls a provider's connector applies (ADR 0029, D8)", () => {
   const APP = fakeWantedFirewall("contabo", "202611001");
   const DB = fakeWantedFirewall("contabo", "202611002", "shop-db");
-  /** The extra server db's removal, in a plan whose state had both servers' firewalls. */
+  /**
+   * The extra server db's removal, in a plan whose state had both servers' firewalls; Contabo's
+   * connector cancels the server (ADR 0029, D10).
+   */
   const REMOVAL: ResourceChange[] = [
     {
       address: "module.server_db.contabo_instance.this",
@@ -469,6 +473,13 @@ describe("planAndApply and the firewalls a provider's connector applies (ADR 002
   ];
   const removalPlanJson = {
     format_version: "1.2",
+    resource_changes: [
+      {
+        address: "module.server_db.contabo_instance.this",
+        type: "contabo_instance",
+        change: { actions: ["delete"], before: { id: "202611002" }, after: null },
+      },
+    ],
     output_changes: {
       wanted_firewalls: {
         actions: ["update"],
@@ -490,6 +501,7 @@ describe("planAndApply and the firewalls a provider's connector applies (ADR 002
       return apply(dir, planFile, approval);
     };
     const contabo = new FakeFirewalls((call) => events.push(call));
+    const servers = new FakeServers(events, "contabo");
     const options = {
       engine,
       dir: join(deps.paths.root, "opscrew", "infra", "prod"),
@@ -498,6 +510,7 @@ describe("planAndApply and the firewalls a provider's connector applies (ADR 002
       files: [],
       confirmPhrase: () => "shop",
       firewalls: { contabo },
+      servers: () => servers,
     };
     return { deps, engine, contabo, events, options };
   }
@@ -511,13 +524,18 @@ describe("planAndApply and the firewalls a provider's connector applies (ADR 002
     s.contabo.seed(DB);
     const result = await planAndApply(s.deps, s.options);
     expect(result.applied).toBe(true);
-    expect(s.events).toEqual(["apply", "remove shop-db-firewall", "sync shop-firewall"]);
+    expect(s.events).toEqual([
+      "cancel:202611002",
+      "apply",
+      "remove shop-db-firewall",
+      "sync shop-firewall",
+    ]);
     const said = s.deps.reporter.text();
     expect(said).toContain("success: Deleted Contabo's firewall shop-db-firewall.");
     expect(said).toContain("success: Created Contabo's firewall shop-firewall with 1 rules.");
     expect(
       s.deps.audit.entries.filter((e) => e.kind === "provider-call").map((e) => e.action),
-    ).toEqual(["delete firewall", "sync firewall"]);
+    ).toEqual(["cancel server", "cancelled server", "delete firewall", "sync firewall"]);
   });
 
   it("sets them again in a run that plans nothing new, but not with --plan-only", async () => {

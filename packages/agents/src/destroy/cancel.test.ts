@@ -38,6 +38,9 @@ import type { ServerSnapshot } from "./servers";
 import { destroyConfirmPrompt } from "./texts";
 import type { DestroyPreview, DestroyServices } from "./types";
 
+/** Whether the stand-in's connector removes its servers (ADR 0029, D10); a test turns it on. */
+const removal = vi.hoisted(() => ({ throughConnector: false }));
+
 /*
  * No registered provider cancels its servers yet (Contabo joins the registry later), so
  * DigitalOcean's definition stands in for one that does: its servers are cancelled at the end of
@@ -52,6 +55,12 @@ vi.mock("@opscrew/providers", async (original) => {
       ...digitalocean.offering,
       removal: { kind: "cancel-at-term-end", minimumTermMonths: 1 },
       serverSnapshotsOutliveServer: false,
+    },
+    terraform: {
+      ...digitalocean.terraform,
+      get connectorRemoval() {
+        return removal.throughConnector;
+      },
     },
   };
   return {
@@ -568,6 +577,28 @@ describe.skipIf(!findExecutable("git"))(
       expect(result.remaining).toContain(ENDED_DATA);
     });
 
+    it("an app on the user's own server: an extra server its provider's connector removes is cancelled through it, then the rest applied", async () => {
+      removal.throughConnector = true;
+      try {
+        const { s, events, services } = await ownWithCancelledData();
+        const result = await runDestroy(s.deps, { services, confirm: async () => true });
+        // Shut down and cancelled after the approval; then the rest planned again and applied.
+        expect(events).toEqual([
+          "power-off:3164444",
+          "cancel:3164444",
+          "state-rm:module.server_data.digitalocean_droplet.this",
+          "apply",
+          "lookup",
+        ]);
+        expect(s.deps.audit.entries).toContainEqual(
+          expect.objectContaining({ kind: "iac", action: "plan again" }),
+        );
+        expect(result.remaining).toContain(ENDED_DATA);
+      } finally {
+        removal.throughConnector = false;
+      }
+    });
+
     it("an app on the user's own server: a refused cancel names the provider's console", async () => {
       const reason =
         "Error: cancelling instance 3164444: 422 Unprocessable Entity: instance was not created via the API";
@@ -611,6 +642,13 @@ async function ownWithCancelledData(refusal?: string) {
     servers: { data: { ipv4: "203.0.113.20" } },
   }));
   const engine = s.engine;
+  const events: string[] = [];
+  // What `state rm` took out of the state, which the destroy plans then no longer delete.
+  const removed = new Set<string>();
+  engine.stateRemove = async (_dir, addresses) => {
+    events.push(`state-rm:${addresses.join(",")}`);
+    for (const address of addresses) removed.add(address);
+  };
   const plan0 = engine.plan.bind(engine);
   engine.plan = async (dir, file, options) => {
     const summary = await plan0(dir, file, options);
@@ -622,11 +660,10 @@ async function ownWithCancelledData(refusal?: string) {
     };
     return {
       ...summary,
-      changes: [...summary.changes, ...DATA_RESOURCES],
+      changes: [...summary.changes, ...DATA_RESOURCES].filter((c) => !removed.has(c.address)),
       planJson: { resource_changes: [droplet] },
     };
   };
-  const events: string[] = [];
   const apply0 = engine.apply.bind(engine);
   engine.apply = async (dir, file, approval, options) => {
     events.push("apply");

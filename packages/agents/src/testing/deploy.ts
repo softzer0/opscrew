@@ -487,7 +487,13 @@ export class FakeEngine implements IacEngine {
     const content = `fake plan ${++this.#counter} for ${dir}`;
     await writeFile(planFile, content);
     await this.#variables.record(dir, sha256(content), options.vars);
-    const changes = this.scenario.changes ?? CREATE;
+    const changes = (this.scenario.changes ?? CREATE).flatMap((change) =>
+      !this.stateRemoved.includes(change.address)
+        ? [change]
+        : change.action === "replace"
+          ? [{ ...change, action: "create" as const }]
+          : [],
+    );
     const count = (action: string) => changes.filter((c) => c.action === action).length;
     return {
       engine: this.info,
@@ -554,6 +560,18 @@ export class FakeEngine implements IacEngine {
     if (error !== undefined) {
       throw new OpsCrewError("ENGINE_FAILED", `OpenTofu import failed (exit code 1).\n${error}`);
     }
+  }
+
+  /** The addresses `stateRemove` took out of the state, in order. */
+  readonly stateRemoved: string[] = [];
+
+  /**
+   * Takes `addresses` out of the state. The plans that follow, as a real engine's, no longer delete
+   * them, and create those a plan replaced.
+   */
+  async stateRemove(_dir: string, addresses: readonly string[]): Promise<void> {
+    this.calls.push("state-rm");
+    this.stateRemoved.push(...addresses);
   }
 
   readonly providerSchemas = noProviderSchemas;

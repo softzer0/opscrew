@@ -843,6 +843,7 @@ export class OwnEngine implements IacEngine {
   readonly providerSchemas = noProviderSchemas;
   readonly stateResources = plainStateResources;
   async untaint(): Promise<void> {}
+  async stateRemove(_dir: string, _addresses: readonly string[]): Promise<void> {}
   async importResource(): Promise<void> {}
 }
 

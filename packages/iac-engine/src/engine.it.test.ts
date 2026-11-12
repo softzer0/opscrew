@@ -7,7 +7,7 @@
  * network access; they skip with a message when the download fails.
  */
 import { randomBytes } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { IacEngine, IacEngineName } from "@opscrew/contracts";
@@ -566,6 +566,74 @@ describe.skipIf(!runDriftIt)("untaint on a root's state (real binaries)", () => 
           expect(kept.changes).toEqual([]);
           // An address the state lacks is no error.
           await engine.untaint(dir, "terraform_data.missing", { env });
+        } finally {
+          await rm(dir, { recursive: true, force: true });
+        }
+      },
+      TIMEOUT,
+    );
+  }
+});
+
+/** Two resources in a local backend's state, one of which `stateRemove` takes out. */
+const STATE_RM_MODULE = `terraform {
+  backend "local" {}
+}
+
+resource "terraform_data" "server" {
+  input = "server"
+}
+
+resource "terraform_data" "record" {
+  input = terraform_data.server.output
+}
+`;
+
+// `stateRemove` on a root with a local backend; only with OPSCREW_IT=1, like `untaint`.
+describe.skipIf(!runDriftIt)("stateRemove from a root's state (real binaries)", () => {
+  const cases = [
+    { name: "tofu" as const, encrypted: false },
+    { name: "tofu" as const, encrypted: true },
+    { name: "terraform" as const, encrypted: false },
+  ];
+  for (const { name, encrypted } of cases) {
+    const found = detected.find((d) => d.name === name && d.supported);
+    it.skipIf(!found)(
+      `takes the address out of the state, leaves no backup in the root, and the next destroy plan no longer has it (${name}${encrypted ? ", encrypted" : ""})`,
+      async () => {
+        const dir = await mkdtemp(path.join(tmpdir(), `opscrew-it-${name}-state-rm-`));
+        try {
+          await writeFile(path.join(dir, "main.tf"), STATE_RM_MODULE);
+          const env = encrypted
+            ? { TF_ENCRYPTION: tofuEncryptionEnv(`it-${randomBytes(16).toString("hex")}`) }
+            : {};
+          const engine = await selectEngine(name);
+          const state = path.join(dir, "state", "root.tfstate");
+          await engine.init(dir, { env, backendConfig: { path: state } });
+          const created = await engine.plan(dir, "create.tfplan", { env });
+          expect(
+            (
+              await engine.apply(
+                dir,
+                created.planFile,
+                { approvedPlanHash: created.planHash },
+                { env },
+              )
+            ).ok,
+          ).toBe(true);
+          const before = await readdir(dir);
+
+          await engine.stateRemove(dir, ["terraform_data.server"], { env });
+          expect(await engine.stateResources(state, { env })).toEqual(["terraform_data.record"]);
+          expect(await readdir(dir)).toEqual(before);
+          const rest = await engine.plan(dir, "rest.tfplan", { env, destroy: true });
+          expect(rest.changes.map((c) => `${c.action} ${c.address}`)).toEqual([
+            "delete terraform_data.record",
+          ]);
+          // An address the state lacks fails, naming it.
+          await expect(
+            engine.stateRemove(dir, ["terraform_data.missing"], { env }),
+          ).rejects.toThrow("state rm terraform_data.missing failed");
         } finally {
           await rm(dir, { recursive: true, force: true });
         }

@@ -130,7 +130,11 @@ export type MoveEvent =
   | { type: "fetch"; url: string }
   | { type: "resolve"; host: string }
   /** A call of a provider connector's firewalls (`sync <name>`, `remove <name>`). */
-  | { type: "firewall"; op: string };
+  | { type: "firewall"; op: string }
+  /** A server cancelled through its provider's connector (ADR 0029, D10). */
+  | { type: "cancel"; serverId: string }
+  /** Addresses taken out of the state. */
+  | { type: "state-rm"; addresses: string[] };
 
 type ModuleName = "server" | "server_previous";
 
@@ -279,6 +283,8 @@ export class FakeMoveEngine implements IacEngine {
   readonly applied: string[] = [];
   #installed = new Set<string>();
   #effects = new Map<string, Effect>();
+  /** Addresses `stateRemove` took out of the state; they go with their module. */
+  readonly #forgotten = new Set<string>();
   #counter = 0;
 
   constructor(
@@ -414,6 +420,7 @@ export class FakeMoveEngine implements IacEngine {
       effect.destroys.push(m);
       for (const resource of RESOURCES[server.provider]) {
         const c = change(m, server.provider, resource, "delete");
+        if (this.#forgotten.has(c.address)) continue;
         effect.changes.push(c);
         const id =
           resource[0] === SERVER_TYPE[server.provider] ? server.id : `${resource[1]}-${server.id}`;
@@ -537,7 +544,12 @@ export class FakeMoveEngine implements IacEngine {
       const server = this.state.servers[m];
       if (server) server.protected = false;
     }
-    for (const m of effect.destroys) delete this.state.servers[m];
+    for (const m of effect.destroys) {
+      delete this.state.servers[m];
+      for (const address of this.#forgotten) {
+        if (address.startsWith(`module.${m}.`)) this.#forgotten.delete(address);
+      }
+    }
     for (const [m, provider] of effect.creates) {
       const created = NEW_SERVERS[provider];
       this.state.servers[m] = { ...created, provider, protected: provider === "hetzner" };
@@ -552,6 +564,13 @@ export class FakeMoveEngine implements IacEngine {
   /** The outputs the last successful apply recorded (a plan without changes does not update them). */
   async output(_dir: string): Promise<Record<string, unknown>> {
     return structuredClone(this.state.outputs);
+  }
+
+  /** Takes `addresses` out of the state, which gets a new serial: a plan saved before is stale. */
+  async stateRemove(_dir: string, addresses: readonly string[]): Promise<void> {
+    for (const address of addresses) this.#forgotten.add(address);
+    this.state.serial++;
+    this.events.push({ type: "state-rm", addresses: [...addresses] });
   }
 
   readonly providerSchemas = noProviderSchemas;
@@ -1210,6 +1229,11 @@ export async function moveFakes(
     },
     powerOn: async () => {
       throw new Error("powerOn is not implemented yet");
+    },
+    // Contabo's Terraform cannot remove a server, so its connector cancels it (ADR 0029, D10).
+    cancelServer: async (serverId) => {
+      events.push({ type: "cancel", serverId });
+      return "2026-12-11";
     },
   });
   /** The servers shut down before their provider cancels them. */

@@ -282,6 +282,14 @@ export class ScriptedDestroyEngine implements IacEngine {
     return {};
   }
 
+  /** Takes `addresses` out of the state: the destroy plans that follow no longer delete them. */
+  async stateRemove(_dir: string, addresses: readonly string[]): Promise<void> {
+    this.calls.push("state-rm");
+    this.events.push(`state-rm:${addresses.join(",")}`);
+    const resources = this.script.resources ?? deployedResources();
+    this.script.resources = resources.filter((change) => !addresses.includes(change.address));
+  }
+
   readonly providerSchemas = noProviderSchemas;
   readonly stateResources = plainStateResources;
   async untaint(): Promise<void> {}
@@ -358,6 +366,19 @@ export class FakeServers implements ServerSnapshotApi {
 
   async powerOn(): Promise<void> {
     throw new Error("powerOn is not implemented yet");
+  }
+
+  /** The servers `cancelServer` cancelled, by id; `cancelError` fails the cancel instead. */
+  readonly cancelled: string[] = [];
+  cancelError: Error | undefined;
+  /** The day a cancelled server's contract ends, as `cancelServer` answers it. */
+  cancelDate = "2026-12-11";
+
+  async cancelServer(serverId: string): Promise<string> {
+    this.events.push(`cancel:${serverId}`);
+    if (this.cancelError) throw this.cancelError;
+    this.cancelled.push(serverId);
+    return this.cancelDate;
   }
 }
 

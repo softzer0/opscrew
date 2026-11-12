@@ -48,6 +48,7 @@ class SiteDriftEngine implements IacEngine {
   readonly calls: string[] = [];
   readonly stateResources = plainStateResources;
   async untaint(): Promise<void> {}
+  async stateRemove(): Promise<void> {}
   async importResource(): Promise<void> {}
   async providerSchemas(): Promise<unknown> {
     return {};

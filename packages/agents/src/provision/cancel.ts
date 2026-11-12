@@ -7,8 +7,13 @@
  * `../destroy` barrel would make an import cycle). Servers at Hetzner and DigitalOcean are deleted
  * at once and never reach this module.
  */
-import type { PhaseName } from "@opscrew/contracts";
-import { APP_SERVER, type DeployPlan, isCloudProvider } from "@opscrew/plan-schema";
+import type { PhaseName, ServerSnapshotApi } from "@opscrew/contracts";
+import {
+  APP_SERVER,
+  type CloudProvider,
+  type DeployPlan,
+  isCloudProvider,
+} from "@opscrew/plan-schema";
 import { CLOUD_PROVIDERS } from "@opscrew/providers";
 import type { PhaseDeps } from "../context";
 import {
@@ -127,10 +132,7 @@ function providerCalls(
 ): { scope: DeletionScope; servers: PlannedCancel[]; input: ServerApiInput }[] {
   const { deps, plan, services } = ctx;
   return byProvider(cancelledByPlan(plan, saved)).map(([provider, servers]) => {
-    const api =
-      provider === plan.target.provider
-        ? services.provider?.servers
-        : services.providers?.[provider]?.servers;
+    const api = givenServers(ctx, provider);
     return {
       scope: {
         deps,
@@ -148,6 +150,16 @@ function providerCalls(
       },
     };
   });
+}
+
+/** The server API of `provider` the run was given (tests): its plan provider's, or another's. */
+export function givenServers(
+  ctx: Pick<ProvisionCancel, "plan" | "services">,
+  provider: CloudProvider,
+): ServerSnapshotApi | undefined {
+  return provider === ctx.plan.target.provider
+    ? ctx.services.provider?.servers
+    : ctx.services.providers?.[provider]?.servers;
 }
 
 /**

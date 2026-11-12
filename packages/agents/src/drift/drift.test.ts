@@ -114,6 +114,7 @@ class DriftEngine implements IacEngine {
   initOptions: IacInitOptions | undefined;
   readonly stateResources = plainStateResources;
   async untaint(): Promise<void> {}
+  async stateRemove(): Promise<void> {}
   async importResource(): Promise<void> {}
 
   constructor(readonly scenario: DriftScenario = {}) {

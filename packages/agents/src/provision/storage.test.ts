@@ -1149,6 +1149,9 @@ class BackupsRootEngine implements IacEngine {
   untaint(dir: string, address: string, options?: IacRunOptions) {
     return this.#pick(dir, options).untaint(dir, address, options);
   }
+  stateRemove(dir: string, addresses: readonly string[], options?: IacRunOptions) {
+    return this.#pick(dir, options).stateRemove(dir, addresses, options);
+  }
   importResource(dir: string, address: string, id: string, options?: IacRunOptions) {
     return this.#pick(dir, options).importResource(dir, address, id, options);
   }

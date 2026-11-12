@@ -531,7 +531,8 @@ export async function destroyOwnServer(
     if (removed !== undefined) return removed;
     throw nothingDeployed(plan);
   }
-  const scope = teardownScope(deps, plan, "own");
+  // An extra server its provider's connector removes is cancelled through `services.servers`.
+  const scope = { ...teardownScope(deps, plan, "own"), servers: services.servers };
   // The extra servers OpsCrew created are in the same root module: deleted with the rest, each
   // after its own typed name, with Hetzner's delete protection lifted first.
   const extras = extraCloudServers(given);

@@ -172,6 +172,12 @@ export interface IacEngine {
    */
   untaint(dir: string, address: string, options?: IacRunOptions): Promise<void>;
   /**
+   * Runs `state rm <addresses…>` in `dir` after `init`, against the root's configured state, with
+   * the same `options.env` as every other command. A state-only change: the resources stay in the
+   * cloud and are no longer managed. A failure throws `ENGINE_FAILED` naming the addresses.
+   */
+  stateRemove(dir: string, addresses: readonly string[], options?: IacRunOptions): Promise<void>;
+  /**
    * Runs `import -input=false -no-color <address> <id>` in `dir` after `init`, against the root's
    * configured state, with the same `options.env` and `options.vars` as `plan` (the root's
    * `terraform.tfvars.json` is read as usual). A state-only change: it records an object that

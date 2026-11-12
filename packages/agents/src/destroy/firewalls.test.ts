@@ -1,9 +1,11 @@
-// `opscrew destroy` on Contabo, whose firewall its connector applies (ADR 0029, D8): the firewall
-// the state wanted is deleted after the teardown's apply, which cancels the server, and also when
-// Cloudflare refused only the tunnel of Portainer's subdomain in that apply (error 1022).
+// `opscrew destroy` on Contabo, whose firewall its connector applies (ADR 0029, D8) and whose
+// server its connector cancels (D10): after the shutdown, the server is cancelled through the
+// connector, taken out of the state, and the rest of the teardown planned again and applied; the
+// firewall the state wanted is deleted after that apply, and also when Cloudflare refused only the
+// tunnel of Portainer's subdomain in it (error 1022).
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { ResourceChange } from "@opscrew/contracts";
+import type { AppServer, ResourceChange } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { cloudTarget } from "@opscrew/iac-templates";
@@ -55,6 +57,13 @@ const RESOURCES: ResourceChange[] = [
 class CancellingServers extends FakeServers {
   override async powerOff(serverId?: string): Promise<void> {
     this.events.push(`power-off:${serverId}`);
+  }
+
+  // Contabo lists a cancelled instance with the day its contract ends.
+  override async findAppServers(app: string): Promise<AppServer[]> {
+    return (await super.findAppServers(app)).map((server) =>
+      this.cancelled.includes(server.id) ? { ...server, cancelledUntil: this.cancelDate } : server,
+    );
   }
 }
 
@@ -151,26 +160,91 @@ async function setup(tunnel = false) {
   await mkdir(join(project.root, plan.infra.dir), { recursive: true });
   await mkdir(dirname(deps.paths.files.knownHosts), { recursive: true });
   await writeFile(deps.paths.files.knownHosts, `${SERVER_IPV4} ${HOST_KEY}\n`);
+  const servers = new CancellingServers(events, "contabo");
   const services: DestroyServices = {
     engine: async () => engine,
     provider: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
-    servers: new CancellingServers(events, "contabo"),
+    servers,
     cloudflare: fakeCloudflare(),
     github: new FakeDestroyGitHub(events),
     sleep: async () => undefined,
     firewalls: { contabo: firewalls },
   };
-  return { deps, engine, events, firewalls, services };
+  return { deps, engine, events, firewalls, servers, services };
 }
 
-describe.skipIf(!findExecutable("git"))("runDestroy on Contabo and its firewall", () => {
+describe.skipIf(!findExecutable("git"))("runDestroy on Contabo's server and firewall", () => {
+  it("cancels the server through the connector after its shutdown, takes it out of the state and applies the rest planned again", async () => {
+    const s = await setup();
+    await runDestroy(s.deps, { services: s.services });
+    const teardown = s.events.filter((event) => !event.startsWith("secret:"));
+    expect(teardown).toEqual([
+      // The preview, then the teardown plan the user approves.
+      "plan:destroy",
+      "plan:destroy",
+      `power-off:${SERVER_ID}`,
+      `cancel:${SERVER_ID}`,
+      "state-rm:module.server.contabo_instance.this",
+      "plan:destroy",
+      "apply:destroy",
+      "remove shop-firewall",
+    ]);
+    // The approved plan listed the server's deletion; the plan applied is it without that.
+    const [, approved, again] = s.engine.planFiles;
+    expect(s.engine.applied.map((a) => a.planFile)).toEqual([again]);
+    expect(again).toBe(approved?.replace(/.tfplan$/, "-rest.tfplan"));
+    const audit = s.deps.audit.entries;
+    expect(audit).toContainEqual(
+      expect.objectContaining({
+        kind: "provider-call",
+        action: "cancelled server",
+        target: `contabo server ${SERVER_ID}`,
+        detail: "contract ends 2026-12-11",
+      }),
+    );
+    expect(audit).toContainEqual(expect.objectContaining({ kind: "iac", action: "plan again" }));
+    expect(s.deps.reporter.text()).toContain(
+      `success: Cancelled the Contabo server ${SERVER_ID}: its contract ends on 2026-12-11.`,
+    );
+    // The end date is still read back after the apply.
+    expect(s.deps.reporter.text()).toContain(
+      "info: The Contabo server shop is cancelled: its contract ends on 11 December 2026",
+    );
+    const plan = await readArtifact("plan", s.deps.paths.files.plan);
+    expect(plan.deployment.destroyedAt).toBeDefined();
+  });
+
+  it("stops before the state is touched when the cancel fails: nothing is deleted", async () => {
+    const s = await setup();
+    s.servers.cancelError = new OpsCrewError("PROVIDER_ERROR", "Contabo answered HTTP 400.");
+    await expect(runDestroy(s.deps, { services: s.services })).rejects.toMatchObject({
+      code: "PROVIDER_ERROR",
+      message: `OpsCrew could not cancel the Contabo server ${SERVER_ID}: Contabo answered HTTP 400. Nothing more was applied, and the infrastructure state is unchanged.`,
+    });
+    expect(s.events.filter((event) => !event.startsWith("plan:"))).toEqual([
+      `power-off:${SERVER_ID}`,
+      `cancel:${SERVER_ID}`,
+    ]);
+    expect(s.engine.calls).not.toContain("state-rm");
+    expect(s.engine.applied).toEqual([]);
+    expect(s.firewalls.firewalls.size).toBe(1);
+    const plan = await readArtifact("plan", s.deps.paths.files.plan);
+    expect(plan.deployment.destroyedAt).toBeUndefined();
+  });
+
   it("deletes the server's firewall after the apply that cancels the server, says and audits it", async () => {
     const s = await setup();
     await runDestroy(s.deps, { services: s.services });
     const teardown = s.events.filter(
       (event) => !event.startsWith("plan:") && !event.startsWith("secret:"),
     );
-    expect(teardown).toEqual([`power-off:${SERVER_ID}`, "apply:destroy", "remove shop-firewall"]);
+    expect(teardown).toEqual([
+      `power-off:${SERVER_ID}`,
+      `cancel:${SERVER_ID}`,
+      "state-rm:module.server.contabo_instance.this",
+      "apply:destroy",
+      "remove shop-firewall",
+    ]);
     expect(s.firewalls.firewalls.size).toBe(0);
     expect(s.deps.reporter.text()).toContain("success: Deleted Contabo's firewall shop-firewall.");
     expect(s.deps.audit.entries).toContainEqual(
@@ -199,10 +273,14 @@ describe.skipIf(!findExecutable("git"))("runDestroy on Contabo and its firewall"
     const s = await setup(true);
     await runDestroy(s.deps, { services: s.services });
     const teardown = s.events.filter((event) =>
-      ["power-off", "apply:", "remove", "poll"].some((kind) => event.startsWith(kind)),
+      ["power-off", "cancel", "state-rm", "apply:", "remove", "poll"].some((kind) =>
+        event.startsWith(kind),
+      ),
     );
     expect(teardown).toEqual([
       `power-off:${SERVER_ID}`,
+      `cancel:${SERVER_ID}`,
+      "state-rm:module.server.contabo_instance.this",
       "apply:destroy",
       "remove shop-firewall",
       "poll",

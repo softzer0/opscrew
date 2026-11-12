@@ -207,7 +207,7 @@ export const definition: CloudProviderDefinition = {
     serverResourceType: "contabo_instance",
     firewallResourceType: FIREWALL,
     connectorFirewall: true,
-    connectorRemoval: false,
+    connectorRemoval: true,
     homeCacheFiles: [".cache/contabo/terraform/token"],
     mirroredAttributes: {},
     lifecycleIgnored: ["add_ons", "default_user", "image_id", "period", "ssh_keys", "user_data"],

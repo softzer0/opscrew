@@ -127,6 +127,13 @@ export function contaboServerApi(client: ContaboClient): ServerSnapshotApi {
       await client.instanceAction(id, "start");
       await client.waitForStatus(id, "running", { timeoutMs: ACTION_TIMEOUT_MS });
     },
+
+    async cancelServer(serverId: string): Promise<string> {
+      const id = instanceId(serverId);
+      // Cancelled already (a removal run again after a stop): its end date, never a second cancel.
+      const { cancelDate } = await client.getInstance(id);
+      return cancelDate || client.cancelInstance(id);
+    },
   };
 }
 

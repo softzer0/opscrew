@@ -9,7 +9,9 @@ import { APP, type MoveEvent, type MoveHarness } from "../../testing";
 /**
  * SC-502: every apply follows an approval of the same plan hash, and an apply that deletes follows
  * an approval with `allowDestroy` and the typed app name (plus the typed confirmation hook when
- * `typed` is set, as in interactive runs).
+ * `typed` is set, as in interactive runs). A plan made again after a server was removed through
+ * its connector (ADR 0029, D10) is the approved plan without that server's deletion: the approval
+ * of the plan that the server's cancel and state removal followed gates it.
  */
 export function expectGated(events: readonly MoveEvent[], typed = false): void {
   const applies = events.flatMap((event, index) =>
@@ -17,9 +19,19 @@ export function expectGated(events: readonly MoveEvent[], typed = false): void {
   );
   for (const { event, index } of applies) {
     const before = events.slice(0, index);
-    const approval = before.findLast(
+    const removal = before.findLastIndex((e) => e.type === "state-rm");
+    const planned = before.findLastIndex((e) => e.type === "plan" && e.hash === event.hash);
+    // The first plan right after the state removal, no other plan in between.
+    const madeAgain =
+      removal >= 0 &&
+      planned > removal &&
+      !before.slice(removal + 1, planned).some((e) => e.type === "plan");
+    const approval = (madeAgain ? before.slice(0, removal) : before).findLast(
       (e) =>
-        e.type === "approval" && e.kind === "iac-apply" && e.approved && e.planHash === event.hash,
+        e.type === "approval" &&
+        e.kind === "iac-apply" &&
+        e.approved &&
+        (madeAgain || e.planHash === event.hash),
     );
     expect(approval, `approval before apply ${event.hash}`).toBeDefined();
     if (event.deletes.length > 0 && approval?.type === "approval") {

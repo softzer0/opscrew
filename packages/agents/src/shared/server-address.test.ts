@@ -89,6 +89,9 @@ class OutputEngine implements IacEngine {
   async untaint(): Promise<never> {
     throw new Error("untaint is not expected");
   }
+  async stateRemove(): Promise<never> {
+    throw new Error("state rm is not expected");
+  }
   async importResource(): Promise<never> {
     throw new Error("importResource is not expected");
   }

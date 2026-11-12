@@ -1,6 +1,8 @@
 // A provision on Contabo, whose firewall its connector applies after the apply (ADR 0029, D8): the
 // firewall is set once the apply is done and again by a run that plans nothing new, and the
-// firewall of a server design dropped goes after the apply that cancels it.
+// firewall of a server design dropped goes after the apply that removes it. Contabo's connector
+// cancels that server (D10): after its shutdown, then it leaves the state and the rest is planned
+// again and applied.
 import { join } from "node:path";
 import { FakeZone } from "@opscrew/connector-cloudflare/testing";
 import type { AppServer, IacApproval, ResourceChange } from "@opscrew/contracts";
@@ -52,6 +54,11 @@ class EventEngine extends FakeEngine {
     this.events.push("apply");
     return super.apply(dir, planFile, approval);
   }
+
+  override async stateRemove(dir: string, addresses: readonly string[]) {
+    this.events.push(`state-rm:${addresses.join(",")}`);
+    return super.stateRemove(dir, addresses);
+  }
 }
 
 async function setup(scenario: ConstructorParameters<typeof FakeEngine>[0]) {
@@ -71,6 +78,11 @@ async function setup(scenario: ConstructorParameters<typeof FakeEngine>[0]) {
     ],
     powerOff: async (id: string) => {
       events.push(`power-off:${id}`);
+    },
+    // Contabo's Terraform cannot cancel a server: its connector does (ADR 0029, D10).
+    cancelServer: async (id: string) => {
+      events.push(`cancel:${id}`);
+      return "2026-12-11";
     },
   };
   const unexpected = async (): Promise<never> => {
@@ -181,6 +193,8 @@ describe.skipIf(!findExecutable("git"))("runProvision on Contabo and its firewal
     await runProvision(s.deps, { services: s.services });
     expect(s.events).toEqual([
       `power-off:${DATA_ID}`,
+      `cancel:${DATA_ID}`,
+      `state-rm:${REMOVAL[0]?.address}`,
       "apply",
       "remove shop-data-firewall",
       "sync shop-firewall",
@@ -188,6 +202,27 @@ describe.skipIf(!findExecutable("git"))("runProvision on Contabo and its firewal
     expect(s.deps.reporter.text()).toContain(
       "success: Deleted Contabo's firewall shop-data-firewall.",
     );
+    // The plan applied is the approved one made again without the server's deletion.
+    expect(s.engine.applied.map((a) => a.planFile.endsWith("-rest.tfplan"))).toEqual([true]);
+    expect(s.deps.reporter.text()).toContain(
+      `success: Cancelled the Contabo server ${DATA_ID}: its contract ends on 2026-12-11.`,
+    );
+  });
+
+  it("stops before the state is touched when Contabo refuses the cancel", async () => {
+    const s = await setup(removal());
+    const servers = s.services.provider?.servers;
+    if (servers === undefined) throw new Error("no servers");
+    servers.cancelServer = async (id: string) => {
+      s.events.push(`cancel:${id}`);
+      throw new OpsCrewError("PROVIDER_ERROR", "Contabo answered HTTP 400.");
+    };
+    await expect(runProvision(s.deps, { services: s.services })).rejects.toMatchObject({
+      code: "PROVIDER_ERROR",
+      message: `OpsCrew could not cancel the Contabo server ${DATA_ID}: Contabo answered HTTP 400. Nothing more was applied, and the infrastructure state is unchanged.`,
+    });
+    expect(s.events).toEqual([`power-off:${DATA_ID}`, `cancel:${DATA_ID}`]);
+    expect(s.engine.stateRemoved).toEqual([]);
   });
 
   it("still shows and audits when a cancelled server's contract ends when the firewall cannot be set", async () => {
@@ -198,6 +233,8 @@ describe.skipIf(!findExecutable("git"))("runProvision on Contabo and its firewal
     });
     expect(s.events).toEqual([
       `power-off:${DATA_ID}`,
+      `cancel:${DATA_ID}`,
+      `state-rm:${REMOVAL[0]?.address}`,
       "apply",
       "remove shop-data-firewall",
       "sync shop-firewall",

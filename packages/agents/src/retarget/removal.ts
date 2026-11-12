@@ -98,6 +98,7 @@ export function moveRemoval(
       what: `removal of the ${which} server`,
       phase: "retarget",
       firewalls: session.services.firewalls,
+      servers: session.services.servers?.[provider],
     },
     { engine: session.engine, env: session.env, dir: session.dir },
   );

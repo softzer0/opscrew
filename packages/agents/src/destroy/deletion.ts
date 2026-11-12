@@ -37,6 +37,7 @@ import {
   readValidJson,
   refusalReason,
 } from "../shared";
+import { type ApprovedPlan, applyWithConnectorRemoval } from "../shared/connector-removal";
 import { type FirewallApis, removeFirewalls } from "../shared/firewalls";
 import {
   type DeletionBounds,
@@ -80,6 +81,11 @@ export interface DeletionScope {
    * apply that removes a server deletes its firewall too.
    */
   firewalls?: FirewallApis | undefined;
+  /**
+   * The server API of the providers whose connector removes their servers (default: their
+   * connectors'): an apply that removes such a server cancels it through this first.
+   */
+  servers?: ServerSnapshotApi | undefined;
 }
 
 /** A deletion of a provider's server, which may have snapshots and delete protection. */
@@ -108,19 +114,34 @@ export function deletionSession<S extends DeletionScope>(
   };
 }
 
+/** How {@link savePlan} plans: its `-var`s, and whether it plans a destroy. */
+export interface SavePlanOptions {
+  vars?: Readonly<Record<string, string>>;
+  destroy?: boolean;
+}
+
+/** Plans into `file` with `options`, as {@link savePlan} does. */
+function planInto(
+  session: DeletionSession,
+  file: string,
+  options: SavePlanOptions,
+): Promise<PlanSummary> {
+  return session.engine.plan(session.dir, file, {
+    env: session.env,
+    ...(options.vars ? { vars: { ...options.vars } } : {}),
+    ...(options.destroy ? { destroy: true } : {}),
+  });
+}
+
 /** Saves a plan under `.opscrew/plans/<stamp>-<suffix>.tfplan`; removes the file on failure. */
 export async function savePlan(
   session: DeletionSession,
   suffix: string,
-  options: { vars?: Readonly<Record<string, string>>; destroy?: boolean } = {},
+  options: SavePlanOptions = {},
 ): Promise<PlanSummary> {
   const file = join(session.deps.paths.files.plansDir, `${session.stamp}-${suffix}.tfplan`);
   try {
-    return await session.engine.plan(session.dir, file, {
-      env: session.env,
-      ...(options.vars ? { vars: { ...options.vars } } : {}),
-      ...(options.destroy ? { destroy: true } : {}),
-    });
+    return await planInto(session, file, options);
   } catch (error) {
     await rm(file, { force: true });
     throw error;
@@ -134,14 +155,23 @@ export async function discardPlan(summary: PlanSummary): Promise<void> {
 
 /**
  * Applies an approved saved plan (the caller has asked for the approval and checked it with
- * `assertApprovedPlan`), audits the outcome and stops with the redacted log tail on failure. Once
- * applied, the firewalls of the servers it removed that the providers' connectors apply (ADR 0029,
- * D8) are deleted: those its plan's state wanted (`summary.planJson`) and the state wants no more.
+ * `assertApprovedPlan`), audits the outcome and stops with the redacted log tail on failure. With
+ * `planOptions`, a server in it that its provider's Terraform cannot remove is removed through its
+ * connector first, and the rest planned again with them (`applyWithConnectorRemoval`, ADR 0029,
+ * D10). Once applied, the firewalls of the servers it removed that the providers' connectors apply
+ * (ADR 0029, D8) are deleted: those its plan's state wanted (`summary.planJson`) and the state
+ * wants no more.
  */
 export async function applyApprovedPlan(
   session: DeletionSession,
-  summary: Pick<PlanSummary, "planFile" | "planHash"> & { planJson?: unknown },
-  options: { allowDestroy: boolean; what: string; hint: string },
+  summary: ApprovedPlan,
+  options: {
+    allowDestroy: boolean;
+    what: string;
+    hint: string;
+    /** The options the plan was made with (`savePlan`'s), for a plan that may remove servers. */
+    planOptions?: SavePlanOptions;
+  },
 ): Promise<void> {
   const { deps } = session;
   const audit = (ok: boolean) =>
@@ -154,13 +184,19 @@ export async function applyApprovedPlan(
       decision: ok ? "approved" : "refused",
       detail: `${options.what}: ${ok ? "apply finished" : "apply failed"}`,
     });
+  const { planOptions } = options;
   let result: Awaited<ReturnType<IacEngine["apply"]>>;
   try {
-    result = await session.engine.apply(
-      session.dir,
-      summary.planFile,
-      { approvedPlanHash: summary.planHash, allowDestroy: options.allowDestroy },
-      { env: session.env },
+    const { phase, command, engine, dir, env } = session;
+    result = await applyWithConnectorRemoval(
+      { deps, phase, command, engine, dir, env, servers: () => session.servers },
+      summary,
+      {
+        allowDestroy: options.allowDestroy,
+        ...(planOptions !== undefined
+          ? { replan: (file: string) => planInto(session, file, planOptions) }
+          : {}),
+      },
     );
   } catch (error) {
     await audit(false);

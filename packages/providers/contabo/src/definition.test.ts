@@ -3,9 +3,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CLOUD_PROVIDER_CONTRACT_VERSION, type PlannedResourceJson } from "@opscrew/contracts";
-import { findExecutable, NodeCommandRunner } from "@opscrew/core";
+import { findExecutable, NodeCommandRunner, Redactor } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
 import { collectProviderModule } from "../../../../scripts/gen-provider-modules";
+import { CREDENTIALS_ENV } from "./__fixtures__/fixtures";
 import { definition } from "./index";
 
 const packageDir = fileURLToPath(new URL("..", import.meta.url));
@@ -146,6 +147,13 @@ describe("Contabo's cloud provider definition", () => {
     expect(previous).toContainEqual(["http_allowed_cidrs", "var.http_allowed_cidrs"]);
     expect(previous.map(([name]) => name)).not.toContain("app_tag_id");
     expect(extraShared.sshKeyId).toBe("coalesce(contabo_secret.deploy.id)");
+  });
+
+  // Its Terraform provider sends the cancel without the body Contabo requires (research R8).
+  it("removes a server through the connector, which can cancel one", () => {
+    expect(definition.terraform.connectorRemoval).toBe(true);
+    const connector = definition.connector({ env: CREDENTIALS_ENV, redactor: new Redactor() });
+    expect(connector.servers?.cancelServer).toBeTypeOf("function");
   });
 
   it("describes the firewall in the module, for the connector to apply, and keeps no login", () => {

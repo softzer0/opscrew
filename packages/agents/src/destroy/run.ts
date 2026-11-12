@@ -354,6 +354,7 @@ async function destroyInfrastructure(
     try {
       await applyApprovedPlan(tunnel ? { ...session, engine } : session, summary, {
         allowDestroy: true,
+        planOptions: { ...(ctx.vars ? { vars: ctx.vars } : {}), destroy: true },
         what: cancel
           ? `cancelling ${cancel.text} and deleting the rest`
           : "deleting the infrastructure",
@@ -660,7 +661,11 @@ async function destroyDeployment(
   const setup = await setupEngine(deps, plan, options);
   const { engine, env } = setup;
   const session = deletionSession(
-    { ...teardownScope(deps, plan, provider), firewalls: services.firewalls },
+    {
+      ...teardownScope(deps, plan, provider),
+      firewalls: services.firewalls,
+      servers: services.servers,
+    },
     { ...setup, dir: join(deps.paths.root, plan.infra.dir) },
   );
   // Delete protection off for the app's server and each extra Hetzner server, where it exists.

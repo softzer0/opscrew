@@ -320,6 +320,47 @@ describe("servers revert and power", () => {
     expect(calls().some((call) => call.endsWith("/actions/stop"))).toBe(false);
   });
 
+  // Contabo's Terraform provider sends this cancel without a body, which fails before calling
+  // Contabo; with `{}` it answered HTTP 200 and the day the contract ends (research R8).
+  it("cancels the instance with an empty body and answers the day its contract ends", async () => {
+    const { api, calls, fake } = setup({
+      "GET /v1/compute/instances/101": instance(101, "stopped"),
+      "POST /v1/compute/instances/101/cancel": {
+        body: {
+          data: [{ tenantId: "DE", customerId: "1", instanceId: 101, cancelDate: "2026-12-11" }],
+        },
+      },
+    });
+    expect(await api.cancelServer?.("101")).toBe("2026-12-11");
+    expect(calls()).toEqual([
+      "GET /v1/compute/instances/101",
+      "POST /v1/compute/instances/101/cancel",
+    ]);
+    expect(fake.calls.at(-1)?.body).toEqual({});
+  });
+
+  it("answers the end date of an instance already cancelled, without a second cancel", async () => {
+    const { api, calls } = setup({
+      "GET /v1/compute/instances/101": instance(101, "stopped", { cancelDate: "2026-12-11" }),
+    });
+    expect(await api.cancelServer?.("101")).toBe("2026-12-11");
+    expect(calls()).toEqual(["GET /v1/compute/instances/101"]);
+  });
+
+  it("says what Contabo answered when it refuses the cancel", async () => {
+    const { api } = setup({
+      "GET /v1/compute/instances/101": instance(101, "stopped"),
+      "POST /v1/compute/instances/101/cancel": {
+        status: 400,
+        body: { statusCode: 400, message: "Instance cannot be cancelled" },
+      },
+    });
+    const error = await failure(api.cancelServer?.("101") ?? Promise.resolve());
+    expect(error.message).toBe(
+      "Contabo answered HTTP 400 to POST /v1/compute/instances/101/cancel: Instance cannot be cancelled",
+    );
+  });
+
   it("powers on and waits until the instance runs", async () => {
     const { api, calls } = setup({
       "POST /v1/compute/instances/101/actions/start": { status: 201, body: { data: [] } },

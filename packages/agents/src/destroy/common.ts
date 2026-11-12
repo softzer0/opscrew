@@ -63,6 +63,7 @@ import {
   type DeletionSession,
   discardPlan,
   previewDeletion,
+  type SavePlanOptions,
   savePlan,
 } from "./deletion";
 import type { DeletionProvider, DestroyGitHubApi, DestroyOptions, DestroyServices } from "./types";
@@ -331,6 +332,8 @@ export interface CloudflareRemovalWords {
 /** The Cloudflare part of the teardown, planned and approved but not applied yet. */
 export interface CloudflareRemoval {
   summary: PlanSummary;
+  /** The options its plan was made with, for an extra server removed through its connector. */
+  planOptions: SavePlanOptions;
   approval: ApprovalRecord;
   /** The plan deletes the app's Cloudflare Tunnel: it is applied after the app is gone. */
   tunnel: boolean;
@@ -447,10 +450,11 @@ export async function approveCloudflareRemoval(
   const { deps, app: name } = session;
   const { words } = input;
   deps.reporter.step(`Planning the removal of the app's ${words.what}`);
-  const summary = await savePlan(session, "destroy", {
+  const planOptions: SavePlanOptions = {
     destroy: true,
     ...(input.vars !== undefined ? { vars: input.vars } : {}),
-  });
+  };
+  const summary = await savePlan(session, "destroy", planOptions);
   try {
     if (summary.changes.length === 0) {
       deps.reporter.info("Nothing is left to delete on Cloudflare.");
@@ -502,7 +506,7 @@ export async function approveCloudflareRemoval(
       );
     }
     await deps.approvals.assertApprovedPlan(summary.planHash, { allowDestroy: true });
-    return { summary, approval, tunnel, words };
+    return { summary, planOptions, approval, tunnel, words };
   } catch (error) {
     await discardPlan(summary);
     throw error;
@@ -522,7 +526,7 @@ export async function applyCloudflareRemoval(
   sleep: ((ms: number) => Promise<void>) | undefined,
 ): Promise<ResourceChange[]> {
   const { deps } = session;
-  const { summary, words } = removal;
+  const { summary, planOptions, words } = removal;
   const left = `The app is removed from ${words.place}; its Cloudflare resources are still there.`;
   try {
     const engine = tunnelSafeEngine(session.engine);
@@ -537,6 +541,7 @@ export async function applyCloudflareRemoval(
     try {
       await applyApprovedPlan(removal.tunnel ? { ...session, engine } : session, summary, {
         allowDestroy: true,
+        planOptions,
         what: "deleting the Cloudflare resources",
         hint: removal.tunnel
           ? `${left} Fix the cause shown above, then run \`opscrew destroy\` again to finish; it continues with what is left.`

@@ -359,6 +359,7 @@ export async function deletionStep(
     deps.reporter.step(upperFirst(input.what));
     await applyApprovedPlan(del, summary, {
       allowDestroy: input.allowDestroy,
+      planOptions: input.vars ? { vars: input.vars } : {},
       what: input.what,
       hint: input.hint,
     });

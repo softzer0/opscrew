@@ -1,7 +1,9 @@
 /**
  * A move to or from Contabo, whose firewall its connector applies after the apply (ADR 0029, D8):
  * the new server's firewall is set once the apply that creates it is done, and the firewall of the
- * server `--finish` or `--abort` removes is deleted after the apply that removes it.
+ * server `--finish` or `--abort` removes is deleted after the apply that removes it. Contabo's
+ * connector cancels that server (D10): it is cancelled after its shutdown and taken out of the
+ * state, and the rest of the removal is planned again and applied.
  */
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
@@ -12,10 +14,12 @@ import { finishRetarget } from "./finish";
 
 const FIREWALL = "shop-firewall";
 
-/** The applies (with what they create or delete) and the firewall calls, in order. */
+/** The applies (with what they create or delete), the cancels and the firewall calls, in order. */
 function firewallTrail(events: readonly MoveEvent[]): string[] {
   return events.flatMap((event) => {
     if (event.type === "firewall") return [event.op];
+    if (event.type === "cancel") return [`cancel ${event.serverId}`];
+    if (event.type === "state-rm") return [`state rm ${event.addresses.join(", ")}`];
     if (event.type !== "apply") return [];
     const creates = event.creates.some((a) => a.endsWith(".terraform_data.firewall"));
     const deletes = event.deletes.some((a) => a.endsWith(".terraform_data.firewall"));
@@ -49,6 +53,8 @@ describe.skipIf(!findExecutable("git"))("a move and Contabo's firewall", () => {
     // The new server is shut down, then cancelled with its other resources; its firewall goes.
     expect(h.poweredOff).toEqual([NEW_SERVERS.contabo.id]);
     expect(firewallTrail(h.events.slice(mark))).toEqual([
+      `cancel ${NEW_SERVERS.contabo.id}`,
+      "state rm module.server.contabo_instance.this",
       "apply deleting it",
       `remove ${FIREWALL}`,
       "apply",
@@ -75,6 +81,8 @@ describe.skipIf(!findExecutable("git"))("a move and Contabo's firewall", () => {
     await finish(h);
     expect(h.poweredOff).toEqual([OLD_IDS.contabo]);
     expect(firewallTrail(h.events.slice(mark))).toEqual([
+      `cancel ${OLD_IDS.contabo}`,
+      "state rm module.server_previous.contabo_instance.this",
       "apply deleting it",
       `remove ${FIREWALL}`,
     ]);

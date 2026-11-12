@@ -350,6 +350,23 @@ export class ContaboClient {
   }
 
   /**
+   * Cancels an instance at the end of its term (`POST …/cancel`) and answers the day its contract
+   * ends. The body `{}` is required: without one Contabo's own Terraform provider fails before
+   * calling it (research R8).
+   */
+  async cancelInstance(instanceId: number): Promise<string> {
+    const body = await this.#request(
+      "POST",
+      `/v1/compute/instances/${instanceId}/cancel`,
+      z.looseObject({
+        data: z.array(z.looseObject({ cancelDate: z.string().min(1) })).length(1),
+      }),
+      { body: {} },
+    );
+    return (body.data[0] as { cancelDate: string }).cancelDate;
+  }
+
+  /**
    * Reads the instance every 5 seconds until its status is `status`. An instance in `error`, and
    * one in another status after `timeoutMs`, throw `PROVIDER_ERROR` naming its status.
    */

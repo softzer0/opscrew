@@ -120,6 +120,8 @@ const HINTS: Record<string, string> = {
     "Read the error above, fix the cause, then run the command again. An import changes only the state, never the cloud.",
   untaint:
     "Run init again in the infrastructure folder and check, for OpenTofu state encryption, that the state passphrase on this computer is the one that encrypted it, then try again.",
+  "state rm":
+    "Nothing in the cloud changed. Run init again in the infrastructure folder and check, for OpenTofu state encryption, that the state passphrase on this computer is the one that encrypted it, then try again.",
 };
 
 /**
@@ -425,6 +427,27 @@ class Engine implements IacEngine {
     this.assertOk("untaint", result, options.timeoutMs);
   }
 
+  async stateRemove(
+    dir: string,
+    addresses: readonly string[],
+    options: IacRunOptions = {},
+  ): Promise<void> {
+    // State commands always back the whole state up, by default into the root as
+    // `terraform.tfstate.<time>.backup`: a scratch folder takes it and is removed afterwards.
+    const scratch = await mkdtemp(path.join(tmpdir(), "opscrew-state-"));
+    try {
+      const step = "state rm";
+      const backup = `-backup=${path.join(scratch, "backup.tfstate")}`;
+      const args = ["state", "rm", "-no-color", backup, ...addresses];
+      const result = await this.exec(step, path.resolve(dir), args, options);
+      if (result.timedOut || result.exitCode !== 0) {
+        throw this.failure(step, result, options.timeoutMs, addresses.join(" "));
+      }
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  }
+
   async importResource(
     dir: string,
     address: string,
@@ -583,10 +606,12 @@ class Engine implements IacEngine {
     if (result.timedOut || result.exitCode !== 0) throw this.failure(step, result, timeoutMs);
   }
 
+  /** The error of a failed `step`; `subject` (what it ran on) follows the step in its message. */
   private failure(
     step: string,
     result: CommandResult,
     timeoutMs: number = COMMAND_TIMEOUT_MS,
+    subject?: string,
   ): OpsCrewError {
     const output = this.redactor.redact(
       tail(result.stderr.trim() !== "" ? result.stderr : result.stdout),
@@ -594,7 +619,8 @@ class Engine implements IacEngine {
     const what = result.timedOut
       ? `timed out after ${durationText(timeoutMs)}`
       : `failed (exit code ${result.exitCode})`;
-    const message = `${this.label} ${step} ${what}.${output ? `\n${output}` : ""}`;
+    const ran = subject === undefined ? step : `${step} ${subject}`;
+    const message = `${this.label} ${ran} ${what}.${output ? `\n${output}` : ""}`;
     return new OpsCrewError("ENGINE_FAILED", message, {
       hint: HINTS[step] ?? "Fix the problem above, then try again.",
     });

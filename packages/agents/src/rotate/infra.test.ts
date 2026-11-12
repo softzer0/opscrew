@@ -270,6 +270,7 @@ class CryptEngine implements IacEngine {
     return {};
   }
   async untaint(): Promise<void> {}
+  async stateRemove(): Promise<void> {}
   async importResource(): Promise<void> {}
 }
 

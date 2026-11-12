@@ -313,6 +313,9 @@ describe("Cloudflare's error 1022", () => {
       untaint: async () => {
         order.push("untaint");
       },
+      stateRemove: async () => {
+        order.push("state rm");
+      },
       importResource: async () => {
         order.push("import");
       },

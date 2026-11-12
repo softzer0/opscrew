@@ -13,6 +13,7 @@ import {
   type PlanSummary,
   type PolicyResult,
   SEVERITIES,
+  type ServerSnapshotApi,
   type VpsProviderId,
 } from "@opscrew/contracts";
 import {
@@ -30,6 +31,7 @@ import { checkDialect, engineLabel, hashFile } from "@opscrew/iac-engine";
 import type { RenderedFile } from "@opscrew/iac-templates";
 import { usesTunnel } from "@opscrew/iac-templates";
 import {
+  type CloudProvider,
   type DeployPlan,
   isCloudTarget,
   isServerlessProvider,
@@ -42,6 +44,7 @@ import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { planProvider, providerProfile, vpsConnector } from "../providers";
 import { describeChanges, PlanRefusedError } from "../shared";
+import { applyWithConnectorRemoval } from "../shared/connector-removal";
 import { type FirewallApis, removeFirewalls, syncFirewalls } from "../shared/firewalls";
 import { engineErrorBlocks } from "../shared/tunnel-connections";
 import { neededScopes } from "./credentials";
@@ -137,6 +140,16 @@ export interface PlanAndApplyOptions {
   redesignHint?: string;
   /** The firewalls of the providers whose connector applies them (default: their connectors'). */
   firewalls?: FirewallApis | undefined;
+  /**
+   * The server API of a provider whose connector removes its servers (default: its connector's):
+   * a server the plan removes there is cancelled through it before the apply (ADR 0029, D10).
+   */
+  servers?: ((provider: CloudProvider) => ServerSnapshotApi | undefined) | undefined;
+}
+
+/** How a plan is made: `plan -destroy` with `destroy`. The same for a plan made again. */
+function planRunOptions(options: Pick<PlanAndApplyOptions, "env" | "destroy">) {
+  return { env: options.env, ...(options.destroy === true ? { destroy: true } : {}) };
 }
 
 /** Engine log text meaning an API refused the token's permissions (HTTP 403, read-only token). */
@@ -576,10 +589,7 @@ async function freshPlan(deps: PhaseDeps, options: PlanAndApplyOptions): Promise
       ? "Planning the removal of the current infrastructure"
       : "Planning the infrastructure changes",
   );
-  const summary = await engine.plan(dir, planFile, {
-    env,
-    ...(options.destroy === true ? { destroy: true } : {}),
-  });
+  const summary = await engine.plan(dir, planFile, planRunOptions(options));
   // Policies, summaries and the saved sidecar only ever see non-sensitive values.
   const planJson = maskSensitivePlanJson(summary.planJson);
   return savedPlanOf({ ...summary, planJson }, evaluatePlanPolicies(planJson, options.deployPlan));
@@ -785,11 +795,23 @@ export async function planAndApply(
       ? "Applying the plan (it only renames resources in the infrastructure state)"
       : "Applying the plan (this usually takes one to three minutes)",
   );
-  const result = await engine.apply(
-    dir,
-    saved.planFile,
-    { approvedPlanHash: saved.planHash, allowDestroy: saved.hasDestroy },
-    { env },
+  // A server its provider's Terraform cannot remove is cancelled through its connector first,
+  // and the rest planned again (ADR 0029, D10).
+  const result = await applyWithConnectorRemoval(
+    {
+      deps,
+      phase: options.phase ?? "provision",
+      command,
+      engine,
+      dir,
+      env,
+      servers: options.servers,
+    },
+    saved,
+    {
+      allowDestroy: saved.hasDestroy,
+      replan: (planFile) => engine.plan(dir, planFile, planRunOptions(options)),
+    },
   );
   await deps.audit.append({
     kind: "iac",
