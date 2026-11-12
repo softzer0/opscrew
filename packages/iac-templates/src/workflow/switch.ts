@@ -12,8 +12,9 @@ import {
   type EdgeProxy,
   edgeProxy,
   type LocalhostSite,
-  openlitespeedNotYet,
-  otherProxy,
+  OPENLITESPEED_COMMAND,
+  openlitespeedCachePurge,
+  otherProxies,
 } from "../edge";
 import { LOCALHOST_TLS, localhostSite } from "../edge/localhost";
 import {
@@ -580,13 +581,60 @@ export function resumeRequests(plan: DeployPlan): string {
  * first deploy registers the first target the same way. Containers of
  * services the Compose file no longer has go with the new copy's start. When the new copy never
  * becomes healthy, the `failed` lines run (they print why), the copy is removed and the script
- * exits 1. `hosts` are kamal-proxy's for the service ({@link proxyHosts}).
+ * exits 1. `hosts` are kamal-proxy's for the service ({@link proxyHosts}). On OpenLiteSpeed the
+ * switch ends with {@link afterSwitch}.
  */
 export function switchApp(
   plan: DeployPlan,
   hosts: string,
   failed: readonly string[],
   onExit: readonly string[] = [],
+): string[] {
+  return [...switchLines(plan, hosts, failed, onExit), ...afterSwitch(plan)];
+}
+
+/**
+ * Takes the server's edge lock (fd 9 on `/srv/edge/.lock`), which every app's deploy holds while
+ * it changes the edge; on this computer only where `flock` exists (Git for Windows and macOS have
+ * none; the local deploy serialises itself there).
+ */
+function takeEdgeLock(plan: DeployPlan): string {
+  return plan.target.provider === "localhost"
+    ? "if command -v flock > /dev/null 2>&1; then flock 9; fi"
+    : "flock 9";
+}
+
+/** Shown when OpenLiteSpeed did not empty the cache or restart after the switch. */
+function afterSwitchFailed(plan: DeployPlan): string {
+  return `::error::The new version of ${plan.app.name} serves, but OpenLiteSpeed did not empty the app's page cache or did not restart after the switch, so it keeps its running configuration. The reason is above: fix its cause and deploy again.`;
+}
+
+/**
+ * On OpenLiteSpeed, once the new copy serves, under the edge's lock (so another app's deploy is
+ * never halfway through copying its site files): the app's page cache emptied, so nobody gets a
+ * page the version before left there (ADR 0031 D4), then the checked graceful restart that follows
+ * every change that moves a backend (D3). A refusal only says so: the new version serves, and
+ * OpenLiteSpeed keeps its running configuration. Nothing on Caddy and nginx.
+ */
+function afterSwitch(plan: DeployPlan): string[] {
+  if (edgeProxy(plan) !== "openlitespeed") return [];
+  const purge = `edge exec -T openlitespeed sh -c ${shellQuote(openlitespeedCachePurge(plan.app.name))} < /dev/null`;
+  return [
+    "(",
+    `  ${takeEdgeLock(plan)}`,
+    `  if ! ${purge} || ! ${RELOAD.openlitespeed}; then`,
+    `    echo ${shellQuote(afterSwitchFailed(plan))}`,
+    "  fi",
+    `) 9> ${EDGE}/.lock`,
+  ];
+}
+
+/** The switch of {@link switchApp}, by `deploy.strategy`. */
+function switchLines(
+  plan: DeployPlan,
+  hosts: string,
+  failed: readonly string[],
+  onExit: readonly string[],
 ): string[] {
   const { strategy, drainSeconds } = plan.deploy;
   const app = plan.app.name;
@@ -641,6 +689,12 @@ function healthFailed(plan: DeployPlan): string {
 /** The app's site as the server had it before this deploy, while the edge takes the new one. */
 const PREVIOUS_SITE = ".site.previous";
 
+/**
+ * OpenLiteSpeed's other site files (`<app>.vhost` and `<app>.map`), which its site before
+ * certbot's first certificate shares: kept as the server had them as `.site.previous.<file>`.
+ */
+const OPENLITESPEED_SHARED = ["vhost", "map"] as const;
+
 /** The app's additions as the server had them before this deploy, as {@link PREVIOUS_SITE}. */
 const PREVIOUS_ADDITIONS = ".additions.previous";
 
@@ -660,20 +714,41 @@ function edgeFailed(plan: DeployPlan, additions: boolean): string {
 }
 
 /**
- * Shown when the deploy switches the server's proxy (research.md R5): the interruption, which the
- * plan stated before its approval.
+ * The proxies a switch to `proxy` replaces, as its script knows them: OpenLiteSpeed's any other;
+ * Caddy's and nginx's only each other, as before OpenLiteSpeed (FR-2714 keeps their files as they
+ * were), so after a switch from OpenLiteSpeed to either, its site files stay unused and the
+ * messages name the other one.
  */
-function switchNotice(plan: DeployPlan): string {
-  const to = EDGE_PROXIES[edgeProxy(plan)].label;
-  const from = EDGE_PROXIES[otherProxy(edgeProxy(plan))].label;
-  const issuer = edgeProxy(plan) === "nginx" ? "certbot gets" : "Caddy gets";
+function replacedProxies(proxy: EdgeProxy): EdgeProxy[] {
+  return proxy === "openlitespeed" ? otherProxies(proxy) : [proxy === "caddy" ? "nginx" : "caddy"];
+}
+
+/**
+ * A line that prints `message(from)`, `from` naming the proxy a switch replaces: on OpenLiteSpeed
+ * the one the server ran (`$from`, from the stamp of its edge file), else
+ * {@link replacedProxies}' one.
+ */
+function sayFrom(plan: DeployPlan, message: (from: string) => string): string {
+  const proxy = edgeProxy(plan);
+  if (proxy === "openlitespeed") return `printf ${printfFormat(message("%s"))} "$from"`;
+  const [from = proxy] = replacedProxies(proxy);
+  return `echo ${shellQuote(message(EDGE_PROXIES[from].label))}`;
+}
+
+/**
+ * Shown when the deploy switches the server's proxy from `from` (research.md R5): the
+ * interruption, which the plan stated before its approval.
+ */
+function switchNotice(plan: DeployPlan, from: string): string {
+  const proxy = edgeProxy(plan);
+  const to = EDGE_PROXIES[proxy].label;
+  const issuer = proxy === "caddy" ? "Caddy gets" : "certbot gets";
   return `::notice::OpsCrew switches this server's proxy from ${from} to ${to} (target.edge in ${planFilePath(plan)}). kamal-proxy and the apps keep running; the sites stop for a few seconds while ${to} starts, and hostnames not proxied by Cloudflare have no HTTPS for under a minute while ${issuer} their certificates.`;
 }
 
-/** Shown when the switch failed and the server's previous proxy is back. */
-function switchFailed(plan: DeployPlan): string {
+/** Shown when the switch failed and the server's previous proxy, `from`, is back. */
+function switchFailed(plan: DeployPlan, from: string): string {
   const to = EDGE_PROXIES[edgeProxy(plan)].label;
-  const from = EDGE_PROXIES[otherProxy(edgeProxy(plan))].label;
   return `::error::The switch to ${to} did not work, so the server keeps ${from} as its proxy.`;
 }
 
@@ -691,9 +766,10 @@ function certbotFailed(hosts: readonly string[], site: string): string {
   return `::error::certbot could not get the certificate for ${hosts.join(", ")}, so ${site}, and the new version was not started. certbot's reason is above. ${LETS_ENCRYPT_LIMITS}`;
 }
 
-/** Shown when nginx refused the site with certbot's new certificate, after certbot got it. */
+/** Shown when the proxy refused the site with certbot's new certificate, after certbot got it. */
 function tlsSiteFailed(plan: DeployPlan): string {
-  return `::error::nginx did not accept this app's site (${siteFile(plan)}) with certbot's certificate, so the site it had stays (on HTTP only before its first certificate), and the new version was not started. nginx's error is above: fix its cause and push again.`;
+  const { label } = EDGE_PROXIES[edgeProxy(plan)];
+  return `::error::${label} did not accept this app's site (${siteFile(plan)}) with certbot's certificate, so the site it had stays (on HTTP only before its first certificate), and the new version was not started. ${label}'s error is above: fix its cause and push again.`;
 }
 
 /** The app's origin TLS files in `/srv/edge/tls/<app>`, as a shell word list. */
@@ -702,14 +778,15 @@ const TLS_FILES = "origin.pem origin.key pull.pem";
 /** On this computer, the app's leaf certificate and key in the edge's `tls/<app>`, the same way. */
 const LOCAL_TLS_FILES = `${LOCALHOST_TLS.certificate} ${LOCALHOST_TLS.key}`;
 
-/** How the deploy reloads the server's proxy: each keeps its running configuration on an error. */
+/**
+ * How the deploy reloads the server's proxy: each keeps its running configuration on an error.
+ * OpenLiteSpeed runs its edge's own check and graceful restart (ADR 0031 D2).
+ */
 const RELOAD: Record<EdgeProxy, string> = {
   caddy:
     "edge exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile < /dev/null",
   nginx: "edge exec -T nginx sh -c 'nginx -t -q && nginx -s reload' < /dev/null",
-  get openlitespeed(): string {
-    throw openlitespeedNotYet("deploy an app");
-  },
+  openlitespeed: `edge exec -T openlitespeed ${OPENLITESPEED_COMMAND.reload} < /dev/null`,
 };
 
 /** What the upload left for the app's edge besides its site. */
@@ -719,11 +796,15 @@ export interface EdgeFiles {
    * `origin.pem.new` and `origin.key.new`, and `pull.pem` in the app's `edge/tls/`.
    */
   originTls: boolean;
-  /** The upload left the user's additions in the app's folder (`additions.caddy` or `.nginx`). */
+  /**
+   * The upload left the user's additions in the app's folder (`additions.caddy`, `.nginx` or
+   * `.openlitespeed`).
+   */
   additions: boolean;
   /**
-   * nginx: the hostnames certbot gets the app's certificate for, and the account's contact email;
-   * the upload left the app's site before its first certificate as `edge/sites/<app>.http.conf`.
+   * nginx and OpenLiteSpeed: the hostnames certbot gets the app's certificate for, and the
+   * account's contact email; the upload left the app's site before its first certificate as
+   * `edge/sites/<app>.http.conf` (`.http.vhconf`).
    */
   certbot?: { hosts: readonly string[]; email?: string | undefined } | undefined;
   /**
@@ -736,7 +817,8 @@ export interface EdgeFiles {
 /**
  * The shared edge, under a lock other apps' deploys wait for:
  * 1. creates the network `opscrew-edge` when missing; on nginx, writes the deploy user's uid and
- *    gid to `/srv/edge/.env`, which the edge's Compose file runs nginx and certbot as;
+ *    gid to `/srv/edge/.env`, which the edge's Compose file runs nginx and certbot as (on
+ *    OpenLiteSpeed certbot only, on a server);
  * 2. puts the uploaded edge Compose file (`edge/compose.yaml` in the app's folder) in `/srv/edge`
  *    when the server's runs the other proxy (the switch, offered only while the server holds this
  *    one OpsCrew app), when its {@link EDGE_VERSION_KEY} is larger than the server's, so an app
@@ -746,15 +828,18 @@ export interface EdgeFiles {
  * 3. puts the app's new origin certificate, its key and `pull.pem` in `/srv/edge/tls/<app>`, so no
  *    other app's reload sees a certificate without its key, or, without origin TLS, takes the
  *    app's old ones out;
- * 4. on nginx, gives the deploy user certbot's volumes (Docker creates them owned by root);
- * 5. puts the app's site and its additions in `/srv/edge/sites`, or takes old additions out; on
- *    nginx with certbot's hostnames, the site before the first certificate until certbot has it;
+ * 4. on nginx and OpenLiteSpeed, gives the deploy user certbot's volumes (Docker creates them owned
+ *    by root);
+ * 5. puts the app's site and its additions in `/srv/edge/sites`, or takes old additions out
+ *    (OpenLiteSpeed's site is three files, `<app>.vhconf`, `.vhost` and `.map`); with certbot's
+ *    hostnames, the site before the first certificate until certbot has it;
  * 6. starts the edge (Compose recreates only what changed, and removes the other proxy's
  *    containers after a switch) and reloads the proxy;
- * 7. on nginx with certbot's hostnames, certbot gets or renews the app's certificate (the first
- *    one, and hostnames added since; once more when another certbot held its lock), then the HTTPS
- *    site goes in;
- * 8. the other proxy's site file of the app goes, and the app's earlier origin TLS files.
+ * 7. with certbot's hostnames, certbot gets or renews the app's certificate (the first one, and
+ *    hostnames added since; once more when another certbot held its lock), then the HTTPS site
+ *    goes in;
+ * 8. the site files of the app for the proxies a switch replaces go ({@link replacedProxies}), and
+ *    the app's earlier origin TLS files.
  *
  * When the start or the reload fails, the app's previous site, additions and origin TLS files go
  * back (or the new ones go, when it had none), so the proxy never keeps a site it refused. After a
@@ -767,9 +852,10 @@ export interface EdgeFiles {
 function edgeCommands(plan: DeployPlan, o: EdgeFiles): string[] {
   const proxy = edgeProxy(plan);
   const { site: ext } = EDGE_PROXIES[proxy];
-  const from = EDGE_PROXIES[otherProxy(proxy)].label;
   const app = plan.app.name;
   const site = `${EDGE}/sites/${app}.${ext}`;
+  /** OpenLiteSpeed's other site files, the same before and after certbot's first certificate. */
+  const shared = proxy === "openlitespeed" ? OPENLITESPEED_SHARED.join(" ") : undefined;
   const additions = `${EDGE}/sites/${app}.additions`;
   const tls = `${EDGE}/tls/${app}`;
   const local = plan.target.provider === "localhost";
@@ -784,6 +870,13 @@ function edgeCommands(plan: DeployPlan, o: EdgeFiles): string[] {
   const restoreFiles = (pad: string) =>
     [
       restore(PREVIOUS_SITE, site),
+      ...(shared === undefined
+        ? []
+        : [
+            `for f in ${shared}; do`,
+            `  ${restore(`${PREVIOUS_SITE}.$f`, `${EDGE}/sites/${app}.$f`)}`,
+            "done",
+          ]),
       restore(PREVIOUS_ADDITIONS, additions),
       `for f in ${tlsFiles}; do`,
       `  if [ -f ${tls}/$f.previous ]; then mv -f ${tls}/$f.previous ${tls}/$f; else rm -f ${tls}/$f; fi`,
@@ -795,11 +888,12 @@ function edgeCommands(plan: DeployPlan, o: EdgeFiles): string[] {
       (line) => `${pad}${line}`,
     );
   const certbot =
-    !local && proxy === "nginx" && o.certbot !== undefined && o.certbot.hosts.length > 0;
+    !local && proxy !== "caddy" && o.certbot !== undefined && o.certbot.hosts.length > 0;
   /** A one-off container of the edge's certbot service. */
   const certbotRun = (args: string) => `edge run --rm --no-deps -T ${args} < /dev/null`;
-  const nginxFiles =
-    proxy === "nginx"
+  // nginx runs as the deploy user, and certbot beside nginx and OpenLiteSpeed on a server.
+  const deployUser =
+    proxy === "nginx" || (proxy === "openlitespeed" && !local)
       ? [
           `  printf 'OPSCREW_DEPLOY_UID=%s\\nOPSCREW_DEPLOY_GID=%s\\n' "$(id -u)" "$(id -g)" > ${EDGE}/.env`,
         ]
@@ -807,10 +901,10 @@ function edgeCommands(plan: DeployPlan, o: EdgeFiles): string[] {
   const installSite = certbot
     ? [
         `  if ${certbotRun(`--entrypoint test certbot -f ${certbotLive(app)}/fullchain.pem`)}; then`,
-        `    cp edge/sites/${app}.conf ${site}`,
+        `    cp edge/sites/${app}.${ext} ${site}`,
         "    first=0",
         "  else",
-        `    cp edge/sites/${app}.http.conf ${site}`,
+        `    cp edge/sites/${app}.http.${ext} ${site}`,
         "    first=1",
         "  fi",
       ]
@@ -837,7 +931,7 @@ function edgeCommands(plan: DeployPlan, o: EdgeFiles): string[] {
       `    if [ -f ${PREVIOUS_EDGE} ]; then`,
       ...restoreFiles("      "),
       ...restoreEdge("      "),
-      `      echo ${shellQuote(certbotFailed(hosts, `the server keeps ${from} as its proxy`))}`,
+      `      ${sayFrom(plan, (from) => certbotFailed(hosts, `the server keeps ${from} as its proxy`))}`,
       '    elif [ "$first" -eq 1 ]; then',
       `      echo ${shellQuote(certbotFailed(hosts, "the site stays on HTTP only"))}`,
       "    else",
@@ -846,18 +940,18 @@ function edgeCommands(plan: DeployPlan, o: EdgeFiles): string[] {
       "    exit 1",
       "  fi",
       `  ${certbotRun(`--entrypoint sh certbot -c ${shellQuote(certbotRenewBefore(app))}`)}`,
-      `  cp edge/sites/${app}.conf ${site}`,
-      `  if ! ${RELOAD.nginx}; then`,
+      `  cp edge/sites/${app}.${ext} ${site}`,
+      `  if ! ${RELOAD[proxy]}; then`,
       `    if [ -f ${PREVIOUS_EDGE} ]; then`,
       ...restoreFiles("      "),
       ...restoreEdge("      "),
-      `      echo ${shellQuote(switchFailed(plan))}`,
+      `      ${sayFrom(plan, (from) => switchFailed(plan, from))}`,
       `    elif [ "$first" -eq 0 ] && [ -f ${PREVIOUS_SITE} ]; then`,
       `      cp ${PREVIOUS_SITE} ${site}`,
-      `      ${RELOAD.nginx} || true`,
+      `      ${RELOAD[proxy]} || true`,
       "    else",
-      `      cp edge/sites/${app}.http.conf ${site}`,
-      `      ${RELOAD.nginx} || true`,
+      `      cp edge/sites/${app}.http.${ext} ${site}`,
+      `      ${RELOAD[proxy]} || true`,
       "    fi",
       `    echo ${shellQuote(tlsSiteFailed(plan))}`,
       "    exit 1",
@@ -868,15 +962,23 @@ function edgeCommands(plan: DeployPlan, o: EdgeFiles): string[] {
     // Before the edge's Compose mounts them: Docker would create them owned by root.
     `mkdir -p ${EDGE}/sites ${EDGE}/tls`,
     "(",
-    local ? "  if command -v flock > /dev/null 2>&1; then flock 9; fi" : "  flock 9",
+    `  ${takeEdgeLock(plan)}`,
     `  docker network inspect ${EDGE_PROJECT} > /dev/null 2>&1 || docker network create ${EDGE_PROJECT} > /dev/null`,
-    ...nginxFiles,
+    ...deployUser,
     `  uploaded="$(${stamp(EDGE_VERSION_KEY, "edge/compose.yaml")})"`,
     `  current="$(${stamp(EDGE_VERSION_KEY, `${EDGE}/compose.yaml`)} 2> /dev/null || true)"`,
     `  proxy="$(${stamp(EDGE_PROXY_KEY, `${EDGE}/compose.yaml`)} 2> /dev/null || true)"`,
+    // OpenLiteSpeed's messages name the proxy the server ran.
+    ...(proxy === "openlitespeed"
+      ? [
+          `  case "$proxy" in ${replacedProxies(proxy)
+            .map((p) => `${p}) from=${shellQuote(EDGE_PROXIES[p].label)} ;;`)
+            .join(" ")} *) from="$proxy" ;; esac`,
+        ]
+      : []),
     `  rm -f ${PREVIOUS_EDGE}`,
     `  if [ -n "$proxy" ] && [ "$proxy" != ${proxy} ]; then`,
-    `    echo ${shellQuote(switchNotice(plan))}`,
+    `    ${sayFrom(plan, (from) => switchNotice(plan, from))}`,
     `    cp ${EDGE}/compose.yaml ${PREVIOUS_EDGE}`,
     `    cp edge/compose.yaml ${EDGE}/compose.yaml`,
     '  elif [ "$uploaded" -gt "${current:-0}" ]; then',
@@ -906,13 +1008,22 @@ function edgeCommands(plan: DeployPlan, o: EdgeFiles): string[] {
           ...(newTls ? [`    mv -f ${tls}/$f.new ${tls}/$f`] : []),
         ]),
     "  done",
-    ...(proxy === "nginx" && !local
+    ...(proxy !== "caddy" && !local
       ? [
           `  ${certbotRun(`--user 0:0 --cap-add CHOWN --entrypoint chown certbot "$(id -u):$(id -g)" ${LETSENCRYPT} ${ACME_WEBROOT} ${RELOAD_DIR}`)}`,
         ]
       : []),
     `  rm -f ${PREVIOUS_SITE} ${PREVIOUS_ADDITIONS}`,
     `  if [ -f ${site} ]; then cp ${site} ${PREVIOUS_SITE}; fi`,
+    ...(shared === undefined
+      ? []
+      : [
+          `  for f in ${shared}; do`,
+          `    rm -f ${PREVIOUS_SITE}.$f`,
+          `    if [ -f ${EDGE}/sites/${app}.$f ]; then cp ${EDGE}/sites/${app}.$f ${PREVIOUS_SITE}.$f; fi`,
+          "  done",
+          `  cp ${OPENLITESPEED_SHARED.map((f) => `edge/sites/${app}.${f}`).join(" ")} ${EDGE}/sites/`,
+        ]),
     `  if [ -f ${additions} ]; then cp ${additions} ${PREVIOUS_ADDITIONS}; fi`,
     ...installSite,
     o.additions ? `  cp additions.${proxy} ${additions}` : `  rm -f ${additions}`,
@@ -920,14 +1031,16 @@ function edgeCommands(plan: DeployPlan, o: EdgeFiles): string[] {
     ...restoreFiles("    "),
     `    if [ -f ${PREVIOUS_EDGE} ]; then`,
     ...restoreEdge("      "),
-    `      echo ${shellQuote(switchFailed(plan))}`,
+    `      ${sayFrom(plan, (from) => switchFailed(plan, from))}`,
     "    fi",
     `    echo ${shellMessage(edgeFailed(plan, o.additions))}`,
     "    exit 1",
     "  fi",
     ...certificate,
     // Only now: a switch that failed above puts the previous proxy back with these files.
-    `  rm -f ${EDGE}/sites/${app}.${EDGE_PROXIES[otherProxy(proxy)].site}`,
+    `  rm -f ${replacedProxies(proxy)
+      .map((p) => `${EDGE}/sites/${app}.${EDGE_PROXIES[p].site}`)
+      .join(" ")}`,
     newTls
       ? `  rm -f ${tlsFiles
           .split(" ")

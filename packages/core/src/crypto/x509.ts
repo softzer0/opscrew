@@ -62,11 +62,13 @@ const OID = {
 } as const;
 
 /**
- * keyUsage bits as a DER BIT STRING: digitalSignature is bit 0 (0x80, 7 unused bits);
- * keyCertSign and cRLSign are bits 5 and 6 (0x06, 1 unused bit).
+ * keyUsage bits as a DER BIT STRING: digitalSignature is bit 0 (0x80, 7 unused bits), with
+ * keyCertSign, bit 5, 0x84 (2 unused bits); keyCertSign and cRLSign are bits 5 and 6 (0x06, 1
+ * unused bit).
  */
 const KEY_USAGE = {
   digitalSignature: bitString(Uint8Array.of(0x80), 7),
+  digitalSignatureAndKeyCertSign: bitString(Uint8Array.of(0x84), 2),
   keyCertSignAndCrlSign: bitString(Uint8Array.of(0x06), 1),
 } as const;
 
@@ -227,13 +229,16 @@ export function buildCsr(input: { key: string; hostnames: readonly string[] }): 
 /**
  * A self-signed X.509 v3 client certificate (PEM) for `commonName`, valid for `days` from `now`:
  * a random 16-byte positive serial, basicConstraints CA:false, keyUsage digitalSignature (both
- * critical) and extKeyUsage clientAuth. `key` is the PKCS#8 PEM of a P-256 key.
+ * critical) and extKeyUsage clientAuth. With `keyCertSign`, keyUsage has keyCertSign too: a server
+ * that checks the certificate trusts it as its own issuer, and OpenLiteSpeed's TLS library
+ * (BoringSSL) does so only then (ADR 0031). `key` is the PKCS#8 PEM of a P-256 key.
  */
 export function selfSignedClientCertificate(input: {
   key: string;
   commonName: string;
   days: number;
   now?: Date;
+  keyCertSign?: boolean;
 }): string {
   const { privateKey, spki } = p256Key(input.key);
   const name = commonNameOf(input.commonName);
@@ -245,7 +250,11 @@ export function selfSignedClientCertificate(input: {
       spki,
       extensions: [
         extension(OID.basicConstraints, true, sequence()),
-        extension(OID.keyUsage, true, KEY_USAGE.digitalSignature),
+        extension(
+          OID.keyUsage,
+          true,
+          input.keyCertSign ? KEY_USAGE.digitalSignatureAndKeyCertSign : KEY_USAGE.digitalSignature,
+        ),
         extension(OID.extKeyUsage, false, sequence(oid(OID.clientAuth))),
       ],
     },
@@ -357,4 +366,26 @@ export function fingerprintSha256(pemText: string): string {
   if (!block) throw new OpsCrewError("INVALID_INPUT", "The text holds no PEM block.");
   const der = Buffer.from((block[2] as string).replace(/\s+/g, ""), "base64");
   return createHash("sha256").update(der).digest("hex");
+}
+
+/**
+ * Whether the certificate in `pemText` has keyCertSign in its keyUsage, which OpenLiteSpeed's TLS
+ * library (BoringSSL) needs to trust a self-signed client certificate (ADR 0031); false without a
+ * keyUsage extension.
+ */
+export function hasKeyCertSign(pemText: string): boolean {
+  const [tbs] = children(new Uint8Array(new X509Certificate(pemText).raw));
+  // The extensions are the TBSCertificate's [3], a SEQUENCE of extensions.
+  const tagged = children(tbs as Uint8Array).find((item) => item[0] === 0xa3);
+  if (tagged === undefined) return false;
+  const keyUsage = Buffer.from(oid(OID.keyUsage));
+  for (const item of children(children(tagged)[0] as Uint8Array)) {
+    const [id, ...rest] = children(item);
+    if (id === undefined || !keyUsage.equals(Buffer.from(id))) continue;
+    // The OCTET STRING holds the BIT STRING: tag, length, unused bits, then the first byte, whose
+    // 0x04 is bit 5, keyCertSign.
+    const [bits] = children(rest.at(-1) as Uint8Array);
+    return ((bits?.[3] ?? 0) & 0x04) !== 0;
+  }
+  return false;
 }

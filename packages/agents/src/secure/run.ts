@@ -15,7 +15,7 @@ import {
   toPosixRelative,
   writeFileAtomic,
 } from "@opscrew/core";
-import { IMAGES, TOOLS } from "@opscrew/iac-templates";
+import { edgeProxy, IMAGES, TOOLS } from "@opscrew/iac-templates";
 import {
   APP_SERVER,
   type DeployPlan,
@@ -171,8 +171,9 @@ function privateReportInput(
  * The checks of the app's site from the server itself, once the app was deployed (FR-1423,
  * FR-1406): `openssl s_client` to 127.0.0.1:443 for each hostname whose origin certificate and
  * client certificate the app's Cloudflare record holds (refused without the client certificate,
- * served Cloudflare's origin certificate, an unknown hostname refused), and the certificates of
- * DNS-only hostnames renewed in time, with certbot's reason on nginx.
+ * served Cloudflare's origin certificate, an unknown hostname refused, by OpenLiteSpeed with a
+ * 403), and the certificates of DNS-only hostnames renewed in time, with certbot's reason beside
+ * nginx and OpenLiteSpeed.
  */
 async function siteTlsChecks(
   deps: PhaseDeps,
@@ -188,7 +189,7 @@ async function siteTlsChecks(
   const renewal =
     hosts.length > 0 ? proxyRenewalAdvice(plan, await readRenewalFailure(deps, plan, remote)) : "";
   return [
-    ...originHostChecks(origin),
+    ...originHostChecks(origin, edgeProxy(plan)),
     ...certificateHostChecks(hosts, { now: deps.clock.now(), renewal }),
   ];
 }

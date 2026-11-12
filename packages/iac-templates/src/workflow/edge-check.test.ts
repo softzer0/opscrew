@@ -8,7 +8,7 @@ import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testContext, testPlan } from "../__fixtures__/plans";
-import { additionsPath } from "../edge";
+import { additionsPath, type EdgeProxy } from "../edge";
 import { type RuntimeContext, renderEdgeSite, renderRuntimeFiles } from "../runtime";
 import { renderWorkflow } from "./index";
 
@@ -20,7 +20,7 @@ const ctx: RuntimeContext = testContext({ acmeEmail: "ops@example.com" });
  * `testPlan` on `edge` for `shop.example.com`, or `example.com` and `www.example.com` with `www`,
  * its hostnames proxied by Cloudflare unless `dnsOnly`.
  */
-function planFor(edge: "caddy" | "nginx", o: { dnsOnly?: boolean; www?: boolean } = {}) {
+function planFor(edge: EdgeProxy, o: { dnsOnly?: boolean; www?: boolean } = {}) {
   const plan = testPlan({
     domain: o.www ? "example.com" : "shop.example.com",
     www: o.www ?? false,
@@ -100,6 +100,40 @@ describe("the deploy job's check of the edge with the proxy's own checker", () =
     expect(proxied).not.toContain("letsencrypt/live");
   });
 
+  it("checks OpenLiteSpeed's whole edge with the edge's own check, also before certbot's first certificate", () => {
+    const plan = planFor("openlitespeed", { dnsOnly: true });
+    const step = check(plan, { ...ctx, additions: true });
+    expect(step.name).toBe("Validate the edge's configuration with OpenLiteSpeed");
+    const run = step.run ?? "";
+    // kamal-proxy's name resolves in the check's own container, which starts nothing else.
+    const olsCheck = `if ! docker compose -p opscrew-edge-check -f "$RUNNER_TEMP/opscrew-edge"/compose.yaml run --rm --no-deps -T -v "$RUNNER_TEMP/opscrew-edge"/letsencrypt:/etc/letsencrypt:ro --entrypoint sh openlitespeed -c 'printf "127.0.0.1 kamal-proxy\\n" >> /etc/hosts && sh /etc/opscrew/check.sh' < /dev/null; then\n`;
+    expect(run.split(olsCheck)).toHaveLength(3);
+    const at = (text: string) => run.indexOf(text);
+    // The virtual host and its hostnames once, then each configuration in turn.
+    expect(run).toContain(
+      'cp opscrew/runtime/edge/sites/shop.vhost "$RUNNER_TEMP/opscrew-edge"/sites/shop.vhost\ncp opscrew/runtime/edge/sites/shop.map "$RUNNER_TEMP/opscrew-edge"/sites/shop.map\n',
+    );
+    expect(
+      at('cp opscrew/runtime/edge/sites/shop.vhconf "$RUNNER_TEMP/opscrew-edge"/sites/shop.vhconf'),
+    ).toBeLessThan(
+      at(
+        'cp opscrew/runtime/edge/sites/shop.http.vhconf "$RUNNER_TEMP/opscrew-edge"/sites/shop.vhconf',
+      ),
+    );
+    expect(run).toContain(
+      'cp opscrew/proxy/additions.openlitespeed "$RUNNER_TEMP/opscrew-edge"/sites/shop.additions\n',
+    );
+    // certbot beside OpenLiteSpeed runs as the deploy user on the server, here as the runner's.
+    expect(run).toContain('export OPSCREW_DEPLOY_UID="$(id -u)" OPSCREW_DEPLOY_GID="$(id -g)"\n');
+    expect(run).toContain(
+      "echo '::error::OpenLiteSpeed refused this app'\\''s edge configuration (opscrew/runtime/edge/sites/shop.vhconf with your additions in opscrew/proxy/additions.openlitespeed)",
+    );
+    // Proxied hostnames only: one configuration, and no certbot certificate.
+    const proxied = check(planFor("openlitespeed"), origin).run ?? "";
+    expect(proxied.split(olsCheck)).toHaveLength(2);
+    expect(proxied).not.toContain("letsencrypt/live");
+  });
+
   it("puts placeholder certificates, made on the runner, where the server has the real ones", () => {
     const run = check(planFor("nginx", { www: true }), {
       ...ctx,
@@ -127,7 +161,7 @@ describe("the deploy job's check of the edge with the proxy's own checker", () =
   });
 
   it("never sees a secret", () => {
-    for (const plan of [planFor("caddy"), planFor("nginx")]) {
+    for (const plan of [planFor("caddy"), planFor("nginx"), planFor("openlitespeed")]) {
       const step = check(plan, origin);
       expect(step.env).toBeUndefined();
       expect(step.run).not.toContain("${{");
@@ -252,6 +286,21 @@ describe.skipIf(reason !== undefined)(
       expect(run.output).toContain('invalid number of arguments in "add_header" directive');
       expect(run.output).toContain("::error::nginx refused this app's edge configuration");
     }, 300_000);
+
+    it("accepts OpenLiteSpeed's edge with origin TLS, certbot's hostname and the additions, and refuses broken ones", () => {
+      const plan = planFor("openlitespeed", { www: true });
+      const c = { ...both, originTls: { hostnames: ["example.com"] } };
+      const good = runStep(
+        plan,
+        c,
+        'context /api/ {\n  type proxy\n  handler kamal-proxy\n  extraHeaders <<<END_extraHeaders\nHeader set Cache-Control "no-store"\n  END_extraHeaders\n}\n',
+      );
+      expect(good.status, good.output).toBe(0);
+      const bad = runStep(plan, c, "context /api/ {\n  type proxy\n  handler nowhere\n}\n");
+      expect(bad.status).toBe(1);
+      expect(bad.output).toContain("Can not find handler");
+      expect(bad.output).toContain("::error::OpenLiteSpeed refused this app's edge configuration");
+    }, 600_000);
 
     it("accepts Caddy's edge with origin TLS and the additions, and refuses broken ones", () => {
       const good = runStep(planFor("caddy"), both, 'header X-Robots-Tag "noindex"\n');

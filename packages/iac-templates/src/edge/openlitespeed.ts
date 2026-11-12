@@ -57,16 +57,28 @@ const CATCH_ALL = "_catchall";
 const ERROR_LOG = `${LSWS}/logs/error.log`;
 
 /**
- * Where the edge mounts, read-only, OpenLiteSpeed's configuration, the catch-all and the error page
- * (Compose configs), the apps' site files (`/srv/edge/sites`) and their certificates
- * (`/srv/edge/tls`).
+ * Where the edge mounts, read-only, OpenLiteSpeed's configuration, the catch-all, the error page and
+ * the scripts of the check and the checked graceful restart (Compose configs), the apps' site files
+ * (`/srv/edge/sites`) and their certificates (`/srv/edge/tls`).
  */
 export const OPENLITESPEED_INPUT = {
   conf: "/etc/opscrew/httpd_config.conf",
   catchAll: "/etc/opscrew/catchall.conf",
   errorPage: "/etc/opscrew/error.html",
+  check: "/etc/opscrew/check.sh",
+  reload: "/etc/opscrew/reload.sh",
   sites: "/etc/opscrew/sites",
   tls: "/etc/opscrew/tls",
+} as const;
+
+/**
+ * The check and the checked graceful restart as commands in the running container (or a one-off
+ * one): the edge's own scripts ({@link OPENLITESPEED_CHECK}, {@link OPENLITESPEED_RELOAD}), so
+ * every app's deploy on a server runs those of the edge it has.
+ */
+export const OPENLITESPEED_COMMAND = {
+  check: `sh ${OPENLITESPEED_INPUT.check}`,
+  reload: `sh ${OPENLITESPEED_INPUT.reload}`,
 } as const;
 
 /**
@@ -144,9 +156,13 @@ function listener(name: string, port: number, tls: readonly string[]): string[] 
  * `sites/<app>.vhost`), the catch-all, and the listeners on 80 and 443 (TLS 1.2 and 1.3, with a
  * placeholder certificate for names no app serves), each mapping the apps' hostnames (each app's
  * `sites/<app>.map`) and every other name to the catch-all, which answers 403. HTTP/3 except on
- * this computer (`local`), where the edge publishes no UDP port.
+ * this computer (`local`), where the edge publishes no UDP port. With Cloudflare's `ranges`,
+ * requests from them carry the visitor's address in `CF-Connecting-IP`, which OpenLiteSpeed then
+ * uses as the client's (`useIpInProxyHeader 2`, those ranges marked trusted with `T`), as Caddy
+ * and nginx do; from any other address the header is ignored.
  */
-export function openlitespeedConf(local: boolean): string {
+export function openlitespeedConf(local: boolean, ranges: readonly string[] = []): string {
+  const trusted = ranges.length > 0;
   return [
     "# OpsCrew's shared edge: each OpsCrew app on this server has its virtual host in /srv/edge/sites/<app>.vhost,",
     "# its hostnames in <app>.map and its configuration in <app>.vhconf.",
@@ -160,6 +176,12 @@ export function openlitespeedConf(local: boolean): string {
     "mime                      conf/mime.properties",
     "showVersionNumber         2",
     "disableWebAdmin           1",
+    ...(trusted
+      ? [
+          "# Requests from Cloudflare's addresses (marked T below) carry the visitor's in CF-Connecting-IP.",
+          "useIpInProxyHeader        2",
+        ]
+      : []),
     "",
     ...block(`errorlog ${ERROR_LOG}`, [
       set("logLevel", "NOTICE"),
@@ -175,7 +197,9 @@ export function openlitespeedConf(local: boolean): string {
         ? [set("quicEnable", 0)]
         : [set("quicEnable", 1), set("quicShmDir", "/dev/shm/ols")]),
     ]),
-    ...block("accessControl", [set("allow", "ALL")]),
+    ...block("accessControl", [
+      set("allow", ["ALL", ...ranges.map((range) => `${range}T`)].join(", ")),
+    ]),
     "# Off: an app's answer is kept only when it asks for it (X-LiteSpeed-Cache-Control).",
     ...block("module cache", [
       set("ls_enabled", 1),
@@ -538,16 +562,16 @@ const FUNCTIONS = [
 ];
 
 /**
- * The check (`sh -c`): the configuration and the sites as `/etc/opscrew` has them, every named
+ * The check (a shell script, the edge's `check.sh`): the configuration and the sites as `/etc/opscrew` has them, every named
  * certificate and key there, and nothing `openlitespeed -t` calls an error. A refusal prints the
  * reason and exits non-zero; the running configuration stays.
  */
 export const OPENLITESPEED_CHECK = [...FUNCTIONS, "locked check"].join("\n");
 
 /**
- * The checked graceful restart (`sh -c`, in the running container): {@link OPENLITESPEED_CHECK},
- * then the restart, which keeps open connections up to 300 seconds. A refusal leaves the running
- * configuration in place, as nginx's does.
+ * The checked graceful restart (a shell script, the edge's `reload.sh`, run in the running
+ * container): {@link OPENLITESPEED_CHECK}, then the restart, which keeps open connections up to
+ * 300 seconds. A refusal leaves the running configuration in place, as nginx's does.
  */
 export const OPENLITESPEED_RELOAD = [...FUNCTIONS, "locked reload"].join("\n");
 

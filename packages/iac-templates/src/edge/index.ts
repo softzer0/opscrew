@@ -6,7 +6,7 @@
  * in `/srv/apps/<app>`, its data in `/srv/data/<app>`. On the user's own computer (the localhost
  * target) the same edge listens on 127.0.0.1 with leaf certificates from OpsCrew's local CA.
  */
-import { OpsCrewError, sha256Hex } from "@opscrew/core";
+import { sha256Hex } from "@opscrew/core";
 import { type DeployPlan, isHostingTarget, isServerlessTarget } from "@opscrew/plan-schema";
 import { stringify } from "yaml";
 import { IMAGES } from "../pins";
@@ -30,10 +30,12 @@ import {
 import {
   OPENLITESPEED_CAPABILITIES,
   OPENLITESPEED_CATCH_ALL,
+  OPENLITESPEED_CHECK,
   OPENLITESPEED_ERROR_PAGE,
   OPENLITESPEED_HEALTHCHECK,
   OPENLITESPEED_INPUT,
   OPENLITESPEED_LOOP,
+  OPENLITESPEED_RELOAD,
   OPENLITESPEED_UPSTREAM,
   openlitespeedConf,
 } from "./openlitespeed";
@@ -45,6 +47,8 @@ export {
 } from "./localhost";
 export {
   OPENLITESPEED_CHECK,
+  OPENLITESPEED_COMMAND,
+  OPENLITESPEED_INPUT,
   OPENLITESPEED_RELOAD,
   openlitespeedCachePurge,
 } from "./openlitespeed";
@@ -110,16 +114,6 @@ export const EDGE_PROXIES: Record<
 };
 
 /**
- * The plain refusal where OpsCrew does not take OpenLiteSpeed yet (feature 027 brings it to every
- * place nginx reaches): `what` OpsCrew would have done.
- */
-export function openlitespeedNotYet(what: string): OpsCrewError {
-  return new OpsCrewError("PHASE_PRECONDITION", `OpsCrew can't ${what} on OpenLiteSpeed yet.`, {
-    hint: 'Set target.edge to "caddy" or "nginx" in the plan, then run the command again.',
-  });
-}
-
-/**
  * The plan's proxy: `target.edge` (a Portainer stack, which has no server edge, runs Caddy). A
  * server-less target and a hosting account have none: throws.
  */
@@ -135,17 +129,17 @@ export function edgeProxy(plan: DeployPlan): EdgeProxy {
 
 /**
  * The user's own additions for `proxy` (the plan's by default) in the repository, which every
- * environment of the app shares: `proxy/additions.caddy` or `proxy/additions.nginx` in the app's
- * folder ({@link artefactsFolder} of its prod), `opscrew/proxy/…` for the repository's first app
- * and `opscrew/apps/<key>/proxy/…` for a further app. On the server `sites/<app>.additions`.
+ * environment of the app shares: `proxy/additions.caddy`, `.nginx` or `.openlitespeed` in the
+ * app's folder ({@link artefactsFolder} of its prod), `opscrew/proxy/…` for the repository's first
+ * app and `opscrew/apps/<key>/proxy/…` for a further app. On the server `sites/<app>.additions`.
  */
 export function additionsPath(plan: DeployPlan, proxy: EdgeProxy = edgeProxy(plan)): string {
   return `${artefactsFolder(plan, "prod")}/proxy/additions.${proxy}`;
 }
 
-/** The other proxy of {@link EDGE_PROXIES}. */
-export function otherProxy(proxy: EdgeProxy): EdgeProxy {
-  return proxy === "caddy" ? "nginx" : "caddy";
+/** The proxies of {@link EDGE_PROXIES} other than `proxy`, in its order. */
+export function otherProxies(proxy: EdgeProxy): EdgeProxy[] {
+  return (Object.keys(EDGE_PROXIES) as EdgeProxy[]).filter((other) => other !== proxy);
 }
 
 /** The memory limits of the edge's containers, in MB. */
@@ -391,15 +385,18 @@ function certbotService() {
 
 /**
  * OpenLiteSpeed (ADR 0031) under Docker's init with OpsCrew's loop, on 80 and 443, reading its
- * configuration, the catch-all and the error page from the Compose configs, the apps' site files
- * from `/srv/edge/sites` and their origin certificates from `/srv/edge/tls/<app>` (all read-only,
- * in `/etc/opscrew`), with certbot as on nginx. Its main process runs as root with only the
- * capabilities it uses: binding 80 and 443, reading the deploy user's keys, starting its workers as
- * `nobody` and signalling them. On this computer there is no certbot and no HTTP/3.
+ * configuration, the catch-all, the error page and the scripts of its check and checked graceful
+ * restart from the Compose configs, the apps' site files from `/srv/edge/sites` and their origin
+ * certificates from `/srv/edge/tls/<app>` (all read-only, in `/etc/opscrew`), with certbot as on
+ * nginx, and trusting Cloudflare's `ranges` for the visitor's address. Its main process runs as
+ * root with only the capabilities it uses: binding 80 and 443, reading the deploy user's keys,
+ * starting its workers as `nobody` and signalling them. On this computer there is no certbot, no
+ * HTTP/3 and no Cloudflare.
  */
-function openlitespeedEdge(plan: DeployPlan) {
+function openlitespeedEdge(plan: DeployPlan, ranges: readonly string[]) {
   const certbot = certbotOn(plan);
-  const conf = openlitespeedConf(plan.target.provider === "localhost");
+  const local = plan.target.provider === "localhost";
+  const conf = openlitespeedConf(local, local ? [] : ranges);
   const files = {
     "openlitespeed-conf": { target: OPENLITESPEED_INPUT.conf, content: conf },
     "openlitespeed-catchall": {
@@ -410,6 +407,8 @@ function openlitespeedEdge(plan: DeployPlan) {
       target: OPENLITESPEED_INPUT.errorPage,
       content: OPENLITESPEED_ERROR_PAGE,
     },
+    "openlitespeed-check": { target: OPENLITESPEED_INPUT.check, content: OPENLITESPEED_CHECK },
+    "openlitespeed-reload": { target: OPENLITESPEED_INPUT.reload, content: OPENLITESPEED_RELOAD },
   };
   return {
     services: {
@@ -427,7 +426,7 @@ function openlitespeedEdge(plan: DeployPlan) {
           ...(certbot ? CERTBOT_MOUNTS : []),
         ],
         healthcheck: OPENLITESPEED_HEALTHCHECK,
-        // A changed configuration, catch-all or error page changes this label, so Compose
+        // A changed configuration, catch-all, error page or script changes this label, so Compose
         // recreates OpenLiteSpeed with it.
         labels: {
           "dev.opscrew.openlitespeed-conf-sha256": sha256Hex(
@@ -485,8 +484,8 @@ function header(plan: DeployPlan): string {
  * kamal-proxy on the external network `opscrew-edge`, stamped with {@link EDGE_VERSION} and the
  * proxy ({@link EDGE_PROXY_KEY}). kamal-proxy keeps the apps' routes on a named volume, so they
  * survive a recreate; the proxy publishes the ports the server's access mode needs (the same for
- * every app on the server). Caddy trusts Cloudflare's `cloudflareRanges` for the visitor's address
- * (nginx does it in each app's site).
+ * every app on the server). Caddy and OpenLiteSpeed trust Cloudflare's `cloudflareRanges` for the
+ * visitor's address (nginx does it in each app's site).
  */
 export function renderEdgeCompose(
   plan: DeployPlan,
@@ -498,7 +497,7 @@ export function renderEdgeCompose(
       ? caddyEdge(plan, cloudflareRanges)
       : proxy === "nginx"
         ? nginxEdge(plan)
-        : openlitespeedEdge(plan);
+        : openlitespeedEdge(plan, cloudflareRanges);
   const document = {
     name: EDGE_PROJECT,
     [EDGE_VERSION_KEY]: EDGE_VERSION,

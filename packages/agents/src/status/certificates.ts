@@ -12,7 +12,6 @@ import {
   EDGE_PROJECT,
   EDGE_PROXIES,
   edgeProxy,
-  openlitespeedNotYet,
   portainerStackName,
   siteHosts,
   tunnelMode,
@@ -53,10 +52,8 @@ export function proxyCertificateHosts(plan: DeployPlan): string[] {
  * shared edge's logs; in the user's Portainer, the Caddy of the app's stack.
  */
 export function proxyRenewalAdvice(plan: DeployPlan, failure: string | undefined): string {
-  const proxy = edgeProxy(plan);
-  if (proxy === "openlitespeed") throw openlitespeedNotYet("advise on a certificate renewal");
   return renewalAdvice(
-    proxy,
+    edgeProxy(plan),
     plan.target.provider === "portainer"
       ? { portainerStack: portainerStackName(plan) }
       : { project: EDGE_PROJECT },
@@ -141,14 +138,14 @@ export async function deployShell(
 /**
  * certbot's reason when its last renewal of the app's certificate failed, read from its log on the
  * server over `remote` (read-only, audited without the address); `undefined` on Caddy, when it did
- * not fail, or when it could not be read.
+ * not fail, or when it could not be read. certbot runs beside nginx and OpenLiteSpeed.
  */
 export async function readRenewalFailure(
   deps: Pick<PhaseDeps, "audit" | "redactor">,
   plan: DeployPlan,
   remote: RemoteExec | undefined,
 ): Promise<string | undefined> {
-  if (remote === undefined || edgeProxy(plan) !== "nginx") return undefined;
+  if (remote === undefined || edgeProxy(plan) === "caddy") return undefined;
   let failure: string | undefined;
   try {
     const result = await remote.run(certbotFailureCommand(EDGE_PROJECT, plan.app.name), {
@@ -180,7 +177,8 @@ export interface TlsStatusOptions {
  * What `status` shows of the app's TLS and secrets copy (FR-1462): the server's proxy, each
  * certificate OpsCrew manages with its expiry (the origin and client certificates from the
  * record; once the app was deployed, the certificates of DNS-only hostnames from a TLS handshake),
- * a warning for each with fewer than 30 days left (with certbot's reason on nginx), and the
+ * a warning for each with fewer than 30 days left (with certbot's reason beside nginx and
+ * OpenLiteSpeed), and the
  * secrets copy's last update, how many keys open it and whether it is behind. On this computer
  * (the localhost target), `localStatusLines` instead. Redacted.
  */

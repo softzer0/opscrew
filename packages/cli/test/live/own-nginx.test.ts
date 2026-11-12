@@ -12,7 +12,6 @@ import {
   EDGE_DIR,
   EDGE_PROJECT,
   type EdgeProxy,
-  openlitespeedNotYet,
   siteHosts,
 } from "@opscrew/iac-templates";
 import { writeArtifact } from "@opscrew/plan-schema";
@@ -46,13 +45,23 @@ const SECOND_APP = "express-api";
 /** The addition the test commits (an exact-match location that answers by itself). */
 const ADDITION_PATH = "/opscrew-e2e-addition";
 const ADDITION_BODY = "served by the addition";
-/** The same addition in each proxy's syntax. */
+/**
+ * The same addition in each proxy's syntax; OpenLiteSpeed's additions only send requests on to the
+ * app, so its addition is the path's own context, which sends the app's answer with a header.
+ */
 const ADDITIONS: Record<EdgeProxy, string> = {
   nginx: `location = ${ADDITION_PATH} {\n    return 200 "${ADDITION_BODY}";\n}\n`,
   caddy: `handle ${ADDITION_PATH} {\n\trespond "${ADDITION_BODY}" 200\n}\n`,
-  get openlitespeed(): string {
-    throw openlitespeedNotYet("run this live test");
-  },
+  openlitespeed: [
+    `context ${ADDITION_PATH} {`,
+    "  type proxy",
+    "  handler kamal-proxy",
+    "  extraHeaders <<<END_extraHeaders",
+    `Header set X-OpsCrew-Addition "${ADDITION_BODY}"`,
+    "  END_extraHeaders",
+    "}",
+    "",
+  ].join("\n"),
 };
 /**
  * The interruption a switch of the proxy may cause for a proxied hostname (the plan states "a few

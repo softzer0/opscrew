@@ -1,6 +1,14 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are bash, not JavaScript templates.
 import type { DeployPlan } from "@opscrew/plan-schema";
-import { additionsPath, EDGE_PROJECT, EDGE_PROXIES, edgeProxy, originPullPem } from "../edge";
+import {
+  additionsPath,
+  EDGE_PROJECT,
+  EDGE_PROXIES,
+  type EdgeProxy,
+  edgeProxy,
+  OPENLITESPEED_COMMAND,
+  originPullPem,
+} from "../edge";
 import { LOCALHOST_TLS } from "../edge/localhost";
 import { LETSENCRYPT } from "../edge/nginx";
 import { shellQuote } from "../runtime/services";
@@ -50,15 +58,33 @@ function localLeaf(plan: DeployPlan, tls: string): string[] {
   ];
 }
 
+/** certbot's certificates in place of the edge's volume, for the proxies beside certbot. */
+const LETSENCRYPT_MOUNT = `-v ${CHECK}/letsencrypt:${LETSENCRYPT}:ro`;
+
+/**
+ * The Compose words of each proxy's own checker, in a one-off container of its service.
+ * OpenLiteSpeed's edge runs its own check (ADR 0031 D2). `openlitespeed -t` needs kamal-proxy's
+ * name to resolve, so the container names it itself: a kamal-proxy started for the check would join
+ * the edge's network, which on the server's or the local runner is the running edge's, and answer
+ * for kamal-proxy's name there too.
+ */
+const CHECKER: Record<EdgeProxy, string> = {
+  caddy:
+    "run --rm --no-deps -T caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile",
+  nginx: `run --rm --no-deps -T ${LETSENCRYPT_MOUNT} --entrypoint nginx nginx -t`,
+  openlitespeed: `run --rm --no-deps -T ${LETSENCRYPT_MOUNT} --entrypoint sh openlitespeed -c 'printf "127.0.0.1 kamal-proxy\\n" >> /etc/hosts && ${OPENLITESPEED_COMMAND.check}'`,
+};
+
 /**
  * The deploy job's step before any upload: the proxy's own checker in its pinned image, through
- * the uploaded edge Compose file on the runner (`caddy validate --adapter caddyfile`, or
- * `nginx -t`), against the whole edge this repository renders (from the environment's
- * {@link runtimeDir}): the main configuration, the app's site (on nginx also the one before
- * certbot's first certificate) and its additions, with placeholder certificates in place of the
- * origin certificate and certbot's. On this computer the site's leaf certificate is the one its
- * edge already has ({@link localLeaf}). A refusal ends the job with the checker's output before
- * anything reaches the server.
+ * the uploaded edge Compose file on the runner (`caddy validate --adapter caddyfile`,
+ * `nginx -t`, or OpenLiteSpeed's edge's own check), against the whole edge this repository
+ * renders (from the environment's {@link runtimeDir}): the main configuration, the app's site (with
+ * certbot's hostnames also the one before its first certificate; on OpenLiteSpeed its other site
+ * files too) and its additions, with placeholder certificates in place of the origin certificate
+ * and certbot's. On this computer the site's leaf certificate is the one its edge already has
+ * ({@link localLeaf}). A refusal ends the job with the checker's output before anything reaches
+ * the server.
  */
 export function edgeCheckStep(plan: DeployPlan, o: EdgeFiles): string[] {
   const proxy = edgeProxy(plan);
@@ -68,17 +94,16 @@ export function edgeCheckStep(plan: DeployPlan, o: EdgeFiles): string[] {
   const dir = runtimeDir(plan);
   const tls = `${CHECK}/tls/${app}`;
   const live = `${CHECK}/letsencrypt/live/${app}`;
-  const nginx = proxy === "nginx";
-  const certbot = nginx && o.certbot !== undefined && o.certbot.hosts.length > 0;
-  const files = [`${app}.${site}`, ...(certbot ? [`${app}.http.conf`] : [])];
-  const check = nginx
-    ? `run --rm --no-deps -T -v ${CHECK}/letsencrypt:${LETSENCRYPT}:ro --entrypoint nginx nginx -t`
-    : "run --rm --no-deps -T caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile";
+  const beside = proxy !== "caddy";
+  const certbot = beside && o.certbot !== undefined && o.certbot.hosts.length > 0;
+  const files = [`${app}.${site}`, ...(certbot ? [`${app}.http.${site}`] : [])];
+  /** OpenLiteSpeed's site files that both of its sites share. */
+  const shared = proxy === "openlitespeed" ? [`${app}.vhost`, `${app}.map`] : [];
   return [
     `- name: Validate the edge's configuration with ${label}`,
     "  run: |",
     "    set -euo pipefail",
-    `    mkdir -p ${CHECK}/sites${nginx ? ` ${CHECK}/letsencrypt` : ""}`,
+    `    mkdir -p ${CHECK}/sites${beside ? ` ${CHECK}/letsencrypt` : ""}`,
     `    cp ${dir}/edge/compose.yaml ${CHECK}/compose.yaml`,
     ...(o.additions ? [`    cp ${additions} ${CHECK}/sites/${app}.additions`] : []),
     ...(o.originTls
@@ -92,8 +117,9 @@ export function edgeCheckStep(plan: DeployPlan, o: EdgeFiles): string[] {
     ...(certbot
       ? [`    mkdir -p ${live}`, placeholder(`${live}/privkey.pem`, `${live}/fullchain.pem`)]
       : []),
-    // nginx runs as the deploy user on the server, here as the runner's.
-    ...(nginx ? ['    export OPSCREW_DEPLOY_UID="$(id -u)" OPSCREW_DEPLOY_GID="$(id -g)"'] : []),
+    // nginx runs as the deploy user on the server, here as the runner's, and so does certbot beside
+    // OpenLiteSpeed (the Compose file names the deploy user wherever certbot runs).
+    ...(beside ? ['    export OPSCREW_DEPLOY_UID="$(id -u)" OPSCREW_DEPLOY_GID="$(id -g)"'] : []),
     // `run --rm` keeps the volumes the edge's Compose file names: on the user's own runner they
     // would stay, so they go at the end, also after a refusal. One another deploy's check uses
     // at that moment stays, and that check removes it.
@@ -107,9 +133,10 @@ export function edgeCheckStep(plan: DeployPlan, o: EdgeFiles): string[] {
     onRunnerMachine(plan)
       ? `    docker network create ${EDGE_PROJECT} > /dev/null 2>&1 || docker network inspect ${EDGE_PROJECT} > /dev/null`
       : `    docker network inspect ${EDGE_PROJECT} > /dev/null 2>&1 || docker network create ${EDGE_PROJECT} > /dev/null`,
+    ...shared.map((file) => `    cp ${dir}/edge/sites/${file} ${CHECK}/sites/${file}`),
     ...files.flatMap((file) => [
       `    cp ${dir}/edge/sites/${file} ${CHECK}/sites/${app}.${site}`,
-      `    if ! docker compose -p opscrew-edge-check -f ${CHECK}/compose.yaml ${check} < /dev/null; then`,
+      `    if ! docker compose -p opscrew-edge-check -f ${CHECK}/compose.yaml ${CHECKER[proxy]} < /dev/null; then`,
       `      echo ${shellQuote(checkFailed(plan, `${dir}/edge/sites/${file}`, o.additions))}`,
       "      exit 1",
       "    fi",

@@ -249,6 +249,10 @@ describe("answersToPortainer", () => {
     expect(() => answersToPortainer(split({ web: "nginx" }), off)).toThrow(
       /portainer\.web: answer tunnel, proxy or caddy/,
     );
+    // A Portainer stack keeps Caddy: OpenLiteSpeed is refused as plainly.
+    expect(() => answersToPortainer(split({ web: "openlitespeed" }), off)).toThrow(
+      /portainer\.web: answer tunnel, proxy or caddy/,
+    );
   });
 
   it("refuses a domain Cloudflare would serve more than one level below its zone through the tunnel", () => {

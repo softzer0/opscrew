@@ -1,0 +1,5 @@
+accessLog /var/log/app.log {
+# refused above: not-allowed
+  pipedLogger             remote-logger
+# refused above: logs
+}

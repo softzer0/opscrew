@@ -1,0 +1,9 @@
+map shop other.example.com
+# refused above: hostname
+vhAliases other.example.com
+# refused above: hostname
+listener Extra {
+# refused above: hostname
+}
+}
+# refused above: hostname

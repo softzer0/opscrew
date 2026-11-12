@@ -1,0 +1,11 @@
+context /www/ {
+  type                    proxy
+  handler                 kamal-proxy
+  rewrite {
+    enable                1
+    rules                 <<<END_rules
+RewriteCond %{HTTP_HOST} ^www\.app\.example\.com$ [NC]
+RewriteRule ^(.*)$ https://app.example.com/$1 [R=301,L]
+    END_rules
+  }
+}

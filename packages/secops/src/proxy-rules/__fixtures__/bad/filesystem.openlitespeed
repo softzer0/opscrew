@@ -1,0 +1,18 @@
+context /files/ {
+  location                /srv/files/
+# refused above: filesystem
+  allowBrowse             1
+# refused above: filesystem
+}
+docRoot /srv/www/
+# refused above: filesystem
+context /x/ {
+  type                    proxy
+  handler                 kamal-proxy
+  rewrite {
+    rules                 <<<END_rules
+RewriteMap lb rnd:/srv/map.txt
+# refused above: filesystem
+    END_rules
+  }
+}

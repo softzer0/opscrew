@@ -1,0 +1,10 @@
+context /x/ {
+  type                    proxy
+  handler                 kamal-proxy
+  extraHeaders            <<<END_extraHeaders
+Header set X-A "a[2Kb"
+# refused above: characters
+Header set X-B ""
+# refused above: characters
+  END_extraHeaders
+}

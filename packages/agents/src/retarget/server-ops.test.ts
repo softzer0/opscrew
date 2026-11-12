@@ -18,6 +18,7 @@ import {
   isAppHealthy,
   moveTimeoutMs,
   recreateDatabase,
+  reloadEdge,
   removeDump,
   restoreDatabase,
   runRelease,
@@ -103,6 +104,29 @@ describe("services", () => {
     expect(error.message).toContain("stop nginx");
   });
 
+  it("reloads each proxy keeping its configuration on an error, OpenLiteSpeed with its edge's own check", async () => {
+    const remote = new FakeRemote("203.0.113.10");
+    for (const proxy of ["caddy", "nginx", "openlitespeed"] as const) {
+      await reloadEdge(remote, proxy, { redact: identity, folder: FOLDER });
+    }
+    expect(remote.calls.map((call) => call.command)).toEqual([
+      "cd /srv/edge && docker compose exec -T caddy caddy reload --force --config /etc/caddy/Caddyfile --adapter caddyfile < /dev/null",
+      "cd /srv/edge && docker compose exec -T nginx sh -c 'nginx -t -q && nginx -s reload' < /dev/null",
+      "cd /srv/edge && docker compose exec -T openlitespeed sh /etc/opscrew/reload.sh < /dev/null",
+    ]);
+    const error = await caught(
+      reloadEdge(
+        new FakeRemote("h", () => fail("OpenLiteSpeed refused the configuration")),
+        "openlitespeed",
+        {
+          redact: identity,
+          folder: FOLDER,
+        },
+      ),
+    );
+    expect(error.message).toContain("reload OpenLiteSpeed");
+  });
+
   it("names the step and host and passes stderr through the redactor", async () => {
     const token = fakeSecret("github-token");
     const redactor = new Redactor();
@@ -155,10 +179,11 @@ describe("app health", () => {
   it("asks the app from a one-off container of the edge's proxy on the Compose network", async () => {
     const remote = new FakeRemote("h");
     expect(await isAppHealthy(remote, 3000, "/healthz", "caddy")).toBe(true);
-    // nginx's image is Alpine, with busybox wget too.
+    // nginx's image is Alpine, with busybox wget too; OpenLiteSpeed's Ubuntu has GNU wget.
     expect(await isAppHealthy(remote, 3000, "/healthz", "nginx")).toBe(true);
+    expect(await isAppHealthy(remote, 3000, "/healthz", "openlitespeed")).toBe(true);
     expect(remote.calls).toEqual(
-      ["caddy", "nginx"].map((proxy) => ({
+      ["caddy", "nginx", "openlitespeed"].map((proxy) => ({
         command: `cd /srv/edge && docker compose run --rm --no-deps -T --entrypoint wget ${proxy} -q -O /dev/null -T 5 'http://app:3000/healthz'`,
         timeoutMs: MIN,
       })),

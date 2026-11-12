@@ -143,6 +143,25 @@ describe("tlsStatusReport (FR-1462)", () => {
     });
   });
 
+  it("on OpenLiteSpeed reads certbot's reason as on nginx, beside the proxy's name", async () => {
+    const base = nginxPlan();
+    const plan = DeployPlanSchema.parse({
+      ...base,
+      target: { ...base.target, edge: "openlitespeed" },
+    });
+    const deps = await setup(plan);
+    const log = certbotLog("Failed to renew certificate shop with error: Timeout during connect.");
+    const { lines } = await tlsStatusReport(deps, plan, {
+      tlsConnect: presented(20),
+      services: { remote: log.remote },
+    });
+    expect(lines[0]).toBe("Proxy: OpenLiteSpeed");
+    expect(lines).toContain(
+      "  Warning: certbot renews certificates 45 days before they expire, so its renewal is failing: certbot's last renewal said: Timeout during connect. Check that the hostname's DNS record points to the server and that port 80 reaches it; certbot tries again every 12 hours.",
+    );
+    expect(log.commands).toHaveLength(1);
+  });
+
   it("reads certbot's log only when a certificate needs it, and says what could not be read", async () => {
     const plan = nginxPlan();
     const deps = await setup(plan);

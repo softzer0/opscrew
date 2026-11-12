@@ -1,0 +1,8 @@
+# accessLog /var/log/app.log { pipedLogger remote }
+context /health {
+  type                    proxy
+  handler                 kamal-proxy
+  extraHeaders            <<<END_extraHeaders
+Header set X-Log "pipedLogger stays off"
+  END_extraHeaders
+}

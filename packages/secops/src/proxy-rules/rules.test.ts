@@ -15,13 +15,25 @@ const COMMON_RULES = [
   "not-allowed",
   "characters",
 ];
-/** The rules each syntax has; `placeholder` reads Caddy's file and environment placeholders. */
-const RULES = { nginx: COMMON_RULES, caddy: [...COMMON_RULES, "placeholder"] } as const;
-const EXTENSION = { nginx: "conf", caddy: "caddy" } as const;
-const PROXIES = ["nginx", "caddy"] as const;
+/**
+ * The rules each syntax has; `placeholder` reads Caddy's file and environment placeholders, and
+ * OpenLiteSpeed has no admin page an addition could open.
+ */
+const RULES = {
+  nginx: COMMON_RULES,
+  caddy: [...COMMON_RULES, "placeholder"],
+  openlitespeed: COMMON_RULES.filter((rule) => rule !== "admin-endpoint"),
+} as const;
+const EXTENSION = { nginx: "conf", caddy: "caddy", openlitespeed: "openlitespeed" } as const;
+const PROXIES = ["nginx", "caddy", "openlitespeed"] as const;
 
+/** The app's hostnames, and its upstream as each proxy's site names it (OpenLiteSpeed's external app). */
 function ctx(proxy: ProxyAdditionsContext["proxy"]): ProxyAdditionsContext {
-  return { proxy, hostnames: ["app.example.com", "www.app.example.com"], upstream: "app-web:3000" };
+  return {
+    proxy,
+    hostnames: ["app.example.com", "www.app.example.com"],
+    upstream: proxy === "openlitespeed" ? "kamal-proxy" : "app-web:3000",
+  };
 }
 
 const FIXTURES = new URL("./__fixtures__/", import.meta.url);

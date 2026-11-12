@@ -1,9 +1,9 @@
 import { listText, normalizeHostName } from "@opscrew/core";
-import { parseCaddy, parseNginx, type Statement } from "./parse";
+import { parseCaddy, parseNginx, parseOpenLiteSpeed, type Statement } from "./parse";
 
 /** What {@link scanProxyAdditions} checks an app's additions against. */
 export interface ProxyAdditionsContext {
-  proxy: "caddy" | "nginx";
+  proxy: "caddy" | "nginx" | "openlitespeed";
   /** The app's own hostnames. */
   hostnames: string[];
   /** Where the app's traffic goes, as the site file names it (`host:port`). */
@@ -41,9 +41,16 @@ interface Syntax {
   remoteLog(s: Statement): string | undefined;
   /** The name that is not on the contract's allow-list where it stands, if any. */
   notAllowed(s: Statement): string | undefined;
+  /** Whether a directive runs a script inside the proxy, besides {@link SCRIPTING}'s names. */
+  runsScript?(s: Statement): boolean;
+  /** Directive names are compared without case (OpenLiteSpeed's): the sets above hold them lower-case. */
+  caseless?: boolean;
 }
 
 const nameOf = (s: Statement) => s.words[0]?.text ?? "";
+/** The directive's name as `syntax` compares it. */
+const keyOf = (s: Statement, syntax: Syntax) =>
+  syntax.caseless ? nameOf(s).toLowerCase() : nameOf(s);
 const args = (s: Statement) => s.words.slice(1).map((w) => w.text);
 
 /** The directives nginx additions may use, anywhere (contracts/edge-and-checks.md). */
@@ -180,7 +187,91 @@ const NGINX_UPSTREAMS = new Set([
 ]);
 const CADDY_UPSTREAMS = new Set(["reverse_proxy", "php_fastcgi", "forward_auth"]);
 
+/**
+ * The directives OpenLiteSpeed additions may use, lower-case, by the block they are in (`""`: the
+ * top of the file, which the app's virtual host includes at its end): contexts that send requests
+ * to the app (`type proxy`, `handler` the app's upstream) with headers, rewrite rules and access
+ * rules. `extraHeaders` and `rules` are the lines of those values.
+ */
+const OPENLITESPEED_ALLOWED: Record<string, ReadonlySet<string>> = {
+  "": new Set(["context"]),
+  context: new Set([
+    "type",
+    "handler",
+    "extraheaders",
+    "rewrite",
+    "accesscontrol",
+    "adddefaultcharset",
+    "enableexpires",
+    "expiresdefault",
+    "expiresbytype",
+  ]),
+  rewrite: new Set(["enable", "inherit", "rules"]),
+  accesscontrol: new Set(["allow", "deny"]),
+  extraheaders: new Set(["header", "requestheader"]),
+  rules: new Set(["rewritecond", "rewriterule"]),
+};
+
+/** The blocks whose lines are a value's (`key <<<END`), where a brace is part of the line. */
+const OPENLITESPEED_VALUES = new Set(["extraheaders", "rules"]);
+
+/** The context types that run a program in the proxy (OpenLiteSpeed's external apps). */
+const OPENLITESPEED_SCRIPT_TYPES = new Set(["lsapi", "cgi", "fcgi", "servlet"]);
+
+/** The last block around a statement, lower-case (`""` at the top). */
+const blockOf = (s: Statement) => (s.parents.at(-1) ?? "").toLowerCase();
+
 const SYNTAX: Record<ProxyAdditionsContext["proxy"], Syntax> = {
+  openlitespeed: {
+    parse: parseOpenLiteSpeed,
+    valueBlocks: new Set(),
+    tls: /^(?:vhssl|sslprotocol|certfile|keyfile|certchain|cacertfile|cacertpath|clientverify|verifydepth|ciphers|enableecdhe|enabledhe|dhparam|crlpath|crlfile|enablestapling|ocsp\w*|sslsession\w*|renegprotection)$/,
+    admin: new Set(),
+    filesystem: new Set([
+      "location",
+      "docroot",
+      "vhroot",
+      "allowbrowse",
+      "autoindex",
+      "indexfiles",
+      "userdb",
+      "groupdb",
+      "configfile",
+      "rewritemap",
+    ]),
+    includes: new Set(["include"]),
+    listening: new Set(["listener", "map", "vhdomain", "vhaliases"]),
+    caseless: true,
+    targets(s) {
+      const name = nameOf(s).toLowerCase();
+      if (name === "handler" || name === "address") return [args(s)[0] ?? ""];
+      // A rule with the `P` (`proxy`) flag sends the request on to the URL it rewrites to.
+      const [, target, flags] = args(s);
+      if (name === "rewriterule" && /^\[(?:.*,)?\s*(?:P|proxy)\s*(?:,.*)?\]$/i.test(flags ?? "")) {
+        return [target ?? ""];
+      }
+      return undefined;
+    },
+    hosts: () => undefined,
+    remoteLog: (s) => (nameOf(s).toLowerCase() === "pipedlogger" ? "pipedLogger" : undefined),
+    notAllowed(s) {
+      const name = nameOf(s);
+      const block = blockOf(s);
+      if (!OPENLITESPEED_ALLOWED[block]?.has(name.toLowerCase())) return name;
+      // A brace inside a line is not a block OpenLiteSpeed reads as one.
+      const brace = s.words.find((w) => !w.quoted && /[{}]/.test(w.text));
+      if (brace !== undefined && !OPENLITESPEED_VALUES.has(block)) return brace.text;
+      // A value with no end marker: the parser reads no value, and OpenLiteSpeed no end.
+      if (s.words.at(-1)?.text === "<<<" && !OPENLITESPEED_VALUES.has(block)) return "<<<";
+      const type = args(s)[0]?.toLowerCase();
+      return name.toLowerCase() === "type" && type !== "proxy" ? `type ${type ?? ""}` : undefined;
+    },
+    runsScript(s) {
+      const name = nameOf(s).toLowerCase();
+      if (name === "scripthandler" || name === "phpinioverride") return true;
+      return name === "type" && OPENLITESPEED_SCRIPT_TYPES.has(args(s)[0]?.toLowerCase() ?? "");
+    },
+  },
   nginx: {
     parse: parseNginx,
     valueBlocks: new Set(),
@@ -267,12 +358,12 @@ const EVERY_WORD = new Set(["placeholder"]);
 const RULES: Record<string, Check> = {
   tls: (s, syntax) => {
     const name = nameOf(s);
-    if (!syntax.tls.test(name)) return undefined;
+    if (!syntax.tls.test(keyOf(s, syntax))) return undefined;
     return `\`${name}\` changes the edge's TLS, which OpsCrew manages for every app (TLS 1.2 and 1.3, the certificates and the client checks). Remove it.`;
   },
   "admin-endpoint": (s, syntax) => {
     const name = nameOf(s);
-    if (!syntax.admin.has(name)) return undefined;
+    if (!syntax.admin.has(keyOf(s, syntax))) return undefined;
     return `\`${name}\` would open the proxy's own admin, metrics or status page to the internet. Remove it: the edge exposes none.`;
   },
   upstream: (s, syntax, { upstream }) => {
@@ -294,7 +385,7 @@ const RULES: Record<string, Check> = {
     if (name === "}" && s.words.length === 1 && s.parents.length === 0) {
       return "This `}` closes no block of the file, so it would close the app's site and what follows could serve other hostnames. Remove it.";
     }
-    if (syntax.listening.has(name)) {
+    if (syntax.listening.has(keyOf(s, syntax))) {
       return `\`${name}\` changes where the edge listens, which OpsCrew sets for every app. Remove it.`;
     }
     const names = syntax.hosts(s);
@@ -307,7 +398,7 @@ const RULES: Record<string, Check> = {
   },
   filesystem: (s, syntax) => {
     const name = nameOf(s);
-    if (!syntax.filesystem.has(name)) return undefined;
+    if (!syntax.filesystem.has(keyOf(s, syntax))) return undefined;
     if (name === "auth_basic_user_file") {
       return "`auth_basic_user_file` reads a password file on the server, and the edge keeps no files of its own. Protect the paths with Cloudflare Access or in the app instead.";
     }
@@ -320,12 +411,12 @@ const RULES: Record<string, Check> = {
   },
   includes: (s, syntax) => {
     const name = nameOf(s);
-    if (!syntax.includes.has(name)) return undefined;
+    if (!syntax.includes.has(keyOf(s, syntax))) return undefined;
     return `\`${name}\` pulls in another file, which OpsCrew cannot check. Put the rules in this file instead.`;
   },
-  scripting: (s) => {
+  scripting: (s, syntax) => {
     const name = nameOf(s);
-    if (!SCRIPTING.test(name)) return undefined;
+    if (!SCRIPTING.test(name) && !(syntax.runsScript?.(s) ?? false)) return undefined;
     return `\`${name}\` runs a script inside the proxy. Do this in the app instead.`;
   },
 };
@@ -339,6 +430,9 @@ const CONTROL = /[^\P{Cc}\t\r]|\r(?!$)|[^\P{Z} ]|\uFEFF/u;
 function notAllowedMessage(name: string): string {
   if (name === "limit_req") {
     return "`limit_req` may use only this app's own zone, `zone=opscrew_<app>`, which OpsCrew defines. Use that zone.";
+  }
+  if (name === "<<<") {
+    return "A value that starts with `<<<` needs the name of the line that ends it right after it, such as `<<<END_rules`. Add the name.";
   }
   if (name === "proxy_set_header") {
     return "`proxy_set_header` inside a `location` or `if` block makes nginx drop the headers OpsCrew sends the app there (Host and X-Forwarded-*). Put it at the top of the file, outside any block, where it adds to them.";

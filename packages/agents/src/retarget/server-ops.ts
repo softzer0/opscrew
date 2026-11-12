@@ -5,7 +5,7 @@ import {
   EDGE_DIR,
   EDGE_PROXIES,
   type EdgeProxy,
-  openlitespeedNotYet,
+  OPENLITESPEED_COMMAND,
   processServices,
 } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
@@ -240,15 +240,17 @@ export async function startService(
   );
 }
 
-/** How the edge's running proxy reloads its configuration; each keeps it on an error. */
+/**
+ * How the edge's running proxy reloads its configuration; each keeps it on an error. OpenLiteSpeed
+ * runs its edge's own check and graceful restart (ADR 0031 D2), which also looks up kamal-proxy
+ * again (D3).
+ */
 const RELOAD: Record<EdgeProxy, string> = {
   // `--force` provisions the sites again even when the configuration is the same, so Caddy tries
   // the certificates of hostnames whose DNS just switched to this server right away.
   caddy: "caddy reload --force --config /etc/caddy/Caddyfile --adapter caddyfile",
   nginx: "sh -c 'nginx -t -q && nginx -s reload'",
-  get openlitespeed(): string {
-    throw openlitespeedNotYet("move an app");
-  },
+  openlitespeed: OPENLITESPEED_COMMAND.reload,
 };
 
 /** Reloads the running proxy of the edge (`/srv/edge`), which other apps on the server share. */
@@ -271,7 +273,8 @@ export async function reloadEdge(
 
 /**
  * The health check; `port` is the plan's (`app.port`, a validated TCP port), `edge` the server's
- * proxy, whose image (Caddy's, or nginx's on Alpine) has busybox `wget`. With `app` (the plan's
+ * proxy, whose image has `wget` (busybox's in Caddy's and nginx's on Alpine, GNU's in
+ * OpenLiteSpeed's on Ubuntu). With `app` (the plan's
  * validated app name) it reaches the app's web container by name, else by the `app` alias.
  */
 function healthCommand(port: number, healthPath: string, edge: EdgeProxy, app?: string): string {

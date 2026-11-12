@@ -1,0 +1,4 @@
+context /x/ {
+	type			proxy
+	handler			kamal-proxy
+}

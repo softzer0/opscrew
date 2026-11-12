@@ -4,7 +4,7 @@ import { FakeZone } from "@opscrew/connector-cloudflare/testing";
 import type { CommandResult } from "@opscrew/contracts";
 import { findExecutable, type OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { IMAGES } from "@opscrew/iac-templates";
+import { IMAGES, OPENLITESPEED_CHECK } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import {
@@ -26,6 +26,7 @@ import type { ProvisionServices } from "./types";
 
 const CADDY = "opscrew/proxy/additions.caddy";
 const NGINX = "opscrew/proxy/additions.nginx";
+const OPENLITESPEED = "opscrew/proxy/additions.openlitespeed";
 
 /**
  * A Hetzner project with a proxied domain whose `docker` answers as `docker` says (`undefined`:
@@ -125,6 +126,68 @@ describe.skipIf(!findExecutable("git"))("opscrew provision: the app's own additi
       `${NGINX} holds additions for nginx, but this app's proxy is Caddy (target.edge), so OpsCrew would not use them. Nothing was changed.`,
     );
     expect(error.hint).toContain(`Write the same rules in Caddy's syntax in ${CADDY}`);
+  });
+
+  it("refuses OpenLiteSpeed's file for a Caddy app, naming its proxy", async () => {
+    const s = await project({ docker: () => ok() });
+    await write(s, OPENLITESPEED, "context /api/ {\n  type proxy\n  handler kamal-proxy\n}\n");
+    const error = await refusedBefore(s);
+    expect(error.message).toBe(
+      `${OPENLITESPEED} holds additions for OpenLiteSpeed, but this app's proxy is Caddy (target.edge), so OpsCrew would not use them. Nothing was changed.`,
+    );
+    expect(error.hint).toContain('or set target.edge to "openlitespeed" in opscrew/plan.yaml');
+  });
+
+  it("on OpenLiteSpeed checks the additions with OpsCrew's rules, then each site file with the edge's own check", async () => {
+    const base = testPlan({ domain: "shop.example.com" });
+    const plan = DeployPlanSchema.parse({
+      ...base,
+      target: { ...base.target, edge: "openlitespeed" },
+      dns: { ...base.dns, proxied: false },
+    });
+    const s = await project({
+      plan,
+      docker: (args) =>
+        args[0] === "version"
+          ? ok("29.1.3\n")
+          : {
+              exitCode: 2,
+              stdout: "",
+              stderr:
+                "OpenLiteSpeed refused the configuration:\n[ERROR] [config:server:vhosts:vhost:shop:context:/api/] Can not find handler with type: 12, name: nowhere.",
+            },
+    });
+    // OpsCrew's own rules refuse a handler other than the app's, before the check.
+    await write(s, OPENLITESPEED, "context /api/ {\n  type proxy\n  handler nowhere\n}\n");
+    const ruled = (await runProvision(s.deps, { services: s.services }).catch(
+      (e: unknown) => e,
+    )) as OpsCrewError;
+    expect(ruled.message).toContain(`OpsCrew refuses your additions in ${OPENLITESPEED}`);
+    expect(ruled.message).toContain("line 3 (upstream)");
+    expect(s.docker.filter((args) => args[0] === "run")).toEqual([]);
+
+    await write(s, OPENLITESPEED, "context /api/ {\n  type proxy\n  handler kamal-proxy\n}\n");
+    const checked = (await runProvision(s.deps, { services: s.services }).catch(
+      (e: unknown) => e,
+    )) as OpsCrewError;
+    expect(checked.code).toBe("PHASE_PRECONDITION");
+    expect(checked.message).toContain(
+      `OpenLiteSpeed refused this app's site with your additions in ${OPENLITESPEED}`,
+    );
+    expect(checked.message).toContain("Can not find handler");
+    const [run] = s.docker.filter((args) => args[0] === "run");
+    // Without a network, kamal-proxy's name on the container's loopback for openlitespeed -t.
+    expect(run).toEqual(
+      expect.arrayContaining(["--network", "none", "--add-host", "kamal-proxy:127.0.0.1"]),
+    );
+    expect(run?.slice(-5)).toEqual([
+      "--entrypoint",
+      "sh",
+      IMAGES.openlitespeed.ref,
+      "-c",
+      OPENLITESPEED_CHECK,
+    ]);
+    expect(s.handler.requests).toEqual([]);
   });
 
   it("checks valid additions with the proxy's own checker in its pinned image, then deploys them", async () => {

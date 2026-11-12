@@ -5,6 +5,7 @@ import { FAKE_ZONE_ID, FakeZone } from "@opscrew/connector-cloudflare/testing";
 import type { CheckResult, CommandResult, FetchLike, RemoteExec } from "@opscrew/contracts";
 import { generateP256, selfSignedClientCertificate } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
+import type { EdgeProxy } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { writeCloudflareRecord } from "../provision/shared-cloudflare";
@@ -45,6 +46,8 @@ const UNKNOWN_REFUSED = "CONNECTED(00000003)\ntlsv1 unrecognized name\n";
 interface Server {
   /** What `openssl s_client` prints for the app's hostname. */
   site?: string;
+  /** What it prints for a hostname no site serves. */
+  unknown?: string;
   /** certbot's last line about the app's certificate. */
   certbot?: string;
   /** Valkey's answer to a ping without its password. */
@@ -59,7 +62,7 @@ function server(o: Server = {}) {
     async run(command): Promise<CommandResult> {
       commands.push(command);
       const ok = (stdout: string, exitCode = 0) => ({ exitCode, stdout, stderr: "" });
-      if (command.includes("unknown.opscrew.invalid")) return ok(UNKNOWN_REFUSED, 1);
+      if (command.includes("unknown.opscrew.invalid")) return ok(o.unknown ?? UNKNOWN_REFUSED, 1);
       if (command.includes("openssl s_client")) return ok(o.site ?? CADDY_REFUSED, 1);
       if (command.includes("service=certbot")) return ok(o.certbot ?? "");
       if (command.includes("valkey-cli PING"))
@@ -99,7 +102,7 @@ function defaultTls(): NonNullable<SharedRecord["tls"]> {
 }
 
 /** A deployed plan for `shop.example.com` (proxied by default) on `edge`. */
-function deployedPlan(o: { proxied?: boolean; edge?: "caddy" | "nginx"; valkey?: boolean } = {}) {
+function deployedPlan(o: { proxied?: boolean; edge?: EdgeProxy; valkey?: boolean } = {}) {
   const base = testPlan({ proxied: o.proxied ?? true });
   return DeployPlanSchema.parse({
     ...base,
@@ -173,6 +176,23 @@ describe("secure's origin check from the server (FR-1423)", () => {
       "printf 'GET / HTTP/1.1\\r\\nHost: %s\\r\\nConnection: close\\r\\n\\r\\n' 'shop.example.com' | timeout 15 openssl s_client -connect 127.0.0.1:443 -servername 'shop.example.com' -tls1_3 -ign_eof 2>&1",
     );
     expect(result.report).toContain("refuses connections without Cloudflare's client certificate");
+  });
+
+  it("on OpenLiteSpeed counts its refused handshake, and its 403 for a hostname no site serves", async () => {
+    const deps = await setup(deployedPlan({ edge: "openlitespeed" }));
+    await writeCloudflareRecord(deps.paths, record());
+    // What the OpenLiteSpeed edge showed in its Docker test: the placeholder certificate, then 403.
+    const unknown = sClient(certificate("default.invalid", 3650), "HTTP/1.1 403 Forbidden\r\n");
+    const { remote, commands } = server({ site: CADDY_REFUSED, unknown });
+    const result = await secure(deps, remote, new FakeZone());
+    expect(find(result.hostChecks, "origin-tls-shop.example.com")).toMatchObject({
+      status: "pass",
+    });
+    expect(find(result.hostChecks, "origin-unknown-hostname")).toMatchObject({ status: "pass" });
+    // The unknown hostname gets a request, to read the answer.
+    expect(commands).toContain(
+      "printf 'GET / HTTP/1.1\\r\\nHost: %s\\r\\nConnection: close\\r\\n\\r\\n' 'unknown.opscrew.invalid' | timeout 15 openssl s_client -connect 127.0.0.1:443 -servername 'unknown.opscrew.invalid' -tls1_3 -ign_eof 2>&1",
+    );
   });
 
   it("fails a hostname the server answers without the client certificate", async () => {

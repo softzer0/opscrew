@@ -950,11 +950,12 @@ export class FakeHost implements RemoteExec {
           ].map((name) => {
             // The app's site on the edge is a file of the edge's folder (deploy:deploy, 644), the
             // site file of the proxy the edge's Compose file is stamped with.
-            const nginx = /^x-opscrew-edge-proxy: *nginx *$/m.test(
+            const stamp = /^x-opscrew-edge-proxy: *(\S+) *$/m.exec(
               this.files.get(`${EDGE_DIR}/compose.yaml`) ?? "",
-            );
+            )?.[1];
+            const ext = stamp === "nginx" ? "conf" : stamp === "openlitespeed" ? "vhconf" : "";
             const site = this.files.get(
-              nginx ? `${EDGE_DIR}/sites/${app}.conf` : runtimeFilePath(app, "site"),
+              ext === "" ? runtimeFilePath(app, "site") : `${EDGE_DIR}/sites/${app}.${ext}`,
             );
             const file =
               name === "site"

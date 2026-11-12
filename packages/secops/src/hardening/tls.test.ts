@@ -163,6 +163,47 @@ describe("the origin check from the server (FR-1402, FR-1404, FR-1423)", () => {
     }
   });
 
+  it("on OpenLiteSpeed counts its refused handshake, and a 403 for an unknown hostname, which it can't refuse", async () => {
+    // What OpenLiteSpeed's edge showed openssl s_client in its Docker test (ADR 0031 D5).
+    const placeholder = selfSignedClientCertificate({
+      key: KEY,
+      commonName: "default.invalid",
+      days: 3650,
+      now: NOW,
+    });
+    const unknown = (status: string) =>
+      out(`CONNECTED(00000003)
+---
+Server certificate
+${placeholder.trim()}
+---
+HTTP/1.1 ${status}
+`);
+    const answers = [
+      out(CADDY_REFUSED, 1),
+      unknown("403 Forbidden"),
+      out(CADDY_REFUSED, 1),
+      unknown("200 OK"),
+    ];
+    const { remote, commands } = shell(() => answers.shift() ?? out("", 1));
+    const checks = originHostChecks(["shop.example.com"], "openlitespeed");
+    const passed = await runHostChecks(remote, checks);
+    expect(passed.map((r) => [r.id, r.status])).toEqual([
+      ["origin-tls-shop.example.com", "pass"],
+      ["origin-unknown-hostname", "pass"],
+    ]);
+    expect(passed[1]?.message).toBe(
+      "The server's proxy answers 403 to a hostname no site on it serves (OpenLiteSpeed can't refuse the connection itself).",
+    );
+    // The unknown hostname gets a request, to read the answer.
+    expect(commands[1]).toBe(serverHandshakeCommand("unknown.opscrew.invalid", true));
+    expect((await runHostChecks(remote, checks))[1]).toMatchObject({
+      status: "fail",
+      message:
+        "The server's proxy accepts a TLS connection for unknown.opscrew.invalid, a hostname no site on it serves.",
+    });
+  });
+
   it("has no checks without hostnames", () => {
     expect(originHostChecks([])).toEqual([]);
   });
@@ -196,12 +237,16 @@ describe("the certificates of DNS-only hostnames (FR-1406, FR-1445)", () => {
     }
   });
 
-  it("says what to do on Caddy, and on nginx without certbot's reason", () => {
+  it("says what to do on Caddy, and beside certbot without its reason", () => {
     expect(renewalAdvice("caddy", { project: "opscrew-edge" })).toContain(
       "`docker compose -p opscrew-edge logs caddy`",
     );
     expect(renewalAdvice("nginx", { project: "opscrew-edge" })).toContain(
       "read why with `docker compose -p opscrew-edge logs certbot` on the server",
+    );
+    // certbot renews OpenLiteSpeed's certificates as nginx's.
+    expect(renewalAdvice("openlitespeed", { project: "opscrew-edge" }, "Timeout")).toBe(
+      renewalAdvice("nginx", { project: "opscrew-edge" }, "Timeout"),
     );
   });
 });

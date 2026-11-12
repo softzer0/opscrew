@@ -1,6 +1,7 @@
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { testServices } from "../__fixtures__/plans";
+import type { EdgeProxy } from "../edge";
 import {
   cell,
   deployRows,
@@ -317,7 +318,7 @@ describe("the runbook's shared rows", () => {
 
   describe("the proxy, its certificates and the recovery copy", () => {
     /** The plan with `target.edge` set. */
-    const onEdge = (p: DeployPlan, edge: "caddy" | "nginx"): DeployPlan =>
+    const onEdge = (p: DeployPlan, edge: EdgeProxy): DeployPlan =>
       p.target.provider === "hetzner" ? { ...p, target: { ...p.target, edge } } : p;
 
     it("names the proxy, the site file and the additions, and the origin certificate when proxied", () => {
@@ -343,6 +344,24 @@ describe("the runbook's shared rows", () => {
       const caddy = renderRunbook(plan({ domain: "shop.example.com", proxied: false }), deployed);
       expect(caddy.content).toContain("Caddy gets and renews the certificates itself");
       expect(caddy.content).toContain("`letsencrypt.org` and `sectigo.com`");
+    });
+
+    it("with OpenLiteSpeed and DNS only, names its three choices, its contexts, certbot and its restarts", () => {
+      const p = onEdge(plan({ domain: "shop.example.com", proxied: false }), "openlitespeed");
+      const { content } = renderRunbook(p, deployed);
+      expect(content).toContain("`opscrew-edge`: OpenLiteSpeed");
+      expect(content).toContain("`/srv/edge/sites/shop.vhconf`");
+      expect(content).toContain(
+        "`opscrew/proxy/additions.openlitespeed` holds this app's own OpenLiteSpeed contexts for its paths",
+      );
+      expect(content).toContain("(`caddy`, `nginx` or `openlitespeed`)");
+      expect(content).toContain("certbot gets the first certificate from Let's Encrypt");
+      expect(content).toContain(
+        "OpenLiteSpeed restarts gracefully, ending only connections older than five minutes.",
+      );
+      expect(content).toContain(
+        "OpsCrew's CAA records name only `letsencrypt.org` (none at the zone's apex).",
+      );
     });
 
     it("explains the recovery copy, with the restore steps and sops alone", () => {

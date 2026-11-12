@@ -48,12 +48,14 @@ describe("cloudflare-dns module", () => {
   it("names the authorities of the plan's edge, and none for an app on the zone apex", () => {
     const issuers = (plan: DeployPlan) =>
       tfvars(plan, testContext({ cloudflare: testCloudflare() })).caa_issuers;
-    const withEdge = (plan: DeployPlan, edge: "caddy" | "nginx") =>
+    const withEdge = (plan: DeployPlan, edge: "caddy" | "nginx" | "openlitespeed") =>
       DeployPlanSchema.parse({ ...plan, target: { ...plan.target, edge } });
     for (const provider of ["hetzner", "digitalocean", "own"] as const) {
       const plan = testPlan({ provider, domain: "shop.example.com" });
       expect(issuers(plan)).toEqual(["letsencrypt.org", "sectigo.com"]);
       expect(issuers(withEdge(plan, "nginx"))).toEqual(["letsencrypt.org"]);
+      // certbot gets OpenLiteSpeed's certificates too.
+      expect(issuers(withEdge(plan, "openlitespeed"))).toEqual(["letsencrypt.org"]);
       const apex = testPlan({ provider, domain: "example.com" });
       expect(issuers(apex)).toEqual([]);
       expect(issuers(withEdge(apex, "nginx"))).toEqual([]);

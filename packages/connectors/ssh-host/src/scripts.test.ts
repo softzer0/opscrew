@@ -775,6 +775,58 @@ esac`;
     }
   });
 
+  it("app teardown on the OpenLiteSpeed edge: removes the app's three site files, its additions and origin TLS files, then restarts OpenLiteSpeed after its check", async () => {
+    const fake = new FakeHost();
+    await provision(fake);
+    deployApp(fake, "shop");
+    const plan = planTeardown(
+      await inspectHost(fake),
+      { deleteData: false, app: "shop", projectId: SHOP_PROJECT, repositoryUrl: SHOP_REPOSITORY },
+      "opscrew destroy",
+    );
+    const step = plan.steps.find((item) => item.id === "app-dirs");
+    if (step === undefined) throw new Error("no app-dirs step");
+    const { apply, verify } = stepScripts(plan, step);
+    const h = new ShellHarness();
+    try {
+      h.stub("docker", "exit 0");
+      h.stub("systemctl", "exit 0");
+      h.write(
+        "/srv/edge/compose.yaml",
+        "name: opscrew-edge\nx-opscrew-edge-proxy: openlitespeed\n",
+      );
+      for (const ext of ["vhconf", "vhost", "map"])
+        h.write(`/srv/edge/sites/shop.${ext}`, "# shop\n");
+      h.write("/srv/edge/sites/shop.additions", "add_header X-Test 1;\n");
+      h.write("/srv/edge/sites/blog.vhconf", "# blog\n");
+      h.write("/srv/edge/tls/shop/origin.pem", "certificate\n");
+      h.write("/srv/edge/tls/shop/origin.key", "placeholder key\n");
+      h.write("/srv/edge/tls/shop/pull.pem", "certificate\n");
+      h.write("/srv/apps/shop/compose.yaml", "name: shop\n");
+      const run = h.run(apply);
+      expect(run.status, run.stderr).toBe(0);
+      for (const gone of [
+        "/srv/edge/sites/shop.vhconf",
+        "/srv/edge/sites/shop.vhost",
+        "/srv/edge/sites/shop.map",
+        "/srv/edge/sites/shop.additions",
+        "/srv/edge/tls/shop",
+      ]) {
+        expect(h.exists(gone)).toBe(false);
+      }
+      // Another app's site stays, and the edge's own script checks the configuration first.
+      expect(h.exists("/srv/edge/sites/blog.vhconf")).toBe(true);
+      const edge = `docker compose -p opscrew-edge -f ${h.posix("/srv/edge/compose.yaml")}`;
+      // The script in the edge's container (the harness moves every /etc/opscrew path it sees).
+      const reload = h.posix("/etc/opscrew/reload.sh");
+      expect(h.calls()).toContain(`${edge} exec -T openlitespeed sh ${reload}`);
+      expect(h.calls().some((call) => call.includes("caddy reload"))).toBe(false);
+      expect(h.run(verify).status).toBe(0);
+    } finally {
+      h.dispose();
+    }
+  });
+
   it("sshd: the check accepts without-password for prohibit-password and needs OpsCrew's drop-in", async () => {
     const { check } = await stepOf((f) => desiredFor(f), "sshd");
     const dropIn = sshdDropIn({

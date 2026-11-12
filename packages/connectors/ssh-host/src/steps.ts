@@ -2009,6 +2009,10 @@ function appDirsScripts(plan: HostPlan, step: HostStep): StepScripts {
       DATA_DIR: dirs.data,
       SITE: runtimeFilePath(p.app, "site"),
       NGINX_SITE: `${EDGE_DIR}/sites/${p.app}.conf`,
+      // OpenLiteSpeed's site is three files.
+      OLS_SITE: `${EDGE_DIR}/sites/${p.app}.vhconf`,
+      OLS_VHOST: `${EDGE_DIR}/sites/${p.app}.vhost`,
+      OLS_MAP: `${EDGE_DIR}/sites/${p.app}.map`,
       ADDITIONS: `${EDGE_DIR}/sites/${p.app}.additions`,
       TLS_DIR: `${EDGE_DIR}/tls/${p.app}`,
       EDGE_COMPOSE: `${EDGE_DIR}/compose.yaml`,
@@ -2039,7 +2043,7 @@ app_dir_gone() {
 }`,
     verify: `  project_gone "$APP" "$DELETE_DATA" || return 1
   app_dir_gone || return 1
-  for f in "$SITE" "$NGINX_SITE" "$ADDITIONS" "$TLS_DIR"; do
+  for f in "$SITE" "$NGINX_SITE" "$OLS_SITE" "$OLS_VHOST" "$OLS_MAP" "$ADDITIONS" "$TLS_DIR"; do
     [ ! -e "$f" ] && [ ! -L "$f" ] || return 1
   done
   if [ "$DELETE_DATA" = true ] && [ -e "$DATA_DIR" ]; then return 1; fi
@@ -2054,12 +2058,15 @@ done
 read_schedule || fail "OpsCrew could not read the deploy user's crontab, so it did not remove the app's scheduled snapshots."
 if [ "$(cron_count)" != 0 ]; then drop_cron -u deploy; fi
 remove_project "$APP" "$APP_COMPOSE" "$APP_DIR" "$DELETE_DATA"
-# The app's site (Caddy's or nginx's), its additions, its origin certificate and its kamal-proxy
-# service leave the shared edge, which stays for other apps (remove_project started Docker when it
-# was stopped).
+# The app's site (Caddy's, nginx's or OpenLiteSpeed's), its additions, its origin certificate and
+# its kamal-proxy service leave the shared edge, which stays for other apps (remove_project started
+# Docker when it was stopped).
 reload=''
 if [ -e "$SITE" ] || [ -L "$SITE" ]; then rm -f "$SITE"; reload=caddy; fi
 if [ -e "$NGINX_SITE" ] || [ -L "$NGINX_SITE" ]; then rm -f "$NGINX_SITE"; reload=nginx; fi
+for f in "$OLS_SITE" "$OLS_VHOST" "$OLS_MAP"; do
+  if [ -e "$f" ] || [ -L "$f" ]; then rm -f "$f"; reload=openlitespeed; fi
+done
 rm -f "$ADDITIONS"
 remove_dir "$TLS_DIR"
 if [ -f "$EDGE_COMPOSE" ] && command -v docker >/dev/null 2>&1; then
@@ -2075,6 +2082,8 @@ if [ -f "$EDGE_COMPOSE" ] && command -v docker >/dev/null 2>&1; then
   case "$reload" in
     caddy) edge exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile </dev/null >/dev/null 2>&1 || true ;;
     nginx) edge exec -T nginx sh -c 'nginx -t && nginx -s reload' </dev/null >/dev/null 2>&1 || true ;;
+    # The edge's own check and graceful restart (OPENLITESPEED_COMMAND in @opscrew/iac-templates).
+    openlitespeed) edge exec -T openlitespeed sh /etc/opscrew/reload.sh </dev/null >/dev/null 2>&1 || true ;;
   esac
 fi
 if keeps_snapshots; then

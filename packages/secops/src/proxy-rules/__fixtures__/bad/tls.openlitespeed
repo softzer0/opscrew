@@ -1,0 +1,14 @@
+# An older protocol for one legacy client.
+vhssl {
+# refused above: tls
+  sslProtocol             3
+# refused above: tls
+  certFile                /etc/ssl/other.pem
+# refused above: tls
+}
+context /api/ {
+  type                    proxy
+  handler                 kamal-proxy
+  clientVerify            0
+# refused above: tls
+}

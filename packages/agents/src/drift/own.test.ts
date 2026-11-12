@@ -702,6 +702,16 @@ describe.skipIf(!findExecutable("git"))("runDrift on a server the user owns", ()
       // The server's site file, which drift names when it differs, is nginx's too.
       expect(expectedRuntimeFiles(plan, ctx).sitePath).toBe("/srv/edge/sites/shop.conf");
       expect(expectedRuntimeFiles(ownPlan(), ctx).sitePath).toBe("/srv/edge/sites/shop.caddy");
+      // On OpenLiteSpeed, its virtual host's configuration, which renderEdgeSite gives first.
+      const ols = DeployPlanSchema.parse({
+        ...ownPlan(),
+        target: { ...ownPlan().target, edge: "openlitespeed" },
+      });
+      const [vhconf] = renderEdgeSite(ols, ctx);
+      expect(vhconf?.path).toBe("opscrew/runtime/edge/sites/shop.vhconf");
+      expect(vhconf?.content).toContain("clientVerify            2");
+      expect(expectedRuntimeFiles(ols, ctx).rendered.site).toBe(sum(vhconf?.content ?? ""));
+      expect(expectedRuntimeFiles(ols, ctx).sitePath).toBe("/srv/edge/sites/shop.vhconf");
     });
 
     it("checks each service's env file as it checks app.env", async () => {

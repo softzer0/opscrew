@@ -228,6 +228,15 @@ describe("shareableHost", () => {
       "dev's server runs nginx as its proxy",
     ],
     [
+      "OpenLiteSpeed",
+      DeployPlanSchema.parse({
+        ...hostTestPlan(),
+        target: { ...hostTestPlan().target, edge: "openlitespeed" },
+      }),
+      HOST_ENV,
+      "dev's server runs OpenLiteSpeed as its proxy, and previews are served by Caddy",
+    ],
+    [
       "dev not provisioned",
       hostTestPlan({ deployed: false }),
       HOST_ENV,

@@ -415,6 +415,14 @@ describe("environment.previews", () => {
     );
   });
 
+  it("refuses an OpenLiteSpeed edge too", async () => {
+    const issue = await refused((p) => {
+      (p.target as { edge?: string }).edge = "openlitespeed";
+    });
+    expect(issue.path).toBe("target.edge");
+    expect(issue.message).toContain('must be "caddy" with previews');
+  });
+
   it("refuses an nginx edge: each preview's site is a Caddy site", async () => {
     const issue = await refused((p) => {
       (p.target as { edge?: string }).edge = "nginx";

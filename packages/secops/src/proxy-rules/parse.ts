@@ -234,3 +234,52 @@ export function parseCaddy(text: string): Statement[] {
   endLine();
   return out.statements;
 }
+
+/** The words of one line of OpenLiteSpeed's configuration: `"…"` is one quoted word. */
+function openlitespeedWords(line: string): Word[] {
+  return [...line.matchAll(/"([^"]*)"|(\S+)/g)].map((match) =>
+    match[1] !== undefined
+      ? { text: match[1], quoted: true }
+      : { text: match[2] ?? "", quoted: false },
+  );
+}
+
+/**
+ * OpenLiteSpeed's syntax (its plain configuration files), line by line as it reads them: a line
+ * starting with `#` is a comment; a line ending in `{` opens a block named by its first word; a line
+ * that is `}` closes one; `key <<<MARKER` makes the following lines, up to the line `MARKER`, its
+ * value, each read as a statement in a block named `key` (comments skipped); any other line is one
+ * statement. A brace anywhere else, and a `<<<` with no marker, stay in their words, for the
+ * rules to refuse.
+ */
+export function parseOpenLiteSpeed(text: string): Statement[] {
+  const out = new Collector();
+  let marker: string | undefined;
+  text.split("\n").forEach((raw, index) => {
+    const line = index + 1;
+    const trimmed = raw.trim();
+    if (marker !== undefined && trimmed === marker) {
+      out.close(line);
+      marker = undefined;
+      return;
+    }
+    if (trimmed === "" || trimmed.startsWith("#")) return;
+    if (marker === undefined && trimmed === "}") {
+      out.close(line);
+      return;
+    }
+    const opens = marker === undefined && trimmed.endsWith("{");
+    const words = openlitespeedWords(opens ? trimmed.slice(0, -1) : trimmed);
+    for (const word of words) out.add(word, line);
+    const last = words.at(-1);
+    const heredoc =
+      marker === undefined &&
+      last?.quoted === false &&
+      last.text.startsWith("<<<") &&
+      last.text.length > 3;
+    if (heredoc) marker = last.text.slice(3);
+    out.end(opens || heredoc, line);
+  });
+  out.end();
+  return out.statements;
+}

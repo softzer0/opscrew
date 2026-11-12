@@ -18,6 +18,9 @@ const DAY_MS = 86_400_000;
 /** A hostname no site serves, for the check that the proxy refuses unknown hostnames. */
 const UNKNOWN_HOSTNAME = "unknown.opscrew.invalid";
 
+/** The reverse proxy in front of the apps on a server (`target.edge`). */
+type EdgeProxy = "caddy" | "nginx" | "openlitespeed";
+
 /** The issuer of Cloudflare's origin certificates (ECC and RSA). */
 const ORIGIN_CA = /CloudFlare Origin SSL/i;
 
@@ -31,7 +34,7 @@ export interface ServerHandshake {
   status?: number;
   /** nginx's answer to a request without the client certificate it requires. */
   clientCertificateMissing: boolean;
-  /** Caddy's refusal: the TLS alert `certificate required` (116) after the handshake. */
+  /** Caddy's and OpenLiteSpeed's refusal: the TLS alert `certificate required` (116) after the handshake. */
   certificateRequired: boolean;
 }
 
@@ -127,11 +130,16 @@ const REDEPLOY =
 /**
  * The checks of origin TLS from the server (FR-1402, FR-1404, FR-1423): for each of `hostnames`
  * (the app's hostnames the origin requires Cloudflare's client certificate for), a connection
- * without one is refused (Caddy ends the handshake; nginx completes it and answers HTTP 400, which
- * counts as refused too; anything else warns) and the certificate served is from Cloudflare's
- * Origin CA; and a hostname no site serves is refused. None without hostnames.
+ * without one is refused (Caddy and OpenLiteSpeed end the handshake; nginx completes it and answers
+ * HTTP 400, which counts as refused too; anything else warns) and the certificate served is from
+ * Cloudflare's Origin CA; and a hostname no site serves is refused, on the server's `proxy`
+ * OpenLiteSpeed with a 403, since it can't refuse the connection (ADR 0031 D5). None without
+ * hostnames.
  */
-export function originHostChecks(hostnames: readonly string[]): HostCheck[] {
+export function originHostChecks(
+  hostnames: readonly string[],
+  proxy: EdgeProxy = "caddy",
+): HostCheck[] {
   if (hostnames.length === 0) return [];
   const perHost = hostnames.map(
     (hostname): HostCheck => ({
@@ -187,15 +195,23 @@ export function originHostChecks(hostnames: readonly string[]): HostCheck[] {
       },
     }),
   );
+  const answers = proxy === "openlitespeed";
   const unknown: HostCheck = {
     id: "origin-unknown-hostname",
     title: "The server's proxy refuses hostnames it does not serve",
     severity: "medium",
-    command: serverHandshakeCommand(UNKNOWN_HOSTNAME, false),
+    command: serverHandshakeCommand(UNKNOWN_HOSTNAME, answers),
     evaluate(output) {
       const seen = parseServerHandshake(output.stdout);
       const unchecked = notChecked(this, output, seen);
       if (unchecked !== undefined) return unchecked;
+      if (answers && seen.status === 403) {
+        return result(
+          this,
+          "pass",
+          "The server's proxy answers 403 to a hostname no site on it serves (OpenLiteSpeed can't refuse the connection itself).",
+        );
+      }
       return seen.certificate === undefined && seen.status === undefined
         ? result(
             this,
@@ -273,12 +289,13 @@ export function certificateHostChecks(
 
 /**
  * What to do about a certificate of the server's proxy that is not renewed in time: Caddy renews
- * 30 days ahead, certbot (nginx) 45 days ahead, so either is failing. `failure` is certbot's
- * reason from its last run ({@link parseCertbotFailure}). `where` is the edge's Compose project on
- * a server, or the app's stack in the user's Portainer (whose Caddy is in the stack).
+ * 30 days ahead, certbot (beside nginx and OpenLiteSpeed) 45 days ahead, so either is failing.
+ * `failure` is certbot's reason from its last run ({@link parseCertbotFailure}). `where` is the
+ * edge's Compose project on a server, or the app's stack in the user's Portainer (whose Caddy is in
+ * the stack).
  */
 export function renewalAdvice(
-  proxy: "caddy" | "nginx",
+  proxy: EdgeProxy,
   where: { project: string } | { portainerStack: string },
   failure?: string,
 ): string {

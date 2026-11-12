@@ -10,7 +10,6 @@ import {
   additionsPath,
   EDGE_PROXIES,
   edgeProxy,
-  openlitespeedNotYet,
   siteHosts,
   translateVercelRouting,
 } from "@opscrew/iac-templates";
@@ -83,7 +82,6 @@ export async function vercelAdditions(
   }
   const content = `${header(routing.sha256, label)}${text}`;
   // Fail closed: a translation OpsCrew's additions rules refuse is never written.
-  if (proxy === "openlitespeed") throw openlitespeedNotYet("check proxy additions");
   const refused = scanProxyAdditions(content, { ...ctx, proxy });
   if (refused.length > 0) {
     const found = refused.map((r) => `line ${r.line} (${r.rule}): ${r.message}`).join(" ");

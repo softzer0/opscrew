@@ -14,7 +14,7 @@ import {
   type EdgeProxy,
   edgeProxy,
   localComposeProject,
-  openlitespeedNotYet,
+  OPENLITESPEED_COMMAND,
   runtimeDir,
   shellQuote,
 } from "@opscrew/iac-templates";
@@ -60,10 +60,11 @@ const RELOAD: Record<EdgeProxy, string> = {
   caddy:
     "edge exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile < /dev/null",
   nginx: "edge exec -T nginx sh -c 'nginx -t -q && nginx -s reload' < /dev/null",
-  get openlitespeed(): string {
-    throw openlitespeedNotYet("remove an app from this computer");
-  },
+  openlitespeed: `edge exec -T openlitespeed ${OPENLITESPEED_COMMAND.reload} < /dev/null`,
 };
+
+/** The app's site files on the edge, of every proxy (OpenLiteSpeed's are three), and its additions. */
+const SITE_FILES = ["caddy", "conf", "vhconf", "vhost", "map", "additions"];
 
 /** The removal script: every object by its Compose label, then the folders by OpsCrew's names. */
 function teardownScript(plan: DeployPlan, o: { last: boolean; deleteData: boolean }): string {
@@ -95,7 +96,7 @@ function teardownScript(plan: DeployPlan, o: { last: boolean; deleteData: boolea
           'rm -rf "$EDGE_DIR"',
         ]
       : [
-          `rm -f "$EDGE_DIR"/sites/${shellQuote(app)}.caddy "$EDGE_DIR"/sites/${shellQuote(app)}.conf "$EDGE_DIR"/sites/${shellQuote(app)}.additions`,
+          `rm -f ${SITE_FILES.map((ext) => `"$EDGE_DIR"/sites/${shellQuote(app)}.${ext}`).join(" ")}`,
           `rm -rf "$EDGE_DIR"/tls/${shellQuote(app)}`,
           `${RELOAD[edgeProxy(plan)]} > /dev/null 2>&1 || true`,
         ]),

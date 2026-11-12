@@ -1,0 +1,6 @@
+include /etc/opscrew/sites/other.additions
+# refused above: includes
+context /x/ {
+  include                 /tmp/more.conf
+# refused above: includes
+}

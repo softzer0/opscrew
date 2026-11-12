@@ -229,6 +229,25 @@ describe("destroy on this computer", () => {
     );
   });
 
+  it("on OpenLiteSpeed takes the app's three site files out, then restarts it after its edge's own check", async () => {
+    const { deps, computer } = await deployed();
+    await mkdir(join(localRoots(deps.paths).apps, "blog"), { recursive: true });
+    const plan = await readArtifact("plan", deps.paths.files.plan);
+    const ols = DeployPlanSchema.parse({
+      ...plan,
+      target: { ...plan.target, edge: "openlitespeed" },
+    });
+    await destroyLocalhost(deps, ols, {}, computer.services());
+    const [teardown] = computer.scripts;
+    const site = (ext: string) => `"$EDGE_DIR"/sites/'shop'.${ext}`;
+    expect(teardown?.script).toContain(
+      `rm -f ${["caddy", "conf", "vhconf", "vhost", "map", "additions"].map(site).join(" ")}\n`,
+    );
+    expect(teardown?.script).toContain(
+      "edge exec -T openlitespeed sh /etc/opscrew/reload.sh < /dev/null > /dev/null 2>&1 || true",
+    );
+  });
+
   it("changes nothing when the teardown is not approved, and refuses when nothing is there", async () => {
     const { deps, computer } = await deployed(
       new ScriptedApprovalHandler(

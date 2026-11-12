@@ -1463,6 +1463,37 @@ describe.skipIf(!findExecutable("git"))("runRetarget on the nginx edge", () => {
   });
 });
 
+describe.skipIf(!findExecutable("git"))("runRetarget on the OpenLiteSpeed edge", () => {
+  it("sizes the new server for OpenLiteSpeed, and stops, checks and starts it instead of Caddy", async () => {
+    const h = await moveHarness();
+    const plan = await readArtifact("plan", h.paths.files.plan);
+    await writeArtifact(
+      "plan",
+      h.paths.files.plan,
+      DeployPlanSchema.parse({ ...plan, target: { ...plan.target, edge: "openlitespeed" } }),
+    );
+    let offered: string[] = [];
+    const result = await run(h, {
+      choose: async (options) => {
+        offered = options.map((option) => option.summary);
+        return options.find((option) => option.recommended)?.id ?? (options[0]?.id as string);
+      },
+    });
+    expect(result).toMatchObject({ step: "switched", done: true });
+    expect(offered.length).toBeGreaterThan(0);
+    for (const summary of offered) expect(summary).toContain("behind OpenLiteSpeed.");
+    const n = h.newServer.ipv4;
+    const steps = trail(h.events);
+    expect(steps).toContain(`${n} stop openlitespeed`);
+    expect(steps).toContain(`${n} start openlitespeed`);
+    expect(steps.some((step) => step.includes("caddy"))).toBe(false);
+    expect(h.reporter.text()).toContain("Starting OpenLiteSpeed on the new");
+    expect((await readArtifact("plan", h.paths.files.plan)).target).toMatchObject({
+      edge: "openlitespeed",
+    });
+  });
+});
+
 describe.skipIf(!findExecutable("git"))("runRetarget: the app's origin TLS", () => {
   /** A certificate and key made now, standing in for one Cloudflare issued. */
   const pair = (name: string) => {

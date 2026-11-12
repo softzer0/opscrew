@@ -1,12 +1,19 @@
+import { X509Certificate } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import type { SharedRecord } from "@opscrew/connector-cloudflare";
 import {
   fingerprintSha256,
   generateP256,
+  hasKeyCertSign,
   OpsCrewError,
   selfSignedClientCertificate,
 } from "@opscrew/core";
-import { renderEdgeSite, renderPortainerStack } from "@opscrew/iac-templates";
+import {
+  type EdgeProxy,
+  originPullPem,
+  renderEdgeSite,
+  renderPortainerStack,
+} from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { generatedValuesFile } from "../shared/app-secrets";
@@ -39,7 +46,7 @@ import {
 const ZONE = "0123456789abcdef0123456789abcdef";
 const SHA = (c: string) => c.repeat(64);
 
-function withEdge(plan: DeployPlan, edge: "caddy" | "nginx"): DeployPlan {
+function withEdge(plan: DeployPlan, edge: EdgeProxy): DeployPlan {
   return DeployPlanSchema.parse({ ...plan, target: { ...plan.target, edge } });
 }
 
@@ -87,6 +94,20 @@ describe("requiringHostnames: the hostnames a site requires the client certifica
     expect(requiringHostnames(site(p, ["example.com"]))).toEqual(["example.com"]);
     expect(requiringHostnames(site(p, undefined))).toEqual([]);
   });
+
+  it("reads OpenLiteSpeed's rendered site: every hostname its map gives the virtual host", () => {
+    const p = withEdge(plan, "openlitespeed");
+    /** The map, then the virtual host's configuration, as the server's edge is read. */
+    const read = (hostnames: string[] | undefined) => {
+      const files = renderEdgeSite(p, hostnames !== undefined ? { originTls: { hostnames } } : {});
+      const file = (name: string) => files.find((f) => f.path.endsWith(`/shop.${name}`))?.content;
+      return requiringHostnames(`${file("map") ?? ""}${file("vhconf") ?? ""}`);
+    };
+    expect(read(["example.com", "www.example.com"])).toEqual(["example.com", "www.example.com"]);
+    // One certificate for the virtual host: its www twin requires the client certificate too.
+    expect(read(["example.com"])).toEqual(["example.com", "www.example.com"]);
+    expect(read(undefined)).toEqual([]);
+  });
 });
 
 describe("parseServerEdge", () => {
@@ -115,10 +136,23 @@ describe("parseServerEdge", () => {
     expect(parseServerEdge(output("traefik", "", ""))).toBeUndefined();
   });
 
+  it("reads OpenLiteSpeed's edge", () => {
+    const site = "map shop example.com, www.example.com\nvhssl {\n  clientVerify            2\n}\n";
+    expect(parseServerEdge(output("openlitespeed", origin.certificate, site))).toEqual({
+      proxy: "openlitespeed",
+      served: {
+        originSha256: fingerprintSha256(origin.certificate),
+        requiring: ["example.com", "www.example.com"],
+      },
+    });
+  });
+
   it("is read with one read-only command", () => {
     const command = edgeReadCommand("shop");
     expect(command).toContain("cat /srv/edge/tls/shop/origin.pem");
-    expect(command).toContain("/srv/edge/sites/shop.caddy /srv/edge/sites/shop.conf");
+    expect(command).toContain(
+      "/srv/edge/sites/shop.map /srv/edge/sites/shop.caddy /srv/edge/sites/shop.conf /srv/edge/sites/shop.vhconf",
+    );
     // Nothing secret is read and nothing is written (only errors go to /dev/null).
     expect(command).not.toMatch(/origin\.key|\brm |(?<!2)>/);
   });
@@ -126,7 +160,7 @@ describe("parseServerEdge", () => {
 
 describe("edgeSwitch", () => {
   const nginx = withEdge(testPlan({ domain: "shop.example.com" }), "nginx");
-  const runs = (proxy: "caddy" | "nginx" | undefined) => ({ proxy, served: { requiring: [] } });
+  const runs = (proxy: EdgeProxy | undefined) => ({ proxy, served: { requiring: [] } });
   const refusal = (f: () => unknown) => {
     try {
       f();
@@ -147,6 +181,11 @@ describe("edgeSwitch", () => {
     expect(note).toContain("from Caddy to nginx");
     expect(note).toContain("a few seconds");
     expect(note).toContain("under a minute");
+    const ols = withEdge(testPlan({ domain: "shop.example.com" }), "openlitespeed");
+    expect(edgeSwitch(ols, runs("nginx"), [])).toContain(
+      "switches the server's proxy from nginx to OpenLiteSpeed: the site is interrupted for a few seconds for hostnames behind Cloudflare's proxy, and for under a minute for DNS-only ones while certbot gets their first certificates.",
+    );
+    expect(edgeSwitch(nginx, runs("openlitespeed"), [])).toContain("from OpenLiteSpeed to nginx");
   });
 
   it("refuses another proxy while other OpsCrew apps share the server", () => {
@@ -168,6 +207,86 @@ describe("edgeSwitch", () => {
 
 describe("planOriginTls and the origin TLS values", () => {
   const plan = testPlan({ domain: "example.com", www: true });
+
+  it("gives the client certificate keyCertSign for an OpenLiteSpeed edge only (ADR 0031)", async () => {
+    /** The client certificate's DER keyUsage, critical: digitalSignature alone, or with keyCertSign. */
+    const usage = {
+      caddy: "300e0603551d0f0101ff040403020780",
+      ols: "300e0603551d0f0101ff040403020284",
+    };
+    const der = async (p: DeployPlan) => {
+      const step = await planOriginTls(await createTestPhaseDeps(), {
+        plan: p,
+        record: undefined,
+        served: undefined,
+      });
+      return new X509Certificate(step?.keys?.clientCertificate ?? "").raw.toString("hex");
+    };
+    for (const edge of ["caddy", "nginx"] as const) {
+      const hex = await der(withEdge(plan, edge));
+      expect(hex).toContain(usage.caddy);
+      expect(hex).not.toContain(usage.ols);
+    }
+    expect(await der(withEdge(plan, "openlitespeed"))).toContain(usage.ols);
+  });
+
+  it("refuses OpenLiteSpeed while Cloudflare has a client certificate without keyCertSign, and makes one again it has not got yet", async () => {
+    const deps = await createTestPhaseDeps();
+    const first = await planOriginTls(deps, { plan, record: undefined, served: undefined });
+    const made = first?.keys?.clientCertificate ?? "";
+    expect(hasKeyCertSign(made)).toBe(false);
+    /** The record once Cloudflare has `certificate` as the app's client certificate. */
+    const uploaded = (certificate: string) =>
+      recordWith({
+        client: {
+          id: "c1",
+          expiresAt: "2041-10-16T23:58:23.000Z",
+          sha256: fingerprintSha256(certificate),
+          enabled: ["example.com", "www.example.com"],
+          retiring: [],
+        },
+      });
+    const ols = withEdge(plan, "openlitespeed");
+    const refused = (await planOriginTls(deps, {
+      plan: ols,
+      record: uploaded(made),
+      served: undefined,
+    }).catch((e: unknown) => e)) as OpsCrewError;
+    expect(refused).toBeInstanceOf(OpsCrewError);
+    expect(refused.code).toBe("PHASE_PRECONDITION");
+    expect(refused.message).toBe(
+      "This app's client certificate for Cloudflare's origin pulls was made for Caddy or nginx, without keyCertSign in its key usage, and OpenLiteSpeed refuses such a certificate: on OpenLiteSpeed (target.edge) every request through Cloudflare would fail. Nothing was changed.",
+    );
+    expect(refused.hint).toContain(
+      "Set target.edge back to the server's proxy in opscrew/plan.yaml",
+    );
+    expect(refused.hint).toContain(
+      `add a new client certificate whose key usage has keyCertSign (and digitalSignature) after the old one in ${originPullPem(ols)} and deploy`,
+    );
+    expect(refused.hint).toMatch(/Then run `opscrew provision` again\.$/);
+    expect((await readOriginTlsValues(deps)).ORIGIN_PULL_CERT).toBe(made);
+    // Caddy and nginx keep it as it is.
+    for (const edge of ["caddy", "nginx"] as const) {
+      const kept = await planOriginTls(deps, {
+        plan: withEdge(plan, edge),
+        record: uploaded(made),
+        served: undefined,
+      });
+      expect(kept?.keys?.clientCertificate).toBe(made);
+    }
+    // Before Cloudflare has it, OpenLiteSpeed's is made again, with keyCertSign, and then kept.
+    const again = await planOriginTls(deps, { plan: ols, record: undefined, served: undefined });
+    const remade = again?.keys?.clientCertificate ?? "";
+    expect(remade).not.toBe(made);
+    expect(hasKeyCertSign(remade)).toBe(true);
+    expect((await readOriginTlsValues(deps)).ORIGIN_PULL_CERT).toBe(remade);
+    const after = await planOriginTls(deps, {
+      plan: ols,
+      record: uploaded(remade),
+      served: undefined,
+    });
+    expect(after?.keys?.clientCertificate).toBe(remade);
+  });
 
   it("makes the client certificate once, keeps a request only while its plan creates one", async () => {
     const deps = await createTestPhaseDeps();

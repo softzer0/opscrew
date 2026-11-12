@@ -20,6 +20,7 @@ import {
   exists,
   fingerprintSha256,
   generateP256,
+  hasKeyCertSign,
   isUserFacingError,
   listText,
   OpsCrewError,
@@ -42,6 +43,7 @@ import { CERTIFICATE_WARN_DAYS, daysLeft } from "@opscrew/secops";
 import { parse } from "yaml";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
+import { planFile } from "../runners/words";
 import {
   appServerShell,
   type PortainerConnection,
@@ -226,6 +228,13 @@ export async function planOriginTls(
     if (!previews) {
       let clientKey = values.ORIGIN_PULL_KEY;
       let clientCertificate = values.ORIGIN_PULL_CERT;
+      // OpenLiteSpeed trusts it only with keyCertSign (ADR 0031): one Cloudflare already has is
+      // refused, one it has not received yet is made again.
+      const openlitespeed = "edge" in plan.target && plan.target.edge === "openlitespeed";
+      if (openlitespeed && clientCertificate !== undefined && !hasKeyCertSign(clientCertificate)) {
+        if (client !== undefined) throw clientCertificateForOpenLiteSpeed(plan);
+        clientCertificate = undefined;
+      }
       if (clientKey === undefined || clientCertificate === undefined) {
         clientKey = newKey(deps);
         clientCertificate = selfSignedClientCertificate({
@@ -233,6 +242,8 @@ export async function planOriginTls(
           commonName: `opscrew-${plan.app.name}`,
           days: CLIENT_CERTIFICATE_DAYS,
           now: deps.clock.now(),
+          // Caddy and nginx get RFC 5280's CA:false without keyCertSign.
+          keyCertSign: openlitespeed,
         });
         values = { ...values, ORIGIN_PULL_KEY: clientKey, ORIGIN_PULL_CERT: clientCertificate };
         await writeOriginTlsValues(deps, values);
@@ -405,12 +416,19 @@ export function renewsOriginCertificate(plan: Pick<SharedPlan, "changes" | "prev
 
 /**
  * The hostnames a site file requires the client certificate for: Caddy's site blocks with
- * `client_auth`, nginx's `server` blocks with `ssl_verify_client on`.
+ * `client_auth`, nginx's `server` blocks with `ssl_verify_client on`, and every hostname of
+ * OpenLiteSpeed's virtual host (its `<app>.map`, read first) once its `vhssl` has
+ * `clientVerify 2`: it serves one certificate for all of them.
  */
 export function requiringHostnames(site: string): string[] {
   const out = new Set<string>();
   let hosts: string[] = [];
+  let mapped: string[] = [];
   for (const line of site.split(/\r?\n/)) {
+    const map = /^map\s+\S+\s+(.+)$/.exec(line);
+    if (map?.[1] !== undefined)
+      mapped = map[1].split(/[\s,]+/).filter((h) => h !== "" && h !== "*");
+    if (/^\s*clientVerify\s+2\s*$/.test(line)) for (const host of mapped) out.add(host);
     const block = /^([^\s#{}][^{]*?)\s*\{\s*$/.exec(line);
     if (block?.[1] !== undefined) {
       hosts =
@@ -439,9 +457,15 @@ export interface ServerEdge {
 
 const EDGE_READ_MARK = "opscrew-edge-read 1";
 
-/** The read-only command that prints the edge's proxy, the app's origin certificate and site. */
+/**
+ * The read-only command that prints the edge's proxy, the app's origin certificate and site: each
+ * proxy's site file, after OpenLiteSpeed's `<app>.map`, which names its hostnames.
+ */
 export function edgeReadCommand(app: string): string {
-  const sites = Object.values(EDGE_PROXIES).map((p) => `${EDGE_DIR}/sites/${app}.${p.site}`);
+  const sites = [
+    `${EDGE_DIR}/sites/${app}.map`,
+    ...Object.values(EDGE_PROXIES).map((p) => `${EDGE_DIR}/sites/${app}.${p.site}`),
+  ];
   return [
     `echo '${EDGE_READ_MARK}'`,
     `if [ -f ${EDGE_DIR}/compose.yaml ]; then echo "proxy=$(sed -n 's/^x-opscrew-edge-proxy: *//p' ${EDGE_DIR}/compose.yaml | head -n 1)"; else echo proxy=none; fi`,
@@ -451,6 +475,11 @@ export function edgeReadCommand(app: string): string {
     `cat ${sites.join(" ")} 2>/dev/null || true`,
     "echo '--end--'",
   ].join("; ");
+}
+
+/** Whether `value` names one of the edge's proxies. */
+function isEdgeProxy(value: string): value is EdgeProxy {
+  return Object.hasOwn(EDGE_PROXIES, value);
 }
 
 /** The edge {@link edgeReadCommand} printed; `undefined` for any other output (nothing was read). */
@@ -465,7 +494,7 @@ export function parseServerEdge(stdout: string): ServerEdge | undefined {
   if (stamp === undefined) return undefined;
   // An edge from before the proxy choice has no stamp: it runs Caddy.
   const proxy = stamp === "none" ? undefined : stamp === "" ? "caddy" : stamp;
-  if (proxy !== undefined && proxy !== "caddy" && proxy !== "nginx") return undefined;
+  if (proxy !== undefined && !isEdgeProxy(proxy)) return undefined;
   const pem = text.slice(origin + "--origin--\n".length, site);
   let originSha256: string | undefined;
   if (pem.includes("-----BEGIN CERTIFICATE-----")) {
@@ -637,8 +666,31 @@ export function clientCertificateWarning(
   if (daysLeft(client.expiresAt, clock.now()) >= CERTIFICATE_WARN_DAYS) {
     return undefined;
   }
+  return `This app's client certificate for Cloudflare's origin pulls expires on ${client.expiresAt.slice(0, 10)}, and OpsCrew does not replace it by itself: the server must trust the new one before Cloudflare sends it. To replace it: ${replaceClientCertificate(plan, "a new client certificate")}.`;
+}
+
+/**
+ * The steps that replace the app's client certificate by hand with `certificate` (OpsCrew has no
+ * command for it): the server trusts both, Cloudflare sends the new one, the old one goes.
+ */
+function replaceClientCertificate(plan: DeployPlan, certificate: string): string {
   const pullPem = originPullPem(plan);
-  return `This app's client certificate for Cloudflare's origin pulls expires on ${client.expiresAt.slice(0, 10)}, and OpsCrew does not replace it by itself: the server must trust the new one before Cloudflare sends it. To replace it: add a new client certificate after the old one in ${pullPem} and deploy; upload the new one and turn it on for each hostname with Cloudflare's API (POST /zones/<zone id>/origin_tls_client_auth/hostnames/certificates, then PUT /zones/<zone id>/origin_tls_client_auth/hostnames); remove the old one from ${pullPem} and deploy; delete the old one at Cloudflare; then put the new certificate's id, expiry and SHA-256 in the client entry of .opscrew/cloudflare.json, and its key in generated_values.json.`;
+  return `add ${certificate} after the old one in ${pullPem} and deploy; upload the new one and turn it on for each hostname with Cloudflare's API (POST /zones/<zone id>/origin_tls_client_auth/hostnames/certificates, then PUT /zones/<zone id>/origin_tls_client_auth/hostnames); remove the old one from ${pullPem} and deploy; delete the old one at Cloudflare; then put the new certificate's id, expiry and SHA-256 in the client entry of .opscrew/cloudflare.json, and its key in generated_values.json`;
+}
+
+/**
+ * Said when the plan's proxy is OpenLiteSpeed while Cloudflare already has the app's client
+ * certificate without keyCertSign, made for Caddy or nginx: OpenLiteSpeed would refuse every
+ * request Cloudflare sends.
+ */
+function clientCertificateForOpenLiteSpeed(plan: DeployPlan): OpsCrewError {
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `This app's client certificate for Cloudflare's origin pulls was made for Caddy or nginx, without keyCertSign in its key usage, and OpenLiteSpeed refuses such a certificate: on OpenLiteSpeed (target.edge) every request through Cloudflare would fail. Nothing was changed.`,
+    {
+      hint: `Set target.edge back to the server's proxy in ${planFile(plan)}, or replace the client certificate first: ${replaceClientCertificate(plan, "a new client certificate whose key usage has keyCertSign (and digitalSignature)")}. Then run \`opscrew provision\` again.`,
+    },
+  );
 }
 
 /**
@@ -811,5 +863,5 @@ export function edgeSwitch(
       },
     );
   }
-  return `The deploy after this run switches the server's proxy from ${from} to ${to}: the site is interrupted for a few seconds for hostnames behind Cloudflare's proxy, and for under a minute for DNS-only ones while ${to === "nginx" ? "certbot gets their first certificates" : "Caddy gets their certificates"}. kamal-proxy and the app keep running, and ${from}'s volumes stay, so switching back is quick.`;
+  return `The deploy after this run switches the server's proxy from ${from} to ${to}: the site is interrupted for a few seconds for hostnames behind Cloudflare's proxy, and for under a minute for DNS-only ones while ${wanted === "caddy" ? "Caddy gets their certificates" : "certbot gets their first certificates"}. kamal-proxy and the app keep running, and ${from}'s volumes stay, so switching back is quick.`;
 }

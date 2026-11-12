@@ -3,8 +3,9 @@ import { sha256Hex } from "@opscrew/core";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { testPlan } from "../__fixtures__/plans";
+import { testContext, testPlan } from "../__fixtures__/plans";
 import { IMAGES } from "../pins";
+import { certbotHosts, type RuntimeContext, renderEdgeSite } from "../runtime";
 import { composeLiteral } from "../runtime/services";
 import { TUNNEL_ORIGIN_PORT } from "../tunnel";
 import { localhostPlan } from "./__fixtures__/localhost";
@@ -13,7 +14,6 @@ import {
   EDGE_PROXY_KEY,
   EDGE_VERSION,
   EDGE_VERSION_KEY,
-  openlitespeedNotYet,
   renderEdgeCompose,
 } from "./index";
 import { CERTBOT_LOOP } from "./nginx";
@@ -21,6 +21,7 @@ import {
   OPENLITESPEED_CAPABILITIES,
   OPENLITESPEED_CATCH_ALL,
   OPENLITESPEED_CHECK,
+  OPENLITESPEED_COMMAND,
   OPENLITESPEED_ERROR_PAGE,
   OPENLITESPEED_HEALTHCHECK,
   OPENLITESPEED_LOOP,
@@ -125,20 +126,35 @@ describe("the OpenLiteSpeed edge's Compose project", () => {
     expect(service.healthcheck).toEqual(OPENLITESPEED_HEALTHCHECK);
   });
 
-  it("mounts its configuration, catch-all and error page, the sites and the certificates read-only", () => {
+  it("mounts its configuration, catch-all, error page and scripts, the sites and the certificates read-only", () => {
     expect(service.configs).toEqual([
       { source: "openlitespeed-conf", target: "/etc/opscrew/httpd_config.conf" },
       { source: "openlitespeed-catchall", target: "/etc/opscrew/catchall.conf" },
       { source: "openlitespeed-error", target: "/etc/opscrew/error.html" },
+      { source: "openlitespeed-check", target: "/etc/opscrew/check.sh" },
+      { source: "openlitespeed-reload", target: "/etc/opscrew/reload.sh" },
     ]);
     expect(doc.configs).toEqual({
       "openlitespeed-conf": { content: composeLiteral(openlitespeedConf(false)) },
       "openlitespeed-catchall": { content: composeLiteral(OPENLITESPEED_CATCH_ALL) },
       "openlitespeed-error": { content: composeLiteral(OPENLITESPEED_ERROR_PAGE) },
+      "openlitespeed-check": { content: composeLiteral(OPENLITESPEED_CHECK) },
+      "openlitespeed-reload": { content: composeLiteral(OPENLITESPEED_RELOAD) },
+    });
+    // Every app's deploy runs the scripts of the edge the server has.
+    expect(OPENLITESPEED_COMMAND).toEqual({
+      check: "sh /etc/opscrew/check.sh",
+      reload: "sh /etc/opscrew/reload.sh",
     });
     expect(service.labels).toEqual({
       "dev.opscrew.openlitespeed-conf-sha256": sha256Hex(
-        [openlitespeedConf(false), OPENLITESPEED_CATCH_ALL, OPENLITESPEED_ERROR_PAGE].join("\n"),
+        [
+          openlitespeedConf(false),
+          OPENLITESPEED_CATCH_ALL,
+          OPENLITESPEED_ERROR_PAGE,
+          OPENLITESPEED_CHECK,
+          OPENLITESPEED_RELOAD,
+        ].join("\n"),
       ),
     });
     expect(service.volumes).toEqual([
@@ -182,6 +198,18 @@ describe("the OpenLiteSpeed edge's Compose project", () => {
     }
   });
 
+  it("trusts Cloudflare's ranges for the visitor's address, never on this computer", () => {
+    const ranges = ["173.245.48.0/20", "2400:cb00::/32"];
+    const conf = (plan: DeployPlan) =>
+      (parse(renderEdgeCompose(plan, ranges).content) as ReturnType<typeof edge>).configs[
+        "openlitespeed-conf"
+      ]?.content;
+    expect(conf(shop)).toBe(composeLiteral(openlitespeedConf(false, ranges)));
+    expect(conf(localhostPlan({ edge: "openlitespeed" }))).toBe(
+      composeLiteral(openlitespeedConf(true)),
+    );
+  });
+
   it("is the same file for every app on a server with the same access mode", () => {
     expect(renderEdgeCompose(ols("blog", { domain: "blog.example.com" }))).toEqual(
       renderEdgeCompose(shop),
@@ -222,6 +250,18 @@ describe("OpenLiteSpeed's main configuration", () => {
     expect(conf).toContain("\naccessLog /dev/null {\n");
     expect(conf).not.toContain("7080");
     expect(conf).not.toContain("adminListener");
+  });
+
+  it("takes the visitor's address from CF-Connecting-IP only from Cloudflare's ranges", () => {
+    expect(conf).not.toContain("useIpInProxyHeader");
+    expect(conf).toContain("\naccessControl {\n  allow                   ALL\n}\n");
+    const trusted = openlitespeedConf(false, ["173.245.48.0/20", "2400:cb00::/32"]);
+    expect(trusted).toContain(
+      "\n# Requests from Cloudflare's addresses (marked T below) carry the visitor's in CF-Connecting-IP.\nuseIpInProxyHeader        2\n",
+    );
+    expect(trusted).toContain(
+      "\naccessControl {\n  allow                   ALL, 173.245.48.0/20T, 2400:cb00::/32T\n}\n",
+    );
   });
 
   it("gives every request up to 300 seconds, and graceful restarts as long for open connections", () => {
@@ -490,6 +530,98 @@ describe("the app's site on OpenLiteSpeed", () => {
   });
 });
 
+describe("the app's site files on OpenLiteSpeed, as renderEdgeSite writes them", () => {
+  const ctx = testContext({ acmeEmail: "ops@example.com" });
+  /** A DNS-only app, whose certificate comes from certbot. */
+  const blog = (() => {
+    const plan = ols("blog", { domain: "blog.example.com" });
+    return DeployPlanSchema.parse({ ...plan, dns: { ...plan.dns, proxied: false } });
+  })();
+  const named = (plan: DeployPlan, c: RuntimeContext) =>
+    Object.fromEntries(
+      renderEdgeSite(plan, c).map((file) => [file.path.split("/").pop() as string, file.content]),
+    );
+
+  it("are <app>.vhconf first, <app>.vhost and <app>.map, each saying where it comes from", () => {
+    const origin = { ...ctx, originTls: { hostnames: ["example.com", "www.example.com"] } };
+    const files = renderEdgeSite(shop, origin);
+    expect(files.map((file) => [file.path, file.kind])).toEqual([
+      ["opscrew/runtime/edge/sites/shop.vhconf", "runtime"],
+      ["opscrew/runtime/edge/sites/shop.vhost", "runtime"],
+      ["opscrew/runtime/edge/sites/shop.map", "runtime"],
+    ]);
+    const site = openlitespeedSite({
+      app: "shop",
+      mode: "direct",
+      hosts: ["example.com", "www.example.com"],
+      origin: ["example.com", "www.example.com"],
+      redirects: ["www.example.com"],
+      beforeCertificate: false,
+    });
+    for (const file of files) {
+      const name = file.path.split("/").pop() as string;
+      expect(file.content).toBe(
+        [
+          "# Generated by OpsCrew from opscrew/plan.yaml; `opscrew provision` regenerates it.",
+          `# shop's site on the server's shared edge (OpenLiteSpeed): the deploy copies it to /srv/edge/sites/${name}.`,
+          ...(site[name] ?? []),
+        ].join("\n"),
+      );
+    }
+  });
+
+  it("include the user's additions from additions.openlitespeed", () => {
+    const vhconf = named(shop, { ...ctx, additions: true })["shop.vhconf"] ?? "";
+    expect(vhconf).toContain(
+      "# Your own additions (opscrew/proxy/additions.openlitespeed).\ninclude /usr/local/lsws/conf/sites/shop.additions\n",
+    );
+  });
+
+  it("serve certbot's hostnames over HTTP until their first certificate, in <app>.http.vhconf alone", () => {
+    const files = named(blog, ctx);
+    expect(Object.keys(files)).toEqual([
+      "blog.vhconf",
+      "blog.vhost",
+      "blog.map",
+      "blog.http.vhconf",
+    ]);
+    expect(certbotHosts(blog, ctx)).toEqual(["blog.example.com"]);
+    expect(files["blog.vhconf"]).toContain("/etc/letsencrypt/live/blog/fullchain.pem");
+    const before = files["blog.http.vhconf"] ?? "";
+    expect(before).toContain(
+      "# blog's site on the server's shared edge (OpenLiteSpeed): the deploy copies it to /srv/edge/sites/blog.vhconf.",
+    );
+    expect(before).not.toContain("vhssl");
+    expect(before).toContain("RewriteCond %{HTTPS} on\nRewriteRule ^ - [F]");
+  });
+
+  it("get no certbot certificate behind a tunnel, for proxied hostnames on the origin certificate, or on this computer", () => {
+    const tunnelCtx = { ...ctx, originTls: { hostnames: ["shop.example.com"] } };
+    expect(Object.keys(named(tunnelled, tunnelCtx))).toEqual([
+      "shop.vhconf",
+      "shop.vhost",
+      "shop.map",
+    ]);
+    expect(certbotHosts(tunnelled, tunnelCtx)).toEqual([]);
+    expect(
+      certbotHosts(shop, { ...ctx, originTls: { hostnames: ["example.com", "www.example.com"] } }),
+    ).toEqual([]);
+    const local = localhostPlan({ edge: "openlitespeed", ports: { https: 8443, http: 8080 } });
+    const localCtx = { ...ctx, localhost: { hostname: "shop.localhost" } };
+    const files = named(local, localCtx);
+    expect(Object.keys(files)).toEqual(["shop.vhconf", "shop.vhost", "shop.map"]);
+    expect(certbotHosts(local, localCtx)).toEqual([]);
+    expect(files["shop.vhconf"]).toContain(
+      "# shop's site on this computer's shared edge (OpenLiteSpeed): the local deploy copies it to the edge's sites.",
+    );
+    expect(files["shop.vhconf"]).toContain(
+      "  certFile                /etc/opscrew/tls/shop/local.pem\n",
+    );
+    expect(files["shop.vhconf"]).toContain("https://shop.localhost:8443$1 [R=308,L]");
+    expect(files["shop.map"]).toContain("map shop shop.localhost\n");
+  });
+});
+
 describe("the check, the graceful restart and the cache purge", () => {
   it("checks a copy of the configuration and the sites, with OpenLiteSpeed's work folder made first", () => {
     for (const line of [
@@ -550,16 +682,6 @@ describe("the check, the graceful restart and the cache purge", () => {
   it("purges only the app's cached answers", () => {
     expect(openlitespeedCachePurge("shop")).toBe(
       "if [ -d '/usr/local/lsws/cachedata/shop' ]; then find '/usr/local/lsws/cachedata/shop' -mindepth 1 -maxdepth 1 ! -name '.*' -exec rm -rf {} +; fi",
-    );
-  });
-});
-
-describe("openlitespeedNotYet", () => {
-  it("refuses plainly, saying what to do", () => {
-    const error = openlitespeedNotYet("deploy an app");
-    expect(error.message).toBe("OpsCrew can't deploy an app on OpenLiteSpeed yet.");
-    expect(error.hint).toBe(
-      'Set target.edge to "caddy" or "nginx" in the plan, then run the command again.',
     );
   });
 });

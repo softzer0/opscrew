@@ -1,0 +1,8 @@
+# certFile /etc/ssl/other.pem
+context /secure/ {
+  type                    proxy
+  handler                 kamal-proxy
+  extraHeaders            <<<END_extraHeaders
+Header set X-Note "certFile and sslProtocol stay OpsCrew's"
+  END_extraHeaders
+}

@@ -1,0 +1,13 @@
+scriptHandler {
+# refused above: scripting
+  add                     lsapi:lsphp php
+}
+context /php/ {
+  type                    lsapi
+# refused above: scripting
+  handler                 lsphp
+# refused above: upstream
+}
+phpIniOverride {
+# refused above: scripting
+}

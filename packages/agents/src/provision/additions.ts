@@ -1,7 +1,7 @@
 /**
  * The user's own additions to the app's site (FR-1443, contracts/edge-and-checks.md): one file in
- * the proxy's syntax, `opscrew/proxy/additions.caddy` or `additions.nginx`, which the site
- * includes. Before any change, OpsCrew's rules scan it, gixy-ng advises on nginx's when it is
+ * the proxy's syntax, `opscrew/proxy/additions.caddy`, `.nginx` or `.openlitespeed`, which the
+ * site includes. Before any change, OpsCrew's rules scan it, gixy-ng advises on nginx's when it is
  * installed, and the proxy's own checker validates the whole edge with it when Docker is there.
  */
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -22,8 +22,9 @@ import {
   type EdgeProxy,
   edgeProxy,
   IMAGES,
-  openlitespeedNotYet,
-  otherProxy,
+  OPENLITESPEED_CHECK,
+  OPENLITESPEED_INPUT,
+  otherProxies,
   type RuntimeContext,
   renderEdgeCompose,
   renderEdgeSite,
@@ -39,15 +40,33 @@ import type { ProvisionServices } from "./types";
 /** How long the proxy's checker may take, pulling its pinned image included. */
 const CHECK_TIMEOUT_MS = 5 * 60_000;
 
-/** The edge's main configuration as its Compose file holds it (`configs.<name>.content`). */
-function mainConfig(compose: string, proxy: EdgeProxy): string {
+/**
+ * The files of the edge's proxy that its Compose file holds (`configs.<name>.content`), by where the
+ * check mounts them: the main configuration, and on OpenLiteSpeed also the catch-all and the error
+ * page.
+ */
+function edgeConfigs(compose: string, proxy: EdgeProxy): Record<string, string> {
   const document = parse(compose) as { configs?: Record<string, { content?: unknown }> };
-  const content = document.configs?.[proxy === "caddy" ? "caddyfile" : "nginx-conf"]?.content;
-  if (typeof content !== "string") {
-    throw new Error("The rendered edge has no main configuration for its proxy.");
-  }
-  // Compose writes a literal `$` as `$$`.
-  return content.replaceAll("$$", "$");
+  const names: Record<string, string> =
+    proxy === "caddy"
+      ? { caddyfile: "/etc/caddy/Caddyfile" }
+      : proxy === "nginx"
+        ? { "nginx-conf": "/etc/nginx/nginx.conf" }
+        : {
+            "openlitespeed-conf": OPENLITESPEED_INPUT.conf,
+            "openlitespeed-catchall": OPENLITESPEED_INPUT.catchAll,
+            "openlitespeed-error": OPENLITESPEED_INPUT.errorPage,
+          };
+  return Object.fromEntries(
+    Object.entries(names).map(([name, target]) => {
+      const content = document.configs?.[name]?.content;
+      if (typeof content !== "string") {
+        throw new Error(`The rendered edge has no ${name} for its proxy.`);
+      }
+      // Compose writes a literal `$` as `$$`.
+      return [target, content.replaceAll("$$", "$")];
+    }),
+  );
 }
 
 /** A throwaway self-signed certificate and key that stand in for a real pair in the check. */
@@ -59,8 +78,9 @@ function placeholder(commonName: string): { certificate: string; key: string } {
 /**
  * Lays the edge out in a temporary folder as the server has it (the main configuration, the
  * app's site, its additions, placeholder certificates) and runs the proxy's own checker in its
- * pinned image, without a network, once for each of the app's site files. Throws
- * `PHASE_PRECONDITION` with the checker's output when it refuses.
+ * pinned image, without a network, once for each of the app's site files (OpenLiteSpeed's edge's own
+ * check, with kamal-proxy's name, which `openlitespeed -t` looks up, on the container's loopback).
+ * Throws `PHASE_PRECONDITION` with the checker's output when it refuses.
  */
 async function runProxyChecker(
   deps: Pick<PhaseDeps, "runner" | "redactor">,
@@ -73,8 +93,10 @@ async function runProxyChecker(
   const app = plan.app.name;
   const dir = await mkdtemp(join(tmpdir(), "opscrew-edge-check-"));
   try {
-    const main = join(dir, "main.conf");
-    await writeFile(main, mainConfig(renderEdgeCompose(plan, ctx.cloudflareRanges).content, proxy));
+    const configs = Object.entries(
+      edgeConfigs(renderEdgeCompose(plan, ctx.cloudflareRanges).content, proxy),
+    ).map(([target, content], index) => ({ target, content, file: join(dir, `config-${index}`) }));
+    for (const config of configs) await writeFile(config.file, config.content);
     await mkdir(join(dir, "sites"));
     await writeFile(join(dir, "sites", `${app}.additions`), additions.text);
     const tls = join(dir, "tls", app);
@@ -98,25 +120,44 @@ async function runProxyChecker(
       typeof process.getuid === "function" && typeof process.getgid === "function"
         ? ["--user", `${process.getuid()}:${process.getgid()}`]
         : [];
+    const mains = configs.flatMap((config) => mount(config.file, config.target));
     const args =
       proxy === "caddy"
         ? [
-            ...mount(main, "/etc/caddy/Caddyfile"),
+            ...mains,
             ...mount(join(dir, "sites"), "/etc/caddy/sites"),
             ...mount(join(dir, "tls"), "/etc/caddy/tls"),
             IMAGES.caddy.ref,
             ...["caddy", "validate", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"],
           ]
-        : [
-            ...user,
-            ...mount(main, "/etc/nginx/nginx.conf"),
-            ...mount(join(dir, "sites"), "/etc/nginx/sites"),
-            ...mount(join(dir, "tls"), "/etc/nginx/tls"),
-            ...mount(join(dir, "letsencrypt"), "/etc/letsencrypt"),
-            ...["--entrypoint", "nginx", IMAGES.nginx.ref, "-t"],
-          ];
-    // On nginx the site before certbot's first certificate is checked too.
-    for (const file of renderEdgeSite(plan, ctx)) {
+        : proxy === "nginx"
+          ? [
+              ...user,
+              ...mains,
+              ...mount(join(dir, "sites"), "/etc/nginx/sites"),
+              ...mount(join(dir, "tls"), "/etc/nginx/tls"),
+              ...mount(join(dir, "letsencrypt"), "/etc/letsencrypt"),
+              ...["--entrypoint", "nginx", IMAGES.nginx.ref, "-t"],
+            ]
+          : [
+              ...["--add-host", "kamal-proxy:127.0.0.1"],
+              ...mains,
+              ...mount(join(dir, "sites"), OPENLITESPEED_INPUT.sites),
+              ...mount(join(dir, "tls"), OPENLITESPEED_INPUT.tls),
+              ...mount(join(dir, "letsencrypt"), "/etc/letsencrypt"),
+              ...["--entrypoint", "sh", IMAGES.openlitespeed.ref, "-c", OPENLITESPEED_CHECK],
+            ];
+    // The site before certbot's first certificate is checked too. OpenLiteSpeed's other site
+    // files are the same for both.
+    const files = renderEdgeSite(plan, ctx).map((file) => ({
+      name: file.path.slice(file.path.lastIndexOf("/") + 1),
+      content: file.content,
+    }));
+    const variant = (name: string) => name.endsWith(`.${site}`);
+    for (const file of files.filter((f) => !variant(f.name))) {
+      await writeFile(join(dir, "sites", file.name), file.content);
+    }
+    for (const file of files.filter((f) => variant(f.name))) {
       await writeFile(join(dir, "sites", `${app}.${site}`), file.content);
       const result = await deps.runner.run(
         "docker",
@@ -157,7 +198,7 @@ export async function portainerAdditionsNote(
 
 /**
  * Checks the app's additions for the plan's proxy on a server before any change, and says whether there are
- * any (the render's `additions`). A file for the other proxy is refused with how to convert it;
+ * any (the render's `additions`). A file for another proxy is refused with how to convert it;
  * OpsCrew's rules refuse what is unsafe, each with its line; gixy-ng's findings on nginx are shown
  * as advice when it is installed (not those that do not apply to what OpsCrew wrote); and when Docker runs on this computer, the proxy's own checker
  * validates the whole edge with the additions (`ctx` as the deploy renders it). Any refusal stops
@@ -172,20 +213,20 @@ export async function checkAdditions(
   const root = deps.paths.root;
   const proxy = edgeProxy(plan);
   const path = additionsPath(plan, proxy);
-  const other = EDGE_PROXIES[otherProxy(proxy)];
-  const otherPath = additionsPath(plan, otherProxy(proxy));
-  if ((await readTextIfExists(join(root, otherPath))) !== undefined) {
+  for (const otherProxy of otherProxies(proxy)) {
+    const other = EDGE_PROXIES[otherProxy];
+    const otherPath = additionsPath(plan, otherProxy);
+    if ((await readTextIfExists(join(root, otherPath))) === undefined) continue;
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       `${otherPath} holds additions for ${other.label}, but this app's proxy is ${EDGE_PROXIES[proxy].label} (target.edge), so OpsCrew would not use them. Nothing was changed.`,
       {
-        hint: `Write the same rules in ${EDGE_PROXIES[proxy].label}'s syntax in ${path} and delete ${otherPath}, or set target.edge to "${otherProxy(proxy)}" in ${planFile(plan)}; then run the command again.`,
+        hint: `Write the same rules in ${EDGE_PROXIES[proxy].label}'s syntax in ${path} and delete ${otherPath}, or set target.edge to "${otherProxy}" in ${planFile(plan)}; then run the command again.`,
       },
     );
   }
   const text = await readTextIfExists(join(root, path));
   if (text === undefined) return false;
-  if (proxy === "openlitespeed") throw openlitespeedNotYet(`check your additions in ${path}`);
   const refusals = scanProxyAdditions(text, {
     proxy,
     // On this computer the site serves its .localhost hostname.

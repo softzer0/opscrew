@@ -1,4 +1,5 @@
 import type { DeployPlan } from "@opscrew/plan-schema";
+import { EDGE_PROXIES } from "../edge";
 import { localComposeProject } from "../runtime";
 import { runtimeDir } from "../runtime-dir";
 import type { RenderedFile } from "../types";
@@ -29,7 +30,7 @@ export function renderLocalRunbook(
     "| | |",
     "|---|---|",
     `| Address | ${o.address} (from this computer only: the ports are bound to 127.0.0.1) |`,
-    `| Where | Docker on this computer: the Compose project ${project}, behind OpsCrew's edge (opscrew-edge, ${target?.edge === "nginx" ? "nginx" : "Caddy"} and kamal-proxy) |`,
+    `| Where | Docker on this computer: the Compose project ${project}, behind OpsCrew's edge (opscrew-edge, ${EDGE_PROXIES[target?.edge ?? "caddy"].label} and kamal-proxy) |`,
     `| Folders | ~/.opscrew/local/srv/apps/${plan.app.name} (the app) and ~/.opscrew/local/srv/edge (the edge) |`,
     `| Image | ${image} |`,
     `| Files | ${runtimeDir(plan)}/ in the repository, copied by each deploy |`,

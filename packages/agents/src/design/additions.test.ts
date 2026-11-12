@@ -34,6 +34,23 @@ function plan(proxy: EdgeProxy): DeployPlan {
 const SKIPPED_ROUTES =
   "Not translated from vercel.json: routes, because `routes` uses Vercel's PCRE form, which OpsCrew does not translate yet; write these rules as `redirects`, `rewrites` and `headers` instead.";
 
+describe("vercelAdditions on OpenLiteSpeed", () => {
+  it("writes no file, listing each rule as not written for OpenLiteSpeed", async () => {
+    const { root, facts } = await repo(await fixture("static-site.json"));
+    const p = plan("openlitespeed");
+    const result = await vercelAdditions(root, p, facts);
+    expect(result.warnings).toEqual([]);
+    expect(result.lines[0]).toBe(
+      "None of vercel.json's routing rules can be written for OpenLiteSpeed, so OpsCrew wrote no opscrew/proxy/additions.openlitespeed.",
+    );
+    expect(result.lines.slice(1).length).toBeGreaterThan(0);
+    for (const line of result.lines.slice(1)) {
+      expect(line).toMatch(/^Not translated from vercel\.json: .+, because .+\.$/);
+    }
+    await expect(readFile(join(root, additionsPath(p)), "utf8")).rejects.toThrow();
+  });
+});
+
 describe.each(["caddy", "nginx"] as const)("vercelAdditions on %s", (proxy) => {
   const file = additionsPath(plan(proxy));
   const label = EDGE_PROXIES[proxy].label;

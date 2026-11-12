@@ -423,8 +423,8 @@ export interface ExpectedRuntimeFiles {
 
 /**
  * The SHA-256 of `opscrew/runtime/compose.yaml` and the app's site file for the server's proxy
- * (`opscrew/runtime/edge/sites/<app>.caddy` or `.conf`) as OpsCrew renders them from `plan` now
- * (the deploy workflow copies exactly these to the app's folder and the shared edge). The site
+ * (`opscrew/runtime/edge/sites/<app>.caddy`, `.conf` or `.vhconf`) as OpsCrew renders them from
+ * `plan` now (the deploy workflow copies exactly these to the app's folder and the shared edge). The site
  * gets what provision renders it with (`siteContext`: its origin TLS, additions and Cloudflare's
  * ranges) and the contact email for certificates, so no secret and no connection is needed. The
  * Compose file keeps the newer pins of `committedCompose`, its committed copy (FR-1222).

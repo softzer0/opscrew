@@ -1,0 +1,8 @@
+# location /srv/files/
+context /files/ {
+  type                    proxy
+  handler                 kamal-proxy
+  extraHeaders            <<<END_extraHeaders
+Header set X-Files "served by the app, not from docRoot"
+  END_extraHeaders
+}

@@ -1,0 +1,15 @@
+context /api/ {
+  type                    proxy
+  handler                 kamal-proxy
+}
+context /v1/ {
+  type                    proxy
+  handler                 kamal-proxy
+  rewrite {
+    enable                1
+    rules                 <<<END_rules
+RewriteRule ^(.*)$ http://kamal-proxy/v2/$1 [P,L]
+RewriteRule ^old$ /new [R=301,L]
+    END_rules
+  }
+}

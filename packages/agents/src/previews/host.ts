@@ -7,7 +7,7 @@
  */
 import type { HostFacts } from "@opscrew/connector-ssh-host";
 import { listText, OpsCrewError, type ProjectPaths, readTextIfExists } from "@opscrew/core";
-import { edgeProxy } from "@opscrew/iac-templates";
+import { EDGE_PROXIES, edgeProxy } from "@opscrew/iac-templates";
 import {
   APP_SERVER,
   type DeployPlan,
@@ -377,7 +377,7 @@ function hostProblem(plan: DeployPlan, host: string): string | undefined {
     return `${host}'s server takes no public SSH (it was closed with \`opscrew secure --close-public-ssh\`), and GitHub's machines reach previews over SSH.`;
   }
   if (edgeProxy(plan) !== "caddy") {
-    return `${host}'s server runs nginx as its proxy, and previews are served by Caddy, which every app on a server shares.`;
+    return `${host}'s server runs ${EDGE_PROXIES[edgeProxy(plan)].label} as its proxy, and previews are served by Caddy, which every app on a server shares.`;
   }
   return privateNetworkProblem(plan, host);
 }

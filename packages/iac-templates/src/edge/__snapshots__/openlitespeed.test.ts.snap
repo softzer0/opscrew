@@ -412,6 +412,10 @@ services:
         target: /etc/opscrew/catchall.conf
       - source: openlitespeed-error
         target: /etc/opscrew/error.html
+      - source: openlitespeed-check
+        target: /etc/opscrew/check.sh
+      - source: openlitespeed-reload
+        target: /etc/opscrew/reload.sh
     entrypoint:
       - sh
       - -c
@@ -480,7 +484,7 @@ services:
       start_period: 30s
       start_interval: 1s
     labels:
-      dev.opscrew.openlitespeed-conf-sha256: 9dad5a4102032538bcfb6bc60ff6ba32a3b08612649e6867e9ac112521f6502c
+      dev.opscrew.openlitespeed-conf-sha256: 6b2ee45014a394f071d7f9667633e1dc8c4e49c97810a1d1e14b35801f374fbb
     depends_on:
       - kamal-proxy
     security_opt: *a1
@@ -671,6 +675,80 @@ configs:
       <title>Unavailable</title>
       <p>This page is not available.</p>
       </html>
+  openlitespeed-check:
+    content: |-
+      running() { pgrep -f '^openlitespeed \\(lshttpd - main\\)' > /dev/null; }
+      check() {
+        mkdir -p /tmp/lshttpd /var/www/opscrew
+        cp /etc/opscrew/httpd_config.conf /usr/local/lsws/conf/httpd_config.conf
+        cp /etc/opscrew/catchall.conf /usr/local/lsws/conf/catchall.conf
+        cat /etc/opscrew/error.html > /var/www/opscrew/opscrew-error.html
+        rm -rf /usr/local/lsws/conf/sites
+        cp -R /etc/opscrew/sites /usr/local/lsws/conf/sites
+        if [ ! -s /usr/local/lsws/conf/default.invalid.key ]; then
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 3650 -subj /CN=default.invalid -keyout /usr/local/lsws/conf/default.invalid.key -out /usr/local/lsws/conf/default.invalid.pem 2> /dev/null
+        fi
+        missing=''
+        for f in $$(awk '$$1 == "certFile" || $$1 == "keyFile" || $$1 == "CACertFile" { print $$2 }' /usr/local/lsws/conf/httpd_config.conf /usr/local/lsws/conf/sites/*.vhconf 2> /dev/null); do
+          if [ ! -s "$$f" ]; then missing="$$missing $$f"; fi
+        done
+        if [ -n "$$missing" ]; then
+          echo "OpenLiteSpeed refused the configuration: these certificate files are missing or empty:$$missing" >&2
+          return 2
+        fi
+        out="$$(/usr/local/lsws/bin/openlitespeed -t 2>&1)"
+        status=$$?
+        if [ "$$status" -gt 1 ]; then
+          echo 'OpenLiteSpeed refused the configuration:' >&2
+          printf '%s\\n' "$$out" | grep -F '[ERROR]' >&2
+          return "$$status"
+        fi
+      }
+      restart() {
+        pid="$$(cat /tmp/lshttpd/lshttpd.pid 2> /dev/null)"
+        if [ -z "$$pid" ]; then sleep 1; pid="$$(cat /tmp/lshttpd/lshttpd.pid 2> /dev/null)"; fi
+        kill -USR1 "$$pid"
+      }
+      reload() { check && restart; }
+      locked() { mkdir -p /tmp/lshttpd; ( flock 9 && "$$@" ) 9> /tmp/lshttpd/opscrew.lock; }
+      locked check
+  openlitespeed-reload:
+    content: |-
+      running() { pgrep -f '^openlitespeed \\(lshttpd - main\\)' > /dev/null; }
+      check() {
+        mkdir -p /tmp/lshttpd /var/www/opscrew
+        cp /etc/opscrew/httpd_config.conf /usr/local/lsws/conf/httpd_config.conf
+        cp /etc/opscrew/catchall.conf /usr/local/lsws/conf/catchall.conf
+        cat /etc/opscrew/error.html > /var/www/opscrew/opscrew-error.html
+        rm -rf /usr/local/lsws/conf/sites
+        cp -R /etc/opscrew/sites /usr/local/lsws/conf/sites
+        if [ ! -s /usr/local/lsws/conf/default.invalid.key ]; then
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 3650 -subj /CN=default.invalid -keyout /usr/local/lsws/conf/default.invalid.key -out /usr/local/lsws/conf/default.invalid.pem 2> /dev/null
+        fi
+        missing=''
+        for f in $$(awk '$$1 == "certFile" || $$1 == "keyFile" || $$1 == "CACertFile" { print $$2 }' /usr/local/lsws/conf/httpd_config.conf /usr/local/lsws/conf/sites/*.vhconf 2> /dev/null); do
+          if [ ! -s "$$f" ]; then missing="$$missing $$f"; fi
+        done
+        if [ -n "$$missing" ]; then
+          echo "OpenLiteSpeed refused the configuration: these certificate files are missing or empty:$$missing" >&2
+          return 2
+        fi
+        out="$$(/usr/local/lsws/bin/openlitespeed -t 2>&1)"
+        status=$$?
+        if [ "$$status" -gt 1 ]; then
+          echo 'OpenLiteSpeed refused the configuration:' >&2
+          printf '%s\\n' "$$out" | grep -F '[ERROR]' >&2
+          return "$$status"
+        fi
+      }
+      restart() {
+        pid="$$(cat /tmp/lshttpd/lshttpd.pid 2> /dev/null)"
+        if [ -z "$$pid" ]; then sleep 1; pid="$$(cat /tmp/lshttpd/lshttpd.pid 2> /dev/null)"; fi
+        kill -USR1 "$$pid"
+      }
+      reload() { check && restart; }
+      locked() { mkdir -p /tmp/lshttpd; ( flock 9 && "$$@" ) 9> /tmp/lshttpd/opscrew.lock; }
+      locked reload
 networks:
   opscrew-edge:
     external: true

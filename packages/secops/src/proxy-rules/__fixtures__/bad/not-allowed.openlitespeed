@@ -1,0 +1,32 @@
+context /x/ {
+  type                    redirect
+# refused above: not-allowed
+  realm                   admins
+# refused above: not-allowed
+  module cache {
+# refused above: not-allowed
+    enableCache           1
+  }
+  extraHeaders            <<<END_extraHeaders
+Header set X-A 1
+Set-Cookie session=1
+# refused above: not-allowed
+  END_extraHeaders
+  websocket /ws {
+# refused above: not-allowed
+  }
+}
+errorPage 404 {
+# refused above: not-allowed
+  url                     /x.html
+}
+context /y/ { type proxy }
+# refused above: not-allowed
+context /w/ {
+  extraHeaders            <<<
+# refused above: not-allowed
+}
+# The `е` below is Cyrillic, so this is not `context`.
+contеxt /z/ {
+# refused above: not-allowed
+}

@@ -616,7 +616,7 @@ function outputsOf(
 
 export interface FakeHost {
   app: boolean;
-  /** The edge's proxy (Caddy, or nginx on the nginx edge) runs. */
+  /** The edge's proxy (Caddy, nginx or OpenLiteSpeed) runs. */
   caddy: boolean;
   /** What the database holds (a marker, never real data). */
   db: string;
@@ -628,15 +628,15 @@ function opOf(command: string): string {
   if (command.includes("opscrew-ready")) return "ready?";
   if (command.endsWith("docker compose stop app")) return "stop app";
   if (command.endsWith("docker compose up -d app")) return "start app";
-  // The edge's proxy: Caddy, or nginx on the nginx edge.
-  const edge = /docker compose (stop|up -d) (caddy|nginx)$/.exec(command);
+  // The edge's proxy: Caddy, nginx or OpenLiteSpeed.
+  const edge = /docker compose (stop|up -d) (caddy|nginx|openlitespeed)$/.exec(command);
   if (edge) return `${edge[1] === "stop" ? "stop" : "start"} ${edge[2]}`;
-  if (/docker compose exec -T (caddy|nginx) /.test(command)) return "reload edge";
+  if (/docker compose exec -T (caddy|nginx|openlitespeed) /.test(command)) return "reload edge";
   // The app's stateful services, which a move's window stops (with time to stop cleanly) and starts.
   const services = /docker compose (stop -t \d+|up -d) ([a-z0-9 -]+)$/.exec(command);
   if (services) return `${services[1] === "up -d" ? "start" : "stop"} ${services[2]}`;
   // The app's web container by its name: the `app` alias may be another app's on a shared edge.
-  if (/--entrypoint wget (caddy|nginx) /.test(command)) {
+  if (/--entrypoint wget (caddy|nginx|openlitespeed) /.test(command)) {
     return command.includes(`'http://${APP}-app-1:`) ? "health" : "health by the app alias";
   }
   if (command.includes("pg_database_size")) return "db size";
@@ -893,10 +893,12 @@ export class FakeHosts {
         return ok();
       case "stop caddy":
       case "stop nginx":
+      case "stop openlitespeed":
         h.caddy = false;
         return ok();
       case "start caddy":
       case "start nginx":
+      case "start openlitespeed":
         h.caddy = true;
         return ok();
       case "health":

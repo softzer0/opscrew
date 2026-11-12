@@ -1,0 +1,23 @@
+context /api/ {
+  type                    proxy
+  handler                 kamal-proxy
+  addDefaultCharset       off
+  enableExpires           1
+  expiresByType           image/*=A604800
+  accessControl {
+    allow                 ALL
+    deny                  192.0.2.0/24
+  }
+  extraHeaders            <<<END_extraHeaders
+Header set Cache-Control "no-store"
+RequestHeader set X-From-Edge 1
+  END_extraHeaders
+  rewrite {
+    enable                1
+    inherit               1
+    rules                 <<<END_rules
+RewriteCond %{REQUEST_METHOD} ^OPTIONS$
+RewriteRule ^ - [R=204,L]
+    END_rules
+  }
+}

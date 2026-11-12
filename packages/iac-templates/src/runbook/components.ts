@@ -157,7 +157,7 @@ export function componentsSection(plan: DeployPlan, environments?: readonly stri
 }
 
 /**
- * "The shared edge": the server's proxy (Caddy, or nginx with certbot) and kamal-proxy in
+ * "The shared edge": the server's proxy (Caddy, or nginx or OpenLiteSpeed with certbot) and kamal-proxy in
  * `/srv/edge`, the app's site file and the user's additions, how deploys keep the newest edge, and
  * the app's certificates with their renewal. `shared`: a server several OpsCrew apps may share
  * (the user's own).
@@ -185,9 +185,18 @@ export function edgeSection(
         ]
       : []),
     "",
-    `- **Your own rules:** \`${additions}\` holds this app's own ${label} rules (headers, redirects, rate limits, basic`,
-    "  authentication). OpsCrew checks them with its rules and with the proxy's own checker before they go live.",
-    `- **The proxy:** \`target.edge\` in \`${runbookFolders(plan, undefined).artefacts}/plan.yaml\` (\`caddy\` or \`nginx\`). Every app on a server uses the same one;`,
+    ...(proxy === "openlitespeed"
+      ? [
+          `- **Your own rules:** \`${additions}\` holds this app's own ${label} contexts for its paths (headers, rewrites,`,
+          "  access rules). OpsCrew checks them with its rules and with the proxy's own check before they go live.",
+          `- **The proxy:** \`target.edge\` in \`${runbookFolders(plan, undefined).artefacts}/plan.yaml\` (\`caddy\`, \`nginx\` or \`openlitespeed\`). Every app on a server uses the same one;`,
+        ]
+      : [
+          `- **Your own rules:** \`${additions}\` holds this app's own ${label} rules (headers, redirects, rate limits, basic`,
+          "  authentication). OpsCrew checks them with its rules and with the proxy's own checker before they go live.",
+          // Caddy's and nginx's runbooks stay as they were before OpenLiteSpeed (FR-2714).
+          `- **The proxy:** \`target.edge\` in \`${runbookFolders(plan, undefined).artefacts}/plan.yaml\` (\`caddy\` or \`nginx\`). Every app on a server uses the same one;`,
+        ]),
     "  it can be switched while the server holds only one OpsCrew app, with a short interruption the plan states.",
     ...certificateLines(plan, proxy, environments),
     "",
@@ -219,10 +228,12 @@ function certificateLines(
     ];
   }
   const caa = `OpsCrew's CAA records name only ${listText(CAA_ISSUERS[proxy].map((issuer) => `\`${issuer}\``))} (none at the zone's apex).`;
-  return proxy === "nginx"
+  return proxy !== "caddy"
     ? [
         "- **Certificates:** certbot gets the first certificate from Let's Encrypt during the first deploy and renews it",
-        `  twice a day when it is due; nginx reloads without dropping connections. ${status}, ${verify}`,
+        proxy === "nginx"
+          ? `  twice a day when it is due; nginx reloads without dropping connections. ${status}, ${verify}`
+          : `  twice a day when it is due; OpenLiteSpeed restarts gracefully, ending only connections older than five minutes. ${status}, ${verify}`,
         `  and ${secure} warn 30 days before a certificate expires, with certbot's reason when a renewal failed.`,
         `  ${caa}`,
       ]

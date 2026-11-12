@@ -1,0 +1,5 @@
+# scriptHandler { add lsapi:lsphp php }
+context /app/ {
+  type                    proxy
+  handler                 kamal-proxy
+}

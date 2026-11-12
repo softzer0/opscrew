@@ -193,7 +193,8 @@ done`;
 /**
  * OpsCrew's runtime files of each app with a folder (`/srv/apps/<app>`), the app's site on the
  * shared edge included (the site file of the edge's proxy: `/srv/edge/sites/<app>.conf` when the
- * edge's Compose file is stamped nginx, `<app>.caddy` otherwise), then each service's
+ * edge's Compose file is stamped nginx, `<app>.vhconf` when it is stamped openlitespeed,
+ * `<app>.caddy` otherwise), then each service's
  * `<service>.env` found in the app's folder: kind, owner, group and mode of each, and the SHA-256
  * of the rendered ones only. Never prints a file's content, never hashes a file that
  * holds secrets, and never follows a symbolic link (an app folder that is a link, or /srv/apps
@@ -201,8 +202,10 @@ done`;
  */
 export const RUNTIME_FILES_SNIPPET = `${APP_NAME_FN}
 site_ext=caddy
-if [ ! -L "${EDGE_DIR}" ] && [ -f "${EDGE_DIR}/compose.yaml" ] && [ ! -L "${EDGE_DIR}/compose.yaml" ] &&
-  grep -q '^x-opscrew-edge-proxy: *nginx *$' "${EDGE_DIR}/compose.yaml"; then site_ext=conf; fi
+if [ ! -L "${EDGE_DIR}" ] && [ -f "${EDGE_DIR}/compose.yaml" ] && [ ! -L "${EDGE_DIR}/compose.yaml" ]; then
+  if grep -q '^x-opscrew-edge-proxy: *nginx *$' "${EDGE_DIR}/compose.yaml"; then site_ext=conf; fi
+  if grep -q '^x-opscrew-edge-proxy: *openlitespeed *$' "${EDGE_DIR}/compose.yaml"; then site_ext=vhconf; fi
+fi
 if [ -d "${APPS_DIR}" ] && [ ! -L "${APPS_DIR}" ]; then
   for d in "${APPS_DIR}"/*; do
     app=\${d##*/}

@@ -1,0 +1,8 @@
+# include /etc/other.conf
+context /inc/ {
+  type                    proxy
+  handler                 kamal-proxy
+  extraHeaders            <<<END_extraHeaders
+Header set X-Include "include stays out"
+  END_extraHeaders
+}
