@@ -58,14 +58,20 @@ const EVERY_PATH = /^(?:\/(?:\(\.\*\)|:[A-Za-z_]\w*(?:\*|\(\.\*\)))|\^\/?\(?\.\*
  */
 const NO_NEWLINE = "(?!.*[\\r\\n])";
 
+/** The proxies OpsCrew writes routing rules for: none for OpenLiteSpeed. */
+type RoutingProxy = Exclude<EdgeProxy, "openlitespeed">;
+
+/** Why OpenLiteSpeed gets none of the rules. */
+const NOT_ON_OPENLITESPEED = "OpsCrew does not write vercel.json's routing rules for OpenLiteSpeed";
+
 /** Characters the proxy would not read as written: quotes, backslashes, control characters, nginx's `$`, Caddy's braces. */
-const UNSAFE: Record<EdgeProxy, RegExp> = {
+const UNSAFE: Record<RoutingProxy, RegExp> = {
   nginx: /["\\$\p{Cc}]/u,
   caddy: /["\\{}\p{Cc}]/u,
 };
 
 /** The first character of `text` the proxy cannot take as it is (and any space, without `spaces`). */
-function unsafeChar(text: string, proxy: EdgeProxy, spaces: boolean): string | undefined {
+function unsafeChar(text: string, proxy: RoutingProxy, spaces: boolean): string | undefined {
   return UNSAFE[proxy].exec(text)?.[0] ?? (spaces ? undefined : /\s/.exec(text)?.[0]);
 }
 
@@ -160,7 +166,7 @@ function regexPattern(source: string): Pattern {
 }
 
 /** The rule's source for `proxy`, checked with plan-schema's `VercelSourceSchema`. */
-function sourcePattern(source: string, proxy: EdgeProxy): Pattern {
+function sourcePattern(source: string, proxy: RoutingProxy): Pattern {
   if (!VercelSourceSchema.safeParse(source).success) {
     throw new Skip(
       "its `source` must start with `/` (a path pattern) or `^` (a regular expression)",
@@ -192,7 +198,7 @@ function sourcePattern(source: string, proxy: EdgeProxy): Pattern {
 }
 
 /** Destination text the proxy reads as it is. */
-function literal(text: string, proxy: EdgeProxy): string {
+function literal(text: string, proxy: RoutingProxy): string {
   const found = unsafeChar(text, proxy, false);
   if (found !== undefined) {
     throw new Skip(`its destination has \`${found}\`, which OpsCrew cannot write safely here`);
@@ -209,7 +215,7 @@ function destination(
   dest: string,
   pattern: Pattern,
   ref: (n: number) => string,
-  proxy: EdgeProxy,
+  proxy: RoutingProxy,
   rewrite: boolean,
 ): string {
   if (!dest.startsWith("/") && !isExternal(dest)) {
@@ -332,13 +338,28 @@ interface HeaderRule {
  * gets the headers of one `location` only, so a header rule whose paths can also match an earlier
  * one's, or a rewrite's, is left out too; a rule for every path goes at server level instead.
  * Requests for `/.well-known/` are never redirected or rewritten, as on Vercel, which keeps
- * certificates working.
+ * certificates working. OpenLiteSpeed gets none of the rules, each listed with the reason.
  */
 export function translateVercelRouting(
   routing: PlatformRouting,
   ctx: VercelRoutingContext,
 ): VercelRoutingTranslation {
   const { proxy, upstream } = ctx;
+  const platform = platformRules(routing);
+  const unsupported = routing.unsupported.map((entry) => ({
+    rule: entry.index === undefined ? entry.property : `${entry.property}[${entry.index}]`,
+    reason: entry.reason,
+  }));
+  if (proxy === "openlitespeed") {
+    const rules = [
+      ...routing.headers.map((entry) => `headers[${entry.index}]`),
+      ...[...platform.redirects, ...platform.rewrites].map((r) => r.rule),
+      ...routing.redirects.map((r) => `redirects[${r.index}]`),
+      ...routing.rewrites.map((r) => `rewrites[${r.index}]`),
+    ];
+    const skipped = [...new Set(rules)].map((rule) => ({ rule, reason: NOT_ON_OPENLITESPEED }));
+    return { text: "", skipped: [...skipped, ...unsupported] };
+  }
   const skipped: VercelRoutingTranslation["skipped"] = [];
   const skip = (rule: string, reason: string) => skipped.push({ rule, reason });
   /** `make()` for the rule, or nothing with the rule listed as skipped. */
@@ -376,7 +397,6 @@ export function translateVercelRouting(
     if (kept.length > 0) headers.push({ rule, source: entry.source, pattern, headers: kept });
   }
 
-  const platform = platformRules(routing);
   const redirects = [
     ...platform.redirects,
     ...routing.redirects.map((r) => ({ ...r, rule: `redirects[${r.index}]` })),
@@ -388,13 +408,7 @@ export function translateVercelRouting(
 
   const render = proxy === "nginx" ? nginxRules : caddyRules;
   const text = render({ headers, redirects, rewrites, upstream, attempt, skip });
-  for (const entry of routing.unsupported) {
-    skip(
-      entry.index === undefined ? entry.property : `${entry.property}[${entry.index}]`,
-      entry.reason,
-    );
-  }
-  return { text, skipped };
+  return { text, skipped: [...skipped, ...unsupported] };
 }
 
 interface RenderInput {

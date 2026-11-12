@@ -58,11 +58,15 @@ function nginxRequestZone(app: string): string {
   return `opscrew_${app}`;
 }
 
+/** Mozilla's intermediate ciphers for TLS 1.2 (version 6.0); TLS 1.3 has its own. */
+export const MOZILLA_CIPHERS =
+  "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305";
+
 /** Mozilla's intermediate configuration, version 6.0 ("Spike results" 6). */
 const MOZILLA_INTERMEDIATE = [
   "\tssl_protocols TLSv1.2 TLSv1.3;",
   "\tssl_ecdh_curve X25519MLKEM768:X25519:prime256v1:secp384r1;",
-  "\tssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;",
+  `\tssl_ciphers ${MOZILLA_CIPHERS};`,
   "\tssl_prefer_server_ciphers off;",
   "\tssl_session_timeout 1d;",
   "\tssl_session_cache shared:opscrew_tls:10m;",

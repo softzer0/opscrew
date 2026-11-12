@@ -22,6 +22,7 @@ import {
   type EdgeProxy,
   edgeProxy,
   IMAGES,
+  openlitespeedNotYet,
   otherProxy,
   type RuntimeContext,
   renderEdgeCompose,
@@ -184,6 +185,7 @@ export async function checkAdditions(
   }
   const text = await readTextIfExists(join(root, path));
   if (text === undefined) return false;
+  if (proxy === "openlitespeed") throw openlitespeedNotYet(`check your additions in ${path}`);
   const refusals = scanProxyAdditions(text, {
     proxy,
     // On this computer the site serves its .localhost hostname.

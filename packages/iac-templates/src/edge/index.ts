@@ -6,7 +6,7 @@
  * in `/srv/apps/<app>`, its data in `/srv/data/<app>`. On the user's own computer (the localhost
  * target) the same edge listens on 127.0.0.1 with leaf certificates from OpsCrew's local CA.
  */
-import { sha256Hex } from "@opscrew/core";
+import { OpsCrewError, sha256Hex } from "@opscrew/core";
 import { type DeployPlan, isHostingTarget, isServerlessTarget } from "@opscrew/plan-schema";
 import { stringify } from "yaml";
 import { IMAGES } from "../pins";
@@ -27,12 +27,27 @@ import {
   NGINX_UPSTREAM,
   RELOAD_DIR,
 } from "./nginx";
+import {
+  OPENLITESPEED_CAPABILITIES,
+  OPENLITESPEED_CATCH_ALL,
+  OPENLITESPEED_ERROR_PAGE,
+  OPENLITESPEED_HEALTHCHECK,
+  OPENLITESPEED_INPUT,
+  OPENLITESPEED_LOOP,
+  OPENLITESPEED_UPSTREAM,
+  openlitespeedConf,
+} from "./openlitespeed";
 
 export {
   type LocalhostSite,
   localhostHostname,
   localhostTlsUpload,
 } from "./localhost";
+export {
+  OPENLITESPEED_CHECK,
+  OPENLITESPEED_RELOAD,
+  openlitespeedCachePurge,
+} from "./openlitespeed";
 
 /** The edge's Compose project, and the external network the edge and every app's web service join. */
 export const EDGE_PROJECT = "opscrew-edge";
@@ -62,7 +77,7 @@ export const EDGE_VERSION = 2026110401;
 /** The key of {@link EDGE_VERSION} in the edge's Compose file (a Compose extension field). */
 export const EDGE_VERSION_KEY = "x-opscrew-edge-version";
 
-/** The key of the edge's proxy (`caddy` or `nginx`) in its Compose file, after its version. */
+/** The key of the edge's proxy (`caddy`, `nginx` or `openlitespeed`) in its Compose file, after its version. */
 export const EDGE_PROXY_KEY = "x-opscrew-edge-proxy";
 
 /** Where Caddy sends every app's traffic: kamal-proxy, which routes by hostname to the app's copy. */
@@ -75,7 +90,7 @@ export const EDGE_UPSTREAM = "kamal-proxy:80";
 export const CADDY_METRICS_PORT = 9180;
 
 /** The reverse proxy in front of the apps on a server (`target.edge`). */
-export type EdgeProxy = "caddy" | "nginx";
+export type EdgeProxy = "caddy" | "nginx" | "openlitespeed";
 
 /** What a server's edge differs in, by proxy. */
 export const EDGE_PROXIES: Record<
@@ -91,7 +106,18 @@ export const EDGE_PROXIES: Record<
 > = {
   caddy: { label: "Caddy", site: "caddy", upstream: EDGE_UPSTREAM },
   nginx: { label: "nginx", site: "conf", upstream: NGINX_UPSTREAM },
+  openlitespeed: { label: "OpenLiteSpeed", site: "vhconf", upstream: OPENLITESPEED_UPSTREAM },
 };
+
+/**
+ * The plain refusal where OpsCrew does not take OpenLiteSpeed yet (feature 027 brings it to every
+ * place nginx reaches): `what` OpsCrew would have done.
+ */
+export function openlitespeedNotYet(what: string): OpsCrewError {
+  return new OpsCrewError("PHASE_PRECONDITION", `OpsCrew can't ${what} on OpenLiteSpeed yet.`, {
+    hint: 'Set target.edge to "caddy" or "nginx" in the plan, then run the command again.',
+  });
+}
 
 /**
  * The plan's proxy: `target.edge` (a Portainer stack, which has no server edge, runs Caddy). A
@@ -126,6 +152,8 @@ export function otherProxy(proxy: EdgeProxy): EdgeProxy {
 export const CADDY_MEMORY_MB = 64;
 const KAMAL_PROXY_MEMORY_MB = 32;
 const NGINX_MEMORY_MB = 64;
+/** OpenLiteSpeed idles at 11 MB and buffers up to 60 MB of request bodies in memory (`inMemBufSize`). */
+const OPENLITESPEED_MEMORY_MB = 128;
 /** certbot used under 48 MB to obtain and renew certificates (certbot 5.8, 2026-10-21). */
 const CERTBOT_MEMORY_MB = 64;
 
@@ -135,16 +163,20 @@ const CERTBOT_MEMORY_MB = 64;
  */
 export const EDGE_MEMORY_MB = CADDY_MEMORY_MB + KAMAL_PROXY_MEMORY_MB + CONNECTOR_MEMORY_MB;
 
+/** The memory of each proxy's containers, in MB: the proxy, and certbot beside nginx and OpenLiteSpeed. */
+const PROXY_MEMORY_MB: Record<EdgeProxy, number> = {
+  caddy: CADDY_MEMORY_MB,
+  nginx: NGINX_MEMORY_MB + CERTBOT_MEMORY_MB,
+  openlitespeed: OPENLITESPEED_MEMORY_MB + CERTBOT_MEMORY_MB,
+};
+
 /**
- * The edge's memory design counts for `proxy`, in MB: {@link EDGE_MEMORY_MB} for Caddy, and for
- * nginx the same with nginx and certbot in Caddy's place (192 MB).
+ * The edge's memory design counts for `proxy`, in MB: {@link EDGE_MEMORY_MB} for Caddy, and the
+ * same with nginx and certbot in Caddy's place for nginx (192 MB), or OpenLiteSpeed and certbot
+ * (256 MB).
  */
 export function edgeMemoryMb(proxy: EdgeProxy): number {
-  return (
-    KAMAL_PROXY_MEMORY_MB +
-    CONNECTOR_MEMORY_MB +
-    (proxy === "nginx" ? NGINX_MEMORY_MB + CERTBOT_MEMORY_MB : CADDY_MEMORY_MB)
-  );
+  return KAMAL_PROXY_MEMORY_MB + CONNECTOR_MEMORY_MB + PROXY_MEMORY_MB[proxy];
 }
 
 /** The folder of the apps' site files in the Caddy container (the server's `/srv/edge/sites`). */
@@ -281,7 +313,7 @@ function caddyEdge(plan: DeployPlan, ranges: readonly string[]) {
   };
 }
 
-/** Both nginx and certbot run as the deploy user, from the edge's `.env`, which the deploy writes. */
+/** nginx and certbot run as the deploy user, from the edge's `.env`, which the deploy writes. */
 const DEPLOY_USER =
   "${OPSCREW_DEPLOY_UID:?the OpsCrew deploy writes it to /srv/edge/.env}:${OPSCREW_DEPLOY_GID:?the OpsCrew deploy writes it to /srv/edge/.env}";
 
@@ -294,7 +326,7 @@ const DEPLOY_USER =
  * come from OpsCrew's local CA, in `tls/<app>`, so there is no certbot and none of its volumes.
  */
 function nginxEdge(plan: DeployPlan) {
-  const certbot = plan.target.provider !== "localhost";
+  const certbot = certbotOn(plan);
   return {
     services: {
       nginx: {
@@ -309,13 +341,7 @@ function nginxEdge(plan: DeployPlan) {
         volumes: [
           "./sites:/etc/nginx/sites:ro",
           "./tls:/etc/nginx/tls:ro",
-          ...(certbot
-            ? [
-                `letsencrypt:${LETSENCRYPT}:ro`,
-                `acme-webroot:${ACME_WEBROOT}:ro`,
-                `reload:${RELOAD_DIR}`,
-              ]
-            : []),
+          ...(certbot ? CERTBOT_MOUNTS : []),
         ],
         healthcheck: NGINX_HEALTHCHECK,
         // A changed main configuration changes this label, so Compose recreates nginx with it.
@@ -324,28 +350,106 @@ function nginxEdge(plan: DeployPlan) {
         ...hardened({ noCapabilities: true }),
         networks: [EDGE_PROJECT],
       },
-      ...(certbot
-        ? {
-            certbot: {
-              image: IMAGES.certbot.ref,
-              restart: "unless-stopped",
-              user: DEPLOY_USER,
-              init: true,
-              ...memoryLimit(CERTBOT_MEMORY_MB),
-              entrypoint: ["sh", "-c", composeLiteral(CERTBOT_LOOP)],
-              volumes: [
-                `letsencrypt:${LETSENCRYPT}`,
-                `acme-webroot:${ACME_WEBROOT}`,
-                `reload:${RELOAD_DIR}`,
-              ],
-              ...hardened({ noCapabilities: true }),
-              networks: [EDGE_PROJECT],
-            },
-          }
-        : {}),
+      ...(certbot ? { certbot: certbotService() } : {}),
     },
     configs: { "nginx-conf": { content: composeLiteral(NGINX_CONF) } },
-    volumes: certbot ? { letsencrypt: {}, "acme-webroot": {}, reload: {} } : {},
+    volumes: certbot ? CERTBOT_VOLUMES : {},
+  };
+}
+
+/** certbot beside the proxy: on a server, not on this computer, where OpsCrew's local CA signs. */
+function certbotOn(plan: DeployPlan): boolean {
+  return plan.target.provider !== "localhost";
+}
+
+/** certbot's volumes as the proxy mounts them: its certificates and webroot read-only. */
+const CERTBOT_MOUNTS = [
+  `letsencrypt:${LETSENCRYPT}:ro`,
+  `acme-webroot:${ACME_WEBROOT}:ro`,
+  `reload:${RELOAD_DIR}`,
+];
+
+const CERTBOT_VOLUMES = { letsencrypt: {}, "acme-webroot": {}, reload: {} };
+
+/**
+ * certbot as the deploy user, renewing the certificates through the webroot `acme-webroot`; its
+ * deploy hook leaves a flag on the volume `reload`, where the proxy's loop sees it.
+ */
+function certbotService() {
+  return {
+    image: IMAGES.certbot.ref,
+    restart: "unless-stopped",
+    user: DEPLOY_USER,
+    init: true,
+    ...memoryLimit(CERTBOT_MEMORY_MB),
+    entrypoint: ["sh", "-c", composeLiteral(CERTBOT_LOOP)],
+    volumes: [`letsencrypt:${LETSENCRYPT}`, `acme-webroot:${ACME_WEBROOT}`, `reload:${RELOAD_DIR}`],
+    ...hardened({ noCapabilities: true }),
+    networks: [EDGE_PROJECT],
+  };
+}
+
+/**
+ * OpenLiteSpeed (ADR 0031) under Docker's init with OpsCrew's loop, on 80 and 443, reading its
+ * configuration, the catch-all and the error page from the Compose configs, the apps' site files
+ * from `/srv/edge/sites` and their origin certificates from `/srv/edge/tls/<app>` (all read-only,
+ * in `/etc/opscrew`), with certbot as on nginx. Its main process runs as root with only the
+ * capabilities it uses: binding 80 and 443, reading the deploy user's keys, starting its workers as
+ * `nobody` and signalling them. On this computer there is no certbot and no HTTP/3.
+ */
+function openlitespeedEdge(plan: DeployPlan) {
+  const certbot = certbotOn(plan);
+  const conf = openlitespeedConf(plan.target.provider === "localhost");
+  const files = {
+    "openlitespeed-conf": { target: OPENLITESPEED_INPUT.conf, content: conf },
+    "openlitespeed-catchall": {
+      target: OPENLITESPEED_INPUT.catchAll,
+      content: OPENLITESPEED_CATCH_ALL,
+    },
+    "openlitespeed-error": {
+      target: OPENLITESPEED_INPUT.errorPage,
+      content: OPENLITESPEED_ERROR_PAGE,
+    },
+  };
+  return {
+    services: {
+      openlitespeed: {
+        image: IMAGES.openlitespeed.ref,
+        restart: "unless-stopped",
+        init: true,
+        ...memoryLimit(OPENLITESPEED_MEMORY_MB),
+        ports: edgePorts(plan, 80, 443),
+        configs: Object.entries(files).map(([source, { target }]) => ({ source, target })),
+        entrypoint: ["sh", "-c", composeLiteral(OPENLITESPEED_LOOP)],
+        volumes: [
+          `./sites:${OPENLITESPEED_INPUT.sites}:ro`,
+          `./tls:${OPENLITESPEED_INPUT.tls}:ro`,
+          ...(certbot ? CERTBOT_MOUNTS : []),
+        ],
+        healthcheck: OPENLITESPEED_HEALTHCHECK,
+        // A changed configuration, catch-all or error page changes this label, so Compose
+        // recreates OpenLiteSpeed with it.
+        labels: {
+          "dev.opscrew.openlitespeed-conf-sha256": sha256Hex(
+            Object.values(files)
+              .map((file) => file.content)
+              .join("\n"),
+          ),
+        },
+        depends_on: ["kamal-proxy"],
+        ...hardened({ noCapabilities: true }),
+        cap_add: OPENLITESPEED_CAPABILITIES,
+        networks: [EDGE_PROJECT],
+      },
+      ...(certbot ? { certbot: certbotService() } : {}),
+    },
+    configs: Object.fromEntries(
+      Object.entries(files).map(([source, { content }]) => [
+        source,
+        { content: composeLiteral(content) },
+      ]),
+    ),
+    volumes: certbot ? CERTBOT_VOLUMES : {},
   };
 }
 
@@ -362,7 +466,11 @@ function header(plan: DeployPlan): string {
       `# every OpsCrew app there: ${EDGE_PROXIES[proxy].label} and kamal-proxy. It listens on 127.0.0.1 only.`,
     ].join("\n");
   }
-  const front = proxy === "nginx" ? "nginx, certbot and kamal-proxy" : "Caddy and kamal-proxy";
+  const front = {
+    caddy: "Caddy and kamal-proxy",
+    nginx: "nginx, certbot and kamal-proxy",
+    openlitespeed: "OpenLiteSpeed, certbot and kamal-proxy",
+  }[proxy];
   return [
     "# Generated by OpsCrew and shared by every OpsCrew app on this server; any app's `opscrew provision` regenerates it.",
     "# OpsCrew's shared edge on the server (/srv/edge, Compose project opscrew-edge), in front of",
@@ -373,7 +481,7 @@ function header(plan: DeployPlan): string {
 }
 
 /**
- * `<runtimeDir>/edge/compose.yaml`: the plan's proxy (Caddy, or nginx with certbot) and
+ * `<runtimeDir>/edge/compose.yaml`: the plan's proxy (Caddy, or nginx or OpenLiteSpeed with certbot) and
  * kamal-proxy on the external network `opscrew-edge`, stamped with {@link EDGE_VERSION} and the
  * proxy ({@link EDGE_PROXY_KEY}). kamal-proxy keeps the apps' routes on a named volume, so they
  * survive a recreate; the proxy publishes the ports the server's access mode needs (the same for
@@ -385,7 +493,12 @@ export function renderEdgeCompose(
   cloudflareRanges: readonly string[] = [],
 ): RenderedFile {
   const proxy = edgeProxy(plan);
-  const front = proxy === "nginx" ? nginxEdge(plan) : caddyEdge(plan, cloudflareRanges);
+  const front =
+    proxy === "caddy"
+      ? caddyEdge(plan, cloudflareRanges)
+      : proxy === "nginx"
+        ? nginxEdge(plan)
+        : openlitespeedEdge(plan);
   const document = {
     name: EDGE_PROJECT,
     [EDGE_VERSION_KEY]: EDGE_VERSION,

@@ -187,7 +187,14 @@ export const IMAGES = {
   nginx: {
     ref: "nginxinc/nginx-unprivileged:1.30.6-alpine@sha256:f5116ed4606f3eb015dd4a8e28cb9b351476dc0ad4bc6e9f93b19cec130cdf03",
   },
-  /** Obtains and renews the nginx edge's certificates. */
+  /**
+   * OpenLiteSpeed for the OpenLiteSpeed edge (`target.edge: openlitespeed`, 027 research R12): the
+   * current release, 1.9.4. Every tag carries PHP, which the edge does not use.
+   */
+  openlitespeed: {
+    ref: "litespeedtech/openlitespeed:1.9.4-lsphp84@sha256:84b5a648789f0c4ba1da9ffe3cb3ba79ae30a9c5c95f1e6a7f9302f8b273f2f8",
+  },
+  /** Obtains and renews the certificates of the nginx and OpenLiteSpeed edges. */
   certbot: {
     ref: "certbot/certbot:v5.8.0@sha256:f70ad0adbb7e117f0fe42a63c553f28ea451edabc0148757b6efcd9735acaa20",
   },

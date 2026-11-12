@@ -22,6 +22,7 @@ import {
   EDGE_UPSTREAM,
   EDGE_VERSION,
   EDGE_VERSION_KEY,
+  type EdgeProxy,
   edgeMemoryMb,
   renderEdgeCompose,
 } from "./index";
@@ -167,16 +168,26 @@ describe("the edge's Compose project", () => {
     // The edge's files in every access mode, without the stamp. When this hash changes, raise
     // EDGE_VERSION in src/edge/index.ts (today's date and change number) and put the new hash
     // here, so servers take the new edge: a deploy replaces the server's edge only with a newer one.
-    // Both proxies' edges count.
-    const nginx = (plan: DeployPlan) =>
-      DeployPlanSchema.parse({ ...plan, target: { ...plan.target, edge: "nginx" } });
-    const files = [shop, filtered, tunnelled, ...[shop, filtered, tunnelled].map(nginx)].map(
-      (plan) =>
-        renderEdgeCompose(plan).content.replace(`${EDGE_VERSION_KEY}: ${EDGE_VERSION}\n`, ""),
-    );
-    expect({ version: EDGE_VERSION, sha256: sha256Hex(files.join("\n")) }).toEqual({
+    // Every proxy's edges count.
+    const on = (edge: EdgeProxy) => (plan: DeployPlan) =>
+      DeployPlanSchema.parse({ ...plan, target: { ...plan.target, edge } });
+    const hash = (plans: DeployPlan[]) =>
+      sha256Hex(
+        plans
+          .map((plan) =>
+            renderEdgeCompose(plan).content.replace(`${EDGE_VERSION_KEY}: ${EDGE_VERSION}\n`, ""),
+          )
+          .join("\n"),
+      );
+    const modes = [shop, filtered, tunnelled];
+    expect({
+      version: EDGE_VERSION,
+      sha256: hash([...modes, ...modes.map(on("nginx"))]),
+      openlitespeed: hash(modes.map(on("openlitespeed"))),
+    }).toEqual({
       version: 2026110401,
       sha256: "a827e2528e6543bb570c0aeec419635fdda85e1b0bdf3c4547bebf573927c62d",
+      openlitespeed: "897da1e61a1840ffe46c28243e18f8e1ae5a3b016eabed77951b37108ca0f429",
     });
   });
 });
@@ -281,7 +292,7 @@ describe("Caddy's figures, on every Caddy edge", () => {
 
 describe("edgeMemoryMb", () => {
   it("adds up the edge's memory limits by proxy, with one tunnel connector", () => {
-    for (const proxy of ["caddy", "nginx"] as const) {
+    for (const proxy of ["caddy", "nginx", "openlitespeed"] as const) {
       const plan = testPlan();
       const edge = DeployPlanSchema.parse({ ...plan, target: { ...plan.target, edge: proxy } });
       const services = parse(renderEdgeCompose(edge).content).services as Record<
@@ -296,6 +307,7 @@ describe("edgeMemoryMb", () => {
     }
     expect(edgeMemoryMb("caddy")).toBe(EDGE_MEMORY_MB);
     expect(edgeMemoryMb("nginx")).toBe(192);
+    expect(edgeMemoryMb("openlitespeed")).toBe(256);
   });
 });
 

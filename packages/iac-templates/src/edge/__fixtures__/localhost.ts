@@ -1,11 +1,12 @@
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { testPlan } from "../../__fixtures__/plans";
+import type { EdgeProxy } from "../index";
 
 /** The options of {@link onThisComputer}. */
 export interface LocalhostPlanOptions {
   /** The environment's name; absent for prod. */
   environment?: string;
-  edge?: "caddy" | "nginx";
+  edge?: EdgeProxy;
   ports?: { https: 443 | 8443; http: 80 | 8080 };
 }
 

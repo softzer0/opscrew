@@ -12,6 +12,7 @@ import {
   EDGE_DIR,
   EDGE_PROJECT,
   type EdgeProxy,
+  openlitespeedNotYet,
   siteHosts,
 } from "@opscrew/iac-templates";
 import { writeArtifact } from "@opscrew/plan-schema";
@@ -49,6 +50,9 @@ const ADDITION_BODY = "served by the addition";
 const ADDITIONS: Record<EdgeProxy, string> = {
   nginx: `location = ${ADDITION_PATH} {\n    return 200 "${ADDITION_BODY}";\n}\n`,
   caddy: `handle ${ADDITION_PATH} {\n\trespond "${ADDITION_BODY}" 200\n}\n`,
+  get openlitespeed(): string {
+    throw openlitespeedNotYet("run this live test");
+  },
 };
 /**
  * The interruption a switch of the proxy may cause for a proxied hostname (the plan states "a few

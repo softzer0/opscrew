@@ -11,8 +11,10 @@ import type { ApprovalRecord } from "@opscrew/contracts";
 import { exists, listText, OpsCrewError } from "@opscrew/core";
 import {
   EDGE_PROJECT,
+  type EdgeProxy,
   edgeProxy,
   localComposeProject,
+  openlitespeedNotYet,
   runtimeDir,
   shellQuote,
 } from "@opscrew/iac-templates";
@@ -54,11 +56,14 @@ import {
 import { forgetServedSite, localAddress, localTarget, servedSite } from "./site";
 
 /** How the edge's proxy takes the app's site out without stopping (as the deploy reloads it). */
-const RELOAD = {
+const RELOAD: Record<EdgeProxy, string> = {
   caddy:
     "edge exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile < /dev/null",
   nginx: "edge exec -T nginx sh -c 'nginx -t -q && nginx -s reload' < /dev/null",
-} as const;
+  get openlitespeed(): string {
+    throw openlitespeedNotYet("remove an app from this computer");
+  },
+};
 
 /** The removal script: every object by its Compose label, then the folders by OpsCrew's names. */
 function teardownScript(plan: DeployPlan, o: { last: boolean; deleteData: boolean }): string {

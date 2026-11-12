@@ -1,0 +1,752 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`snapshots > a DNS-only app's site, and before its first certificate 1`] = `
+{
+  "blog.http.vhconf": "docRoot                 /var/www/opscrew/
+enableGzip              0
+
+errorPage 400 {
+  url                     /opscrew-error.html
+}
+
+errorPage 403 {
+  url                     /opscrew-error.html
+}
+
+errorPage 404 {
+  url                     /opscrew-error.html
+}
+
+errorPage 405 {
+  url                     /opscrew-error.html
+}
+
+errorPage 408 {
+  url                     /opscrew-error.html
+}
+
+errorPage 413 {
+  url                     /opscrew-error.html
+}
+
+errorPage 500 {
+  url                     /opscrew-error.html
+}
+
+errorPage 502 {
+  url                     /opscrew-error.html
+}
+
+errorPage 503 {
+  url                     /opscrew-error.html
+}
+
+errorPage 504 {
+  url                     /opscrew-error.html
+}
+
+context /opscrew-error.html {
+  location                /var/www/opscrew/opscrew-error.html
+  allowBrowse             1
+}
+
+# kamal-proxy, whose address OpenLiteSpeed looks up when it loads its configuration.
+extprocessor kamal-proxy {
+  type                    proxy
+  address                 kamal-proxy:80
+  maxConns                1000
+  pcKeepAliveTimeout      60
+  initTimeout             60
+  retryTimeout            0
+  respBuffer              0
+}
+
+context / {
+  type                    proxy
+  handler                 kamal-proxy
+  addDefaultCharset       off
+  extraHeaders            <<<END_extraHeaders
+Header set X-Content-Type-Options "nosniff"
+Header set X-Frame-Options "SAMEORIGIN"
+Header set Referrer-Policy "strict-origin-when-cross-origin"
+RequestHeader unset X-Forwarded-For
+RequestHeader unset X-Forwarded-Host
+RequestHeader unset X-Forwarded-Proto
+  END_extraHeaders
+}
+
+# certbot's HTTP-01 challenges, from its webroot. A pattern, since OpenLiteSpeed refuses a
+# folder that does not exist yet, and certbot makes it at its first challenge.
+context exp:^/(\\.well-known/acme-challenge/[^/]+)$ {
+  location                /var/www/acme/$1
+  allowBrowse             1
+}
+
+# WebSockets: an Upgrade request reaches the app as one.
+websocket / {
+  address                 kamal-proxy:80
+}
+
+rewrite {
+  enable                  1
+  autoLoadHtaccess        0
+  rules                   <<<END_rules
+RewriteRule ^/opscrew-error\\.html$ - [L]
+RewriteCond %{HTTP_HOST} !^(blog\\.example\\.com)(:[0-9]+)?$ [NC]
+RewriteRule ^ - [F]
+RewriteCond %{HTTPS} on
+RewriteRule ^ - [F]
+  END_rules
+}
+
+# Off: an answer is kept only when the app asks for it (X-LiteSpeed-Cache-Control).
+module cache {
+  ls_enabled              1
+  param                   <<<END_param
+enableCache             0
+enablePrivateCache      0
+storagePath             /usr/local/lsws/cachedata/blog
+  END_param
+}
+",
+  "blog.map": "map blog blog.example.com
+",
+  "blog.vhconf": "docRoot                 /var/www/opscrew/
+enableGzip              0
+
+errorPage 400 {
+  url                     /opscrew-error.html
+}
+
+errorPage 403 {
+  url                     /opscrew-error.html
+}
+
+errorPage 404 {
+  url                     /opscrew-error.html
+}
+
+errorPage 405 {
+  url                     /opscrew-error.html
+}
+
+errorPage 408 {
+  url                     /opscrew-error.html
+}
+
+errorPage 413 {
+  url                     /opscrew-error.html
+}
+
+errorPage 500 {
+  url                     /opscrew-error.html
+}
+
+errorPage 502 {
+  url                     /opscrew-error.html
+}
+
+errorPage 503 {
+  url                     /opscrew-error.html
+}
+
+errorPage 504 {
+  url                     /opscrew-error.html
+}
+
+context /opscrew-error.html {
+  location                /var/www/opscrew/opscrew-error.html
+  allowBrowse             1
+}
+
+# kamal-proxy, whose address OpenLiteSpeed looks up when it loads its configuration.
+extprocessor kamal-proxy {
+  type                    proxy
+  address                 kamal-proxy:80
+  maxConns                1000
+  pcKeepAliveTimeout      60
+  initTimeout             60
+  retryTimeout            0
+  respBuffer              0
+}
+
+context / {
+  type                    proxy
+  handler                 kamal-proxy
+  addDefaultCharset       off
+  extraHeaders            <<<END_extraHeaders
+Header set Strict-Transport-Security "max-age=31536000; includeSubDomains"
+Header set X-Content-Type-Options "nosniff"
+Header set X-Frame-Options "SAMEORIGIN"
+Header set Referrer-Policy "strict-origin-when-cross-origin"
+RequestHeader unset X-Forwarded-For
+RequestHeader unset X-Forwarded-Host
+RequestHeader unset X-Forwarded-Proto
+  END_extraHeaders
+}
+
+# certbot's HTTP-01 challenges, from its webroot. A pattern, since OpenLiteSpeed refuses a
+# folder that does not exist yet, and certbot makes it at its first challenge.
+context exp:^/(\\.well-known/acme-challenge/[^/]+)$ {
+  location                /var/www/acme/$1
+  allowBrowse             1
+}
+
+# WebSockets: an Upgrade request reaches the app as one.
+websocket / {
+  address                 kamal-proxy:80
+}
+
+rewrite {
+  enable                  1
+  autoLoadHtaccess        0
+  rules                   <<<END_rules
+RewriteRule ^/opscrew-error\\.html$ - [L]
+RewriteCond %{HTTP_HOST} !^(blog\\.example\\.com)(:[0-9]+)?$ [NC]
+RewriteRule ^ - [F]
+RewriteCond %{HTTPS} !on
+RewriteCond %{REQUEST_URI} !^/\\.well-known/acme-challenge/
+RewriteRule ^(.*)$ https://%{HTTP_HOST}$1 [R=308,L]
+  END_rules
+}
+
+vhssl {
+  certFile                /etc/letsencrypt/live/blog/fullchain.pem
+  keyFile                 /etc/letsencrypt/live/blog/privkey.pem
+  certChain               1
+  sslProtocol             24
+  enableECDHE             1
+  ciphers                 ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305
+}
+
+# Off: an answer is kept only when the app asks for it (X-LiteSpeed-Cache-Control).
+module cache {
+  ls_enabled              1
+  param                   <<<END_param
+enableCache             0
+enablePrivateCache      0
+storagePath             /usr/local/lsws/cachedata/blog
+  END_param
+}
+",
+  "blog.vhost": "virtualHost blog {
+  vhRoot                  /var/www/
+  configFile              /usr/local/lsws/conf/sites/blog.vhconf
+}
+",
+}
+`;
+
+exports[`snapshots > a proxied app's site with origin TLS and its own additions 1`] = `
+{
+  "shop.map": "map shop example.com, www.example.com
+",
+  "shop.vhconf": "docRoot                 /var/www/opscrew/
+enableGzip              0
+
+errorPage 400 {
+  url                     /opscrew-error.html
+}
+
+errorPage 403 {
+  url                     /opscrew-error.html
+}
+
+errorPage 404 {
+  url                     /opscrew-error.html
+}
+
+errorPage 405 {
+  url                     /opscrew-error.html
+}
+
+errorPage 408 {
+  url                     /opscrew-error.html
+}
+
+errorPage 413 {
+  url                     /opscrew-error.html
+}
+
+errorPage 500 {
+  url                     /opscrew-error.html
+}
+
+errorPage 502 {
+  url                     /opscrew-error.html
+}
+
+errorPage 503 {
+  url                     /opscrew-error.html
+}
+
+errorPage 504 {
+  url                     /opscrew-error.html
+}
+
+context /opscrew-error.html {
+  location                /var/www/opscrew/opscrew-error.html
+  allowBrowse             1
+}
+
+# kamal-proxy, whose address OpenLiteSpeed looks up when it loads its configuration.
+extprocessor kamal-proxy {
+  type                    proxy
+  address                 kamal-proxy:80
+  maxConns                1000
+  pcKeepAliveTimeout      60
+  initTimeout             60
+  retryTimeout            0
+  respBuffer              0
+}
+
+context / {
+  type                    proxy
+  handler                 kamal-proxy
+  addDefaultCharset       off
+  extraHeaders            <<<END_extraHeaders
+Header set Strict-Transport-Security "max-age=31536000; includeSubDomains"
+Header set X-Content-Type-Options "nosniff"
+Header set X-Frame-Options "SAMEORIGIN"
+Header set Referrer-Policy "strict-origin-when-cross-origin"
+RequestHeader unset X-Forwarded-For
+RequestHeader unset X-Forwarded-Host
+RequestHeader unset X-Forwarded-Proto
+  END_extraHeaders
+}
+
+# WebSockets: an Upgrade request reaches the app as one.
+websocket / {
+  address                 kamal-proxy:80
+}
+
+rewrite {
+  enable                  1
+  autoLoadHtaccess        0
+  rules                   <<<END_rules
+RewriteRule ^/opscrew-error\\.html$ - [L]
+RewriteCond %{HTTP_HOST} !^(example\\.com|www\\.example\\.com)(:[0-9]+)?$ [NC]
+RewriteRule ^ - [F]
+RewriteCond %{HTTPS} !on
+RewriteRule ^(.*)$ https://%{HTTP_HOST}$1 [R=308,L]
+RewriteCond %{HTTP_HOST} ^www\\.example\\.com(:[0-9]+)?$ [NC]
+RewriteRule ^(.*)$ https://example.com$1 [R=308,L]
+  END_rules
+}
+
+vhssl {
+  certFile                /etc/opscrew/tls/shop/origin.pem
+  keyFile                 /etc/opscrew/tls/shop/origin.key
+  clientVerify            2
+  verifyDepth             1
+  CACertFile              /etc/opscrew/tls/shop/pull.pem
+  certChain               1
+  sslProtocol             24
+  enableECDHE             1
+  ciphers                 ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305
+}
+
+# Off: an answer is kept only when the app asks for it (X-LiteSpeed-Cache-Control).
+module cache {
+  ls_enabled              1
+  param                   <<<END_param
+enableCache             0
+enablePrivateCache      0
+storagePath             /usr/local/lsws/cachedata/shop
+  END_param
+}
+
+# Your own additions (opscrew/proxy/additions.openlitespeed).
+include /usr/local/lsws/conf/sites/shop.additions
+",
+  "shop.vhost": "virtualHost shop {
+  vhRoot                  /var/www/
+  configFile              /usr/local/lsws/conf/sites/shop.vhconf
+}
+",
+}
+`;
+
+exports[`snapshots > the OpenLiteSpeed edge 1`] = `
+"# Generated by OpsCrew and shared by every OpsCrew app on this server; any app's \`opscrew provision\` regenerates it.
+# OpsCrew's shared edge on the server (/srv/edge, Compose project opscrew-edge), in front of
+# every OpsCrew app there: OpenLiteSpeed, certbot and kamal-proxy. Each app's deploy brings this file and puts it
+# in /srv/edge only when its x-opscrew-edge-version is larger than the server's, or when its
+# x-opscrew-edge-proxy differs (the switch, while the server holds one OpsCrew app).
+name: opscrew-edge
+x-opscrew-edge-version: 2026110401
+x-opscrew-edge-proxy: openlitespeed
+services:
+  kamal-proxy:
+    image: <pin:IMAGES.kamalProxy>
+    restart: unless-stopped
+    volumes:
+      - kamal-proxy-config:/home/kamal-proxy/.config/kamal-proxy
+    mem_limit: 32m
+    memswap_limit: 32m
+    security_opt: &a1
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    cap_drop:
+      - ALL
+    networks:
+      - opscrew-edge
+  openlitespeed:
+    image: <pin:IMAGES.openlitespeed>
+    restart: unless-stopped
+    init: true
+    mem_limit: 128m
+    memswap_limit: 128m
+    ports:
+      - 80:80
+      - 443:443
+      - 443:443/udp
+    configs:
+      - source: openlitespeed-conf
+        target: /etc/opscrew/httpd_config.conf
+      - source: openlitespeed-catchall
+        target: /etc/opscrew/catchall.conf
+      - source: openlitespeed-error
+        target: /etc/opscrew/error.html
+    entrypoint:
+      - sh
+      - -c
+      - |-
+        running() { pgrep -f '^openlitespeed \\(lshttpd - main\\)' > /dev/null; }
+        check() {
+          mkdir -p /tmp/lshttpd /var/www/opscrew
+          cp /etc/opscrew/httpd_config.conf /usr/local/lsws/conf/httpd_config.conf
+          cp /etc/opscrew/catchall.conf /usr/local/lsws/conf/catchall.conf
+          cat /etc/opscrew/error.html > /var/www/opscrew/opscrew-error.html
+          rm -rf /usr/local/lsws/conf/sites
+          cp -R /etc/opscrew/sites /usr/local/lsws/conf/sites
+          if [ ! -s /usr/local/lsws/conf/default.invalid.key ]; then
+            openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 3650 -subj /CN=default.invalid -keyout /usr/local/lsws/conf/default.invalid.key -out /usr/local/lsws/conf/default.invalid.pem 2> /dev/null
+          fi
+          missing=''
+          for f in $$(awk '$$1 == "certFile" || $$1 == "keyFile" || $$1 == "CACertFile" { print $$2 }' /usr/local/lsws/conf/httpd_config.conf /usr/local/lsws/conf/sites/*.vhconf 2> /dev/null); do
+            if [ ! -s "$$f" ]; then missing="$$missing $$f"; fi
+          done
+          if [ -n "$$missing" ]; then
+            echo "OpenLiteSpeed refused the configuration: these certificate files are missing or empty:$$missing" >&2
+            return 2
+          fi
+          out="$$(/usr/local/lsws/bin/openlitespeed -t 2>&1)"
+          status=$$?
+          if [ "$$status" -gt 1 ]; then
+            echo 'OpenLiteSpeed refused the configuration:' >&2
+            printf '%s\\n' "$$out" | grep -F '[ERROR]' >&2
+            return "$$status"
+          fi
+        }
+        restart() {
+          pid="$$(cat /tmp/lshttpd/lshttpd.pid 2> /dev/null)"
+          if [ -z "$$pid" ]; then sleep 1; pid="$$(cat /tmp/lshttpd/lshttpd.pid 2> /dev/null)"; fi
+          kill -USR1 "$$pid"
+        }
+        reload() { check && restart; }
+        locked() { mkdir -p /tmp/lshttpd; ( flock 9 && "$$@" ) 9> /tmp/lshttpd/opscrew.lock; }
+        locked check || exit 1
+        rm -f /tmp/lshttpd/lshttpd.pid
+        /usr/local/lsws/bin/openlitespeed
+        for i in $$(seq 1 30); do if running; then break; fi; sleep 1; done
+        stop() { kill -TERM "$$(cat /tmp/lshttpd/lshttpd.pid)"; while running; do sleep 1; done; exit 0; }
+        trap stop TERM INT QUIT
+        while running; do
+          sleep 5 &
+          wait $$!
+          if [ -e /var/www/reload/flag ]; then
+            rm -f /var/www/reload/flag
+            locked reload
+          fi
+        done
+        exit 1
+    volumes:
+      - ./sites:/etc/opscrew/sites:ro
+      - ./tls:/etc/opscrew/tls:ro
+      - letsencrypt:/etc/letsencrypt:ro
+      - acme-webroot:/var/www/acme:ro
+      - reload:/var/www/reload
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pgrep -f '^openlitespeed \\(lshttpd - main\\)' > /dev/null
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      start_interval: 1s
+    labels:
+      dev.opscrew.openlitespeed-conf-sha256: 9dad5a4102032538bcfb6bc60ff6ba32a3b08612649e6867e9ac112521f6502c
+    depends_on:
+      - kamal-proxy
+    security_opt: *a1
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - KILL
+      - NET_BIND_SERVICE
+      - SETGID
+      - SETUID
+    networks:
+      - opscrew-edge
+  certbot:
+    image: <pin:IMAGES.certbot>
+    restart: unless-stopped
+    user: \${OPSCREW_DEPLOY_UID:?the OpsCrew deploy writes it to /srv/edge/.env}:\${OPSCREW_DEPLOY_GID:?the OpsCrew deploy writes it to /srv/edge/.env}
+    init: true
+    mem_limit: 64m
+    memswap_limit: 64m
+    entrypoint:
+      - sh
+      - -c
+      - |-
+        trap 'exit 0' TERM INT
+        while :; do
+          sleep $$((43200 + RANDOM % 3600)) &
+          wait $$!
+          certbot renew --config-dir /etc/letsencrypt --work-dir /tmp/certbot/work --logs-dir /tmp/certbot/logs --no-random-sleep-on-renew
+        done
+    volumes:
+      - letsencrypt:/etc/letsencrypt
+      - acme-webroot:/var/www/acme
+      - reload:/var/www/reload
+    security_opt: *a1
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    cap_drop:
+      - ALL
+    networks:
+      - opscrew-edge
+configs:
+  openlitespeed-conf:
+    content: |
+      # OpsCrew's shared edge: each OpsCrew app on this server has its virtual host in /srv/edge/sites/<app>.vhost,
+      # its hostnames in <app>.map and its configuration in <app>.vhconf.
+      serverName                opscrew
+      user                      nobody
+      group                     nogroup
+      autoRestart               1
+      inMemBufSize              60M
+      swappingDir               /tmp/lshttpd/swap
+      gracefulRestartTimeout    300
+      mime                      conf/mime.properties
+      showVersionNumber         2
+      disableWebAdmin           1
+
+      errorlog /usr/local/lsws/logs/error.log {
+        logLevel                NOTICE
+        debugLevel              0
+        rollingSize             10M
+        keepDays                7
+      }
+
+      accessLog /dev/null {
+        rollingSize             0
+      }
+
+      tuning {
+        connTimeout             300
+        maxReqBodySize          2047M
+        quicEnable              1
+        quicShmDir              /dev/shm/ols
+      }
+
+      accessControl {
+        allow                   ALL
+      }
+
+      # Off: an app's answer is kept only when it asks for it (X-LiteSpeed-Cache-Control).
+      module cache {
+        ls_enabled              1
+        enableCache             0
+        enablePrivateCache      0
+        storagePath             /usr/local/lsws/cachedata
+      }
+
+      include /usr/local/lsws/conf/sites/*.vhost
+
+      # Every hostname no app serves.
+      virtualHost _catchall {
+        vhRoot                  /var/www/
+        configFile              /usr/local/lsws/conf/catchall.conf
+      }
+
+      listener HTTP {
+        address                 *:80
+        secure                  0
+        include /usr/local/lsws/conf/sites/*.map
+        map                     _catchall *
+      }
+
+      listener HTTPS {
+        address                 *:443
+        secure                  1
+        keyFile                 /usr/local/lsws/conf/default.invalid.key
+        certFile                /usr/local/lsws/conf/default.invalid.pem
+        certChain               1
+        sslProtocol             24
+        enableECDHE             1
+        ciphers                 ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305
+        include /usr/local/lsws/conf/sites/*.map
+        map                     _catchall *
+      }
+  openlitespeed-catchall:
+    content: |
+      # Every hostname no OpsCrew app on this server serves: refused with 403.
+      docRoot                 /var/www/opscrew/
+
+      errorPage 400 {
+        url                     /opscrew-error.html
+      }
+
+      errorPage 403 {
+        url                     /opscrew-error.html
+      }
+
+      errorPage 404 {
+        url                     /opscrew-error.html
+      }
+
+      errorPage 405 {
+        url                     /opscrew-error.html
+      }
+
+      errorPage 408 {
+        url                     /opscrew-error.html
+      }
+
+      errorPage 413 {
+        url                     /opscrew-error.html
+      }
+
+      errorPage 500 {
+        url                     /opscrew-error.html
+      }
+
+      errorPage 502 {
+        url                     /opscrew-error.html
+      }
+
+      errorPage 503 {
+        url                     /opscrew-error.html
+      }
+
+      errorPage 504 {
+        url                     /opscrew-error.html
+      }
+
+      context /opscrew-error.html {
+        location                /var/www/opscrew/opscrew-error.html
+        allowBrowse             1
+      }
+
+      rewrite {
+        enable                  1
+        autoLoadHtaccess        0
+        rules                   <<<END_rules
+      RewriteRule ^/opscrew-error\\.html$$ - [L]
+      RewriteRule ^ - [F]
+        END_rules
+      }
+  openlitespeed-error:
+    content: |
+      <!DOCTYPE html>
+      <html lang="en">
+      <meta charset="utf-8">
+      <title>Unavailable</title>
+      <p>This page is not available.</p>
+      </html>
+networks:
+  opscrew-edge:
+    external: true
+volumes:
+  letsencrypt: {}
+  acme-webroot: {}
+  reload: {}
+  kamal-proxy-config: {}
+"
+`;
+
+exports[`snapshots > the catch-all and the error page 1`] = `
+{
+  "catchAll": "# Every hostname no OpsCrew app on this server serves: refused with 403.
+docRoot                 /var/www/opscrew/
+
+errorPage 400 {
+  url                     /opscrew-error.html
+}
+
+errorPage 403 {
+  url                     /opscrew-error.html
+}
+
+errorPage 404 {
+  url                     /opscrew-error.html
+}
+
+errorPage 405 {
+  url                     /opscrew-error.html
+}
+
+errorPage 408 {
+  url                     /opscrew-error.html
+}
+
+errorPage 413 {
+  url                     /opscrew-error.html
+}
+
+errorPage 500 {
+  url                     /opscrew-error.html
+}
+
+errorPage 502 {
+  url                     /opscrew-error.html
+}
+
+errorPage 503 {
+  url                     /opscrew-error.html
+}
+
+errorPage 504 {
+  url                     /opscrew-error.html
+}
+
+context /opscrew-error.html {
+  location                /var/www/opscrew/opscrew-error.html
+  allowBrowse             1
+}
+
+rewrite {
+  enable                  1
+  autoLoadHtaccess        0
+  rules                   <<<END_rules
+RewriteRule ^/opscrew-error\\.html$ - [L]
+RewriteRule ^ - [F]
+  END_rules
+}
+",
+  "errorPage": "<!DOCTYPE html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Unavailable</title>
+<p>This page is not available.</p>
+</html>
+",
+}
+`;

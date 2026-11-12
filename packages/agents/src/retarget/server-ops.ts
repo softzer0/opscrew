@@ -5,6 +5,7 @@ import {
   EDGE_DIR,
   EDGE_PROXIES,
   type EdgeProxy,
+  openlitespeedNotYet,
   processServices,
 } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
@@ -245,6 +246,9 @@ const RELOAD: Record<EdgeProxy, string> = {
   // the certificates of hostnames whose DNS just switched to this server right away.
   caddy: "caddy reload --force --config /etc/caddy/Caddyfile --adapter caddyfile",
   nginx: "sh -c 'nginx -t -q && nginx -s reload'",
+  get openlitespeed(): string {
+    throw openlitespeedNotYet("move an app");
+  },
 };
 
 /** Reloads the running proxy of the edge (`/srv/edge`), which other apps on the server share. */

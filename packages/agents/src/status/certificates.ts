@@ -12,6 +12,7 @@ import {
   EDGE_PROJECT,
   EDGE_PROXIES,
   edgeProxy,
+  openlitespeedNotYet,
   portainerStackName,
   siteHosts,
   tunnelMode,
@@ -52,8 +53,10 @@ export function proxyCertificateHosts(plan: DeployPlan): string[] {
  * shared edge's logs; in the user's Portainer, the Caddy of the app's stack.
  */
 export function proxyRenewalAdvice(plan: DeployPlan, failure: string | undefined): string {
+  const proxy = edgeProxy(plan);
+  if (proxy === "openlitespeed") throw openlitespeedNotYet("advise on a certificate renewal");
   return renewalAdvice(
-    edgeProxy(plan),
+    proxy,
     plan.target.provider === "portainer"
       ? { portainerStack: portainerStackName(plan) }
       : { project: EDGE_PROJECT },

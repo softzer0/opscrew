@@ -1,6 +1,7 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are HCL interpolation, not JavaScript templates.
 import { OpsCrewError } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
+import { type EdgeProxy, openlitespeedNotYet } from "../edge";
 import { usesCloudflare } from "../predicates";
 import type { RenderContext } from "../types";
 import { moduleBlock, output, sensitiveOutput, type VariableSpec } from "./hcl";
@@ -94,9 +95,12 @@ export function zoneTfvars(
  * The authorities each edge gets certificates from (research R4): Caddy falls back to ZeroSSL,
  * which issues under Sectigo's CAA name.
  */
-export const CAA_ISSUERS = {
+export const CAA_ISSUERS: Record<EdgeProxy, string[]> = {
   caddy: ["letsencrypt.org", "sectigo.com"],
   nginx: ["letsencrypt.org"],
+  get openlitespeed(): string[] {
+    throw openlitespeedNotYet("write CAA records");
+  },
 };
 
 /**

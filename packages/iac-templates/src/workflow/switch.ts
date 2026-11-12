@@ -12,6 +12,7 @@ import {
   type EdgeProxy,
   edgeProxy,
   type LocalhostSite,
+  openlitespeedNotYet,
   otherProxy,
 } from "../edge";
 import { LOCALHOST_TLS, localhostSite } from "../edge/localhost";
@@ -706,6 +707,9 @@ const RELOAD: Record<EdgeProxy, string> = {
   caddy:
     "edge exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile < /dev/null",
   nginx: "edge exec -T nginx sh -c 'nginx -t -q && nginx -s reload' < /dev/null",
+  get openlitespeed(): string {
+    throw openlitespeedNotYet("deploy an app");
+  },
 };
 
 /** What the upload left for the app's edge besides its site. */

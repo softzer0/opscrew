@@ -325,7 +325,7 @@
             "edge": {
               "default": "caddy",
               "type": "string",
-              "enum": ["caddy", "nginx"]
+              "enum": ["caddy", "nginx", "openlitespeed"]
             }
           },
           "required": ["provider", "mode", "location", "serverType", "backups"],
@@ -353,7 +353,7 @@
             "edge": {
               "default": "caddy",
               "type": "string",
-              "enum": ["caddy", "nginx"]
+              "enum": ["caddy", "nginx", "openlitespeed"]
             }
           },
           "required": ["provider", "mode", "arch", "access"],
@@ -469,7 +469,7 @@
             "edge": {
               "default": "caddy",
               "type": "string",
-              "enum": ["caddy", "nginx"]
+              "enum": ["caddy", "nginx", "openlitespeed"]
             }
           },
           "required": ["provider", "mode", "arch", "ports", "image"],
@@ -2340,7 +2340,7 @@
                     "edge": {
                       "default": "caddy",
                       "type": "string",
-                      "enum": ["caddy", "nginx"]
+                      "enum": ["caddy", "nginx", "openlitespeed"]
                     }
                   },
                   "required": ["provider", "mode", "location", "serverType", "backups"],
@@ -2368,7 +2368,7 @@
                     "edge": {
                       "default": "caddy",
                       "type": "string",
-                      "enum": ["caddy", "nginx"]
+                      "enum": ["caddy", "nginx", "openlitespeed"]
                     }
                   },
                   "required": ["provider", "mode", "arch", "access"],

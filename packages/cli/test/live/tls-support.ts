@@ -8,7 +8,7 @@
  */
 import { previousEntries } from "@opscrew/agents";
 import { OPSCREW_MANAGED_COMMENT, type SharedRecord } from "@opscrew/connector-cloudflare";
-import { EDGE_PROJECT, type EdgeProxy } from "@opscrew/iac-templates";
+import { EDGE_PROJECT, type EdgeProxy, openlitespeedNotYet } from "@opscrew/iac-templates";
 import { DEEP_TOOL_NAME, type DeepTool } from "@opscrew/secops";
 import { jsonStrings, type LoadFailure } from "./support";
 
@@ -152,7 +152,13 @@ export function deepProblems(
 // The origin check from the server.
 
 /** Where each proxy listens for HTTPS on the edge's network (the nginx edge runs unprivileged). */
-const EDGE_HTTPS: Record<EdgeProxy, string> = { caddy: "caddy:443", nginx: "nginx:8443" };
+const EDGE_HTTPS: Record<EdgeProxy, string> = {
+  caddy: "caddy:443",
+  nginx: "nginx:8443",
+  get openlitespeed(): string {
+    throw openlitespeedNotYet("check the origin from the edge's network");
+  },
+};
 
 /**
  * The fallback of the origin check (research "Spike results" 14): `command`, a check that runs

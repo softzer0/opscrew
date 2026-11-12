@@ -16,7 +16,7 @@ describe("JSON Schema export", () => {
         additionalProperties: false,
       });
     }
-    const edge = { enum: ["caddy", "nginx"], default: "caddy" };
+    const edge = { enum: ["caddy", "nginx", "openlitespeed"], default: "caddy" };
     expect(schemas.plan).toMatchObject({
       properties: {
         app: { properties: { maxBodyMb: { type: "integer", minimum: 1, maximum: 2048 } } },

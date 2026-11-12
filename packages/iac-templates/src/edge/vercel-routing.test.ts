@@ -280,6 +280,31 @@ describe.each(["caddy", "nginx"] as const)("translateVercelRouting on %s", (prox
   });
 });
 
+describe("translateVercelRouting on OpenLiteSpeed", () => {
+  it("writes none of the rules, and lists each with the reason, then what detect could not read", () => {
+    const reason = "OpsCrew does not write vercel.json's routing rules for OpenLiteSpeed";
+    expect(translate(STATIC_SITE, "openlitespeed")).toEqual({
+      text: "",
+      skipped: [
+        ...[
+          "headers[0]",
+          "headers[2]",
+          "cleanUrls",
+          "trailingSlash",
+          "redirects[0]",
+          "redirects[1]",
+          "redirects[2]",
+          "redirects[4]",
+          "redirects[5]",
+        ].map((rule) => ({ rule, reason })),
+        { rule: "redirects[3]", reason: CONDITION },
+        { rule: "headers[1]", reason: CONDITION },
+      ],
+    });
+    expect(translate(VITE_SPA, "openlitespeed").skipped).toEqual([{ rule: "rewrites[0]", reason }]);
+  });
+});
+
 describe("translateVercelRouting, by proxy", () => {
   it("leaves out patterns Caddy's RE2 cannot express, which nginx's PCRE can", () => {
     const lookahead = routing({

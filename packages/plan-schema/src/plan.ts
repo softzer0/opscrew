@@ -46,10 +46,10 @@ import { checkPlacement, MoveSchema, NetworkSchema } from "./placement";
 const POSTGRES_PROVIDERS = new Set(["postgres", "supabase"]);
 
 /**
- * The reverse proxy in front of every OpsCrew app on a server: Caddy (the default) or nginx with
- * certbot. Every OpsCrew app on one server uses the same one.
+ * The reverse proxy in front of every OpsCrew app on a server: Caddy (the default), nginx with
+ * certbot, or OpenLiteSpeed with certbot. Every OpsCrew app on one server uses the same one.
  */
-const EdgeSchema = z.enum(["caddy", "nginx"]).default("caddy");
+const EdgeSchema = z.enum(["caddy", "nginx", "openlitespeed"]).default("caddy");
 
 /**
  * A server OpsCrew creates on Hetzner Cloud or DigitalOcean: provider, location, server size, image,

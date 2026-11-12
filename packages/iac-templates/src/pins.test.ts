@@ -88,6 +88,7 @@ describe("pins.ts", () => {
       sshAudit: "v3.9.0",
       testssl: "3.2",
       nginx: "1.30.6-alpine",
+      openlitespeed: "1.9.4-lsphp84",
       certbot: "v5.8.0",
       pebble: "2.10.1",
       linuxTools: "latest",
@@ -111,6 +112,7 @@ describe("pins.ts", () => {
     expect(parseImageRef(IMAGES.sshAudit.ref).repo).toBe("positronsecurity/ssh-audit");
     expect(parseImageRef(IMAGES.testssl.ref).repo).toBe("ghcr.io/testssl/testssl.sh");
     expect(parseImageRef(IMAGES.nginx.ref).repo).toBe("nginxinc/nginx-unprivileged");
+    expect(parseImageRef(IMAGES.openlitespeed.ref).repo).toBe("litespeedtech/openlitespeed");
     expect(parseImageRef(IMAGES.certbot.ref).repo).toBe("certbot/certbot");
     expect(parseImageRef(IMAGES.pebble.ref).repo).toBe("ghcr.io/letsencrypt/pebble");
     expect(parseImageRef(IMAGES.kafka.ref).repo).toBe("apache/kafka");
@@ -158,6 +160,7 @@ describe("pins.ts", () => {
         "clickhouse",
         "neo4j",
         "nginx",
+        "openlitespeed",
         "paketoBuilder",
         "paketoRun",
         "pebble",

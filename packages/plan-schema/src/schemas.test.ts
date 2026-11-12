@@ -595,7 +595,7 @@ describe("DeployPlan target on a server the user owns", () => {
       mode: "vps-compose";
       arch: "amd64" | "arm64";
       access: "public" | "tunnel";
-      edge: "caddy" | "nginx";
+      edge: "caddy" | "nginx" | "openlitespeed";
     }>();
     expectTypeOf<CloudDeployTarget["image"]>().toEqualTypeOf<string>();
     expect(
@@ -1276,7 +1276,7 @@ describe("DeployPlan target on the localhost target", () => {
       arch: "amd64" | "arm64";
       ports: { https: 443 | 8443; http: 80 | 8080 };
       image: "registry" | "local-build";
-      edge: "caddy" | "nginx";
+      edge: "caddy" | "nginx" | "openlitespeed";
     }>();
     for (const variant of [
       target({ arch: "amd64", image: "registry", edge: "nginx" }),
@@ -1793,7 +1793,7 @@ describe("DeployPlan reverse proxy and upload limit", () => {
         expect(pathsOf(result), `${target.provider} ${edge}`).toEqual(["target.edge"]);
       }
     }
-    expectTypeOf<CloudDeployTarget["edge"]>().toEqualTypeOf<"caddy" | "nginx">();
+    expectTypeOf<CloudDeployTarget["edge"]>().toEqualTypeOf<"caddy" | "nginx" | "openlitespeed">();
     // A move keeps the previous server's proxy.
     const move = {
       from: { target: { ...hetzner, edge: "nginx" } },
