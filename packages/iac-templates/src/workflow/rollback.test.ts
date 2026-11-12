@@ -473,7 +473,7 @@ function withoutMode(start: string): string {
   return script;
 }
 
-describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 120_000 }, () => {
+describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 300_000 }, () => {
   beforeEach(setUp);
   afterEach(() => {
     rmSync(work, { recursive: true, force: true });

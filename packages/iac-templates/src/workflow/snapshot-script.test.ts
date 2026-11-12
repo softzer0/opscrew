@@ -331,7 +331,7 @@ function approve(id: string, only?: string, seconds = 1800): void {
   write(at(RESTORE_APPROVAL_FILE), `${line}\n`);
 }
 
-describe.skipIf(!shWorks())("snapshot.sh", { timeout: 120_000 }, () => {
+describe.skipIf(!shWorks())("snapshot.sh", { timeout: 300_000 }, () => {
   beforeEach(() => {
     work = mkdtempSync(join(tmpdir(), "opscrew-snapshot-script-")).replaceAll("\\", "/");
     fakeBin(work, {

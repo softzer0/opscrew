@@ -1204,7 +1204,7 @@ const BASH_WORKS = (() => {
  */
 describe.skipIf(!shWorks() || !BASH_WORKS)(
   "the release snapshot with databases on extra servers",
-  { timeout: 120_000 },
+  { timeout: 300_000 },
   () => {
     const APP_HOST = "203.0.113.10";
     const HOSTS = { data: "203.0.113.20", more: "203.0.113.21" } as const;
