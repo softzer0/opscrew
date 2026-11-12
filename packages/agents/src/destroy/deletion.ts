@@ -37,6 +37,7 @@ import {
   readValidJson,
   refusalReason,
 } from "../shared";
+import { type FirewallApis, removeFirewalls } from "../shared/firewalls";
 import {
   type DeletionBounds,
   deletesServer,
@@ -74,6 +75,11 @@ export interface DeletionScope {
   what: string;
   /** Phase recorded in audit entries. */
   phase: PhaseName;
+  /**
+   * The firewalls of the providers whose connector applies them (default: their connectors'): an
+   * apply that removes a server deletes its firewall too.
+   */
+  firewalls?: FirewallApis | undefined;
 }
 
 /** A deletion of a provider's server, which may have snapshots and delete protection. */
@@ -128,11 +134,13 @@ export async function discardPlan(summary: PlanSummary): Promise<void> {
 
 /**
  * Applies an approved saved plan (the caller has asked for the approval and checked it with
- * `assertApprovedPlan`), audits the outcome and stops with the redacted log tail on failure.
+ * `assertApprovedPlan`), audits the outcome and stops with the redacted log tail on failure. Once
+ * applied, the firewalls of the servers it removed that the providers' connectors apply (ADR 0029,
+ * D8) are deleted: those its plan's state wanted (`summary.planJson`) and the state wants no more.
  */
 export async function applyApprovedPlan(
   session: DeletionSession,
-  summary: Pick<PlanSummary, "planFile" | "planHash">,
+  summary: Pick<PlanSummary, "planFile" | "planHash"> & { planJson?: unknown },
   options: { allowDestroy: boolean; what: string; hint: string },
 ): Promise<void> {
   const { deps } = session;
@@ -165,6 +173,7 @@ export async function applyApprovedPlan(
       hint: options.hint,
     });
   }
+  await removeFirewalls(session, summary.planJson, result.outputs);
 }
 
 /** What a deletion would delete, from a preview plan that was discarded. */

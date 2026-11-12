@@ -42,6 +42,7 @@ import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { planProvider, providerProfile, vpsConnector } from "../providers";
 import { describeChanges, PlanRefusedError } from "../shared";
+import { type FirewallApis, removeFirewalls, syncFirewalls } from "../shared/firewalls";
 import { engineErrorBlocks } from "../shared/tunnel-connections";
 import { neededScopes } from "./credentials";
 import { maskSensitivePlanJson, plannedImports } from "./plan-json";
@@ -128,6 +129,8 @@ export interface PlanAndApplyOptions {
    * option by starting again).
    */
   redesignHint?: string;
+  /** The firewalls of the providers whose connector applies them (default: their connectors'). */
+  firewalls?: FirewallApis | undefined;
 }
 
 /** Engine log text meaning an API refused the token's permissions (HTTP 403, read-only token). */
@@ -627,7 +630,9 @@ export function approveLaterHint(
  * moves-only plan is approved as a state rename (nothing changes in the cloud), and a plan that
  * imports a server another apply lost is approved with its imports, and both are applied like any
  * other. The hooks (`approvalNotes`, `beforeApply`, `applyFailed`) see the plan being approved
- * and applied.
+ * and applied. After a successful apply, and in a run (not `planOnly`) that finds nothing to
+ * apply, the firewalls the providers' connectors apply follow the root's `wanted_firewalls`
+ * (`syncFirewalls`); after an apply, those of the servers it removed are deleted first.
  */
 export async function planAndApply(
   deps: PhaseDeps,
@@ -696,9 +701,17 @@ export async function planAndApply(
   // blocks) still has to be applied.
   const movesOnly = isMovesOnly(saved);
   const imports = plannedImports(saved.planJson).length;
+  const firewallRun = {
+    deps,
+    phase: options.phase ?? "provision",
+    command,
+    firewalls: options.firewalls,
+  };
   if (saved.changes.length === 0 && !movesOnly && imports === 0) {
     deps.reporter.success("The infrastructure is already up to date.");
     const outputs = await engine.output(dir, { env }).catch(() => ({}));
+    // A run after a failed firewall sync plans nothing new and sets the firewalls again.
+    if (options.planOnly !== true) await syncFirewalls(firewallRun, outputs);
     return { planHash: saved.planHash, applied: false, outputs, plan: saved };
   }
 
@@ -798,6 +811,10 @@ export async function planAndApply(
       ? "Renamed the resources in the infrastructure state; nothing changed in the cloud."
       : "Infrastructure applied.",
   );
+  // The firewalls the providers' Terraform cannot manage (ADR 0029, D8): those of the servers the
+  // apply removed go, the others become exactly what the state wants.
+  await removeFirewalls(firewallRun, saved.planJson, result.outputs);
+  await syncFirewalls(firewallRun, result.outputs);
   return {
     planHash: saved.planHash,
     applied: true,

@@ -9,12 +9,13 @@ export function testWireGuardKey(n: number): string {
 /** An extra cloud server of {@link splitPlan}: `db` runs on the first, `cache` on the second. */
 export interface TestExtraServer {
   name: string;
-  provider: "hetzner" | "digitalocean";
+  provider: "hetzner" | "digitalocean" | "contabo";
 }
 
 const EXTRA_TARGETS = {
   hetzner: { location: "hel1", serverType: "cx33", backups: false },
   digitalocean: { location: "ams3", serverType: "s-2vcpu-4gb", backups: false },
+  contabo: { location: "EU", serverType: "V153", backups: false },
 } as const;
 
 /**

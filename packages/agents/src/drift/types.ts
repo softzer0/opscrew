@@ -58,10 +58,22 @@ export interface DriftOptions {
   services?: ProvisionServices;
 }
 
-/** Result of `opscrew drift`. Holds resource addresses, attribute names and paths, never values. */
+/**
+ * A resource changed outside OpsCrew. The firewall a provider's connector applies (ADR 0029, D8)
+ * is the `terraform_data` that describes it, and says in plain English how the provider's firewall
+ * differs: its rules and the servers it protects, none of them secret.
+ */
+export interface DriftedResource extends ResourceDrift {
+  differences?: string[];
+}
+
+/**
+ * Result of `opscrew drift`. Holds resource addresses, attribute names and paths, never values
+ * (but for how a firewall the connector applies differs, which holds no secret).
+ */
 export interface DriftReport {
   /** Resources changed outside OpsCrew (console, API), sorted by address, attribute names sorted. */
-  drift: ResourceDrift[];
+  drift: DriftedResource[];
   /** What `opscrew provision` would change now (code not applied yet, or undoing drift), by address. */
   pending: ResourceChange[];
   /**

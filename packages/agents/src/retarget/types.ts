@@ -58,6 +58,8 @@ export interface RetargetServices
     | "askPagesVerification"
     // The private network's and the monitoring's host plans on servers OpsCrew created.
     | "serverHost"
+    // The firewalls a provider's connector applies (ADR 0029, D8).
+    | "firewalls"
   > {
   /** Credential checks per provider (default: `vpsConnector(id).verifyCredentials`). */
   providers?: Partial<

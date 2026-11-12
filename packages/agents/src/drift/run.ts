@@ -1,5 +1,5 @@
 import { type HostFacts, inspectHost } from "@opscrew/connector-ssh-host";
-import type { ResourceChange, ResourceDrift } from "@opscrew/contracts";
+import type { ResourceChange } from "@opscrew/contracts";
 import { OpsCrewError, tfstateFile } from "@opscrew/core";
 import { usesTunnel } from "@opscrew/iac-templates";
 import {
@@ -21,6 +21,7 @@ import { requireStorageKey } from "../provision/storage";
 import { hasDeployment, stringOutput } from "../shared";
 import { appDeployed } from "../status/run";
 import { cloudflareRulesDrift } from "./cloudflare-rules";
+import { firewallDrift } from "./firewalls";
 import { cloudRunnerDrift, type HostDrift, ownHostDrift, serverComponentDrift } from "./host";
 import {
   compareInfrastructure,
@@ -35,7 +36,7 @@ import { portainerDrift } from "./portainer";
 import { appZoneDrift, previewRecipeDrift } from "./previews";
 import { namedDifferences, type ServersDriftOptions, serversDrift } from "./servers";
 import { siteDrift } from "./site";
-import type { DriftOptions, DriftReport } from "./types";
+import type { DriftedResource, DriftOptions, DriftReport } from "./types";
 
 /**
  * A server the user owns whose plan manages nothing on Cloudflare (no DNS, no tunnel) has no cloud
@@ -125,7 +126,7 @@ export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Pro
 
   // 3. Engine, state encryption, and 4. the refresh-only plan (drift) and normal plan (pending)
   const { engine, env } = await driftEngine(deps, plan, options, stateKind);
-  let drift: ResourceDrift[] = [];
+  let drift: DriftedResource[] = [];
   let pending: ResourceChange[] = [];
   let tunnelId: string | undefined;
   const notes: string[] = [];
@@ -159,7 +160,11 @@ export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Pro
           }
         : {}),
     });
-    drift = compared.drift;
+    // The firewalls the providers' connectors apply (ADR 0029, D8), against the state's outputs.
+    drift = [
+      ...compared.drift,
+      ...(await firewallDrift(deps, plan, compared.outputs, services.firewalls)),
+    ];
     pending = compared.pending;
     notes.push(...compared.notes);
     // The connector on the server must run for the tunnel the state holds.

@@ -26,6 +26,7 @@ import {
 } from "../provision";
 import { savedPlanOf, writePlanSidecar } from "../provision/plan-apply";
 import { planStop } from "../shared";
+import { syncFirewalls } from "../shared/firewalls";
 import {
   clearPending,
   type MoveAction,
@@ -38,7 +39,7 @@ import type { MoveSession } from "./session";
 /** What a plan step needs of a run: a server move's session, or a site move's. */
 export type PlanSession = Pick<
   MoveSession,
-  "deps" | "engine" | "dir" | "env" | "plan" | "command" | "approve"
+  "deps" | "services" | "engine" | "dir" | "env" | "plan" | "command" | "approve"
 >;
 
 /** What a plan step came to. */
@@ -129,6 +130,7 @@ function planAndApplyOptions(session: PlanSession, input: InfraPlanInput): PlanA
     files: input.files,
     command: session.command,
     phase: "retarget",
+    firewalls: session.services.firewalls,
     ...(input.notes && input.notes.length > 0 ? { approvalNotes: input.notes } : {}),
     ...(input.costDelta !== undefined ? { costDelta: input.costDelta } : {}),
     ...(input.redesignHint !== undefined ? { redesignHint: input.redesignHint } : {}),
@@ -220,6 +222,16 @@ export async function prepareInfraPlan(
   });
   const saved = planned.plan;
   if (saved === undefined || (saved.changes.length === 0 && !isMovesOnly(saved))) {
+    // Nothing to apply, as after a step whose firewall could not be set: it is set again.
+    await syncFirewalls(
+      {
+        deps,
+        phase: "retarget",
+        command: session.command,
+        firewalls: session.services.firewalls,
+      },
+      planned.outputs,
+    );
     return { kind: "unchanged", outputs: planned.outputs };
   }
   try {

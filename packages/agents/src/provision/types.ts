@@ -28,6 +28,7 @@ import type { RunnerGitHubApi } from "../runners/github";
 import type { RunnerHostServices } from "../runners/machine";
 import type { RefreshRecoveryOptions } from "../secrets";
 import type { EnvAnswer, EnvQuestion, HostAdapterApi, OwnServerConnection } from "../shared";
+import type { FirewallApis } from "../shared/firewalls";
 import type { StorageKey, StorageKeyQuestion } from "./storage";
 
 /**
@@ -118,6 +119,11 @@ export interface ProvisionServices {
    * server's, by provider (default: `vpsConnector` over each one's token).
    */
   providers?: Partial<Record<CloudProvider, ProviderCheck>>;
+  /**
+   * The firewalls of the providers whose connector applies them (ADR 0029, D8), by provider
+   * (default: each provider connector's `firewalls`).
+   */
+  firewalls?: FirewallApis;
   /** Cloudflare API (default: client from `CLOUDFLARE_API_TOKEN`); `null` means no token. */
   cloudflare?: CloudflareApi | null;
   /** GitHub REST API (default: client from `resolveGitHubToken`); `null` means no token. */

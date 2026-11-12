@@ -8,6 +8,8 @@ import {
   createTestPhaseDeps,
   FakeEngine,
   type FakeEngineScenario,
+  FakeFirewalls,
+  fakeWantedFirewall,
   portainerPlan,
   ScriptedApprovalHandler,
   testPlan,
@@ -446,6 +448,116 @@ describe("planAndApply hooks", () => {
     const s = await hooked({ changes: DNS_UPDATE });
     await planAndApply(s.deps, { ...s.options, approvalNotes: ["Warning: fixed."] });
     expect(s.handler.requests[0]?.details).toMatch(/\n\nWarning: fixed\.$/);
+  });
+});
+
+describe("planAndApply and the firewalls a provider's connector applies (ADR 0029, D8)", () => {
+  const APP = fakeWantedFirewall("contabo", "202611001");
+  const DB = fakeWantedFirewall("contabo", "202611002", "shop-db");
+  /** The extra server db's removal, in a plan whose state had both servers' firewalls. */
+  const REMOVAL: ResourceChange[] = [
+    {
+      address: "module.server_db.contabo_instance.this",
+      type: "contabo_instance",
+      name: "this",
+      provider: "registry.opentofu.org/contabo/contabo",
+      action: "delete",
+    },
+  ];
+  const removalPlanJson = {
+    format_version: "1.2",
+    output_changes: {
+      wanted_firewalls: {
+        actions: ["update"],
+        before: { server: APP, server_db: DB },
+        after: { server: APP },
+      },
+    },
+  };
+
+  async function setup(scenario: FakeEngineScenario) {
+    const events: string[] = [];
+    const deps = await createTestPhaseDeps({
+      approvalHandler: new ScriptedApprovalHandler(() => true),
+    });
+    const engine = new FakeEngine(scenario);
+    const apply = engine.apply.bind(engine);
+    engine.apply = async (dir, planFile, approval) => {
+      events.push("apply");
+      return apply(dir, planFile, approval);
+    };
+    const contabo = new FakeFirewalls((call) => events.push(call));
+    const options = {
+      engine,
+      dir: join(deps.paths.root, "opscrew", "infra", "prod"),
+      env: {},
+      deployPlan: testPlan({ provider: "contabo", deployed: true }),
+      files: [],
+      confirmPhrase: () => "shop",
+      firewalls: { contabo },
+    };
+    return { deps, engine, contabo, events, options };
+  }
+
+  it("deletes the firewalls of the servers the apply removed, then sets the others", async () => {
+    const s = await setup({
+      changes: REMOVAL,
+      planJson: removalPlanJson,
+      outputs: { wanted_firewalls: { server: APP } },
+    });
+    s.contabo.seed(DB);
+    const result = await planAndApply(s.deps, s.options);
+    expect(result.applied).toBe(true);
+    expect(s.events).toEqual(["apply", "remove shop-db-firewall", "sync shop-firewall"]);
+    const said = s.deps.reporter.text();
+    expect(said).toContain("success: Deleted Contabo's firewall shop-db-firewall.");
+    expect(said).toContain("success: Created Contabo's firewall shop-firewall with 1 rules.");
+    expect(
+      s.deps.audit.entries.filter((e) => e.kind === "provider-call").map((e) => e.action),
+    ).toEqual(["delete firewall", "sync firewall"]);
+  });
+
+  it("sets them again in a run that plans nothing new, but not with --plan-only", async () => {
+    const s = await setup({ changes: DNS_UPDATE, outputs: { wanted_firewalls: { server: APP } } });
+    await planAndApply(s.deps, s.options);
+    s.engine.scenario.changes = [];
+    const again = await planAndApply(s.deps, s.options);
+    expect(again.applied).toBe(false);
+    expect(s.events).toEqual(["apply", "sync shop-firewall", "sync shop-firewall"]);
+
+    await planAndApply(s.deps, { ...s.options, planOnly: true });
+    s.engine.scenario.changes = DNS_UPDATE;
+    await planAndApply(s.deps, { ...s.options, planOnly: true });
+    expect(s.events).toHaveLength(3);
+  });
+
+  it("stops after an apply whose firewall could not be set, and the next run sets it", async () => {
+    const s = await setup({ changes: DNS_UPDATE, outputs: { wanted_firewalls: { server: APP } } });
+    s.contabo.syncError = new OpsCrewError("PROVIDER_ERROR", "Contabo answered 503.");
+    const error = await planAndApply(s.deps, s.options).catch((e: unknown) => e);
+    expect(error).toMatchObject({
+      code: "PROVIDER_ERROR",
+      message:
+        "Setting Contabo's firewall shop-firewall failed: Contabo answered 503. The server may not be protected yet.",
+      hint: "Run `opscrew provision` again: it plans nothing new and sets the firewall again.",
+    });
+    expect(s.engine.applied).toHaveLength(1);
+    // The apply is recorded, so naming its hash again plans afresh.
+    const hash = s.engine.applied[0]?.approval.approvedPlanHash ?? "";
+    expect((await findSavedPlan(s.deps.paths.files.plansDir, hash))?.appliedAt).toBeDefined();
+
+    s.contabo.syncError = undefined;
+    s.engine.scenario.changes = [];
+    await planAndApply(s.deps, s.options);
+    expect(s.events).toEqual(["apply", "sync shop-firewall", "sync shop-firewall"]);
+  });
+
+  it("touches no firewall for a root without wanted firewalls", async () => {
+    const s = await setup({ changes: DNS_UPDATE });
+    await planAndApply(s.deps, s.options);
+    s.engine.scenario.changes = [];
+    await planAndApply(s.deps, s.options);
+    expect(s.events).toEqual(["apply"]);
   });
 });
 

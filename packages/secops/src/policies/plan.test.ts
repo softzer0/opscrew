@@ -463,3 +463,78 @@ describe("evaluatePlanPolicies on a Portainer target", () => {
     expect(failed(results)).toContain("firewall-attached");
   });
 });
+
+describe("evaluatePlanPolicies on a firewall the connector applies (`<type>.<name>`)", () => {
+  /** A Contabo plan: the server, its wanted firewall and another `terraform_data` of that module. */
+  function contaboPlanJson(databaseOpen: boolean) {
+    const rule = (protocol: string, port: string) => ({
+      protocol,
+      ports: [port],
+      ipv4: ["0.0.0.0/0"],
+      ipv6: ["::/0"],
+    });
+    const input = (rules: unknown[]) => ({
+      name: "shop-firewall",
+      description: "OpsCrew's firewall of shop.",
+      server_ids: ["202611001"],
+      rules,
+    });
+    const resource = (type: string, name: string, values: Record<string, unknown>) => ({
+      address: `module.server.${type}.${name}`,
+      mode: "managed",
+      type,
+      name,
+      values,
+    });
+    return {
+      format_version: "1.2",
+      planned_values: {
+        root_module: {
+          child_modules: [
+            {
+              address: "module.server",
+              resources: [
+                resource("contabo_instance", "this", { id: "202611001", ssh_keys: [1] }),
+                resource("terraform_data", "firewall", {
+                  input: input([
+                    rule("tcp", "22"),
+                    rule("tcp", "443"),
+                    ...(databaseOpen ? [rule("tcp", "5432")] : []),
+                  ]),
+                }),
+                // Not the firewall, though of the same type: never checked as one.
+                resource("terraform_data", "other", { input: input([rule("tcp", "6379")]) }),
+              ],
+            },
+          ],
+        },
+      },
+      resource_changes: [],
+    };
+  }
+
+  it("checks the resource of that type and that name, and no other of the type", () => {
+    const plan = deployPlan({ backups: false, proxied: false });
+    const passing = evaluatePlanPolicies(contaboPlanJson(false), plan);
+    expect(failed(passing)).toEqual([]);
+    expect(
+      passing
+        .filter((r) => r.policyId === "no-open-admin-ports")
+        .map((r) => [r.resource, r.passed]),
+    ).toEqual([["module.server.terraform_data.firewall", true]]);
+    expect(passing.find((r) => r.policyId === "firewall-attached")).toMatchObject({
+      passed: true,
+      resource: "module.server.contabo_instance.this",
+    });
+
+    const open = evaluatePlanPolicies(contaboPlanJson(true), plan);
+    expect(blockingPolicyFailures(open)).toEqual([
+      expect.objectContaining({
+        policyId: "no-open-admin-ports",
+        resource: "module.server.terraform_data.firewall",
+        message: expect.stringContaining("tcp/5432"),
+      }),
+    ]);
+    expect(open.some((r) => r.resource === "module.server.terraform_data.other")).toBe(false);
+  });
+});

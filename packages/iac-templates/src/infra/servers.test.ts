@@ -1,10 +1,12 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are HCL interpolation, not JavaScript templates.
 import { CLOUD_PROVIDERS } from "@opscrew/providers";
 import { describe, expect, it } from "vitest";
+import { testTarget } from "../__fixtures__/layouts";
 import { testContext, testPlan } from "../__fixtures__/plans";
+import { cloudTarget } from "../providers";
 import type { RenderContext, RenderedFile } from "../types";
 import { splitPlan, type TestExtraServer } from "./__fixtures__/servers";
-import { appServerVariables, extraServerVariables, renderInfra } from "./index";
+import { appServerVariables, extraServerVariables, moveLayout, renderInfra } from "./index";
 import { MODULE_FILES } from "./modules";
 
 const root = (files: readonly RenderedFile[], name: string) =>
@@ -268,6 +270,63 @@ describe("an own app server plus a Hetzner db", () => {
   });
 });
 
+describe("the wanted firewalls of the servers whose provider's connector applies them", () => {
+  /** The `wanted_firewalls` output's entries, as rendered. */
+  const entry = (module: string, provider: string) =>
+    [
+      `    ${module} = {`,
+      `      provider = "${provider}"`,
+      `      firewall = module.${module}.wanted_firewall`,
+      "    }",
+    ].join("\n");
+  const output = (...entries: string[]) =>
+    ['output "wanted_firewalls" {', "  value = {", ...entries, "  }", "}"].join("\n");
+  const outputsOf = (plan: Parameters<typeof renderInfra>[0], context = ctx()) =>
+    root(renderInfra(plan, context), "outputs.tf");
+
+  it("lists the app's server on Contabo by its module, with its provider", () => {
+    expect(outputsOf(testPlan({ provider: "contabo" }))).toContain(
+      output(entry("server", "contabo")),
+    );
+  });
+
+  it("lists only the servers on such a provider, the app's or the extra ones", () => {
+    const contaboDb = outputsOf(splitPlan({ servers: [{ name: "db", provider: "contabo" }] }));
+    expect(contaboDb).toContain(output(entry("server_db", "contabo")));
+    const contaboApp = outputsOf(
+      splitPlan({
+        app: { provider: "contabo" },
+        servers: [
+          { name: "db", provider: "hetzner" },
+          { name: "cache", provider: "contabo" },
+        ],
+      }),
+    );
+    expect(contaboApp).toContain(
+      output(entry("server", "contabo"), entry("server_cache", "contabo")),
+    );
+  });
+
+  it("lists the old server of a move by its module", () => {
+    const plan = testPlan({ provider: "hetzner" });
+    const outputs = outputsOf(
+      plan,
+      ctx({ layout: moveLayout("both", testTarget("contabo"), cloudTarget(plan.target)) }),
+    );
+    expect(outputs).toContain(output(entry("server_previous", "contabo")));
+  });
+
+  it("is not written for other providers' servers", () => {
+    for (const plan of [
+      testPlan(),
+      testPlan({ provider: "digitalocean" }),
+      splitPlan({ servers: [{ name: "db", provider: "digitalocean" }] }),
+    ]) {
+      expect(outputsOf(plan)).not.toContain("wanted_firewalls");
+    }
+  });
+});
+
 describe("the server modules", () => {
   for (const module of CLOUD_PROVIDERS.map(({ terraform }) => terraform.module.name)) {
     const main = MODULE_FILES[`${module}/main.tf`] ?? "";
@@ -288,8 +347,10 @@ describe("the server modules", () => {
       expect(main).toMatch(
         /resource "\w+" "deploy" \{\n {2}count += var\.ssh_key_id == null \? 1 : 0/,
       );
-      expect(main).toMatch(/for_each = var\.web \? local\.web_rules : \[\]/);
-      expect(main).toMatch(/for_each = var\.wireguard_port\[\*\]/);
+      // A firewall's dynamic rule blocks, or the rules of the firewall the connector applies (ADR
+      // 0029, D8), which a `for` expression lists.
+      expect(main).toMatch(/(?:for_each =|for \w+ in) var\.web \? local\.web_rules : \[\]/);
+      expect(main).toMatch(/(?:for_each =|for \w+ in) var\.wireguard_port\[\*\]/);
     });
   }
 

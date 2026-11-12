@@ -655,10 +655,10 @@ async function destroyDeployment(
   // 3. Engine, state encryption, init
   const setup = await setupEngine(deps, plan, options);
   const { engine, env } = setup;
-  const session = deletionSession(teardownScope(deps, plan, provider), {
-    ...setup,
-    dir: join(deps.paths.root, plan.infra.dir),
-  });
+  const session = deletionSession(
+    { ...teardownScope(deps, plan, provider), firewalls: services.firewalls },
+    { ...setup, dir: join(deps.paths.root, plan.infra.dir) },
+  );
   // Delete protection off for the app's server and each extra Hetzner server, where it exists.
   const protectionVars = {
     ...(profile.deleteProtection ? { [PROTECTION_VARIABLE]: "false" } : {}),

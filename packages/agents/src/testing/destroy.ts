@@ -127,16 +127,29 @@ export interface DestroyScript {
    * the id of the provider's fake server; `null` leaves it out (plan JSON without the id).
    */
   serverId?: string | null;
+  /**
+   * The root's `wanted_firewalls` output before the destroy (the firewalls a provider's connector
+   * applies, ADR 0029 D8), which the destroy plan JSON's `output_changes` gives; none by default.
+   */
+  wantedFirewalls?: Record<string, unknown>;
 }
 
 /** Server ids in the state by resource type (the fake servers of {@link FakeServers}). */
 const STATE_SERVER_IDS: Readonly<Record<string, string>> = {
   hcloud_server: "4711",
   digitalocean_droplet: "3164444",
+  contabo_instance: "202611001",
 };
 
-/** `show -json` of a destroy plan: every change a delete, with the state's `before` values. */
-function destroyPlanJson(changes: readonly ResourceChange[], serverId: string | null | undefined) {
+/**
+ * `show -json` of a destroy plan: every change a delete, with the state's `before` values, and the
+ * wanted firewalls' output deleted with them.
+ */
+function destroyPlanJson(
+  changes: readonly ResourceChange[],
+  serverId: string | null | undefined,
+  wantedFirewalls: Record<string, unknown> | undefined,
+) {
   const before = (change: ResourceChange): Record<string, unknown> => {
     const stateId = STATE_SERVER_IDS[change.type];
     if (stateId === undefined) return { id: `${change.name}-1` };
@@ -152,6 +165,13 @@ function destroyPlanJson(changes: readonly ResourceChange[], serverId: string | 
       name: change.name,
       change: { actions: ["delete"], before: before(change), after: null },
     })),
+    ...(wantedFirewalls !== undefined
+      ? {
+          output_changes: {
+            wanted_firewalls: { actions: ["delete"], before: wantedFirewalls, after: null },
+          },
+        }
+      : {}),
   };
 }
 
@@ -230,7 +250,7 @@ export class ScriptedDestroyEngine implements IacEngine {
       hasDestroy: changes.some((c) => c.action === "delete" || c.action === "replace"),
       planJson:
         kind === "destroy"
-          ? destroyPlanJson(changes, this.script.serverId)
+          ? destroyPlanJson(changes, this.script.serverId, this.script.wantedFirewalls)
           : changes.length > 0
             ? unprotect.planJson
             : { format_version: "1.2", resource_changes: [] },

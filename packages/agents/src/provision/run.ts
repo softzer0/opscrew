@@ -1127,6 +1127,7 @@ async function provisionFlow(
       files,
       command,
       phase,
+      firewalls: services.firewalls,
       ...first.hooks,
       // An extra server no longer in the plan is deleted only with its name typed, as destroy asks.
       // A saved plan's servers taken over are named from its imports (it is not planned again).

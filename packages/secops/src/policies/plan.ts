@@ -186,7 +186,7 @@ function openPortResults(
 
 /** What differs between the providers whose servers the policies check. */
 interface ProviderChecks extends ProviderSecOps {
-  /** Resource types of the server and of its cloud firewall. */
+  /** Resource type of the server, and of its cloud firewall (or `<type>.<name>`). */
   server: string;
   firewall: string;
   /** Whether the server has delete and rebuild protection to check. */
@@ -201,6 +201,15 @@ const PROVIDERS: readonly ProviderChecks[] = CLOUD_PROVIDERS.map((provider) => (
   deleteProtection: provider.offering.deleteProtection,
 }));
 
+/**
+ * Whether `resource` is a provider's firewall: of its `firewallResourceType`, or for `<type>.<name>`
+ * (a general type, such as `terraform_data.firewall`) of that type and that name.
+ */
+function isFirewall(resource: PlannedResourceJson, firewallType: string): boolean {
+  const [type, name] = firewallType.split(".");
+  return resource.type === type && (name === undefined || resource.name === name);
+}
+
 /** The server and firewall policies of one provider (spec 004 plan "Security checks"). */
 function providerPolicies(
   provider: ProviderChecks,
@@ -211,7 +220,7 @@ function providerPolicies(
 ): PolicyResult[] {
   const results: PolicyResult[] = [];
   const servers = resources.filter((r) => r.type === provider.server);
-  const firewalls = resources.filter((r) => r.type === provider.firewall);
+  const firewalls = resources.filter((r) => isFirewall(r, provider.firewall));
   const { noun } = provider;
 
   for (const server of servers) {

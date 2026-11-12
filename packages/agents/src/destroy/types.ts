@@ -41,6 +41,7 @@ export interface DestroyServices
     | "runnerMachine"
     | "remote"
     | "serverHost"
+    | "firewalls"
   > {
   /** Cloudflare API (default: client from `CLOUDFLARE_API_TOKEN`); `null` means no token. */
   cloudflare?: DestroyCloudflareApi | null;

@@ -418,6 +418,34 @@ function serversOutput(shape: RootShape): string[] {
   ];
 }
 
+/**
+ * `output "wanted_firewalls"`: the firewall of each server module whose provider's connector
+ * applies it (`connectorFirewall`, ADR 0029 D8), by module, with that provider; none without such
+ * a server. OpsCrew passes each to its provider's connector after every apply.
+ */
+function wantedFirewallsOutput(shape: RootShape): string[] {
+  const modules = [
+    ...shape.servers.map(({ slot, provider }) => ({ module: slot, provider })),
+    ...shape.extras.map(({ module, provider }) => ({ module, provider })),
+  ].filter(({ provider }) => provider.terraform.connectorFirewall);
+  if (modules.length === 0) return [];
+  return [
+    "# The firewall of each server whose provider's Terraform cannot manage it, by module: OpsCrew",
+    "# makes it through the provider's API after every apply.",
+    'output "wanted_firewalls" {',
+    "  value = {",
+    ...modules.flatMap(({ module, provider }) => [
+      `    ${module} = {`,
+      `      provider = "${provider.id}"`,
+      `      firewall = module.${module}.wanted_firewall`,
+      "    }",
+    ]),
+    "  }",
+    "}",
+    "",
+  ];
+}
+
 function outputsTf(plan: DeployPlan, shape: RootShape, pieces: TunnelPieces | undefined): string {
   const { live } = shape;
   const { ipv4, ipv6 } = addressesOf(live);
@@ -438,6 +466,7 @@ function outputsTf(plan: DeployPlan, shape: RootShape, pieces: TunnelPieces | un
     ...output("url", url),
     ...serversOutput(shape),
     ...extraServersOutput(shape.extras),
+    ...wantedFirewallsOutput(shape),
     ...(previewsCertificatePack(plan)?.outputs ?? []),
     ...(pieces?.outputs ?? []),
   ].join("\n");

@@ -27,7 +27,9 @@ import {
   CF_V6,
   createProject,
   createTestPhaseDeps,
+  FakeFirewalls,
   fakeCloudflare,
+  fakeWantedFirewall,
   movingPlan,
   plainStateResources,
   projectRunner,
@@ -399,6 +401,44 @@ describe.skipIf(!findExecutable("git"))("runDrift", () => {
     const text = renderDriftReport(report);
     expect(text).toContain("matches the plan");
     expect(text).not.toContain("changed outside OpsCrew");
+  });
+
+  it("names a firewall the connector applies that differs at Contabo, with how it differs", async () => {
+    const wanted = fakeWantedFirewall("contabo", "202611001");
+    const engine = new DriftEngine();
+    engine.output = async () => {
+      engine.calls.push("output");
+      return { wanted_firewalls: { server: wanted } };
+    };
+    const contabo = new FakeFirewalls();
+    const { deps, services } = await setup({
+      plan: testPlan({ provider: "contabo", deployed: true }),
+      engine,
+      services: { firewalls: { contabo } },
+    });
+    const report = await runDrift(deps, { services });
+    const address = "module.server.terraform_data.firewall";
+    expect(report.clean).toBe(false);
+    expect(report.drift).toEqual([
+      {
+        address,
+        type: "terraform_data",
+        name: "firewall",
+        provider: "terraform.io/builtin/terraform",
+        action: "update",
+        attributes: [],
+        differences: ["Contabo has no firewall named shop-firewall."],
+      },
+    ]);
+    expect(contabo.calls).toEqual(["differences shop-firewall"]);
+    expect(engine.calls).not.toContain("apply");
+    const text = renderDriftReport(report);
+    expect(text).toContain(`  ~ ${address}:\n      Contabo has no firewall named shop-firewall.`);
+    expect(text).toContain("`opscrew provision` would undo these changes");
+
+    // As the plan wants it: no drift.
+    contabo.seed(wanted);
+    expect((await runDrift(deps, { services })).drift).toEqual([]);
   });
 
   it("names a firewall changed outside OpsCrew and its attribute, and explains both choices", async () => {

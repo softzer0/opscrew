@@ -53,6 +53,7 @@ import {
   DeployPlanSchema,
   writeArtifact,
 } from "@opscrew/plan-schema";
+import { cloudProvider } from "@opscrew/providers";
 import type { PhaseDeps } from "../context";
 import type { PortainerServices } from "../provision/types";
 import { isMaintenanceWindowRequest } from "../retarget/texts";
@@ -71,6 +72,7 @@ import {
   testPlan,
 } from "./deploy";
 import { MemoryReporter, ScriptedRunner } from "./deps";
+import { FakeFirewalls, fakeWantedFirewall } from "./firewalls";
 import { type FakePortainer, fakeCertificate, fakePortainer } from "./portainer";
 import { noProviderSchemas, plainStateResources } from "./state";
 
@@ -126,7 +128,9 @@ export type MoveEvent =
   | { type: "dispatch"; ref: string }
   | { type: "snapshot"; serverId: string }
   | { type: "fetch"; url: string }
-  | { type: "resolve"; host: string };
+  | { type: "resolve"; host: string }
+  /** A call of a provider connector's firewalls (`sync <name>`, `remove <name>`). */
+  | { type: "firewall"; op: string };
 
 type ModuleName = "server" | "server_previous";
 
@@ -161,7 +165,8 @@ const RESOURCES: Record<CloudProvider, readonly (readonly [string, string])[]> =
     ["contabo_tag", "app"],
     ["contabo_instance", "this"],
     ["contabo_tag_assignment", "app"],
-    ["contabo_firewall", "this"],
+    // The firewall Contabo's connector applies after the apply (ADR 0029, D8).
+    ["terraform_data", "firewall"],
   ],
 };
 const SERVER_TYPE: Record<CloudProvider, string> = {
@@ -447,7 +452,15 @@ export class FakeMoveEngine implements IacEngine {
         }
       }
     }
-    effect.planJson = { format_version: "1.2", resource_changes: details };
+    // The firewalls the state wants before the plan, as `output_changes` gives them.
+    const firewalls = this.state.outputs.wanted_firewalls;
+    effect.planJson = {
+      format_version: "1.2",
+      resource_changes: details,
+      ...(firewalls !== undefined
+        ? { output_changes: { wanted_firewalls: { actions: ["update"], before: firewalls } } }
+        : {}),
+    };
     return effect;
   }
 
@@ -549,7 +562,8 @@ export class FakeMoveEngine implements IacEngine {
 
 /**
  * The root outputs of the rendered configuration over the servers in the state: `server_*` and
- * `url` follow the live module, `servers` lists every server module's server by provider.
+ * `url` follow the live module, `servers` lists every server module's server by provider, and
+ * `wanted_firewalls` the firewall of each whose provider's connector applies it.
  */
 function outputsOf(
   config: FakeConfig,
@@ -558,9 +572,13 @@ function outputsOf(
 ): Record<string, unknown> {
   const live = config.live ? servers[config.live] : undefined;
   const byProvider: Record<string, { ipv4: string; ipv6: string; id: string }> = {};
+  const firewalls: Record<string, unknown> = {};
   for (const [m, provider] of config.modules) {
     const server = servers[m];
     if (server) byProvider[provider] = { ipv4: server.ipv4, ipv6: server.ipv6, id: server.id };
+    if (server && cloudProvider(provider).terraform.connectorFirewall) {
+      firewalls[m] = fakeWantedFirewall(provider, server.id);
+    }
   }
   return {
     ...(live
@@ -573,6 +591,7 @@ function outputsOf(
         }
       : {}),
     servers: byProvider,
+    ...(Object.keys(firewalls).length > 0 ? { wanted_firewalls: firewalls } : {}),
   };
 }
 
@@ -1059,6 +1078,8 @@ export function cliAnswer(flags: () => CliFlags) {
 
 export interface MoveHarnessOptions {
   from?: CloudProvider;
+  /** The new side's provider (default: DigitalOcean from Hetzner, else Hetzner). */
+  to?: CloudProvider;
   /** `cloudflare` (default), `other` (a domain without managed DNS) or `none` (no domain). */
   dns?: "cloudflare" | "other" | "none";
   postgres?: boolean;
@@ -1106,7 +1127,7 @@ export async function moveFakes(
   options: MoveHarnessOptions = {},
 ) {
   const from = options.from ?? "hetzner";
-  const to: CloudProvider = from === "hetzner" ? "digitalocean" : "hetzner";
+  const to: CloudProvider = options.to ?? (from === "hetzner" ? "digitalocean" : "hetzner");
   const dns = options.dns ?? "cloudflare";
   const env: Record<string, string | undefined> = {
     ...runEnv,
@@ -1183,18 +1204,27 @@ export async function moveFakes(
     rebuild: async () => {
       throw new Error("rebuild is not implemented yet");
     },
-    powerOff: async () => {
-      throw new Error("powerOff is not implemented yet");
+    // The shutdown before a provider that cancels its servers cancels one.
+    powerOff: async (serverId) => {
+      poweredOff.push(serverId);
     },
     powerOn: async () => {
       throw new Error("powerOn is not implemented yet");
     },
   });
+  /** The servers shut down before their provider cancels them. */
+  const poweredOff: string[] = [];
+  /** Contabo's firewalls, which its connector applies (ADR 0029, D8): the old server's, if any. */
+  const firewalls = new FakeFirewalls((op) => events.push({ type: "firewall", op }));
+  const old = engine.state.servers.server;
+  if (old !== undefined && cloudProvider(from).terraform.connectorFirewall) {
+    firewalls.seed(fakeWantedFirewall(from, old.id));
+  }
   let monotonic = 0;
   const ok = { configured: true, verify: async () => ({ ok: true, message: "ok" }) };
   const services: RetargetServices = {
     engine: async () => engine,
-    providers: { hetzner: ok, digitalocean: ok },
+    providers: { hetzner: ok, digitalocean: ok, contabo: ok },
     cloudflare: fakeCloudflare(
       dns === "cloudflare"
         ? {
@@ -1208,8 +1238,13 @@ export async function moveFakes(
     github,
     tcpConnect: async () => true,
     remote: hosts.remote,
-    servers: { hetzner: fakeServers("hetzner"), digitalocean: fakeServers("digitalocean") },
+    servers: {
+      hetzner: fakeServers("hetzner"),
+      digitalocean: fakeServers("digitalocean"),
+      contabo: fakeServers("contabo"),
+    },
     catalogs: { hetzner: euCatalog(), digitalocean: doEuCatalog() },
+    firewalls: { contabo: firewalls },
     // A proxied Cloudflare domain resolves to the edge; otherwise to where the user points it.
     resolve: async (host) => {
       events.push({ type: "resolve", host });
@@ -1221,7 +1256,21 @@ export async function moveFakes(
     },
     now: () => monotonic,
   };
-  return { env, paths, from, to, events, hosts, engine, github, fetch, services, manual };
+  return {
+    env,
+    paths,
+    from,
+    to,
+    events,
+    hosts,
+    engine,
+    github,
+    fetch,
+    services,
+    manual,
+    firewalls,
+    poweredOff,
+  };
 }
 
 /** A provisioned project (git repo, plan, state, keys) with every fake a move talks to. */

@@ -257,6 +257,8 @@ export function renderDriftReport(
     for (const item of drift) {
       if (item.action === "delete") {
         lines.push(`  - ${item.address} no longer exists`);
+      } else if (item.differences !== undefined) {
+        lines.push(`  ~ ${item.address}:`, ...item.differences.map((line) => `      ${line}`));
       } else {
         const names = item.attributes.length > 0 ? item.attributes.join(", ") : "attributes";
         lines.push(`  ~ ${item.address}: ${names} changed`);
