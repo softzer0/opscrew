@@ -153,6 +153,24 @@ function toolSteps(site: Site, dir: string): string[] {
 }
 
 /**
+ * The steps that set up the site's tool ({@link toolSteps}) in `dir` (a YAML scalar) and, with a
+ * package manager, install the site's dependencies from its lockfile.
+ */
+export function siteToolSteps(site: Site, dir: string): string[] {
+  const pm = site.packageManager;
+  return [
+    ...toolSteps(site, dir),
+    ...(pm === undefined
+      ? []
+      : [
+          "- name: Install the site's dependencies",
+          `  working-directory: ${dir}`,
+          ...run(["set -euo pipefail", INSTALL[pm]]),
+        ]),
+  ];
+}
+
+/**
  * The build job's steps up to the built site, on GitHub's machines with no image: the checkout
  * (its token kept out of the build), the site's tool ({@link toolSteps}), the install from the
  * lockfile and `site.command` in `app.buildContext`. The build gets every variable of `app.env`
@@ -188,19 +206,11 @@ export function siteBuildSteps(
             command,
           ]),
         ];
-  const pm = site.packageManager;
   return [
     `- uses: ${ACTIONS.checkout}`,
     "  with:",
     "    persist-credentials: false",
-    ...toolSteps(site, dir),
-    ...(pm === undefined
-      ? []
-      : [
-          "- name: Install the site's dependencies",
-          `  working-directory: ${dir}`,
-          ...run(["set -euo pipefail", INSTALL[pm]]),
-        ]),
+    ...siteToolSteps(site, dir),
     ...build,
   ];
 }

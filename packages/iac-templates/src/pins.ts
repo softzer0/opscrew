@@ -221,6 +221,33 @@ export const IMAGES = {
   grafana: {
     ref: "grafana/grafana:13.3.0@sha256:488984b716c0862639f91a698adbe2862677a5a07bad42da5f03f3030883b205",
   },
+  // The 027 hosting build (2026-11-12): Composer runs in the PHP CLI image of the version the
+  // hosting account serves the app with, one per version a hosting plan can choose.
+  php74Cli: {
+    ref: "php:7.4-cli@sha256:620a6b9f4d4feef2210026172570465e9d0c1de79766418d3affd09190a7fda5",
+  },
+  php80Cli: {
+    ref: "php:8.0-cli@sha256:0569e384b9064c04dec55dc6e41be41b494a878dfbb6577a7d76bd50cfd5bc00",
+  },
+  php81Cli: {
+    ref: "php:8.1-cli@sha256:76e563191d1ade120313a8736df24154d21da5155c0756f147c0b01bd19d9087",
+  },
+  php82Cli: {
+    ref: "php:8.2-cli@sha256:604de2f0cba9e9dde16cf717c2f03b0948c99949bdf7c11cdf76326e0da7d2ea",
+  },
+  php83Cli: {
+    ref: "php:8.3-cli@sha256:628102249d93494233b54490b785f12db9cd60f4dc89416dfca15973f2125f10",
+  },
+  php84Cli: {
+    ref: "php:8.4-cli@sha256:d63e8b80cd4c6cfd01cfa7c910522e299cdc7ca1a2b6d6563db48df3c17e6c55",
+  },
+  php85Cli: {
+    ref: "php:8.5-cli@sha256:50956f094e90a716d43bea28087d447555ad80510e386ab8c9c10d8c70d781a9",
+  },
+  /** Composer's release, whose `/usr/bin/composer` the hosting build runs in the PHP CLI image. */
+  composer: {
+    ref: "composer:2.11.2@sha256:5bcb28b8d0edc4091125f8218f9d088f998bdfc843f8fbb9a4beb4dcd8625684",
+  },
 } as const satisfies Record<string, ImagePin>;
 
 /** A platform the GitHub Actions runner is released for, as its release assets name it. */
