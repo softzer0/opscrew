@@ -2062,7 +2062,7 @@ export async function resolveCatalog(
       isStatic: true,
       warning:
         wording.tokenVar === undefined
-          ? `${wording.name} has no price API, so prices come from ${fallback.dated} and are estimates; ${wording.profile.serverNoun} availability is not checked.`
+          ? noPriceApi(wording, fallback.dated)
           : `${wording.tokenVar} is not set, so prices come from ${fallback.dated} and are estimates; ${wording.profile.serverNoun} availability is not checked. Set ${wording.tokenVar} for live prices.`,
     };
   }
@@ -2075,7 +2075,21 @@ export async function resolveCatalog(
       warning: `The ${wording.name} token could not be used (${check.message}) Prices come from ${fallback.dated} and are estimates.`,
     };
   }
+  if (wording.tokenVar === undefined) {
+    // No price API: the connector's catalogue is the dated list, credentials or not.
+    const { dated } = await staticCatalog(deps, provider, location);
+    return {
+      catalog: connector.catalog(),
+      isStatic: true,
+      warning: noPriceApi(wording, dated),
+    };
+  }
   return { catalog: connector.catalog(), isStatic: false };
+}
+
+/** `Contabo has no price API, so prices come from Contabo's published price list dated …`. */
+function noPriceApi(wording: ReturnType<typeof designWording>, dated: string): string {
+  return `${wording.name} has no price API, so prices come from ${dated} and are estimates; ${wording.profile.serverNoun} availability is not checked.`;
 }
 
 /**
