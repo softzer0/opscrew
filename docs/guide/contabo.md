@@ -56,9 +56,15 @@ export CNTB_OAUTH2_CLIENT_ID=… CNTB_OAUTH2_CLIENT_SECRET=… CNTB_OAUTH2_USER=
      the other providers;
    - its SSH key;
    - a Contabo firewall with the same rules: SSH from the networks you allow, the web ports on the
-     server that serves your site, and WireGuard where it is used.
+     server that serves your site, and WireGuard where it is used. Contabo's Terraform provider
+     can't manage a firewall, so OpsCrew sets it through Contabo's API right after the apply, to
+     exactly the rules of the plan you approved. When that fails, provision says the server may not
+     be protected yet: run `npx opscrew provision` again, which plans nothing new and sets the
+     firewall again.
 5. `npx opscrew verify`, `npx opscrew secure` and `npx opscrew drift` work as on the other
-   providers.
+   providers. `drift` also compares Contabo's firewall with the plan's and lists each difference,
+   such as a rule added or a server removed in the Customer Control Panel; `npx opscrew provision`
+   sets it back.
 
 ## Plans and prices
 
@@ -102,7 +108,8 @@ what that means before you type the server's name to approve it:
 - **The server is billed to the end of its term.** Contabo ends the contract at the end of the
   current term, at least a month after the server was bought, and bills it until then.
 - **OpsCrew shuts the server down now** and removes the app's other resources at once: its DNS
-  records, its firewall and its SSH key.
+  records, its firewall and its SSH key. When Contabo refuses to delete the firewall, destroy says
+  so and finishes; delete it in the Customer Control Panel (a firewall costs nothing).
 - **The end date is shown.** After the cancel, OpsCrew shows the date Contabo answers and records it
   in the audit log.
 - **The disk and Contabo's snapshots go when the term ends.** When the server holds your app's
