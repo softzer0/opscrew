@@ -17,6 +17,19 @@ const SNAPSHOT_PREFIX = "opscrew-";
 const SNAPSHOT_NAME_MAX = 30;
 /** How the tag naming the app an instance belongs to starts (`opscrew-app:<app>`). */
 const APP_TAG = "opscrew-app:";
+/** The time OpsCrew ends a snapshot's description with: `…, 20261112T081123Z`. */
+const TAKEN_AT = /(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/;
+
+/**
+ * When OpsCrew took a snapshot, from the time its description ends with: Contabo answers a
+ * `createdDate` an hour early (026 research R8). Undefined without that time.
+ */
+function takenAt(description: string | null | undefined): string | undefined {
+  const match = TAKEN_AT.exec(description ?? "");
+  if (match === null) return undefined;
+  const [, year, month, day, hour, minute, second] = match;
+  return `${year}-${month}-${day}T${hour}:${minute}:${second}.000Z`;
+}
 
 /**
  * Server lookup by OpsCrew's app tag (and by name for a server never tagged), and snapshots,
@@ -76,7 +89,7 @@ export function contaboServerApi(client: ContaboClient): ServerSnapshotApi {
         .filter((snapshot) => snapshot.name.startsWith(SNAPSHOT_PREFIX))
         .map((snapshot) => ({
           id: `${id}:${snapshot.snapshotId}`,
-          createdAt: snapshot.createdDate,
+          createdAt: takenAt(snapshot.description) ?? snapshot.createdDate,
         }))
         .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
     },
