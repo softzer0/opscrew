@@ -11,6 +11,17 @@ import {
   realSleep,
 } from "@opscrew/core";
 import { z } from "zod";
+import {
+  type AddedDeployKey,
+  type DeployKey,
+  DeployKeySchema,
+  DeployKeysSchema,
+  keyBody,
+  keyInUse,
+  knownHostsLines,
+  MetaSchema,
+  toDeployKey,
+} from "./deploy-keys";
 import { GhcrReader, type ImageFacts, type RegistryCredential } from "./ghcr";
 import { sealSecret } from "./seal";
 
@@ -39,7 +50,7 @@ export const GITHUB_TOKEN_PERMISSIONS = [
   "Actions: Read and write",
   "Workflows: Read and write",
   "Metadata: Read",
-  "Administration: Read and write (only for an app with several environments, for self-hosted runners, and for GitHub Pages)",
+  "Administration: Read and write (only for an app with several environments, for self-hosted runners, for GitHub Pages, and for a hosting account's deploy key)",
   "Environments: Read and write (only for an app with several environments)",
   "Pages: Read and write (only for GitHub Pages)",
   "Plan: Read (optional, for GitHub Pages on a private repository: an account permission, or an organization permission when an organization owns the repository)",
@@ -1643,6 +1654,74 @@ export class GitHubClient {
   /** A token to remove a self-hosted runner (`config.sh remove --token`), valid for one hour. */
   async runnerRemoveToken(owner: string, repo: string): Promise<string> {
     return this.#runnerToken(owner, repo, "remove");
+  }
+
+  /** The repository's deploy keys, every page. Needs Administration: Read. */
+  async listDeployKeys(owner: string, repo: string): Promise<DeployKey[]> {
+    const what = `list the deploy keys of ${owner}/${repo}`;
+    const keys: DeployKey[] = [];
+    for await (const { json } of this.#pages(`/repos/${owner}/${repo}/keys?per_page=100`, what, {
+      permission: ADMINISTRATION_READ,
+    })) {
+      keys.push(...this.#parse(DeployKeysSchema, json, what).map(toDeployKey));
+    }
+    return keys;
+  }
+
+  /**
+   * Adds `publicKey` (an OpenSSH public key line) as a read-only deploy key titled `title` and
+   * answers its id. A read-only key with that title and key already there is answered as
+   * `existing`, not added twice. A key GitHub holds elsewhere is refused with a plain message.
+   * Needs Administration: Read and write.
+   */
+  async addDeployKey(
+    owner: string,
+    repo: string,
+    title: string,
+    publicKey: string,
+  ): Promise<AddedDeployKey> {
+    const body = keyBody(publicKey);
+    const existing = (await this.listDeployKeys(owner, repo)).find(
+      (key) => key.title === title && keyBody(key.key) === body && key.readOnly,
+    );
+    if (existing) return { id: existing.id, state: "existing" };
+    const what = `add the deploy key ${title} to ${owner}/${repo}`;
+    const { status, json } = await this.#request("POST", `/repos/${owner}/${repo}/keys`, what, {
+      body: { title, key: publicKey.trim(), read_only: true },
+      ok: [422],
+      permission: ADMINISTRATION,
+    });
+    if (status === 422) {
+      throw (
+        keyInUse(json, owner, repo) ??
+        new OpsCrewError(
+          "PROVIDER_ERROR",
+          `GitHub could not ${what}: ${messageOf(json, "HTTP 422")}.`,
+        )
+      );
+    }
+    return { id: this.#parse(DeployKeySchema, json, what).id, state: "added" };
+  }
+
+  /** Removes the deploy key `id`; one already gone (404) is `absent`. Needs Administration. */
+  async removeDeployKey(owner: string, repo: string, id: number): Promise<"deleted" | "absent"> {
+    const { status } = await this.#request(
+      "DELETE",
+      `/repos/${owner}/${repo}/keys/${id}`,
+      `remove the deploy key ${id} from ${owner}/${repo}`,
+      { ok: [404], permission: ADMINISTRATION },
+    );
+    return status === 404 ? "absent" : "deleted";
+  }
+
+  /**
+   * `known_hosts` lines for GitHub's SSH host keys, read from GitHub's `/meta`: each key for
+   * `github.com` and for `[ssh.github.com]:443`.
+   */
+  async githubSshHostKeys(): Promise<string[]> {
+    const what = "read GitHub's SSH host keys";
+    const { json } = await this.#request("GET", "/meta", what);
+    return knownHostsLines(this.#parse(MetaSchema, json, what).ssh_keys);
   }
 
   /** The repository's self-hosted runners (up to 100). Needs Administration. */

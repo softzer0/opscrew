@@ -1,4 +1,5 @@
 export { type GitHubConnector, githubConnector, resolveGitHubToken } from "./connector";
+export type { AddedDeployKey, DeployKey } from "./deploy-keys";
 export type { ImageFacts, ImagePlatform, ImageProvenance, RegistryCredential } from "./ghcr";
 export { GitClient, type GitStatusEntry, parseGitHubRepo } from "./git";
 export {

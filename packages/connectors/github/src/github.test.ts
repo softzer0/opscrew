@@ -391,7 +391,7 @@ describe("githubConnector", () => {
       "Actions: Read and write",
       "Workflows: Read and write",
       "Metadata: Read",
-      "Administration: Read and write (only for an app with several environments, for self-hosted runners, and for GitHub Pages)",
+      "Administration: Read and write (only for an app with several environments, for self-hosted runners, for GitHub Pages, and for a hosting account's deploy key)",
       "Environments: Read and write (only for an app with several environments)",
       "Pages: Read and write (only for GitHub Pages)",
       "Plan: Read (optional, for GitHub Pages on a private repository: an account permission, or an organization permission when an organization owns the repository)",
