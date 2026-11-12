@@ -56,6 +56,13 @@ export interface EngineOptions {
   now?: () => Date;
   /** Waits before `init` tries an unanswering provider registry again. Default: a timer. */
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Files a provider caches its login in, relative to the home folder (ADR 0029, D9). Each is
+   * removed before and after every command. Default: none.
+   */
+  homeCacheFiles?: readonly string[];
+  /** Removes a file, a missing one being fine. Default: `rm` with `force`. */
+  removeFile?: (file: string) => Promise<void>;
 }
 
 /**
@@ -115,6 +122,20 @@ const HINTS: Record<string, string> = {
     "Run init again in the infrastructure folder and check, for OpenTofu state encryption, that the state passphrase on this computer is the one that encrypted it, then try again.",
 };
 
+/**
+ * Each of `files` under the home folder `env` names, found as the providers' Go code finds it
+ * (go-homedir): `HOME`, else `USERPROFILE`, else `HOMEDRIVE` and `HOMEPATH`. None without a home.
+ */
+function homeCacheFiles(
+  env: Record<string, string | undefined>,
+  files: readonly string[],
+): string[] {
+  if (files.length === 0) return [];
+  const home =
+    env.HOME || env.USERPROFILE || (env.HOMEDRIVE && env.HOMEPATH && env.HOMEDRIVE + env.HOMEPATH);
+  return home ? files.map((file) => path.join(home, file)) : [];
+}
+
 class Engine implements IacEngine {
   readonly info: IacEngineInfo;
   private readonly runner: CommandRunner;
@@ -123,6 +144,8 @@ class Engine implements IacEngine {
   private readonly now: () => Date;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly label: string;
+  private readonly homeCacheFiles: readonly string[];
+  private readonly removeFile: (file: string) => Promise<void>;
   /** Parsed `providers schema -json` per resolved directory. */
   private readonly schemas = new Map<string, unknown>();
 
@@ -134,6 +157,8 @@ class Engine implements IacEngine {
     this.now = options.now ?? (() => new Date());
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.label = engineLabel(info.name);
+    this.homeCacheFiles = options.homeCacheFiles ?? [];
+    this.removeFile = options.removeFile ?? ((file) => rm(file, { force: true }));
   }
 
   async init(dir: string, options: IacInitOptions = {}): Promise<void> {
@@ -494,10 +519,26 @@ class Engine implements IacEngine {
     maxOutputBytes?: number,
   ): Promise<CommandResult> {
     const { onOutput } = options;
+    const env = this.environment(options.env);
+    const cacheFiles = homeCacheFiles(env, this.homeCacheFiles);
+    for (const file of cacheFiles) {
+      try {
+        await this.removeFile(file);
+      } catch (error) {
+        throw new OpsCrewError(
+          "ENGINE_FAILED",
+          `OpsCrew could not remove ${file}, where a provider keeps its saved login, so ${this.label} ${step} did not run.`,
+          {
+            hint: "Delete that file by hand (or make it removable), then run the command again.",
+            cause: error,
+          },
+        );
+      }
+    }
     try {
       return await this.runner.run(this.info.binary, args, {
         cwd,
-        env: this.environment(options.env),
+        env,
         timeoutMs: options.timeoutMs ?? COMMAND_TIMEOUT_MS,
         ...(options.signal ? { signal: options.signal } : {}),
         ...(onOutput
@@ -522,6 +563,16 @@ class Engine implements IacEngine {
         );
       }
       throw error;
+    } finally {
+      // After the command its result matters most, so a failed removal is only said; the next
+      // command's removal stops before it runs, so the saved login is never used again.
+      for (const file of cacheFiles) {
+        await this.removeFile(file).catch(() => {
+          onOutput?.(
+            `OpsCrew could not remove ${file}, where a provider keeps its saved login. Delete it by hand.`,
+          );
+        });
+      }
     }
   }
 

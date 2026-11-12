@@ -4,8 +4,9 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { IacEngine, IacEngineName, ResourceAction } from "@opscrew/contracts";
 import { tfstateFile } from "@opscrew/core";
-import { tofuEncryptionEnv } from "@opscrew/iac-engine";
-import { describe, expect, it } from "vitest";
+import { selectEngine, tofuEncryptionEnv } from "@opscrew/iac-engine";
+import { CLOUD_PROVIDERS } from "@opscrew/providers";
+import { describe, expect, it, vi } from "vitest";
 import {
   createTestPhaseDeps,
   DATA_ZONE,
@@ -17,6 +18,7 @@ import {
   withStateList,
 } from "../testing";
 import {
+  chooseEngine,
   describeChanges,
   existingStateEngine,
   hasState,
@@ -24,6 +26,24 @@ import {
   stateContents,
 } from "./engine";
 import { pollUntil } from "./wait";
+
+vi.mock("@opscrew/iac-engine", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@opscrew/iac-engine")>()),
+  selectEngine: vi.fn(async () => new FakeEngine()),
+}));
+
+describe("chooseEngine", () => {
+  it("has the engine remove every registered provider's login cache", async () => {
+    const deps = await createTestPhaseDeps();
+    await chooseEngine(deps, "auto");
+    const files = CLOUD_PROVIDERS.flatMap((provider) => provider.terraform.homeCacheFiles);
+    expect(files).toContain(".cache/contabo/terraform/token");
+    expect(vi.mocked(selectEngine)).toHaveBeenCalledWith(
+      "auto",
+      expect.objectContaining({ homeCacheFiles: files }),
+    );
+  });
+});
 
 const tofu = async (): Promise<IacEngine> => new FakeEngine();
 const terraform = async (): Promise<IacEngine> =>

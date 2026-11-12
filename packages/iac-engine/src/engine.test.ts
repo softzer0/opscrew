@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { IacEngine, IacEngineName } from "@opscrew/contracts";
@@ -607,5 +607,109 @@ describe("output and hashFile", () => {
         .digest("hex"),
     );
     expect(await hashFile(file)).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
+describe("homeCacheFiles", () => {
+  const TOKEN = ".cache/contabo/terraform/token";
+
+  function cacheEngine(
+    runner: ScriptedRunner,
+    env: Record<string, string | undefined>,
+    removeFile: (file: string) => Promise<void>,
+  ): IacEngine {
+    return createEngine(
+      { name: "tofu", version: "1.13.1", binary: "/bin/tofu" },
+      { runner, env, now: () => NOW, homeCacheFiles: [TOKEN], removeFile },
+    );
+  }
+
+  it("removes each file under HOME before and after every command", async () => {
+    const events: string[] = [];
+    const runner = new ScriptedRunner().on("output", () => {
+      events.push("output");
+      return { stdout: "{}" };
+    });
+    const engine = cacheEngine(
+      runner,
+      { HOME: "/home/me", USERPROFILE: "C:Usersme" },
+      async (file) => {
+        events.push(file);
+      },
+    );
+    await engine.output(dir);
+    const token = path.join("/home/me", TOKEN);
+    expect(events).toEqual([token, "output", token]);
+  });
+
+  it("uses the home the command's own environment names: HOME, else USERPROFILE, else HOMEDRIVE and HOMEPATH", async () => {
+    const removed: string[] = [];
+    const remove = async (file: string) => {
+      removed.push(file);
+    };
+    const runner = new ScriptedRunner().on("output", { stdout: "{}" });
+    await cacheEngine(runner, { USERPROFILE: "C:Usersme" }, remove).output(dir, {
+      env: { HOME: "/run/home" },
+    });
+    await cacheEngine(runner, { HOME: "", USERPROFILE: "C:Usersme" }, remove).output(dir);
+    await cacheEngine(runner, { HOMEDRIVE: "D:", HOMEPATH: "Usersme" }, remove).output(dir);
+    expect(removed).toEqual([
+      path.join("/run/home", TOKEN),
+      path.join("/run/home", TOKEN),
+      path.join("C:Usersme", TOKEN),
+      path.join("C:Usersme", TOKEN),
+      path.join("D:Usersme", TOKEN),
+      path.join("D:Usersme", TOKEN),
+    ]);
+  });
+
+  it("removes nothing and runs as before without home cache files", async () => {
+    const runner = new ScriptedRunner().on("output", { stdout: "{}" });
+    let removals = 0;
+    const engine = createEngine(
+      { name: "tofu", version: "1.13.1", binary: "/bin/tofu" },
+      { runner, env: { HOME: "/home/me" }, removeFile: async () => void removals++ },
+    );
+    await engine.output(dir);
+    expect(removals).toBe(0);
+  });
+
+  it("removes a real file and is fine when it is missing", async () => {
+    const home = path.join(dir, "home");
+    const file = path.join(home, TOKEN);
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, "cached login");
+    const runner = new ScriptedRunner().on("output", { stdout: "{}" });
+    const engine = createEngine(
+      { name: "tofu", version: "1.13.1", binary: "/bin/tofu" },
+      { runner, env: { HOME: home }, homeCacheFiles: [TOKEN] },
+    );
+    await engine.output(dir);
+    expect(existsSync(file)).toBe(false);
+    await engine.output(dir);
+    expect(runner.calls).toHaveLength(2);
+  });
+
+  it("stops before the command when a removal fails, naming the file", async () => {
+    const runner = new ScriptedRunner().on("output", { stdout: "{}" });
+    const engine = cacheEngine(runner, { HOME: "/home/me" }, async () => {
+      throw Object.assign(new Error("EPERM: operation not permitted"), { code: "EPERM" });
+    });
+    const error = await failure(engine.output(dir));
+    expect(error.code).toBe("ENGINE_FAILED");
+    expect(error.message).toContain(path.join("/home/me", TOKEN));
+    expect(error.hint).toContain("Delete");
+    expect(runner.calls).toHaveLength(0);
+  });
+
+  it("keeps the command's result when the removal after it fails, and says so", async () => {
+    const runner = new ScriptedRunner().on("output", { stdout: '{"a":{"value":"x"}}' });
+    let calls = 0;
+    const engine = cacheEngine(runner, { HOME: "/home/me" }, async () => {
+      if (++calls > 1) throw new Error("EBUSY");
+    });
+    const lines: string[] = [];
+    expect(await engine.output(dir, { onOutput: (line) => lines.push(line) })).toEqual({ a: "x" });
+    expect(lines.some((line) => line.includes(path.join("/home/me", TOKEN)))).toBe(true);
   });
 });

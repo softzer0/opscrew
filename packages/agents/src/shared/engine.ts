@@ -19,6 +19,7 @@ import {
   tofuEncryptionEnv,
 } from "@opscrew/iac-engine";
 import type { DeployPlan } from "@opscrew/plan-schema";
+import { CLOUD_PROVIDERS } from "@opscrew/providers";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
@@ -174,7 +175,10 @@ export type EngineDeps = Pick<PhaseDeps, "paths" | "runner" | "env" | "redactor"
 /** Picks the IaC engine (default: `selectEngine`; tests pass a fake). */
 export type EngineFactory = (preference: EnginePreference) => Promise<IacEngine>;
 
-/** The engine for `preference`: the factory's (a fake in tests), else `selectEngine`'s. */
+/**
+ * The engine for `preference`: the factory's (a fake in tests), else `selectEngine`'s, which
+ * removes every registered provider's login cache around each command.
+ */
 export function chooseEngine(
   deps: EngineDeps,
   preference: EnginePreference,
@@ -186,6 +190,7 @@ export function chooseEngine(
     env: deps.env,
     redactor: deps.redactor,
     now: () => deps.clock.now(),
+    homeCacheFiles: CLOUD_PROVIDERS.flatMap((provider) => provider.terraform.homeCacheFiles),
   });
 }
 
