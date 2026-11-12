@@ -171,8 +171,8 @@ under `flock -n`. Each run:
    answers `X-LiteSpeed-Purge: *`, removed right after; a Node.js or Python app's `tmp/restart.txt`.
 9. **Check** `https://<hostname><health path>` from the account (R11; `http://` until it has seen a
    valid certificate there) until it answers 2xx or 3xx with `X-OpsCrew-Release: <run
-   id>-<attempt>`: up to 60 s on LiteSpeed; on Apache, past `realpath_cache_ttl` (120 s), since a
-   switch reaches every PHP process only then. Otherwise switch back, make it serve again, and
+   id>-<attempt>`, within about 125 s: on LiteSpeed the first good answer counts; elsewhere only one
+   past `realpath_cache_ttl` (120 s), since a switch reaches every PHP process only then. Otherwise switch back, make it serve again, and
    record the failure. The header shows the web server's view; on LiteSpeed the restart is what
    makes PHP follow.
 10. **Keep** the last 3 releases besides the running one; write `state/status` (running, previous,

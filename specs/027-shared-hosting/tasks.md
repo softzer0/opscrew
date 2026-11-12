@@ -96,7 +96,7 @@ names the change.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-cpanel && pnpm lint`
   - Effort: xhigh
 
-- [ ] T2704 [P] [US1] [US2] [US4] The agent
+- [x] T2704 [P] [US1] [US2] [US4] The agent
   - Owns: `packages/iac-templates/src/hosting/{agent,env-php}*.ts`, `packages/iac-templates/src/hosting/agent/**`, `packages/iac-templates/src/hosting/__snapshots__/{agent,env-php}*`, `packages/iac-templates/src/hosting/__fixtures__/**`
   - Reads: plan 2, 3, 5, 6; research R4, R10, R11; ADR 0028 (D7, D11), ADR 0030; `connectors/ssh-host/src/shell.ts` (quoting), `iac-templates/src/workflow/snapshot-script.ts`, `detect/src/release/native.ts`
   - Depends: T2701
