@@ -46,6 +46,8 @@ import {
 } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
+import { hostnameOf } from "../hosting/provision-plans";
+import { type HostingSecurity, hostingSecurityChecks } from "../hosting/secure";
 import { LOCAL_PROBES_SKIPPED, LOCAL_SECURE_NOTES, localSecurityChecks } from "../localhost/secure";
 import type { LocalhostServices } from "../localhost/services";
 import { planProvider, providerProfile } from "../providers";
@@ -326,6 +328,13 @@ function siteDeep(provider: ServerlessProvider): NoServer {
   };
 }
 
+/** A hosting account: OpsCrew has no shell there, so nothing to audit but the hostname's TLS. */
+const HOSTING_DEEP: NoServer = {
+  message:
+    "OpsCrew has no shell on the hosting account (the host runs its server), so the server audit and the SSH audit do not apply. The TLS audit still runs.",
+  hint: "Nothing to do: the host runs the server and its SSH.",
+};
+
 /** The deeper checks on this computer: a local stack has no server, SSH or public TLS to audit. */
 function localDeepSkipped(): DeepToolResult[] {
   return (["lynis", "ssh-audit", "testssl"] as const).map((tool) =>
@@ -380,7 +389,8 @@ async function deepChecks(
     sshAudit = await runSshAudit(docker, server.sshHost, server.sshPort, DEEP_PINS);
   }
 
-  const hostnames = verifyHosts(plan);
+  // A hosting account's hostname may be on any DNS.
+  const hostnames = plan.target.provider === "hosting" ? [hostnameOf(plan)] : verifyHosts(plan);
   let testssl: DeepToolResult;
   if (plan.environment?.previews !== undefined) {
     testssl = skippedTool(
@@ -423,7 +433,8 @@ async function deepChecks(
  * is given), runs the hardening checks on the server over SSH as `deploy`, probes from outside that
  * only the expected ports answer and that SSH refuses passwords, with `deep` also runs the deeper
  * checks (see `deepChecks`), then writes
- * `opscrew/SECURITY_REPORT.md` and prints a summary. Marks `secure` (`failed` when anything fails).
+ * `opscrew/SECURITY_REPORT.md` and prints a summary. On a hosting account the account's own checks
+ * (`hostingSecurityChecks`) take the server's place. Marks `secure` (`failed` when anything fails).
  */
 export async function runSecure(
   deps: PhaseDeps,
@@ -450,12 +461,14 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
   // A server the user owns is reached by its recorded login instead (see `ownSecureTarget`); the
   // user's Portainer through its API (see `portainerSecurityChecks`), never its host; this
   // computer through its Docker (see `localSecurityChecks`); a site with no server over HTTPS
-  // (see `siteSecurityChecks`).
+  // (see `siteSecurityChecks`); a hosting account through its panel and over HTTP (see
+  // `hostingSecurityChecks`).
   const portainer = plan.target.provider === "portainer";
   const localhost = plan.target.provider === "localhost";
   const site = isServerlessProvider(plan.target.provider) ? plan.target.provider : undefined;
+  const hosting = plan.target.provider === "hosting";
   const address =
-    plan.target.provider === "own" || portainer || localhost || site !== undefined
+    plan.target.provider === "own" || portainer || localhost || site !== undefined || hosting
       ? undefined
       : await serverAddress(deps, plan);
   const host = address?.ipv4;
@@ -482,6 +495,7 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
   let probes: CheckResult[] = [];
   let hostChecksSkipped: string | undefined;
   let remote: RemoteExec | undefined;
+  let account: HostingSecurity | undefined;
   const own = plan.target.provider === "own" ? await ownSecureTarget(deps, plan) : undefined;
   const sshHost = own?.sshHost ?? host;
   if (portainer) {
@@ -492,6 +506,9 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
     hostChecks = await localSecurityChecks(deps, plan, options.localhost);
   } else if (site !== undefined) {
     hostChecks = await siteSecurityChecks(deps, plan);
+  } else if (hosting) {
+    account = await hostingSecurityChecks(deps, plan);
+    hostChecks = account.checks;
   } else if (sshHost === undefined) {
     hostChecksSkipped =
       plan.target.provider === "own"
@@ -569,12 +586,14 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
             ? PORTAINER_DEEP
             : site !== undefined
               ? siteDeep(site)
-              : {
-                  ...(remote !== undefined ? { remote } : {}),
-                  ...(hostChecksSkipped !== undefined ? { skipped: hostChecksSkipped } : {}),
-                  ...(sshHost !== undefined ? { sshHost } : {}),
-                  sshPort: own?.sshPort ?? 22,
-                },
+              : hosting
+                ? HOSTING_DEEP
+                : {
+                    ...(remote !== undefined ? { remote } : {}),
+                    ...(hostChecksSkipped !== undefined ? { skipped: hostChecksSkipped } : {}),
+                    ...(sshHost !== undefined ? { sshHost } : {}),
+                    sshPort: own?.sshPort ?? 22,
+                  },
           options.docker ?? localDocker(deps.runner),
         );
 
@@ -606,6 +625,12 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
             notes: siteSecureNotes(site),
             probesSkipped: siteProbesSkipped(site),
           },
+        }
+      : {}),
+    // An app on a hosting account reads as a site on the account, which the host runs.
+    ...(account !== undefined
+      ? {
+          site: { host: account.host, notes: account.notes, probesSkipped: account.probesSkipped },
         }
       : {}),
   };
@@ -649,6 +674,7 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
   if (portainer) reporter.info(portainerSecureNotes(plan).join(" "));
   if (localhost) reporter.info(LOCAL_SECURE_NOTES.join(" "));
   if (site !== undefined) reporter.info(siteSecureNotes(site).join(" "));
+  if (account !== undefined) reporter.info(account.notes.join(" "));
   if (hostChecksSkipped !== undefined)
     reporter.warn(
       say(

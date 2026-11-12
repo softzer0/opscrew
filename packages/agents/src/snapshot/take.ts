@@ -9,6 +9,7 @@ import { listText, OpsCrewError } from "@opscrew/core";
 import { SNAPSHOT_SCRIPT, type SnapshotPart, snapshotParts } from "@opscrew/iac-templates";
 import { APP_SERVER, snapshotOffsiteOf } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { takeHostingSnapshot } from "../hosting/snapshot";
 import { STOP_SECONDS } from "../retarget/sides/types";
 import { MAINTENANCE_WINDOW_TITLE, sizeText } from "../retarget/texts";
 import { serverWords } from "../shared/server-address";
@@ -390,6 +391,7 @@ export async function takeSnapshot(
   options: TakeSnapshotOptions = {},
 ): Promise<TakenSnapshot> {
   const run = await snapshotRun(deps, options.services);
+  if (run.plan.target.provider === "hosting") return takeHostingSnapshot(run, options);
   const skip = new Set(options.skip ?? []);
   const places = placesOf(run, skip);
   await requireNoDeployOrMove(run, "take a snapshot");

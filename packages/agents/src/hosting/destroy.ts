@@ -408,6 +408,9 @@ const STILL_INSTALLED =
 /** A dump's name in `dumps/`, as the agent writes it. */
 const DUMP = /^[A-Za-z0-9][A-Za-z0-9._-]*\.sql\.gz$/;
 
+/** The name of a snapshot's copy of the shared files in `dumps/`, as the agent writes it. */
+const SHARED_COPY = /^[A-Za-z0-9][A-Za-z0-9_-]*\.shared\.tar\.gz$/;
+
 /** The account's files, which a plan step that uses them was only made with. */
 function filesOf(ctx: HostingDestroyContext): HostingFiles {
   if (ctx.files === undefined) throw new Error("A file step without the account's files.");
@@ -510,7 +513,12 @@ async function destroyStep(
           },
         );
       }
-      return ctx.made({ kind: "file", key: `${folder}/dumps/${answer.dump}` });
+      await ctx.made({ kind: "file", key: `${folder}/dumps/${answer.dump}` });
+      // The snapshot's copy of the shared files, when it has one, is kept with its dump.
+      if (answer.shared !== undefined && SHARED_COPY.test(answer.shared)) {
+        await ctx.made({ kind: "file", key: `${folder}/dumps/${answer.shared}` });
+      }
+      return;
     }
     case "cron":
       await panel.removeCron(step.key);
@@ -824,7 +832,7 @@ export async function destroyHosting(
   const remaining = [
     ...outcome.dumps.map(
       (dump) =>
-        `The final dump of the database, ~/${folder}/dumps/${dump}: download it in ${name}'s File Manager. ~/${folder}/ and ~/${posix.dirname(folder)}/ stay because they hold it.`,
+        `${SHARED_COPY.test(dump) ? "The final copy of the app's shared files" : "The final dump of the database"}, ~/${folder}/dumps/${dump}: download it in ${name}'s File Manager. ~/${folder}/ and ~/${posix.dirname(folder)}/ stay because they hold it.`,
     ),
     ...outcome.kept.map((why) => `A certificate the hostname had stays: ${why}`),
     ...destroyPlan.steps.flatMap((step) =>

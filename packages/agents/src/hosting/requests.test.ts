@@ -44,16 +44,16 @@ describe("requestText", () => {
     expect(requestText({ kind: "env" }, HASH.toUpperCase(), NOW)).toBe(
       `kind=env\nhash=${HASH}\nexpires=${expires}\n`,
     );
-    expect(requestText({ kind: "restore", dump: "snapshot-1.sql.gz" }, HASH, NOW)).toContain(
-      "dump=snapshot-1.sql.gz\n",
+    expect(requestText({ kind: "restore", snapshot: "snapshot-1" }, HASH, NOW)).toContain(
+      "snapshot=snapshot-1\n",
     );
   });
 
   it.each([
-    [{ kind: "restore", dump: "../x; rm -rf" }, HASH, "a dump's name in dumps/"],
-    [{ kind: "restore", dump: "snapshot..sql.gz" }, HASH, "a dump's name in dumps/"],
-    [{ kind: "restore", dump: "snapshot.tar" }, HASH, "a dump's name in dumps/"],
-    [{ kind: "restore", dump: "" }, HASH, "a dump's name in dumps/"],
+    [{ kind: "restore", snapshot: "../x; rm -rf" }, HASH, "a snapshot's id in dumps/"],
+    [{ kind: "restore", snapshot: "snapshot-1.sql.gz" }, HASH, "a snapshot's id in dumps/"],
+    [{ kind: "restore", snapshot: "-x" }, HASH, "a snapshot's id in dumps/"],
+    [{ kind: "restore", snapshot: "" }, HASH, "a snapshot's id in dumps/"],
     [{ kind: "rollback", release: "41-0", restore: false }, HASH, "a release's id"],
     [{ kind: "rollback", release: "latest", restore: false }, HASH, "a release's id"],
     [{ kind: "env" }, "not-a-hash", "a plan's SHA-256 hash"],
@@ -78,10 +78,13 @@ describe("requestText", () => {
     },
   );
 
-  it("takes the agent's own names: a snapshot's dump and a release id", () => {
+  it("takes the agent's own names: a snapshot's id, a release's dump and a release id", () => {
     expect(
-      requestText({ kind: "restore", dump: "snapshot-20261112T120000Z-2.sql.gz" }, HASH, NOW),
-    ).toContain("dump=snapshot-20261112T120000Z-2.sql.gz\n");
+      requestText({ kind: "restore", snapshot: "snapshot-20261112T120000Z-2" }, HASH, NOW),
+    ).toContain("snapshot=snapshot-20261112T120000Z-2\n");
+    expect(requestText({ kind: "restore", snapshot: "41-2" }, HASH, NOW)).toContain(
+      "snapshot=41-2\n",
+    );
     expect(requestText({ kind: "rollback", release: "41-2", restore: false }, HASH, NOW)).toContain(
       "release=41-2\n",
     );

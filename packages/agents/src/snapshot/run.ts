@@ -8,6 +8,7 @@ import { OpsCrewError } from "@opscrew/core";
 import { type DeployPlan, onOneServer, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
+import { hostingFolder } from "../hosting/provision-plans";
 import { FINISH_COMMAND, MOVE_COMMAND } from "../move/window";
 import { NOTHING_CHANGED } from "../promote/shared";
 import { missing } from "../provision/credentials";
@@ -51,13 +52,23 @@ export async function snapshotRun(
 /**
  * Where `run`'s data lives ({@link SnapshotTarget}).
  * @throws OpsCrewError `PHASE_PRECONDITION` for a site on Cloudflare's hosting or GitHub Pages,
- * which keeps no data OpsCrew snapshots.
+ * which keeps no data OpsCrew snapshots, and for a hosting account, whose snapshots
+ * `opscrew snapshot` and `opscrew restore` reach through its agent (`takeHostingSnapshot`).
  */
 export function snapshotTarget(run: SnapshotRun): SnapshotTarget {
   const { provider } = run.plan.target;
   if (provider === "localhost") return "computer";
   if (provider === "portainer") return "portainer";
   if (onOneServer(provider)) return "servers";
+  if (provider === "hosting") {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `${run.environment} runs on a hosting account, whose snapshots stay there in ~/${hostingFolder(run.plan)}/dumps/, which \`opscrew snapshot list\` and \`opscrew snapshot delete\` don't reach. ${NOTHING_CHANGED}`,
+      {
+        hint: "The panel's File Manager lists, downloads and deletes them; `opscrew snapshot` takes one, and `opscrew restore <id>` puts one back.",
+      },
+    );
+  }
   throw new OpsCrewError(
     "PHASE_PRECONDITION",
     `${run.environment} is a site on ${provider === "github-pages" ? "GitHub Pages" : "Cloudflare's hosting"}: it keeps no data on a server, so there is nothing to snapshot. ${NOTHING_CHANGED}`,

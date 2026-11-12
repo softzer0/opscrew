@@ -20,12 +20,20 @@ const HEADER_LINES = BASELINE_HEADERS.map(
  *   comma-separated, newest first), and the last attempt: `attempt`, `result` (`deployed`,
  *   `refused` or `failed`), `reason` and `at` (UTC).
  * - `state/<sha256>.result` for each request: `result` (`done`, `refused` or `failed`), `reason`,
- *   and `dump=<file in dumps/>` for a snapshot or `saved=<file in dumps/>` for a restore.
+ *   then for a snapshot `dump=<file in dumps/>` and `shared=<file in dumps/>` (each when it has
+ *   that part), for a restore `saved=<the id of the snapshot taken first>` (when there was anything
+ *   to copy).
+ * - A snapshot `<id>` (`snapshot-<UTC time>`), taken on a `snapshot` request and before a
+ *   `restore`: the app's database, when it has one, dumped into `dumps/<id>.sql.gz` and, when
+ *   `shared/` holds more than the settings files (`.env`, `.env.next`, `env.php`, `mysql.cnf`),
+ *   those others in `dumps/<id>.shared.tar.gz`. A restore of `<id>` puts back the parts it holds
+ *   (a release's dump `dumps/<release>.sql.gz` is one too), and leaves the settings files as they
+ *   are.
  *
  * A request is `requests/<SHA-256 of its bytes>.req`, at most 4 KB of `key=value` lines whose
  * values hold letters, digits, `.`, `_` and `-` only: `kind`, `hash` (the approved plan's) and
  * `expires` (UTC epoch seconds), then by kind `release` and `restore` (`yes` or `no`) for
- * `rollback`, `dump` for `restore`, nothing more for `env` and `snapshot`.
+ * `rollback`, `snapshot` (a snapshot's id) for `restore`, nothing more for `env` and `snapshot`.
  *
  * A release is the newest commit of the release branch with one line `OpsCrew-Release: <run
  * id> <attempt> <env> <signature>`, the signature `openssl dgst -sha256 -sign`'s (ECDSA P-256, DER,
@@ -563,7 +571,7 @@ answer() {
 # is refused.
 read_request() {
   local line n=0 key kind allowed
-  local hash_re='^[0-9a-f]{64}$' release_re='^[1-9][0-9]*-[1-9][0-9]*$' dump_re='^[A-Za-z0-9][A-Za-z0-9._-]*\\.sql\\.gz$'
+  local hash_re='^[0-9a-f]{64}$' release_re='^[1-9][0-9]*-[1-9][0-9]*$' snapshot_re='^[A-Za-z0-9][A-Za-z0-9_-]*$'
   if [ "$(sha256sum < "$1" | cut -c 1-64)" != "$2" ]; then
     PROBLEM="its content doesn't match its name: it changed after it was written"
     return 0
@@ -588,7 +596,7 @@ read_request() {
   case $kind in
     rollback) allowed="kind hash expires release restore" ;;
     env | snapshot) allowed="kind hash expires" ;;
-    restore) allowed="kind hash expires dump" ;;
+    restore) allowed="kind hash expires snapshot" ;;
     *)
       PROBLEM="the kind \${kind:-(none)} isn't one the agent carries out"
       return 0
@@ -619,8 +627,8 @@ read_request() {
     PROBLEM="release isn't a release's id"
   elif [ "$kind" = rollback ] && ! [[ \${R[restore]} =~ ^(yes|no)$ ]]; then
     PROBLEM="restore isn't yes or no"
-  elif [ "$kind" = restore ] && ! [[ \${R[dump]} =~ $dump_re ]]; then
-    PROBLEM="dump isn't a dump's name"
+  elif [ "$kind" = restore ] && ! [[ \${R[snapshot]} =~ $snapshot_re ]]; then
+    PROBLEM="snapshot isn't a snapshot's id"
   fi
 }
 
@@ -692,57 +700,115 @@ do_env() {
   answer "$name" done ""
 }
 
-# A free name in dumps/ for a snapshot: snapshot-<UTC time>.sql.gz, or -2, -3… within one second.
+# A free name for a snapshot: snapshot-<UTC time>, or -2, -3… within one second.
 snapshot_name() {
-  local base n=1 file
+  local base n=1 name
   base=snapshot-$(date -u +%Y%m%dT%H%M%SZ)
-  file=$base.sql.gz
-  while [ -e "dumps/$file" ]; do
+  name=$base
+  while [ -e "dumps/$name.sql.gz" ] || [ -e "dumps/$name.shared.tar.gz" ]; do
     n=$((n + 1))
-    file=$base-$n.sql.gz
+    name=$base-$n
   done
-  printf '%s' "$file"
+  printf '%s' "$name"
 }
 
-# A snapshot: the database dumped into dumps/ under a new name.
+# The entries of shared/ a snapshot copies, into ENTRIES (each ./<name>): all but the settings
+# files (.env, .env.next, env.php and mysql.cnf), so a restore never puts back old values.
+shared_entries() {
+  local entry
+  ENTRIES=()
+  for entry in shared/* shared/.[!.]* shared/..?*; do
+    [ -e "$entry" ] || [ -L "$entry" ] || continue
+    case \${entry#shared/} in .env | .env.next | env.php | mysql.cnf) continue ;; esac
+    ENTRIES+=("./\${entry#shared/}")
+  done
+}
+
+# Snapshot $1: the app's database, when it has one, dumped into dumps/$1.sql.gz and, when shared/
+# holds more than the settings files, those copied into dumps/$1.shared.tar.gz (0600). Makes
+# nothing when there is neither; fails leaving neither.
+take_snapshot() {
+  if [ -n "$DATABASE" ]; then dump "dumps/$1.sql.gz" || return 1; fi
+  shared_entries
+  [ "\${#ENTRIES[@]}" -gt 0 ] || return 0
+  if tar -czf "dumps/$1.shared.tar.gz.partial" -C shared "\${ENTRIES[@]}"; then
+    chmod 0600 "dumps/$1.shared.tar.gz.partial"
+    mv -f "dumps/$1.shared.tar.gz.partial" "dumps/$1.shared.tar.gz"
+    return 0
+  fi
+  rm -f "dumps/$1.sql.gz" "dumps/$1.shared.tar.gz.partial"
+  return 1
+}
+
+# Puts the shared files back as the copy $1 holds them: every entry of shared/ but the settings
+# files goes, then the copy, when there is one, is unpacked there, never over a settings file even
+# if the copy holds one.
+put_shared() {
+  shared_entries
+  if [ "\${#ENTRIES[@]}" -gt 0 ]; then (cd shared && rm -rf "\${ENTRIES[@]}") || return 1; fi
+  [ ! -f "$1" ] || tar --anchored --exclude=./.env --exclude=./.env.next --exclude=./env.php \\
+    --exclude=./mysql.cnf -xzf "$1" -C shared
+}
+
+# A snapshot (take_snapshot) under a new name, answered with its parts (dump= and shared=);
+# refused for an app with no database and no shared files besides its settings.
 do_snapshot() {
-  local name=$1 file
-  if [ -z "$DATABASE" ]; then
-    answer "$name" refused "this app has no database"
+  local name=$1 snapshot parts=()
+  shared_entries
+  if [ -z "$DATABASE" ] && [ "\${#ENTRIES[@]}" -eq 0 ]; then
+    answer "$name" refused "this app has no database and no shared files besides its settings"
     return 0
   fi
-  file=$(snapshot_name)
-  if ! dump "dumps/$file"; then
-    answer "$name" failed "the dump failed"
+  snapshot=$(snapshot_name)
+  if ! take_snapshot "$snapshot"; then
+    answer "$name" failed "the database dump or the copy of the shared files failed"
     return 0
   fi
-  answer "$name" done "" "dump=$file"
+  if [ -f "dumps/$snapshot.sql.gz" ]; then parts+=("dump=$snapshot.sql.gz"); fi
+  if [ -f "dumps/$snapshot.shared.tar.gz" ]; then parts+=("shared=$snapshot.shared.tar.gz"); fi
+  answer "$name" done "" "\${parts[@]}"
 }
 
-# A restore of dumps/R[dump]: the current database is dumped first as a snapshot, and put back if
-# the restore fails.
+# A restore of snapshot R[snapshot]: the current database and shared files are copied first as a
+# snapshot (saved=, when there was anything to copy); then the database goes back when the
+# snapshot holds its dump, then the shared files when it holds their copy (the settings files stay
+# as they are). A failure puts back what was copied first.
 do_restore() {
-  local name=$1 file=\${R[dump]} saved
-  if [ -z "$DATABASE" ]; then
-    answer "$name" refused "this app has no database"
+  local name=$1 id=\${R[snapshot]} saved back extra=()
+  local db_file=dumps/\${R[snapshot]}.sql.gz files_copy=dumps/\${R[snapshot]}.shared.tar.gz
+  if [ ! -f "$db_file" ] && [ ! -f "$files_copy" ]; then
+    answer "$name" refused "the snapshot $id isn't in dumps/"
     return 0
   fi
-  if [ ! -f "dumps/$file" ]; then
-    answer "$name" refused "dumps/$file isn't there"
+  if [ -f "$db_file" ] && [ -z "$DATABASE" ]; then
+    answer "$name" refused "the snapshot $id holds a database dump, and this app has no database"
     return 0
   fi
   saved=$(snapshot_name)
-  if ! dump "dumps/$saved"; then
-    answer "$name" failed "the current database couldn't be dumped first: nothing changed"
+  if ! take_snapshot "$saved"; then
+    answer "$name" failed "the current database and shared files couldn't be copied first: nothing changed"
     return 0
   fi
-  if load "dumps/$file"; then
-    answer "$name" done "" "saved=$saved"
-  elif load "dumps/$saved"; then
-    answer "$name" failed "the restore failed: the database is back as it was" "saved=$saved"
-  else
-    answer "$name" failed "the restore failed, and putting the database back failed too: dumps/$saved holds it" "saved=$saved"
+  if [ -f "dumps/$saved.sql.gz" ] || [ -f "dumps/$saved.shared.tar.gz" ]; then extra=("saved=$saved"); fi
+  if [ -f "$db_file" ] && ! load "$db_file"; then
+    if load "dumps/$saved.sql.gz"; then
+      answer "$name" failed "the restore failed: the database is back as it was" \${extra[@]+"\${extra[@]}"}
+    else
+      answer "$name" failed "the restore failed, and putting the database back failed too: the snapshot $saved in dumps/ holds it" \${extra[@]+"\${extra[@]}"}
+    fi
+    return 0
   fi
+  if [ -f "$files_copy" ] && ! put_shared "$files_copy"; then
+    back="the shared files are"
+    if [ -f "$db_file" ]; then back="the database and the shared files are"; fi
+    if { [ ! -f "$db_file" ] || load "dumps/$saved.sql.gz"; } && put_shared "dumps/$saved.shared.tar.gz"; then
+      answer "$name" failed "putting the shared files back failed: $back back as they were" \${extra[@]+"\${extra[@]}"}
+    else
+      answer "$name" failed "putting the shared files back failed, and putting things back as they were failed too: the snapshot $saved in dumps/ holds them" \${extra[@]+"\${extra[@]}"}
+    fi
+    return 0
+  fi
+  answer "$name" done "" \${extra[@]+"\${extra[@]}"}
 }
 
 # Request $1 (requests/$1.req), carried out at most once: its answer is written before it starts,

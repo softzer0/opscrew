@@ -39,6 +39,17 @@ export interface SiteDifference {
   detail: string;
 }
 
+/**
+ * One way an app on a hosting account differs from what OpsCrew made there and recorded: the
+ * hostname and its document root, the database, a cron line, the agent's or its settings' copy on
+ * the account, the deploy key on GitHub. Names, paths and public keys only, never a value.
+ */
+export interface HostingDifference {
+  title: string;
+  /** What it means and what to do about it. */
+  detail: string;
+}
+
 /** The Portainer part of a drift report. */
 export interface PortainerDrift {
   /** The environment checked, by its name in Portainer. */
@@ -111,6 +122,8 @@ export interface DriftReport {
    * HTTPS once GitHub has the certificate) differs from the plan.
    */
   site?: SiteDifference[];
+  /** An app on a hosting account: how the account and GitHub differ from OpsCrew's record. */
+  hosting?: HostingDifference[];
   /** True when nothing drifted, nothing is pending and every file (and the server or site) matches. */
   clean: boolean;
   /** The IaC engine of the check; absent on this computer (the localhost target has none). */
@@ -119,9 +132,9 @@ export interface DriftReport {
   checkedAt: string;
   /**
    * Provider of the deployment, named in the report: `portainer` for the user's Portainer,
-   * `localhost` for this computer, or the server-less target.
+   * `localhost` for this computer, `hosting` for a hosting account, or the server-less target.
    */
-  provider: VpsProviderId | "portainer" | "localhost" | ServerlessProvider;
+  provider: VpsProviderId | "portainer" | "localhost" | ServerlessProvider | "hosting";
   /**
    * Plain-English remarks about the check itself, for example that the provider schemas could
    * not be read, so values the cloud maintains itself may show as drift. Absent when there are none.

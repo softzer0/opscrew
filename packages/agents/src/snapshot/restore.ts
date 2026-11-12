@@ -28,6 +28,7 @@ import {
 } from "@opscrew/iac-templates";
 import { APP_SERVER, snapshotOffsiteOf } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { restoreHostingSnapshot } from "../hosting/snapshot";
 import { NOTHING_CHANGED } from "../promote/shared";
 import { APPROVAL_SECONDS } from "../rollback/database";
 import { type Relogin, reloginCommand, restoreRelogins } from "./generations";
@@ -628,9 +629,10 @@ export async function restoreSnapshot(
   id: string,
   options: RestoreSnapshotOptions = {},
 ): Promise<RestoredSnapshot> {
-  requireSnapshotId(id);
   const services = options.services ?? {};
   const run = await snapshotRun(deps, services);
+  if (run.plan.target.provider === "hosting") return restoreHostingSnapshot(run, id, options);
+  requireSnapshotId(id);
   hideIdentity(run, options.identity);
   const target = snapshotTarget(run);
   if (options.from === "offsite") requireOffsite(run, id, options);

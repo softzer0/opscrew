@@ -14,10 +14,13 @@ export type HostingRequest =
   | { kind: "rollback"; release: string; restore: boolean }
   /** `shared/.env.next` renamed into place, Laravel's config cache made again, the restart. */
   | { kind: "env" }
-  /** A dump of the database into `dumps/`. */
+  /** A snapshot into `dumps/`: the database's dump, and the shared files but the settings. */
   | { kind: "snapshot" }
-  /** The database replaced by `dumps/<dump>`, the current one dumped first. */
-  | { kind: "restore"; dump: string };
+  /**
+   * The snapshot `<id>` in `dumps/` put back (its database dump and its shared files, whichever it
+   * holds), the current ones copied first into a new snapshot.
+   */
+  | { kind: "restore"; snapshot: string };
 
 /** How long a request stays valid after it is written: 30 minutes. */
 export const REQUEST_TTL_SECONDS = 30 * 60;
@@ -35,9 +38,9 @@ const VALUE = /^[A-Za-z0-9._-]+$/;
 const FIELDS: Readonly<Record<string, { pattern: RegExp; what: string }>> = {
   hash: { pattern: /^[0-9a-f]{64}$/, what: "a plan's SHA-256 hash" },
   release: { pattern: /^[1-9][0-9]*-[1-9][0-9]*$/, what: "a release's id, <run id>-<attempt>" },
-  dump: {
-    pattern: /^[A-Za-z0-9](?:[A-Za-z0-9_-]|\.(?!\.))*\.sql\.gz$/,
-    what: "a dump's name in dumps/, ending in .sql.gz",
+  snapshot: {
+    pattern: /^[A-Za-z0-9][A-Za-z0-9_-]*$/,
+    what: "a snapshot's id in dumps/, such as snapshot-20261112T120000Z",
   },
 };
 
@@ -55,7 +58,7 @@ export function requestText(request: HostingRequest, hash: string, now: Date): s
   if (request.kind === "rollback") {
     fields.push(["release", request.release], ["restore", request.restore ? "yes" : "no"]);
   } else if (request.kind === "restore") {
-    fields.push(["dump", request.dump]);
+    fields.push(["snapshot", request.snapshot]);
   }
   for (const [key, value] of fields) {
     const field = FIELDS[key];
@@ -75,9 +78,11 @@ export function requestText(request: HostingRequest, hash: string, now: Date): s
 export const RequestResultSchema = z.strictObject({
   result: z.enum(["done", "refused", "failed"]),
   reason: z.string().min(1).optional(),
-  /** A snapshot's dump, in `dumps/`. */
+  /** A snapshot's dump of the database, in `dumps/`; none for an app without one. */
   dump: z.string().min(1).optional(),
-  /** The dump a restore made of the database first, in `dumps/`. */
+  /** A snapshot's copy of the shared files but the settings, in `dumps/`; none when there are none. */
+  shared: z.string().min(1).optional(),
+  /** The id of the snapshot a restore took first; none when there was nothing to copy. */
   saved: z.string().min(1).optional(),
 });
 

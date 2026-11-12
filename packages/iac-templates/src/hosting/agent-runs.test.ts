@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -71,8 +72,21 @@ function current(a: Account): string {
   return readlinkSync(`${a.dir}/current`);
 }
 
+/** A snapshot's id from one of its files' names. */
+function idOf(file: string | undefined): string {
+  return (file ?? "").replace(/\.sql\.gz$|\.shared\.tar\.gz$/, "");
+}
+
 function dumpOf(a: Account, file: string): string {
   return gunzipSync(readFileSync(`${a.dir}/dumps/${file}`)).toString("utf8");
+}
+
+/** The names in the tar.gz `file` of `folder`, sorted, as bash's tar lists them. */
+function tarNames(folder: string, file: string): string[] {
+  const listed = spawnSync("bash", ["-c", 'cd "$1" && tar -tzf "$2"', "_", folder, file], {
+    encoding: "utf8",
+  });
+  return listed.stdout.split("\n").filter(Boolean).sort();
 }
 
 function mode(path: string): number {
@@ -542,17 +556,47 @@ describe.skipIf(reason !== undefined)("the hosting agent", { timeout: 180_000 },
     writeFileSync(`${a.stub}/db`, "state=before\n");
     const snapshot = a.request(requestText({ kind: "snapshot" }));
     a.run();
-    const dump = a.keyValues(`state/${snapshot}.result`).dump ?? "";
+    const taken = a.keyValues(`state/${snapshot}.result`);
+    // shared/ held only the settings files: the snapshot is the dump alone.
+    expect(taken).toEqual({ result: "done", dump: expect.stringMatching(/\.sql\.gz$/) });
+    expect(readdirSync(`${a.dir}/dumps`)).toEqual([taken.dump]);
     writeFileSync(`${a.stub}/db`, "state=after\n");
     writeFileSync(`${a.stub}/refuse`, "state=before");
-    const restore = a.request(requestText({ kind: "restore", dump }));
+    mkdirSync(`${a.dir}/shared/storage`);
+    writeFileSync(`${a.dir}/shared/storage/upload.txt`, "after");
+    const restore = a.request(requestText({ kind: "restore", snapshot: idOf(taken.dump) }));
     a.run();
     expect(a.keyValues(`state/${restore}.result`)).toEqual({
       result: "failed",
       reason: "the restore failed: the database is back as it was",
-      saved: expect.stringMatching(/^snapshot-\S+\.sql\.gz$/),
+      saved: expect.stringMatching(/^snapshot-\d{8}T\d{6}Z(-\d+)?$/),
     });
     expect(a.stubFile("db")).toBe("state=after\n");
+    expect(a.file("shared/storage/upload.txt")).toBe("after");
+  });
+
+  it("puts the database and the shared files back when unpacking the shared files fails", () => {
+    const a = account();
+    a.run();
+    writeFileSync(`${a.stub}/db`, "state=before\n");
+    mkdirSync(`${a.dir}/shared/storage`);
+    writeFileSync(`${a.dir}/shared/storage/upload.txt`, "before");
+    const snapshot = a.request(requestText({ kind: "snapshot" }));
+    a.run();
+    const taken = a.keyValues(`state/${snapshot}.result`);
+    writeFileSync(`${a.dir}/dumps/${taken.shared}`, "not a tar");
+    writeFileSync(`${a.stub}/db`, "state=after\n");
+    writeFileSync(`${a.dir}/shared/storage/upload.txt`, "after");
+    const restore = a.request(requestText({ kind: "restore", snapshot: idOf(taken.dump) }));
+    a.run();
+    expect(a.keyValues(`state/${restore}.result`)).toEqual({
+      result: "failed",
+      reason:
+        "putting the shared files back failed: the database and the shared files are back as they were",
+      saved: expect.stringMatching(/^snapshot-\S+$/),
+    });
+    expect(a.stubFile("db")).toBe("state=after\n");
+    expect(a.file("shared/storage/upload.txt")).toBe("after");
   });
 
   switching(
@@ -639,40 +683,133 @@ describe.skipIf(reason !== undefined)("the hosting agent", { timeout: 180_000 },
     },
   );
 
-  it("takes a snapshot and restores one on requests", () => {
-    const a = account();
+  it("takes a snapshot of the database and the shared files, and restores one, on requests", () => {
+    const a = account({}, { envPhp: true });
     a.run();
     writeFileSync(`${a.stub}/db`, "state=before\n");
+    mkdirSync(`${a.dir}/shared/storage/app`, { recursive: true });
+    writeFileSync(`${a.dir}/shared/storage/app/photo.txt`, "before");
+    writeFileSync(`${a.dir}/shared/.env.next`, "APP_NAME=next\n");
     const snapshot = a.request(requestText({ kind: "snapshot" }));
     a.run();
     const taken = a.keyValues(`state/${snapshot}.result`);
-    expect(taken).toEqual({
-      result: "done",
-      dump: expect.stringMatching(/^snapshot-\d{8}T\d{6}Z\.sql\.gz$/),
-    });
+    const id = idOf(taken.dump);
+    expect(id).toMatch(/^snapshot-\d{8}T\d{6}Z$/);
+    // The same name for the shared files' copy, without the settings files.
+    const copy = `${id}.shared.tar.gz`;
+    expect(taken).toEqual({ result: "done", dump: `${id}.sql.gz`, shared: copy });
     expect(dumpOf(a, taken.dump ?? "")).toContain("state=before");
     expect(a.stubFile("mysql.log")).toContain(
       "mysqldump --defaults-extra-file=shared/mysql.cnf --single-transaction --no-tablespaces acct_notes\n",
     );
-    if (POSIX) expect(mode(`${a.dir}/dumps/${taken.dump}`)).toBe(0o600);
+    expect(readdirSync(`${a.dir}/dumps`).sort()).toEqual([taken.dump, copy].sort());
+    expect(tarNames(`${a.dir}/dumps`, copy)).toEqual([
+      "./storage/",
+      "./storage/app/",
+      "./storage/app/photo.txt",
+    ]);
+    if (POSIX) {
+      expect(mode(`${a.dir}/dumps/${taken.dump}`)).toBe(0o600);
+      expect(mode(`${a.dir}/dumps/${copy}`)).toBe(0o600);
+    }
 
     writeFileSync(`${a.stub}/db`, "state=after\n");
-    const restore = a.request(requestText({ kind: "restore", dump: taken.dump ?? "" }));
+    writeFileSync(`${a.dir}/shared/storage/app/photo.txt`, "after");
+    writeFileSync(`${a.dir}/shared/storage/app/new.txt`, "new");
+    writeFileSync(`${a.dir}/shared/.env`, "APP_NAME=changed\n");
+    const restore = a.request(requestText({ kind: "restore", snapshot: id }));
     a.run();
     const restored = a.keyValues(`state/${restore}.result`);
-    expect(restored).toEqual({
-      result: "done",
-      saved: expect.stringMatching(/^snapshot-\S+\.sql\.gz$/),
-    });
-    expect(restored.saved).not.toBe(taken.dump);
+    expect(restored).toEqual({ result: "done", saved: expect.stringMatching(/^snapshot-\S+$/) });
+    expect(restored.saved).not.toBe(id);
     expect(a.stubFile("db")).toBe("state=before\n");
-    expect(dumpOf(a, restored.saved ?? "")).toContain("state=after");
+    expect(dumpOf(a, `${restored.saved}.sql.gz`)).toContain("state=after");
+    // The shared files as they were, the settings files as they are now.
+    expect(a.file("shared/storage/app/photo.txt")).toBe("before");
+    expect(existsSync(`${a.dir}/shared/storage/app/new.txt`)).toBe(false);
+    expect(a.file("shared/.env")).toBe("APP_NAME=changed\n");
+    expect(a.file("shared/.env.next")).toBe("APP_NAME=next\n");
+    expect(a.file("shared/mysql.cnf")).toBe("[client]\nuser=acct_notes\n");
+    expect(a.file("shared/env.php")).toContain("<?php");
+    expect(tarNames(`${a.dir}/dumps`, `${restored.saved}.shared.tar.gz`)).toContain(
+      "./storage/app/new.txt",
+    );
 
-    const missing = a.request(requestText({ kind: "restore", dump: "nope.sql.gz" }));
+    const missing = a.request(requestText({ kind: "restore", snapshot: "nope" }));
     a.run();
     expect(a.keyValues(`state/${missing}.result`)).toEqual({
       result: "refused",
-      reason: "dumps/nope.sql.gz isn't there",
+      reason: "the snapshot nope isn't in dumps/",
+    });
+  });
+
+  it("snapshots and restores the shared files of an app without a database, and refuses one with neither", () => {
+    const a = account({ database: undefined, snapshots: false });
+    a.run();
+    const none = a.request(requestText({ kind: "snapshot" }));
+    a.run();
+    expect(a.keyValues(`state/${none}.result`)).toEqual({
+      result: "refused",
+      reason: "this app has no database and no shared files besides its settings",
+    });
+
+    mkdirSync(`${a.dir}/shared/storage`);
+    writeFileSync(`${a.dir}/shared/storage/upload.txt`, "before");
+    // Another expiry than the first request's, so another name within the same second.
+    const later = Math.floor(Date.now() / 1000) + 1801;
+    const snapshot = a.request(requestText({ kind: "snapshot" }, later));
+    a.run();
+    const taken = a.keyValues(`state/${snapshot}.result`);
+    expect(taken).toEqual({ result: "done", shared: expect.stringMatching(/\.shared\.tar\.gz$/) });
+    expect(readdirSync(`${a.dir}/dumps`)).toEqual([taken.shared]);
+    expect(a.stubFile("mysql.log")).toBe("");
+
+    writeFileSync(`${a.dir}/shared/storage/upload.txt`, "after");
+    const restore = a.request(requestText({ kind: "restore", snapshot: idOf(taken.shared) }));
+    a.run();
+    expect(a.keyValues(`state/${restore}.result`)).toEqual({
+      result: "done",
+      saved: expect.stringMatching(/^snapshot-\S+$/),
+    });
+    expect(a.file("shared/storage/upload.txt")).toBe("before");
+    expect(a.stubFile("mysql.log")).toBe("");
+
+    // A copy holding settings files never puts them back over the current ones.
+    const old = `${a.root}/old-shared`;
+    mkdirSync(`${old}/storage`, { recursive: true });
+    for (const name of [".env", ".env.next", "env.php", "mysql.cnf"]) {
+      writeFileSync(`${old}/${name}`, "old values\n");
+    }
+    writeFileSync(`${old}/storage/upload.txt`, "old");
+    const made = spawnSync(
+      "bash",
+      [
+        "-c",
+        'cd "$2" && tar -czf old.shared.tar.gz -C "$1" ./.env ./.env.next ./env.php ./mysql.cnf ./storage',
+        "_",
+        old,
+        `${a.dir}/dumps`,
+      ],
+      { encoding: "utf8" },
+    );
+    expect(made.status).toBe(0);
+    const restoreOld = a.request(requestText({ kind: "restore", snapshot: "old" }));
+    a.run();
+    expect(a.keyValues(`state/${restoreOld}.result`)).toMatchObject({ result: "done" });
+    expect(a.file("shared/storage/upload.txt")).toBe("old");
+    expect(a.file("shared/.env")).toBe("APP_NAME=notes\n");
+    expect(a.file("shared/mysql.cnf")).toBe("[client]\nuser=acct_notes\n");
+    for (const name of [".env.next", "env.php"]) {
+      expect(existsSync(`${a.dir}/shared/${name}`)).toBe(false);
+    }
+
+    // A database dump can't go back into an app without a database.
+    writeFileSync(`${a.dir}/dumps/12-1.sql.gz`, "");
+    const dump = a.request(requestText({ kind: "restore", snapshot: "12-1" }));
+    a.run();
+    expect(a.keyValues(`state/${dump}.result`)).toEqual({
+      result: "refused",
+      reason: "the snapshot 12-1 holds a database dump, and this app has no database",
     });
   });
 

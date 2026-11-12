@@ -189,6 +189,28 @@ describe("destroy on a cPanel account", () => {
     expect(said).not.toContain(PANEL_TOKEN);
   });
 
+  it("keeps the final snapshot's copy of the shared files with its dump", async () => {
+    const id = "snapshot-20261011T120000Z";
+    const w = await world({
+      answer: (request) => {
+        if (request.kind !== "snapshot") return undefined;
+        w.app.account.write(`${w.app.folder}/dumps/${id}.sql.gz`, "final dump");
+        w.app.account.write(`${w.app.folder}/dumps/${id}.shared.tar.gz`, "final copy");
+        return `result=done\ndump=${id}.sql.gz\nshared=${id}.shared.tar.gz\n`;
+      },
+    });
+    const { result, error } = await w.run();
+    expect(error).toBeUndefined();
+    expect(w.app.account.paths().filter((path) => path.startsWith("opscrew/"))).toEqual([
+      `opscrew/notes-prod/dumps/${id}.sql.gz`,
+      `opscrew/notes-prod/dumps/${id}.shared.tar.gz`,
+    ]);
+    expect(result?.remaining.slice(0, 2)).toEqual([
+      `The final dump of the database, ~/opscrew/notes-prod/dumps/${id}.sql.gz: download it in cPanel's File Manager. ~/opscrew/notes-prod/ and ~/opscrew/ stay because they hold it.`,
+      `The final copy of the app's shared files, ~/opscrew/notes-prod/dumps/${id}.shared.tar.gz: download it in cPanel's File Manager. ~/opscrew/notes-prod/ and ~/opscrew/ stay because they hold it.`,
+    ]);
+  });
+
   it("without the final dump removes the whole folder, then ~/opscrew when nothing else is in it", async () => {
     const w = await world({ database: true });
     const { handler, error } = await w.run({ snapshot: false });

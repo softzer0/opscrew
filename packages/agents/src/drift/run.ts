@@ -10,6 +10,7 @@ import {
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
+import { hostingDrift } from "../hosting/drift";
 import { localDrift } from "../localhost/drift";
 import { previewServer, previewServerAddress } from "../previews/host";
 import { planProvider, providerProfile } from "../providers";
@@ -73,6 +74,9 @@ const NO_CLOUD_RESOURCES_NOTE =
  * On Cloudflare's hosting and GitHub Pages it compares the site with its plan and its IaC state
  * (`report.site`, see `siteDrift`).
  *
+ * On a hosting account it compares the account and the agent's deploy key with OpsCrew's record and
+ * the committed files (`report.hosting`, see `hostingDrift`).
+ *
  * In a preview environment it also compares the recipe on the preview server with the committed
  * one (`previewRecipeDrift`).
  */
@@ -95,6 +99,7 @@ export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Pro
   }
   if (plan.target.provider === "portainer") return portainerDrift(deps, plan, options);
   if (plan.target.provider === "localhost") return localDrift(deps, plan);
+  if (plan.target.provider === "hosting") return hostingDrift(deps, plan);
   if (isServerlessProvider(plan.target.provider)) return siteDrift(deps, plan, options);
   const statePath = tfstateFile(deps.paths);
   const cloudResources = !(await ownWithoutCloudResources(plan, statePath));

@@ -20,6 +20,7 @@ import { defaultTcpConnect, type TcpConnect } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
 import { builderBranch, followsBranch } from "../environments/branches";
 import { commandFlags } from "../environments/choice";
+import { verifyHosting } from "../hosting/verify";
 import type { LocalhostServices } from "../localhost/services";
 import { verifyLocalhost } from "../localhost/verify";
 import type { ReadNetworkServices } from "../network";
@@ -142,7 +143,8 @@ export interface VerifyResult {
  * none is recorded and no move is under way) in `opscrew/plan.yaml`, which stays as it is when
  * none changes. Marks `verify`. A site on Cloudflare's hosting or GitHub Pages is checked by
  * `verifySite`, which changes nothing and writes only its runbook. A preview environment is checked
- * by `verifyPreviews`, which writes nothing.
+ * by `verifyPreviews`, which writes nothing. An app on a hosting account is checked by
+ * `verifyHosting`, which writes nothing.
  */
 export async function runVerify(
   deps: PhaseDeps,
@@ -157,6 +159,9 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
 
   const plan = await readArtifact("plan", paths.files.plan);
   if (plan.target.provider === "localhost") return verifyLocalhost(deps, plan, options.localhost);
+  if (plan.target.provider === "hosting") {
+    return verifyHosting(deps, plan, options.fetch !== undefined ? { fetch: options.fetch } : {});
+  }
   const portainer = plan.target.provider === "portainer";
   const ownProxy = plan.target.provider === "portainer" && plan.target.web.mode === "proxy";
   // ` --env <name>` for the commands verify names; `--env prod` beside other environments.

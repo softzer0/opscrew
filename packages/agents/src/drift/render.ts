@@ -64,6 +64,16 @@ export function driftNextSteps(
           `to keep a change, make it in ${file} before you provision again.`,
         ];
   }
+  if (report.provider === "hosting") {
+    return report.clean
+      ? [
+          `nothing to do; ${again} after changes in the panel, on the account or to the repository's deploy keys.`,
+        ]
+      : [
+          `to write the agent and its settings back on the account, run ${provision} (it shows the hosting plan first and changes nothing without your approval).`,
+          "for the other differences, follow the step the report gives with each.",
+        ];
+  }
   if (isServerlessProvider(report.provider)) {
     const where =
       report.provider === "github-pages"
@@ -167,6 +177,7 @@ export function renderDriftReport(
     report.provider === "own" ||
     report.provider === "portainer" ||
     report.provider === "localhost" ||
+    report.provider === "hosting" ||
     isServerlessProvider(report.provider)
       ? undefined
       : providerProfile(report.provider).displayName;
@@ -175,6 +186,7 @@ export function renderDriftReport(
   const stacks = report.portainer?.differences ?? [];
   const rules = report.cloudflareRules ?? [];
   const site = report.site ?? [];
+  const hosting = report.hosting ?? [];
   const files = [
     ...report.files.changed.map((path) => ({ path, label: "changed" })),
     ...report.files.created.map((path) => ({ path, label: "missing" })),
@@ -188,20 +200,23 @@ export function renderDriftReport(
     host.length === 0 &&
     stacks.length === 0 &&
     rules.length === 0 &&
-    site.length === 0
+    site.length === 0 &&
+    hosting.length === 0
   ) {
     lines.push(
-      report.provider === "cloudflare-workers"
-        ? `The deployment matches the plan: the Worker, its custom domains, ${report.cloudflareRules !== undefined ? "OpsCrew's rules in the zone, " : ""}the state and the infrastructure code all agree.`
-        : report.provider === "github-pages"
-          ? "The deployment matches the plan: the GitHub Pages site, its DNS records, the state and the infrastructure code all agree."
-          : local
-            ? "The deployment matches the plan: the stack on this computer is as OpsCrew set it up, and the generated files agree."
-            : portainer
-              ? "The deployment matches the plan: OpsCrew's stacks in your Portainer, the deploy branch, the Cloudflare resources, the state, the infrastructure code and the generated files all agree."
-              : ownServer
-                ? "The deployment matches the plan: your server is set up as OpsCrew left it, and the Cloudflare resources, the state, the infrastructure code and the generated files all agree."
-                : "The deployment matches the plan: the live infrastructure, the state, the infrastructure code and the generated files all agree.",
+      report.provider === "hosting"
+        ? "The deployment matches what OpsCrew made: the hostname and its document root, the database, the cron lines, the agent and its settings on the account, and the deploy key on GitHub agree with OpsCrew's record and the committed files."
+        : report.provider === "cloudflare-workers"
+          ? `The deployment matches the plan: the Worker, its custom domains, ${report.cloudflareRules !== undefined ? "OpsCrew's rules in the zone, " : ""}the state and the infrastructure code all agree.`
+          : report.provider === "github-pages"
+            ? "The deployment matches the plan: the GitHub Pages site, its DNS records, the state and the infrastructure code all agree."
+            : local
+              ? "The deployment matches the plan: the stack on this computer is as OpsCrew set it up, and the generated files agree."
+              : portainer
+                ? "The deployment matches the plan: OpsCrew's stacks in your Portainer, the deploy branch, the Cloudflare resources, the state, the infrastructure code and the generated files all agree."
+                : ownServer
+                  ? "The deployment matches the plan: your server is set up as OpsCrew left it, and the Cloudflare resources, the state, the infrastructure code and the generated files all agree."
+                  : "The deployment matches the plan: the live infrastructure, the state, the infrastructure code and the generated files all agree.",
       ...notes,
     );
     return lines.join("\n");
@@ -237,6 +252,14 @@ export function renderDriftReport(
         : `The Worker's custom domains differ from the plan (${site.length}):`,
     );
     for (const item of site) lines.push(`  ~ ${item.title}`, `      ${item.detail}`);
+    lines.push("");
+  }
+
+  if (hosting.length > 0) {
+    lines.push(
+      `The hosting account or GitHub differs from what OpsCrew made there (${hosting.length}):`,
+    );
+    for (const item of hosting) lines.push(`  ~ ${item.title}`, `      ${item.detail}`);
     lines.push("");
   }
 
