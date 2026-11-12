@@ -76,6 +76,9 @@ const plan: DeployPlan = DeployPlanSchema.parse({
   dns: { provider: "none", proxied: false },
   cicd: { provider: "github-actions", registry: "ghcr", branch: "main" },
   security: {},
+  // The switch alone: the snapshot before each release (on by default) has its own tests in
+  // snapshots.test.ts, with a fake server that has the snapshot script.
+  deploy: { snapshots: false },
 });
 
 const ctx: RenderContext = {

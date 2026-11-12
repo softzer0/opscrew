@@ -359,7 +359,7 @@ describe.skipIf(!SH_AVAILABLE)("the database step on a server", () => {
   });
 
   it("reads nothing on prod without snapshots or down migrations, and says why each is refused", async () => {
-    const { folder, step } = await world(serverPlan());
+    const { folder, step } = await world(serverPlan({ extra: { deploy: { snapshots: false } } }));
     const chosen = await step();
     expect(chosen).toMatchObject({ choice: "keep", flags: "", record: { choice: "keep" } });
     expect(chosen.binding).toBeUndefined();
@@ -367,7 +367,7 @@ describe.skipIf(!SH_AVAILABLE)("the database step on a server", () => {
 
     const snapshot = await failure(step({ database: "snapshot" }));
     expect(snapshot.message).toBe(
-      "prod takes no snapshots before its releases: deploy.snapshots is off in its plan (prod takes them only with deploy.snapshots: true). Nothing was changed.",
+      "prod takes no snapshots before its releases: its plan turns them off (deploy.snapshots: false). Nothing was changed.",
     );
     const migrations = await failure(step({ database: "migrations" }));
     expect(migrations.message).toBe(

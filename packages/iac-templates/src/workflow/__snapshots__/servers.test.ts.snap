@@ -73,8 +73,19 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
           HOST: \${{ secrets.OPSCREW_SERVER_DATA_HOST }}
           OPSCREW_SERVICE_DB_ENV: \${{ secrets.OPSCREW_SERVICE_DB_ENV }}
           OPSCREW_SERVICE_DOCS_ENV: \${{ secrets.OPSCREW_SERVICE_DOCS_ENV }}
+          IMAGE: \${{ needs.build.outputs.image || needs.verify.outputs.image }}
+          RUNNING: \${{ steps.outgoing.outputs.image }}
+          MODE: \${{ inputs.rollback && 'rollback' || 'deploy' }}
         run: |
           set -euo pipefail
+          if [[ ! "$IMAGE" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::The build job did not report the image digest; re-run the workflow."
+            exit 1
+          fi
+          if [[ -n "$RUNNING" && ! "$RUNNING" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ || ( "$MODE" != deploy && "$MODE" != rollback ) ]]; then
+            echo "::error::The step for the server data was given no running version or mode it can use, so nothing changed there; re-run the workflow."
+            exit 1
+          fi
           ssh_opts=(-i "$RUNNER_TEMP/opscrew-servers/key" -o UserKnownHostsFile="$RUNNER_TEMP/opscrew-servers/known_hosts" -F "$RUNNER_TEMP/opscrew-servers/config" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
           ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'mkdir -p /srv/apps/shop'
           scp "\${ssh_opts[@]}" opscrew/runtime/servers/data/compose.yaml "deploy@\${HOST}:/srv/apps/shop/compose.yaml"
@@ -489,12 +500,46 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
               exit 1 ;;
           esac
           SNAPSHOT
-          ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s <<'REMOTE'
+          ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" "$MODE" "$RUNNING" <<'REMOTE'
           APPS_DIR="\${OPSCREW_APPS_DIR:-/srv/apps}"
           EDGE_DIR="\${OPSCREW_EDGE_DIR:-/srv/edge}"
           set -eu
           cd "$APPS_DIR"/shop
+          rm -f .database.changed
+          target="\${1:-}"
+          MODE="\${2:-}"
+          running="\${3:-}"
+          image_ref() {
+            case "$1" in
+              "") return 0 ;;
+              *[!A-Za-z0-9./:@_-]* | *@*@*) return 1 ;;
+              *@sha256:*) ;;
+              *) return 1 ;;
+            esac
+            _ref_hex="\${1##*@sha256:}"
+            case "$_ref_hex" in *[!0-9a-f]*) return 1 ;; esac
+            [ "\${#_ref_hex}" -eq 64 ]
+          }
+          if [ -z "$target" ] || ! image_ref "$target" || ! image_ref "$running" || { [ "$MODE" != deploy ] && [ "$MODE" != rollback ]; }; then
+            echo '::error::The deploy step of the server data was given no image digests or mode it can use, so nothing changed there. Run the workflow again.'
+            exit 1
+          fi
           docker compose pull
+          if [ "$MODE" = deploy ] && [ -n "$running" ] && [ "\${running##*@sha256:}" != "\${target##*@sha256:}" ]; then
+            skip=""
+            for part in db docs; do
+              if [ -z "$(docker compose ps -aq "$part")" ]; then skip="$skip --skip $part"; fi
+            done
+            snap=0
+            sh ./snapshot.sh take release --version "sha256:\${running##*@sha256:}" $skip > /dev/null || snap=$?
+            case "$snap" in
+              0) echo 'OpsCrew took a snapshot of the data on the server data before this release: a rollback to the previous version can restore it.' ;;
+              2) printf '::warning::The disk that holds %s on the server data has less than 1 GiB or 10%% free, so OpsCrew takes no snapshot of the data there this time, and a rollback can'\\''t restore it to this moment. Free some space, or keep fewer snapshots (deploy.keepSnapshots in opscrew/plan.yaml).\\n' "$APPS_DIR"/shop ;;
+              *)
+                printf '::error::The snapshot of the data on the server data before this release failed, so the new version was not started and the previous version keeps serving. The output of the copies and restores stays on the server data in %s/.snapshots/snapshot.log (it can quote data, so it is not printed here). Fix its cause and push again, or set deploy.snapshots: false in opscrew/plan.yaml to deploy without snapshots.\\n' "$APPS_DIR"/shop
+                exit 1 ;;
+            esac
+          fi
           docker compose up -d --wait --remove-orphans
           published() { [ "$(docker compose port "$1" "$2" 2> /dev/null)" = "$3" ]; }
           if ! published db 5432 10.200.4.2:5432; then
@@ -525,8 +570,19 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
         env:
           HOST: \${{ secrets.OPSCREW_SERVER_BOX_2_HOST }}
           OPSCREW_SERVICE_ORDERS_ENV: \${{ secrets.OPSCREW_SERVICE_ORDERS_ENV }}
+          IMAGE: \${{ needs.build.outputs.image || needs.verify.outputs.image }}
+          RUNNING: \${{ steps.outgoing.outputs.image }}
+          MODE: \${{ inputs.rollback && 'rollback' || 'deploy' }}
         run: |
           set -euo pipefail
+          if [[ ! "$IMAGE" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::The build job did not report the image digest; re-run the workflow."
+            exit 1
+          fi
+          if [[ -n "$RUNNING" && ! "$RUNNING" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ || ( "$MODE" != deploy && "$MODE" != rollback ) ]]; then
+            echo "::error::The step for the server box-2 was given no running version or mode it can use, so nothing changed there; re-run the workflow."
+            exit 1
+          fi
           ssh_opts=(-i "$RUNNER_TEMP/opscrew-servers/key" -o UserKnownHostsFile="$RUNNER_TEMP/opscrew-servers/known_hosts" -F "$RUNNER_TEMP/opscrew-servers/config" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
           ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'mkdir -p /srv/apps/shop/services'
           scp "\${ssh_opts[@]}" opscrew/runtime/servers/box-2/compose.yaml "deploy@\${HOST}:/srv/apps/shop/compose.yaml"
@@ -926,12 +982,46 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
               exit 1 ;;
           esac
           SNAPSHOT
-          ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s <<'REMOTE'
+          ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" "$MODE" "$RUNNING" <<'REMOTE'
           APPS_DIR="\${OPSCREW_APPS_DIR:-/srv/apps}"
           EDGE_DIR="\${OPSCREW_EDGE_DIR:-/srv/edge}"
           set -eu
           cd "$APPS_DIR"/shop
+          rm -f .database.changed
+          target="\${1:-}"
+          MODE="\${2:-}"
+          running="\${3:-}"
+          image_ref() {
+            case "$1" in
+              "") return 0 ;;
+              *[!A-Za-z0-9./:@_-]* | *@*@*) return 1 ;;
+              *@sha256:*) ;;
+              *) return 1 ;;
+            esac
+            _ref_hex="\${1##*@sha256:}"
+            case "$_ref_hex" in *[!0-9a-f]*) return 1 ;; esac
+            [ "\${#_ref_hex}" -eq 64 ]
+          }
+          if [ -z "$target" ] || ! image_ref "$target" || ! image_ref "$running" || { [ "$MODE" != deploy ] && [ "$MODE" != rollback ]; }; then
+            echo '::error::The deploy step of the server box-2 was given no image digests or mode it can use, so nothing changed there. Run the workflow again.'
+            exit 1
+          fi
           docker compose pull
+          if [ "$MODE" = deploy ] && [ -n "$running" ] && [ "\${running##*@sha256:}" != "\${target##*@sha256:}" ]; then
+            skip=""
+            for part in orders; do
+              if [ -z "$(docker compose ps -aq "$part")" ]; then skip="$skip --skip $part"; fi
+            done
+            snap=0
+            sh ./snapshot.sh take release --version "sha256:\${running##*@sha256:}" $skip > /dev/null || snap=$?
+            case "$snap" in
+              0) echo 'OpsCrew took a snapshot of the data on the server box-2 before this release: a rollback to the previous version can restore it.' ;;
+              2) printf '::warning::The disk that holds %s on the server box-2 has less than 1 GiB or 10%% free, so OpsCrew takes no snapshot of the data there this time, and a rollback can'\\''t restore it to this moment. Free some space, or keep fewer snapshots (deploy.keepSnapshots in opscrew/plan.yaml).\\n' "$APPS_DIR"/shop ;;
+              *)
+                printf '::error::The snapshot of the data on the server box-2 before this release failed, so the new version was not started and the previous version keeps serving. The output of the copies and restores stays on the server box-2 in %s/.snapshots/snapshot.log (it can quote data, so it is not printed here). Fix its cause and push again, or set deploy.snapshots: false in opscrew/plan.yaml to deploy without snapshots.\\n' "$APPS_DIR"/shop
+                exit 1 ;;
+            esac
+          fi
           docker compose up -d --wait --remove-orphans
           published() { [ "$(docker compose port "$1" "$2" 2> /dev/null)" = "$3" ]; }
           if ! published orders 3306 10.200.4.3:3306; then
@@ -1382,6 +1472,342 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
               exit 1 ;;
           esac
           SNAPSHOT
+      - id: others
+        name: Change the data on the app's other servers
+        if: inputs.rollback
+        env:
+          HOST: \${{ secrets.OPSCREW_HOST }}
+          SERVER_HOST_DATA: \${{ secrets.OPSCREW_SERVER_DATA_HOST }}
+          SERVER_HOST_BOX_2: \${{ secrets.OPSCREW_SERVER_BOX_2_HOST }}
+          IMAGE: \${{ needs.build.outputs.image || needs.verify.outputs.image }}
+          RUNNING: \${{ steps.outgoing.outputs.image }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$IMAGE" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::The build job did not report the image digest; re-run the workflow."
+            exit 1
+          fi
+          ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
+          server_sh() {
+            case "$1" in
+              data) ssh -i "$RUNNER_TEMP/opscrew-servers/key" -o UserKnownHostsFile="$RUNNER_TEMP/opscrew-servers/known_hosts" -F "$RUNNER_TEMP/opscrew-servers/config" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20 "deploy@\${SERVER_HOST_DATA}" sh -s -- "\${@:2}" ;;
+              box-2) ssh -i "$RUNNER_TEMP/opscrew-servers/key" -o UserKnownHostsFile="$RUNNER_TEMP/opscrew-servers/known_hosts" -F "$RUNNER_TEMP/opscrew-servers/config" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20 "deploy@\${SERVER_HOST_BOX_2}" sh -s -- "\${@:2}" ;;
+              *) return 1 ;;
+            esac
+          }
+          cat > "$RUNNER_TEMP/opscrew-hold.sh" <<'REMOTE'
+          APPS_DIR="\${OPSCREW_APPS_DIR:-/srv/apps}"
+          EDGE_DIR="\${OPSCREW_EDGE_DIR:-/srv/edge}"
+          set -eu
+          cd "$APPS_DIR"/shop
+          edge() { docker compose -p opscrew-edge -f "$EDGE_DIR"/compose.yaml "$@"; }
+          case "\${1:-}" in hold | stop | resume | requests) if [ -f .snapshots/.held ]; then held="held $(cat .snapshots/.held)"; case "$held" in "held rotation "*) printf '::error::OpsCrew changed nothing on the server: a credential rotation holds the app (the rotation of the plan %s), so its services may have new values the app does not use yet: finish the rotation with opscrew rotate, or put the old values back with opscrew rotate --undo, then try again.\\n' "\${held#held rotation }" ;; *) printf '::error::OpsCrew changed nothing on the server: a restore holds the app (.snapshots/.held in its folder), so its data may be partly restored: finish the restore with opscrew restore <copy>, or run sh snapshot.sh resume in the app'\\''s folder as the deploy user, then try again.\\n' ;; esac >&2; exit 1; fi ;; esac
+          case "\${1:-}" in
+            hold | stop)
+              exec 7> .start.lock
+              flock -w 900 7 || { echo '::error::The start script is still running on the app'\\''s server after 15 minutes, so OpsCrew changed nothing. Check the app on the server (opscrew/RUNBOOK.md has the SSH command), then run the deploy or opscrew rollback again.' >&2; exit 1; }
+              if [ "$1" = hold ]; then
+                case "\${2:-}" in "" | *[!0-9.]*)
+                  echo '::error::The app'\\''s hold script needs the workflow run that holds the app, so nothing was changed.' >&2
+                  exit 1 ;;
+                esac
+                (umask 077; printf '%s\\n' "$2" > .others.held)
+              fi
+              edge exec -T kamal-proxy kamal-proxy pause shop --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
+              docker compose stop app
+              ;;
+            resume)
+              docker compose start app
+              edge exec -T kamal-proxy kamal-proxy resume shop < /dev/null > /dev/null 2>&1 || true
+              rm -f .others.held ;;
+            requests) edge exec -T kamal-proxy kamal-proxy resume shop < /dev/null > /dev/null 2>&1 || true ;;
+            held) if [ -n "\${2:-}" ] && [ "$(cat .others.held 2> /dev/null)" = "$2" ]; then echo held; else echo none; fi ;;
+            forget) rm -f .others.held ;;
+            *)
+              echo '::error::The app'\\''s hold script knows only hold, stop, resume, requests, held and forget.' >&2
+              exit 1 ;;
+          esac
+          REMOTE
+          cat > "$RUNNER_TEMP/opscrew-rollback-data.sh" <<'REMOTE'
+          APPS_DIR="\${OPSCREW_APPS_DIR:-/srv/apps}"
+          EDGE_DIR="\${OPSCREW_EDGE_DIR:-/srv/edge}"
+          set -eu
+          cd "$APPS_DIR"/shop
+          image_ref() {
+            case "$1" in
+              "") return 0 ;;
+              *[!A-Za-z0-9./:@_-]* | *@*@*) return 1 ;;
+              *@sha256:*) ;;
+              *) return 1 ;;
+            esac
+            _ref_hex="\${1##*@sha256:}"
+            case "$_ref_hex" in *[!0-9a-f]*) return 1 ;; esac
+            [ "\${#_ref_hex}" -eq 64 ]
+          }
+          OPSCREW_SNAPSHOT_FUNCTIONS=1 . ./snapshot.sh
+          exec 7> .start.lock
+          flock -w 900 7 || { echo '::error::A snapshot on the server data kept the app'\\''s start lock there for 15 minutes, so the rollback changed nothing there. Run opscrew rollback again.' >&2; exit 1; }
+          mark() {
+            (umask 077; printf 'target=%s\\nsaved=%s\\nchanged=%s\\nchoice=%s\\n' "$target" "$running" "$1" "$2" > .database.changed)
+          }
+          ours() {
+            [ -f .database.changed ] && [ "$(sed -n 's/^target=//p' .database.changed)" = "$target" ] && [ "$(sed -n 's/^saved=//p' .database.changed)" = "$running" ]
+          }
+          changed() {
+            ours && [ "$(sed -n 's/^changed=//p' .database.changed)" = 1 ]
+          }
+          case "\${1:-}" in
+            check)
+              if [ "$#" -ne 2 ] || [ -z "$2" ] || ! image_ref "$2"; then
+                echo '::error::The rollback'\\''s script on the server data needs the image it goes back to, so nothing was changed there.' >&2
+                exit 1
+              fi
+              target="\${2##*@sha256:}"
+              if [ ! -f .rollback-database ]; then echo keep; exit 0; fi
+              approved=""; choice=""; expiry=""
+              read -r approved choice expiry < .rollback-database || true
+              rm -f .rollback-database
+              if [ "$approved" != "$target" ]; then
+                echo '::warning::The approval to change the data on the server data on a rollback (.rollback-database there) is for another version, so OpsCrew removed it: this rollback keeps the data there as it is.' >&2
+                echo keep
+                exit 0
+              fi
+              case "$choice" in snapshot) ;; *)
+                echo '::error::The one-time approval on the server data (.rollback-database) names a choice it can'\\''t carry out, so nothing was changed. Run opscrew rollback again.' >&2
+                exit 1 ;;
+              esac
+              case "$expiry" in "" | *[!0-9]* | ???????????*) expiry=0 ;; esac
+              if [ "$expiry" -le "$(date +%s)" ]; then
+                echo '::error::The one-time approval to change the data on the server data on this rollback expired before the run started, so nothing was changed. Run opscrew rollback again.' >&2
+                exit 1
+              fi
+              if [ "$choice" = snapshot ] && ! snapshot_complete "$target"; then
+                echo '::error::The snapshot this rollback was approved to restore is no longer complete on the server data (in .snapshots), so the rollback changed nothing. Run opscrew rollback again to choose again.' >&2
+                exit 1
+              fi
+              echo "$choice" ;;
+            change)
+              if [ "$#" -ne 4 ] || [ -z "$3" ] || [ -z "$4" ] || ! image_ref "$3" || ! image_ref "$4" || [ "\${3##*@sha256:}" = "\${4##*@sha256:}" ]; then
+                echo '::error::The rollback'\\''s script on the server data needs a choice, the image it goes back to and the one that runs, so nothing was changed there.' >&2
+                exit 1
+              fi
+              target="\${3##*@sha256:}"
+              running="\${4##*@sha256:}"
+              case "$2" in
+                snapshot) snapshot_complete "$target" || exit 1; parts="$(snapshot_parts "$target")" ;;
+                migrations) parts='db docs' ;;
+                *) exit 1 ;;
+              esac
+              mark 0 "$2"
+              if ! snapshot_take "$running" release "$running" $parts; then
+                rm -f .database.changed
+                printf '::error::OpsCrew could not save the data on the server data before changing it (a copy failed, or the disk is too full), so the rollback changed nothing there. The output of the copies and restores stays on the server data in %s/.snapshots/snapshot.log (it can quote data, so it is not printed here).\\n' "$APPS_DIR"/shop >&2
+                exit 1
+              fi
+              mark 1 "$2"
+              if [ "$2" = migrations ]; then
+                echo 'OpsCrew saved the data on the server data before the down migrations change it.' >&2
+                exit 0
+              fi
+              if snapshot_restore "$target" $parts; then
+                echo "OpsCrew restored the data on the server data from the snapshot taken $(cat .snapshots/"$target"/taken)." >&2
+                exit 0
+              fi
+              if snapshot_restore "$running" $parts; then
+                rm -f .database.changed
+                printf '::error::Restoring the snapshot on the server data failed, so OpsCrew put its data back as it was before the rollback. The output of the copies and restores stays on the server data in %s/.snapshots/snapshot.log (it can quote data, so it is not printed here).\\n' "$APPS_DIR"/shop >&2
+                exit 1
+              fi
+              printf '::error::Restoring the snapshot on the server data failed, and putting its data back as it was before the rollback failed too, so it may be partly changed. Its copy from before the rollback stays there in %s/.snapshots/%s. The output of the copies and restores stays on the server data in %s/.snapshots/snapshot.log (it can quote data, so it is not printed here).\\n' "$APPS_DIR"/shop "$running" "$APPS_DIR"/shop >&2
+              exit 2 ;;
+            marked)
+              if [ "$#" -ne 3 ] || [ -z "$2" ] || [ -z "$3" ] || ! image_ref "$2" || ! image_ref "$3"; then
+                echo '::error::The rollback'\\''s script on the server data needs the image it goes back to and the one that ran before, so nothing was changed there.' >&2
+                exit 1
+              fi
+              target="\${2##*@sha256:}"
+              running="\${3##*@sha256:}"
+              if changed; then echo "marked $(sed -n 's/^choice=//p' .database.changed)"; else echo none; fi ;;
+            back)
+              if [ "$#" -ne 3 ] || [ -z "$2" ] || [ -z "$3" ] || ! image_ref "$2" || ! image_ref "$3"; then
+                echo '::error::The rollback'\\''s script on the server data needs the image it went back to and the one that ran before, so nothing was changed there.' >&2
+                exit 1
+              fi
+              target="\${2##*@sha256:}"
+              running="\${3##*@sha256:}"
+              if ! changed; then
+                if ours; then rm -f .database.changed; fi
+                exit 0
+              fi
+              if snapshot_complete "$running" && snapshot_restore "$running" $(snapshot_parts "$running"); then
+                rm -f .database.changed
+                echo 'OpsCrew put the data on the server data back as it was before the rollback.' >&2
+                exit 0
+              fi
+              printf '::error::Putting the data on the server data back as it was before the rollback failed, so it may be partly changed. Its copy from before the rollback stays there in %s/.snapshots/%s. The output of the copies and restores stays on the server data in %s/.snapshots/snapshot.log (it can quote data, so it is not printed here).\\n' "$APPS_DIR"/shop "$running" "$APPS_DIR"/shop >&2
+              exit 1 ;;
+            *)
+              echo '::error::The rollback'\\''s script on the server data knows only check, change, marked and back, so nothing was changed there.' >&2
+              exit 1 ;;
+          esac
+          REMOTE
+          cat > "$RUNNER_TEMP/opscrew-rollback-box-2.sh" <<'REMOTE'
+          APPS_DIR="\${OPSCREW_APPS_DIR:-/srv/apps}"
+          EDGE_DIR="\${OPSCREW_EDGE_DIR:-/srv/edge}"
+          set -eu
+          cd "$APPS_DIR"/shop
+          image_ref() {
+            case "$1" in
+              "") return 0 ;;
+              *[!A-Za-z0-9./:@_-]* | *@*@*) return 1 ;;
+              *@sha256:*) ;;
+              *) return 1 ;;
+            esac
+            _ref_hex="\${1##*@sha256:}"
+            case "$_ref_hex" in *[!0-9a-f]*) return 1 ;; esac
+            [ "\${#_ref_hex}" -eq 64 ]
+          }
+          OPSCREW_SNAPSHOT_FUNCTIONS=1 . ./snapshot.sh
+          exec 7> .start.lock
+          flock -w 900 7 || { echo '::error::A snapshot on the server box-2 kept the app'\\''s start lock there for 15 minutes, so the rollback changed nothing there. Run opscrew rollback again.' >&2; exit 1; }
+          mark() {
+            (umask 077; printf 'target=%s\\nsaved=%s\\nchanged=%s\\nchoice=%s\\n' "$target" "$running" "$1" "$2" > .database.changed)
+          }
+          ours() {
+            [ -f .database.changed ] && [ "$(sed -n 's/^target=//p' .database.changed)" = "$target" ] && [ "$(sed -n 's/^saved=//p' .database.changed)" = "$running" ]
+          }
+          changed() {
+            ours && [ "$(sed -n 's/^changed=//p' .database.changed)" = 1 ]
+          }
+          case "\${1:-}" in
+            check)
+              if [ "$#" -ne 2 ] || [ -z "$2" ] || ! image_ref "$2"; then
+                echo '::error::The rollback'\\''s script on the server box-2 needs the image it goes back to, so nothing was changed there.' >&2
+                exit 1
+              fi
+              target="\${2##*@sha256:}"
+              if [ ! -f .rollback-database ]; then echo keep; exit 0; fi
+              approved=""; choice=""; expiry=""
+              read -r approved choice expiry < .rollback-database || true
+              rm -f .rollback-database
+              if [ "$approved" != "$target" ]; then
+                echo '::warning::The approval to change the data on the server box-2 on a rollback (.rollback-database there) is for another version, so OpsCrew removed it: this rollback keeps the data there as it is.' >&2
+                echo keep
+                exit 0
+              fi
+              case "$choice" in snapshot) ;; *)
+                echo '::error::The one-time approval on the server box-2 (.rollback-database) names a choice it can'\\''t carry out, so nothing was changed. Run opscrew rollback again.' >&2
+                exit 1 ;;
+              esac
+              case "$expiry" in "" | *[!0-9]* | ???????????*) expiry=0 ;; esac
+              if [ "$expiry" -le "$(date +%s)" ]; then
+                echo '::error::The one-time approval to change the data on the server box-2 on this rollback expired before the run started, so nothing was changed. Run opscrew rollback again.' >&2
+                exit 1
+              fi
+              if [ "$choice" = snapshot ] && ! snapshot_complete "$target"; then
+                echo '::error::The snapshot this rollback was approved to restore is no longer complete on the server box-2 (in .snapshots), so the rollback changed nothing. Run opscrew rollback again to choose again.' >&2
+                exit 1
+              fi
+              echo "$choice" ;;
+            change)
+              if [ "$#" -ne 4 ] || [ -z "$3" ] || [ -z "$4" ] || ! image_ref "$3" || ! image_ref "$4" || [ "\${3##*@sha256:}" = "\${4##*@sha256:}" ]; then
+                echo '::error::The rollback'\\''s script on the server box-2 needs a choice, the image it goes back to and the one that runs, so nothing was changed there.' >&2
+                exit 1
+              fi
+              target="\${3##*@sha256:}"
+              running="\${4##*@sha256:}"
+              case "$2" in
+                snapshot) snapshot_complete "$target" || exit 1; parts="$(snapshot_parts "$target")" ;;
+                migrations) parts='orders' ;;
+                *) exit 1 ;;
+              esac
+              mark 0 "$2"
+              if ! snapshot_take "$running" release "$running" $parts; then
+                rm -f .database.changed
+                printf '::error::OpsCrew could not save the data on the server box-2 before changing it (a copy failed, or the disk is too full), so the rollback changed nothing there. The output of the copies and restores stays on the server box-2 in %s/.snapshots/snapshot.log (it can quote data, so it is not printed here).\\n' "$APPS_DIR"/shop >&2
+                exit 1
+              fi
+              mark 1 "$2"
+              if [ "$2" = migrations ]; then
+                echo 'OpsCrew saved the data on the server box-2 before the down migrations change it.' >&2
+                exit 0
+              fi
+              if snapshot_restore "$target" $parts; then
+                echo "OpsCrew restored the data on the server box-2 from the snapshot taken $(cat .snapshots/"$target"/taken)." >&2
+                exit 0
+              fi
+              if snapshot_restore "$running" $parts; then
+                rm -f .database.changed
+                printf '::error::Restoring the snapshot on the server box-2 failed, so OpsCrew put its data back as it was before the rollback. The output of the copies and restores stays on the server box-2 in %s/.snapshots/snapshot.log (it can quote data, so it is not printed here).\\n' "$APPS_DIR"/shop >&2
+                exit 1
+              fi
+              printf '::error::Restoring the snapshot on the server box-2 failed, and putting its data back as it was before the rollback failed too, so it may be partly changed. Its copy from before the rollback stays there in %s/.snapshots/%s. The output of the copies and restores stays on the server box-2 in %s/.snapshots/snapshot.log (it can quote data, so it is not printed here).\\n' "$APPS_DIR"/shop "$running" "$APPS_DIR"/shop >&2
+              exit 2 ;;
+            marked)
+              if [ "$#" -ne 3 ] || [ -z "$2" ] || [ -z "$3" ] || ! image_ref "$2" || ! image_ref "$3"; then
+                echo '::error::The rollback'\\''s script on the server box-2 needs the image it goes back to and the one that ran before, so nothing was changed there.' >&2
+                exit 1
+              fi
+              target="\${2##*@sha256:}"
+              running="\${3##*@sha256:}"
+              if changed; then echo "marked $(sed -n 's/^choice=//p' .database.changed)"; else echo none; fi ;;
+            back)
+              if [ "$#" -ne 3 ] || [ -z "$2" ] || [ -z "$3" ] || ! image_ref "$2" || ! image_ref "$3"; then
+                echo '::error::The rollback'\\''s script on the server box-2 needs the image it went back to and the one that ran before, so nothing was changed there.' >&2
+                exit 1
+              fi
+              target="\${2##*@sha256:}"
+              running="\${3##*@sha256:}"
+              if ! changed; then
+                if ours; then rm -f .database.changed; fi
+                exit 0
+              fi
+              if snapshot_complete "$running" && snapshot_restore "$running" $(snapshot_parts "$running"); then
+                rm -f .database.changed
+                echo 'OpsCrew put the data on the server box-2 back as it was before the rollback.' >&2
+                exit 0
+              fi
+              printf '::error::Putting the data on the server box-2 back as it was before the rollback failed, so it may be partly changed. Its copy from before the rollback stays there in %s/.snapshots/%s. The output of the copies and restores stays on the server box-2 in %s/.snapshots/snapshot.log (it can quote data, so it is not printed here).\\n' "$APPS_DIR"/shop "$running" "$APPS_DIR"/shop >&2
+              exit 1 ;;
+            *)
+              echo '::error::The rollback'\\''s script on the server box-2 knows only check, change, marked and back, so nothing was changed there.' >&2
+              exit 1 ;;
+          esac
+          REMOTE
+          got=""
+          for server in data box-2; do
+            answer="$(server_sh "$server" check "$IMAGE" < "$RUNNER_TEMP/opscrew-rollback-$server.sh")"
+            case "$answer" in
+              snapshot | migrations) got="$got $server:$answer" ;;
+              keep) ;;
+              *) echo "::error::The server $server gave no answer OpsCrew can use about its one-time approval, so nothing was changed."; exit 1 ;;
+            esac
+          done
+          got="\${got# }"
+          if [[ -z "$got" ]]; then exit 0; fi
+          case "$got" in
+            'data:snapshot box-2:snapshot') choice=snapshot ;;
+            *)
+              echo "::error::The one-time approvals on the app's other servers don't match the rollback's choice on every server it changes ($got), so nothing was changed. Run opscrew rollback again."
+              exit 1 ;;
+          esac
+          if [[ ! "$RUNNING" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::The app's server names no version by its image digest, so OpsCrew can't save the data on its other servers before changing it, and the rollback changed nothing. Run opscrew rollback again and keep the database as it is."
+            exit 1
+          fi
+          ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- hold "$GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT" < "$RUNNER_TEMP/opscrew-hold.sh"
+          restored=""
+          for entry in $got; do
+            server="\${entry%%:*}"
+            code=0
+            server_sh "$server" change "$choice" "$IMAGE" "$RUNNING" < "$RUNNER_TEMP/opscrew-rollback-$server.sh" || code=$?
+            if (( code != 0 )); then
+              if (( code != 1 && code != 2 )); then echo "::error::The change on the server $server did not finish (exit code $code), so its data may be partly changed: the rollback step checks it."; fi
+              exit 1
+            fi
+            restored="$restored,$server"
+          done
+          echo "restored=\${restored#,}" >> "$GITHUB_OUTPUT"
       - id: start
         name: Start the new version
         env:
@@ -1389,6 +1815,7 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
           IMAGE: \${{ needs.build.outputs.image || needs.verify.outputs.image }}
           TAG: \${{ needs.build.outputs.tag || needs.verify.outputs.tag }}
           MODE: \${{ inputs.rollback && 'rollback' || 'deploy' }}
+          RESTORED: \${{ steps.others.outputs.restored }}
           REGISTRY_TOKEN: \${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -1403,7 +1830,7 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
           if [[ -n "$previous" && ! "$previous" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then previous=unknown; fi
           echo "previous=$previous" >> "$GITHUB_OUTPUT"
           printf '%s\\n' "$REGISTRY_TOKEN" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "DOCKER_CONFIG=/srv/apps/shop/.docker docker login ghcr.io -u '\${GITHUB_ACTOR}' --password-stdin"
-          ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" "$MODE" <<'REMOTE'
+          ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" "$MODE" "$RESTORED" <<'REMOTE'
           APPS_DIR="\${OPSCREW_APPS_DIR:-/srv/apps}"
           EDGE_DIR="\${OPSCREW_EDGE_DIR:-/srv/edge}"
           set -eu
@@ -1446,6 +1873,16 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
               fi
               database="$choice"
             fi
+          fi
+          others="$(printf '%s' "\${3:-}" | tr , ' ')"
+          case "$database" in
+            snapshot) expected='data box-2' ;;
+            migrations) expected='' ;;
+            *) expected="" ;;
+          esac
+          if [ "$others" != "$expected" ]; then
+            printf '::error::The app'\\''s other servers this rollback changed (%s) aren'\\''t those this server'\\''s one-time approval (.rollback-database) needs (%s), so nothing was changed here, and the rollback step puts their data back. Run opscrew rollback again.\\n' "\${others:-none}" "\${expected:-none}"
+            exit 1
           fi
           keep_failed() {
             (
@@ -1516,6 +1953,21 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
             fi
           fi
           if crontab -l 2> /dev/null | grep -q ' # opscrew-snapshots shop$'; then crontab -l | grep -v ' # opscrew-snapshots shop$' | crontab -; fi
+          if [ "$MODE" = deploy ] && [ -n "$running" ] && [ "$running" != "$target" ]; then
+            OPSCREW_SNAPSHOT_FUNCTIONS=1 . ./snapshot.sh
+            snap=0
+            snapshot_cmd_take release > /dev/null || snap=$?
+            if [ "$snap" -eq 1 ]; then
+              printf '::error::The snapshot of the data before this release failed, so the new version was not started and the previous version keeps serving. The copies'\\'' output stays on the server in %s/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/RUNBOOK.md has the SSH command). Fix its cause and push again, or set deploy.snapshots: false in opscrew/plan.yaml to deploy without snapshots.\\n' "$APPS_DIR"/shop
+              exit 1
+            fi
+            if [ "$snap" -eq 2 ]; then
+              printf '::warning::The disk that holds %s has less than 1 GiB or 10%% free, so OpsCrew takes no snapshot of the data this time, and a rollback can'\\''t restore it to this moment. Free some space, or keep fewer snapshots (deploy.keepSnapshots in opscrew/plan.yaml).\\n' "$APPS_DIR"/shop
+            fi
+            if [ "$snap" -eq 0 ]; then
+              echo 'OpsCrew took a snapshot of the data before this release: a rollback to the previous version can restore it.'
+            fi
+          fi
           if [ "$database" != keep ]; then
             if [ -z "$running" ] || [ "$running" = "$target" ]; then
               echo '::error::The server'\\''s .env names no other version by its image digest, so OpsCrew can'\\''t save its database before changing it, and the rollback changed nothing. Run opscrew rollback again and keep the database as it is.'
@@ -1542,11 +1994,11 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
               snapshot_take "$running" release "$running" $parts || snap=$?
               if [ "$snap" -eq 1 ]; then
                 printf '::error::OpsCrew could not save the current database before changing it, so the rollback changed nothing and the running version starts again. The output of the dumps and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/RUNBOOK.md has the SSH command). Fix the cause and run opscrew rollback again, or keep the database as it is.\\n' "$APPS_DIR"/shop
-                rm -f .database.changed; docker compose start app; exit 1
+                rm -f .database.changed; if [ -z "$others" ]; then docker compose start app; fi; exit 1
               fi
               if [ "$snap" -eq 2 ]; then
                 echo '::error::The server has too little free disk to save the current database before changing it, so the rollback changed nothing and the running version starts again. Free some space and run opscrew rollback again.'
-                rm -f .database.changed; docker compose start app; exit 1
+                rm -f .database.changed; if [ -z "$others" ]; then docker compose start app; fi; exit 1
               fi
               saved="$running"
             fi
@@ -1564,7 +2016,7 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
             if [ "$failed" -ne 0 ]; then
               if snapshot_restore "$saved" $parts; then
                 printf '::error::%s failed, so OpsCrew put the database back as it was before the rollback, and the running version starts again: the rollback changed nothing. The output of the dumps and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/RUNBOOK.md has the SSH command). Fix the cause and run opscrew rollback again.\\n' "$what" "$APPS_DIR"/shop
-                rm -f .database.changed; docker compose start app; exit 1
+                rm -f .database.changed; if [ -z "$others" ]; then docker compose start app; fi; exit 1
               fi
               printf '::error::%s failed, and putting the database back as it was before the rollback failed too, so it may be partly changed, and no version of the app starts on it. Its copy from before the rollback stays in %s/.snapshots/%s: the rollback step tries once more to restore it. The output of the dumps and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/RUNBOOK.md has the SSH command).\\n' "$what" "$APPS_DIR"/shop "$saved" "$APPS_DIR"/shop
               exit 1
@@ -1640,14 +2092,357 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
           commit="\${TAG##*:}"
           echo "Rolled back to \\\`$IMAGE\\\` (built from \\\`\${commit%%-*}\\\`): no build, no release command." >> "$GITHUB_STEP_SUMMARY"
       - name: Roll back to the previous version
-        if: (failure() || cancelled()) && (steps.start.outcome == 'failure' || steps.start.outcome == 'cancelled' || steps.health.outcome == 'failure')
+        if: (failure() || cancelled()) && (steps.start.outcome == 'failure' || steps.start.outcome == 'cancelled' || steps.health.outcome == 'failure' || steps.others.outcome == 'failure' || steps.others.outcome == 'cancelled' || (steps.others.outcome == 'success' && steps.start.outcome == 'skipped'))
         env:
           HOST: \${{ secrets.OPSCREW_HOST }}
+          SERVER_HOST_DATA: \${{ secrets.OPSCREW_SERVER_DATA_HOST }}
+          SERVER_HOST_BOX_2: \${{ secrets.OPSCREW_SERVER_BOX_2_HOST }}
           IMAGE: \${{ needs.build.outputs.image || needs.verify.outputs.image }}
           MODE: \${{ inputs.rollback && 'rollback' || 'deploy' }}
+          RUNNING: \${{ steps.outgoing.outputs.image }}
         run: |
           set -uo pipefail
           ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
+          held=none
+          if [[ "$MODE" == rollback && "\${IMAGE:-}" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ && "\${RUNNING:-}" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then
+          server_sh() {
+            case "$1" in
+              data) ssh -i "$RUNNER_TEMP/opscrew-servers/key" -o UserKnownHostsFile="$RUNNER_TEMP/opscrew-servers/known_hosts" -F "$RUNNER_TEMP/opscrew-servers/config" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20 "deploy@\${SERVER_HOST_DATA}" sh -s -- "\${@:2}" ;;
+              box-2) ssh -i "$RUNNER_TEMP/opscrew-servers/key" -o UserKnownHostsFile="$RUNNER_TEMP/opscrew-servers/known_hosts" -F "$RUNNER_TEMP/opscrew-servers/config" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20 "deploy@\${SERVER_HOST_BOX_2}" sh -s -- "\${@:2}" ;;
+              *) return 1 ;;
+            esac
+          }
+          cat > "$RUNNER_TEMP/opscrew-hold.sh" <<'REMOTE'
+          APPS_DIR="\${OPSCREW_APPS_DIR:-/srv/apps}"
+          EDGE_DIR="\${OPSCREW_EDGE_DIR:-/srv/edge}"
+          set -eu
+          cd "$APPS_DIR"/shop
+          edge() { docker compose -p opscrew-edge -f "$EDGE_DIR"/compose.yaml "$@"; }
+          case "\${1:-}" in hold | stop | resume | requests) if [ -f .snapshots/.held ]; then held="held $(cat .snapshots/.held)"; case "$held" in "held rotation "*) printf '::error::OpsCrew changed nothing on the server: a credential rotation holds the app (the rotation of the plan %s), so its services may have new values the app does not use yet: finish the rotation with opscrew rotate, or put the old values back with opscrew rotate --undo, then try again.\\n' "\${held#held rotation }" ;; *) printf '::error::OpsCrew changed nothing on the server: a restore holds the app (.snapshots/.held in its folder), so its data may be partly restored: finish the restore with opscrew restore <copy>, or run sh snapshot.sh resume in the app'\\''s folder as the deploy user, then try again.\\n' ;; esac >&2; exit 1; fi ;; esac
+          case "\${1:-}" in
+            hold | stop)
+              exec 7> .start.lock
+              flock -w 900 7 || { echo '::error::The start script is still running on the app'\\''s server after 15 minutes, so OpsCrew changed nothing. Check the app on the server (opscrew/RUNBOOK.md has the SSH command), then run the deploy or opscrew rollback again.' >&2; exit 1; }
+              if [ "$1" = hold ]; then
+                case "\${2:-}" in "" | *[!0-9.]*)
+                  echo '::error::The app'\\''s hold script needs the workflow run that holds the app, so nothing was changed.' >&2
+                  exit 1 ;;
+                esac
+                (umask 077; printf '%s\\n' "$2" > .others.held)
+              fi
+              edge exec -T kamal-proxy kamal-proxy pause shop --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
+              docker compose stop app
+              ;;
+            resume)
+              docker compose start app
+              edge exec -T kamal-proxy kamal-proxy resume shop < /dev/null > /dev/null 2>&1 || true
+              rm -f .others.held ;;
+            requests) edge exec -T kamal-proxy kamal-proxy resume shop < /dev/null > /dev/null 2>&1 || true ;;
+            held) if [ -n "\${2:-}" ] && [ "$(cat .others.held 2> /dev/null)" = "$2" ]; then echo held; else echo none; fi ;;
+            forget) rm -f .others.held ;;
+            *)
+              echo '::error::The app'\\''s hold script knows only hold, stop, resume, requests, held and forget.' >&2
+              exit 1 ;;
+          esac
+          REMOTE
+          cat > "$RUNNER_TEMP/opscrew-rollback-data.sh" <<'REMOTE'
+          APPS_DIR="\${OPSCREW_APPS_DIR:-/srv/apps}"
+          EDGE_DIR="\${OPSCREW_EDGE_DIR:-/srv/edge}"
+          set -eu
+          cd "$APPS_DIR"/shop
+          image_ref() {
+            case "$1" in
+              "") return 0 ;;
+              *[!A-Za-z0-9./:@_-]* | *@*@*) return 1 ;;
+              *@sha256:*) ;;
+              *) return 1 ;;
+            esac
+            _ref_hex="\${1##*@sha256:}"
+            case "$_ref_hex" in *[!0-9a-f]*) return 1 ;; esac
+            [ "\${#_ref_hex}" -eq 64 ]
+          }
+          OPSCREW_SNAPSHOT_FUNCTIONS=1 . ./snapshot.sh
+          exec 7> .start.lock
+          flock -w 900 7 || { echo '::error::A snapshot on the server data kept the app'\\''s start lock there for 15 minutes, so the rollback changed nothing there. Run opscrew rollback again.' >&2; exit 1; }
+          mark() {
+            (umask 077; printf 'target=%s\\nsaved=%s\\nchanged=%s\\nchoice=%s\\n' "$target" "$running" "$1" "$2" > .database.changed)
+          }
+          ours() {
+            [ -f .database.changed ] && [ "$(sed -n 's/^target=//p' .database.changed)" = "$target" ] && [ "$(sed -n 's/^saved=//p' .database.changed)" = "$running" ]
+          }
+          changed() {
+            ours && [ "$(sed -n 's/^changed=//p' .database.changed)" = 1 ]
+          }
+          case "\${1:-}" in
+            check)
+              if [ "$#" -ne 2 ] || [ -z "$2" ] || ! image_ref "$2"; then
+                echo '::error::The rollback'\\''s script on the server data needs the image it goes back to, so nothing was changed there.' >&2
+                exit 1
+              fi
+              target="\${2##*@sha256:}"
+              if [ ! -f .rollback-database ]; then echo keep; exit 0; fi
+              approved=""; choice=""; expiry=""
+              read -r approved choice expiry < .rollback-database || true
+              rm -f .rollback-database
+              if [ "$approved" != "$target" ]; then
+                echo '::warning::The approval to change the data on the server data on a rollback (.rollback-database there) is for another version, so OpsCrew removed it: this rollback keeps the data there as it is.' >&2
+                echo keep
+                exit 0
+              fi
+              case "$choice" in snapshot) ;; *)
+                echo '::error::The one-time approval on the server data (.rollback-database) names a choice it can'\\''t carry out, so nothing was changed. Run opscrew rollback again.' >&2
+                exit 1 ;;
+              esac
+              case "$expiry" in "" | *[!0-9]* | ???????????*) expiry=0 ;; esac
+              if [ "$expiry" -le "$(date +%s)" ]; then
+                echo '::error::The one-time approval to change the data on the server data on this rollback expired before the run started, so nothing was changed. Run opscrew rollback again.' >&2
+                exit 1
+              fi
+              if [ "$choice" = snapshot ] && ! snapshot_complete "$target"; then
+                echo '::error::The snapshot this rollback was approved to restore is no longer complete on the server data (in .snapshots), so the rollback changed nothing. Run opscrew rollback again to choose again.' >&2
+                exit 1
+              fi
+              echo "$choice" ;;
+            change)
+              if [ "$#" -ne 4 ] || [ -z "$3" ] || [ -z "$4" ] || ! image_ref "$3" || ! image_ref "$4" || [ "\${3##*@sha256:}" = "\${4##*@sha256:}" ]; then
+                echo '::error::The rollback'\\''s script on the server data needs a choice, the image it goes back to and the one that runs, so nothing was changed there.' >&2
+                exit 1
+              fi
+              target="\${3##*@sha256:}"
+              running="\${4##*@sha256:}"
+              case "$2" in
+                snapshot) snapshot_complete "$target" || exit 1; parts="$(snapshot_parts "$target")" ;;
+                migrations) parts='db docs' ;;
+                *) exit 1 ;;
+              esac
+              mark 0 "$2"
+              if ! snapshot_take "$running" release "$running" $parts; then
+                rm -f .database.changed
+                printf '::error::OpsCrew could not save the data on the server data before changing it (a copy failed, or the disk is too full), so the rollback changed nothing there. The output of the copies and restores stays on the server data in %s/.snapshots/snapshot.log (it can quote data, so it is not printed here).\\n' "$APPS_DIR"/shop >&2
+                exit 1
+              fi
+              mark 1 "$2"
+              if [ "$2" = migrations ]; then
+                echo 'OpsCrew saved the data on the server data before the down migrations change it.' >&2
+                exit 0
+              fi
+              if snapshot_restore "$target" $parts; then
+                echo "OpsCrew restored the data on the server data from the snapshot taken $(cat .snapshots/"$target"/taken)." >&2
+                exit 0
+              fi
+              if snapshot_restore "$running" $parts; then
+                rm -f .database.changed
+                printf '::error::Restoring the snapshot on the server data failed, so OpsCrew put its data back as it was before the rollback. The output of the copies and restores stays on the server data in %s/.snapshots/snapshot.log (it can quote data, so it is not printed here).\\n' "$APPS_DIR"/shop >&2
+                exit 1
+              fi
+              printf '::error::Restoring the snapshot on the server data failed, and putting its data back as it was before the rollback failed too, so it may be partly changed. Its copy from before the rollback stays there in %s/.snapshots/%s. The output of the copies and restores stays on the server data in %s/.snapshots/snapshot.log (it can quote data, so it is not printed here).\\n' "$APPS_DIR"/shop "$running" "$APPS_DIR"/shop >&2
+              exit 2 ;;
+            marked)
+              if [ "$#" -ne 3 ] || [ -z "$2" ] || [ -z "$3" ] || ! image_ref "$2" || ! image_ref "$3"; then
+                echo '::error::The rollback'\\''s script on the server data needs the image it goes back to and the one that ran before, so nothing was changed there.' >&2
+                exit 1
+              fi
+              target="\${2##*@sha256:}"
+              running="\${3##*@sha256:}"
+              if changed; then echo "marked $(sed -n 's/^choice=//p' .database.changed)"; else echo none; fi ;;
+            back)
+              if [ "$#" -ne 3 ] || [ -z "$2" ] || [ -z "$3" ] || ! image_ref "$2" || ! image_ref "$3"; then
+                echo '::error::The rollback'\\''s script on the server data needs the image it went back to and the one that ran before, so nothing was changed there.' >&2
+                exit 1
+              fi
+              target="\${2##*@sha256:}"
+              running="\${3##*@sha256:}"
+              if ! changed; then
+                if ours; then rm -f .database.changed; fi
+                exit 0
+              fi
+              if snapshot_complete "$running" && snapshot_restore "$running" $(snapshot_parts "$running"); then
+                rm -f .database.changed
+                echo 'OpsCrew put the data on the server data back as it was before the rollback.' >&2
+                exit 0
+              fi
+              printf '::error::Putting the data on the server data back as it was before the rollback failed, so it may be partly changed. Its copy from before the rollback stays there in %s/.snapshots/%s. The output of the copies and restores stays on the server data in %s/.snapshots/snapshot.log (it can quote data, so it is not printed here).\\n' "$APPS_DIR"/shop "$running" "$APPS_DIR"/shop >&2
+              exit 1 ;;
+            *)
+              echo '::error::The rollback'\\''s script on the server data knows only check, change, marked and back, so nothing was changed there.' >&2
+              exit 1 ;;
+          esac
+          REMOTE
+          cat > "$RUNNER_TEMP/opscrew-rollback-box-2.sh" <<'REMOTE'
+          APPS_DIR="\${OPSCREW_APPS_DIR:-/srv/apps}"
+          EDGE_DIR="\${OPSCREW_EDGE_DIR:-/srv/edge}"
+          set -eu
+          cd "$APPS_DIR"/shop
+          image_ref() {
+            case "$1" in
+              "") return 0 ;;
+              *[!A-Za-z0-9./:@_-]* | *@*@*) return 1 ;;
+              *@sha256:*) ;;
+              *) return 1 ;;
+            esac
+            _ref_hex="\${1##*@sha256:}"
+            case "$_ref_hex" in *[!0-9a-f]*) return 1 ;; esac
+            [ "\${#_ref_hex}" -eq 64 ]
+          }
+          OPSCREW_SNAPSHOT_FUNCTIONS=1 . ./snapshot.sh
+          exec 7> .start.lock
+          flock -w 900 7 || { echo '::error::A snapshot on the server box-2 kept the app'\\''s start lock there for 15 minutes, so the rollback changed nothing there. Run opscrew rollback again.' >&2; exit 1; }
+          mark() {
+            (umask 077; printf 'target=%s\\nsaved=%s\\nchanged=%s\\nchoice=%s\\n' "$target" "$running" "$1" "$2" > .database.changed)
+          }
+          ours() {
+            [ -f .database.changed ] && [ "$(sed -n 's/^target=//p' .database.changed)" = "$target" ] && [ "$(sed -n 's/^saved=//p' .database.changed)" = "$running" ]
+          }
+          changed() {
+            ours && [ "$(sed -n 's/^changed=//p' .database.changed)" = 1 ]
+          }
+          case "\${1:-}" in
+            check)
+              if [ "$#" -ne 2 ] || [ -z "$2" ] || ! image_ref "$2"; then
+                echo '::error::The rollback'\\''s script on the server box-2 needs the image it goes back to, so nothing was changed there.' >&2
+                exit 1
+              fi
+              target="\${2##*@sha256:}"
+              if [ ! -f .rollback-database ]; then echo keep; exit 0; fi
+              approved=""; choice=""; expiry=""
+              read -r approved choice expiry < .rollback-database || true
+              rm -f .rollback-database
+              if [ "$approved" != "$target" ]; then
+                echo '::warning::The approval to change the data on the server box-2 on a rollback (.rollback-database there) is for another version, so OpsCrew removed it: this rollback keeps the data there as it is.' >&2
+                echo keep
+                exit 0
+              fi
+              case "$choice" in snapshot) ;; *)
+                echo '::error::The one-time approval on the server box-2 (.rollback-database) names a choice it can'\\''t carry out, so nothing was changed. Run opscrew rollback again.' >&2
+                exit 1 ;;
+              esac
+              case "$expiry" in "" | *[!0-9]* | ???????????*) expiry=0 ;; esac
+              if [ "$expiry" -le "$(date +%s)" ]; then
+                echo '::error::The one-time approval to change the data on the server box-2 on this rollback expired before the run started, so nothing was changed. Run opscrew rollback again.' >&2
+                exit 1
+              fi
+              if [ "$choice" = snapshot ] && ! snapshot_complete "$target"; then
+                echo '::error::The snapshot this rollback was approved to restore is no longer complete on the server box-2 (in .snapshots), so the rollback changed nothing. Run opscrew rollback again to choose again.' >&2
+                exit 1
+              fi
+              echo "$choice" ;;
+            change)
+              if [ "$#" -ne 4 ] || [ -z "$3" ] || [ -z "$4" ] || ! image_ref "$3" || ! image_ref "$4" || [ "\${3##*@sha256:}" = "\${4##*@sha256:}" ]; then
+                echo '::error::The rollback'\\''s script on the server box-2 needs a choice, the image it goes back to and the one that runs, so nothing was changed there.' >&2
+                exit 1
+              fi
+              target="\${3##*@sha256:}"
+              running="\${4##*@sha256:}"
+              case "$2" in
+                snapshot) snapshot_complete "$target" || exit 1; parts="$(snapshot_parts "$target")" ;;
+                migrations) parts='orders' ;;
+                *) exit 1 ;;
+              esac
+              mark 0 "$2"
+              if ! snapshot_take "$running" release "$running" $parts; then
+                rm -f .database.changed
+                printf '::error::OpsCrew could not save the data on the server box-2 before changing it (a copy failed, or the disk is too full), so the rollback changed nothing there. The output of the copies and restores stays on the server box-2 in %s/.snapshots/snapshot.log (it can quote data, so it is not printed here).\\n' "$APPS_DIR"/shop >&2
+                exit 1
+              fi
+              mark 1 "$2"
+              if [ "$2" = migrations ]; then
+                echo 'OpsCrew saved the data on the server box-2 before the down migrations change it.' >&2
+                exit 0
+              fi
+              if snapshot_restore "$target" $parts; then
+                echo "OpsCrew restored the data on the server box-2 from the snapshot taken $(cat .snapshots/"$target"/taken)." >&2
+                exit 0
+              fi
+              if snapshot_restore "$running" $parts; then
+                rm -f .database.changed
+                printf '::error::Restoring the snapshot on the server box-2 failed, so OpsCrew put its data back as it was before the rollback. The output of the copies and restores stays on the server box-2 in %s/.snapshots/snapshot.log (it can quote data, so it is not printed here).\\n' "$APPS_DIR"/shop >&2
+                exit 1
+              fi
+              printf '::error::Restoring the snapshot on the server box-2 failed, and putting its data back as it was before the rollback failed too, so it may be partly changed. Its copy from before the rollback stays there in %s/.snapshots/%s. The output of the copies and restores stays on the server box-2 in %s/.snapshots/snapshot.log (it can quote data, so it is not printed here).\\n' "$APPS_DIR"/shop "$running" "$APPS_DIR"/shop >&2
+              exit 2 ;;
+            marked)
+              if [ "$#" -ne 3 ] || [ -z "$2" ] || [ -z "$3" ] || ! image_ref "$2" || ! image_ref "$3"; then
+                echo '::error::The rollback'\\''s script on the server box-2 needs the image it goes back to and the one that ran before, so nothing was changed there.' >&2
+                exit 1
+              fi
+              target="\${2##*@sha256:}"
+              running="\${3##*@sha256:}"
+              if changed; then echo "marked $(sed -n 's/^choice=//p' .database.changed)"; else echo none; fi ;;
+            back)
+              if [ "$#" -ne 3 ] || [ -z "$2" ] || [ -z "$3" ] || ! image_ref "$2" || ! image_ref "$3"; then
+                echo '::error::The rollback'\\''s script on the server box-2 needs the image it went back to and the one that ran before, so nothing was changed there.' >&2
+                exit 1
+              fi
+              target="\${2##*@sha256:}"
+              running="\${3##*@sha256:}"
+              if ! changed; then
+                if ours; then rm -f .database.changed; fi
+                exit 0
+              fi
+              if snapshot_complete "$running" && snapshot_restore "$running" $(snapshot_parts "$running"); then
+                rm -f .database.changed
+                echo 'OpsCrew put the data on the server box-2 back as it was before the rollback.' >&2
+                exit 0
+              fi
+              printf '::error::Putting the data on the server box-2 back as it was before the rollback failed, so it may be partly changed. Its copy from before the rollback stays there in %s/.snapshots/%s. The output of the copies and restores stays on the server box-2 in %s/.snapshots/snapshot.log (it can quote data, so it is not printed here).\\n' "$APPS_DIR"/shop "$running" "$APPS_DIR"/shop >&2
+              exit 1 ;;
+            *)
+              echo '::error::The rollback'\\''s script on the server box-2 knows only check, change, marked and back, so nothing was changed there.' >&2
+              exit 1 ;;
+          esac
+          REMOTE
+            held="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- held "$GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT" < "$RUNNER_TEMP/opscrew-hold.sh")" || held=unknown
+          fi
+          if [[ "$held" != none ]]; then
+            stuck=0
+            marked=()
+            unknown=()
+            kinds=""
+            for server in data box-2; do
+              answer="$(server_sh "$server" marked "$IMAGE" "$RUNNING" < "$RUNNER_TEMP/opscrew-rollback-$server.sh")" || answer=""
+              case "$answer" in
+                "marked snapshot" | "marked migrations") marked+=("$server"); kinds="$kinds $server:\${answer#marked }" ;;
+                none) ;;
+                *)
+                  echo "::error::OpsCrew could not tell whether this rollback changed the data on the server $server: it did not answer."
+                  unknown+=("$server") ;;
+              esac
+            done
+            failed=()
+            if (( \${#marked[@]} + \${#unknown[@]} > 0 )); then
+              if ! ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- stop < "$RUNNER_TEMP/opscrew-hold.sh"; then
+                stuck=1
+                failed=("\${marked[@]}")
+              else
+                for server in "\${marked[@]}"; do
+                  server_sh "$server" back "$IMAGE" "$RUNNING" < "$RUNNER_TEMP/opscrew-rollback-$server.sh" || failed+=("$server")
+                done
+              fi
+            fi
+            if (( stuck || \${#failed[@]} + \${#unknown[@]} > 0 )); then
+              ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- requests < "$RUNNER_TEMP/opscrew-hold.sh" || true
+              left="\${failed[*]} \${unknown[*]}"
+              left="\${left# }"; left="\${left% }"
+              env="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'f=/srv/apps/shop/.env; if [ -f "$f" ]; then sed -n "s/^APP_IMAGE=//p" "$f"; fi')" || env=""
+              hex="\${RUNNING##*@sha256:}"
+              commands=""
+              for server in $left; do
+                case " $kinds " in *" $server:migrations "*) kind=migrations ;; *) kind=snapshot ;; esac
+                case "$server:$kind" in
+                  data:snapshot) commands="$commands \\\`opscrew restore $hex --only db\\\` \\\`opscrew restore $hex --only docs\\\`" ;;
+                  box-2:snapshot) commands="$commands \\\`opscrew restore $hex --only orders\\\`" ;;
+                esac
+              done
+              if [[ "$env" == "$IMAGE" ]]; then
+                echo "::error::The rollback failed, and OpsCrew could not put the data back as it was before the rollback on the app's other servers $left (the messages above say why, and where each copy stays), so the app stays stopped and no version runs on data it doesn't match. The app's server's .env names the version the rollback went to, its own data may hold that version's snapshot, and its .database.changed marker stays. Once those servers are fixed, run \\\`opscrew rollback --to sha256:$hex --database snapshot\\\`: it restores the copies this run saved before changing anything, on every server, and starts that version. Start the app by hand (\\\`docker compose start\\\` in its folder; opscrew/RUNBOOK.md has the SSH command) only once the data on every server matches the version its .env names. Connect to the server and run \\\`docker compose ps\\\` in /srv/apps/shop."
+              elif [[ "$env" == "$RUNNING" ]]; then
+                echo "::error::The rollback failed, and OpsCrew could not put the data back as it was before the rollback on the app's other servers $left (the messages above say why, and where each copy stays), so the app stays stopped and no version runs on data it doesn't match. The app's server still runs the version that ran, on its own data as before. Once those servers are fixed, run$commands: each puts the copy this run saved before changing anything back on its server. Start the app by hand (\\\`docker compose start\\\` in its folder; opscrew/RUNBOOK.md has the SSH command) only once the data on every server matches the version its .env names. Connect to the server and run \\\`docker compose ps\\\` in /srv/apps/shop."
+              else
+                echo "::error::The rollback failed, and OpsCrew could not put the data back as it was before the rollback on the app's other servers $left (the messages above say why, and where each copy stays), so the app stays stopped and no version runs on data it doesn't match. OpsCrew could not reach the app's server either, to read which version its .env names. Once the servers are fixed: if it names the version the rollback went to, run \\\`opscrew rollback --to sha256:$hex --database snapshot\\\`; if it names the version that ran, run$commands: each puts the copy this run saved before changing anything back on its server. Start the app by hand (\\\`docker compose start\\\` in its folder; opscrew/RUNBOOK.md has the SSH command) only once the data on every server matches the version its .env names. Connect to the server and run \\\`docker compose ps\\\` in /srv/apps/shop."
+              fi
+              exit 1
+            fi
+          fi
           cat > "$RUNNER_TEMP/rollback.sh" <<'REMOTE'
           APPS_DIR="\${OPSCREW_APPS_DIR:-/srv/apps}"
           EDGE_DIR="\${OPSCREW_EDGE_DIR:-/srv/edge}"
@@ -1757,6 +2552,12 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
           if [[ "\${IMAGE:-}" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then
             outcome="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" < "$RUNNER_TEMP/rollback.sh")"
           fi
+          if [[ "$held" != none ]]; then
+            case "$outcome" in
+              restored | unchanged | no-previous) ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- resume < "$RUNNER_TEMP/opscrew-hold.sh" || true ;;
+            esac
+            ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- forget < "$RUNNER_TEMP/opscrew-hold.sh" || true
+          fi
           case "$MODE:$outcome" in
             *:held*) case "$outcome" in "held rotation "*) printf '::error::This run stopped before changing anything: a credential rotation holds the app (the rotation of the plan %s), so its services may have new values the app does not use yet: finish the rotation with opscrew rotate, or put the old values back with opscrew rotate --undo, then try again.\\n' "\${outcome#held rotation }" ;; *) printf '::error::This run stopped before changing anything: a restore holds the app (.snapshots/.held in its folder), so its data may be partly restored: finish the restore with opscrew restore <copy>, or run sh snapshot.sh resume in the app'\\''s folder as the deploy user, then try again.\\n' ;; esac ;;
             rollback:restored)
@@ -1774,5 +2575,60 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
             *)
               echo "::error::The deploy failed and OpsCrew could not restore the previous version. Connect to the server and run \\\`docker compose ps\\\` in /srv/apps/shop." ;;
           esac
-          exit 1"
+          exit 1
+      - name: Forget the app's hold for its other servers
+        if: success() && steps.others.outputs.restored != ''
+        env:
+          HOST: \${{ secrets.OPSCREW_HOST }}
+        run: |
+          set -euo pipefail
+          ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
+          ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- forget < "$RUNNER_TEMP/opscrew-hold.sh" || echo "::warning::The rollback worked, but OpsCrew could not remove the app's server's record that this run held the app (.others.held in its folder). It stays, and is harmless: opscrew rollback --to reads it only beside a marker of this run on another server, which the next deploy clears."
+      - name: Record the running version on the app's other servers
+        if: always() && steps.start.outcome != 'skipped'
+        env:
+          HOST: \${{ secrets.OPSCREW_HOST }}
+          SERVER_HOST_DATA: \${{ secrets.OPSCREW_SERVER_DATA_HOST }}
+          SERVER_HOST_BOX_2: \${{ secrets.OPSCREW_SERVER_BOX_2_HOST }}
+        run: |
+          set -uo pipefail
+          ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
+          server_sh() {
+            case "$1" in
+              data) ssh -i "$RUNNER_TEMP/opscrew-servers/key" -o UserKnownHostsFile="$RUNNER_TEMP/opscrew-servers/known_hosts" -F "$RUNNER_TEMP/opscrew-servers/config" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20 "deploy@\${SERVER_HOST_DATA}" sh -s -- "\${@:2}" ;;
+              box-2) ssh -i "$RUNNER_TEMP/opscrew-servers/key" -o UserKnownHostsFile="$RUNNER_TEMP/opscrew-servers/known_hosts" -F "$RUNNER_TEMP/opscrew-servers/config" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20 "deploy@\${SERVER_HOST_BOX_2}" sh -s -- "\${@:2}" ;;
+              *) return 1 ;;
+            esac
+          }
+          cat > "$RUNNER_TEMP/opscrew-running.sh" <<'REMOTE'
+          APPS_DIR="\${OPSCREW_APPS_DIR:-/srv/apps}"
+          EDGE_DIR="\${OPSCREW_EDGE_DIR:-/srv/edge}"
+          set -eu
+          cd "$APPS_DIR"/shop
+          image_ref() {
+            case "$1" in
+              "") return 0 ;;
+              *[!A-Za-z0-9./:@_-]* | *@*@*) return 1 ;;
+              *@sha256:*) ;;
+              *) return 1 ;;
+            esac
+            _ref_hex="\${1##*@sha256:}"
+            case "$_ref_hex" in *[!0-9a-f]*) return 1 ;; esac
+            [ "\${#_ref_hex}" -eq 64 ]
+          }
+          if ! image_ref "\${1:-}"; then
+            echo '::error::The version the app'\\''s server runs is no image digest, so OpsCrew left .running as it was.' >&2
+            exit 1
+          fi
+          if [ -z "\${1:-}" ]; then rm -f .running; exit 0; fi
+          (umask 077; printf '%s\\n' "$1" > .running.new && mv -f .running.new .running)
+          REMOTE
+          if ! running="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'f=/srv/apps/shop/.env; if [ -f "$f" ]; then sed -n "s/^APP_IMAGE=//p" "$f"; fi')"; then
+            echo "::warning::OpsCrew could not read the version that runs on the app's server, so the snapshots taken there by hand or on a schedule may record another version than the one that runs, until the next deploy."
+            exit 0
+          fi
+          if [[ ! "$running" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then running=; fi
+          for server in data box-2; do
+            server_sh "$server" "$running" < "$RUNNER_TEMP/opscrew-running.sh" || echo "::warning::OpsCrew could not record the version that runs on the server $server, so the snapshots taken there by hand or on a schedule may record another version than the one that runs, until the next deploy."
+          done"
 `;

@@ -317,8 +317,9 @@ Then revoke the bucket's key in the same console.
 
 ## The snapshot before each release
 
-With `deploy.snapshots` on (every environment but prod, by default), each deploy takes a snapshot
-before its release command, so that [a rollback can restore it](rollback.md#the-database).
+With `deploy.snapshots` on (every environment but previews, prod included, by default), each
+deploy takes a snapshot before its release command, so that
+[a rollback can restore it](rollback.md#the-database).
 `opscrew snapshot list` lists them as `before a release`. What they hold, how many stay and how
 `deploy.snapshotStop` adds a service that stops for its copy are in
 [Snapshots before each release](rollback.md#snapshots-before-each-release); how a rollback

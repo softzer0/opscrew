@@ -97,7 +97,7 @@ export interface RollbackOptions {
   /**
    * `--database <choice>`: how a server's or this computer's rollback treats the database (plan.md
    * 12.5). Without it, `chooseDatabase` asks, or the default applies: the snapshot outside prod
-   * when there is one, keep otherwise. A site refuses `snapshot` and `migrations`.
+   * when the environment takes snapshots, keep otherwise. A site refuses `snapshot` and `migrations`.
    */
   database?: DatabaseChoice;
   /** A terminal's question, asked when more than keep is offered and `database` is not given. */

@@ -221,7 +221,8 @@ describe("the masking file on every server (monitoring on)", () => {
       const all = stepRun(split(), name).split("\n");
       const envFile = all.findIndex((line) => line.includes(`cat > /srv/apps/shop/${last}'`));
       const mask = all.findIndex((line) => line.includes("cat > /srv/apps/shop/mask.re"));
-      const remote = all.findIndex((line) => line.includes("sh -s <<'REMOTE'"));
+      // With the snapshot before each release (on by default), the script takes the image too.
+      const remote = all.findIndex((line) => / sh -s (-- .+ )?<<'REMOTE'$/.test(line));
       expect(envFile).toBeGreaterThan(0);
       expect(mask).toBeGreaterThan(envFile);
       expect(remote).toBeGreaterThan(mask);

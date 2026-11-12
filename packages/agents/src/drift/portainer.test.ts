@@ -213,8 +213,9 @@ describe.skipIf(!findExecutable("git"))("opscrew drift for the user's Portainer"
     const s = await deployed({ plan });
     const content = await deployImage(s);
     expect(content).toContain(`OPSCREW_RELEASE: run`);
-    // `opscrew rollback`'s dispatch writes the same stack with the release command switched off.
-    const rolledBack = content.replace("OPSCREW_RELEASE: run", "OPSCREW_RELEASE: skip");
+    // `opscrew rollback`'s dispatch writes the same stack with the release command, and the
+    // snapshot before it, switched off.
+    const rolledBack = content.replaceAll("OPSCREW_RELEASE: run", "OPSCREW_RELEASE: skip");
     await writeBranch(s.bare, "opscrew-deploy", rolledBack);
     let report = await drift(s);
     expect(report.portainer?.differences).toEqual([]);

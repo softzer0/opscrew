@@ -84,7 +84,7 @@ const SETTINGS = { ...serverSettings(process.env), app: "nextjs-postgres" };
 const DATABASE_SETTINGS = { ...serverSettings(process.env), app: DATABASE_EXAMPLE };
 /** The classic `read:packages` token OpsCrew reads the versions from GHCR with (docs/e2e.md). */
 const GHCR_READ_TOKEN = process.env.OPSCREW_E2E_GHCR_READ_TOKEN?.trim() ?? "";
-/** The database pass's environment: snapshots are on by default everywhere but prod. */
+/** The database pass's environment: snapshots are on by default everywhere but previews. */
 const STAGING = "staging";
 
 for (const [gate, missing, what] of [
@@ -638,9 +638,7 @@ describe.skipIf(MISSING_DATABASE.length > 0)(
         }
         health = `https://${host}${staging.app.healthPath}`;
         workflow = posix.basename(staging.cicd.workflowPath);
-        expect(snapshotsOn(staging), "staging takes snapshots (on by default outside prod)").toBe(
-          true,
-        );
+        expect(snapshotsOn(staging), "staging takes snapshots (on by default)").toBe(true);
         expect(staging.app.migrations?.tool, "staging's app.migrations").toBe("knex");
         await envs.provision(STAGING, "staging");
         const first = await run.deploy("v1, staging's first deploy", [workflow]);

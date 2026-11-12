@@ -238,9 +238,10 @@ export function register(program: Command, ctx: CliContext): void {
         SUMMARY,
         "",
         "On a server or this computer it asks how to treat the database: restore the snapshot taken",
-        "when that version stopped running (the default outside prod, when there is one), migrate it",
-        "down, or keep it as it is (the default on prod). Restoring or migrating down needs the",
-        "app's name typed, as destroy does. Settings and secrets stay; the release command never runs.",
+        "when that version stopped running (the default outside prod, when the environment takes",
+        "snapshots), migrate it down, or keep it as it is (the default on prod). Restoring or",
+        "migrating down needs the app's name typed, as destroy does. Settings and secrets stay; the",
+        "release command never runs.",
       ].join("\n"),
     )
     .option(

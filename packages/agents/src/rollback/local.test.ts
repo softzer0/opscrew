@@ -195,11 +195,14 @@ describe("opscrew rollback on this computer", () => {
       how: "local",
       database: { choice: "keep" },
     });
+    // Prod takes snapshots before each release (the default), so the hash binds keeping the
+    // database, with no snapshot taken here.
     const hash = imageRollbackHash({
       environment: "shop/prod",
       current: RUNNING,
       target: PREVIOUS,
       targetPlanHash: planHash(world.plan),
+      database: { choice: "keep", taken: null, currentRecord: null, targetRecord: null },
     });
     const request = world.handler.requests[0] as ApprovalRequest;
     expect(request).toMatchObject({ kind: "promote", planHash: hash });
@@ -384,7 +387,7 @@ describe("opscrew rollback on this computer", () => {
     expect(mismatch.code).toBe("PLAN_NOT_APPROVED");
     const refused = await failure(world.run());
     expect(refused.code).toBe("APPROVAL_REFUSED");
-    expect(refused.hint).toMatch(new RegExp(`${COMMAND} --approve [0-9a-f]{64}$`));
+    expect(refused.hint).toMatch(new RegExp(`${COMMAND} --database keep --approve [0-9a-f]{64}$`));
     expect(world.scripts()).toEqual([]);
     expect(await readRollback(world.deps.paths)).toBeUndefined();
   });

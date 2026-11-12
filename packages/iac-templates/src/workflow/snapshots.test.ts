@@ -1071,10 +1071,11 @@ describe.skipIf(!shWorks())(
     });
 
     describe("with snapshots off and no approval", () => {
-      const prod = withProcesses(withPlan(testPlan(), { releaseCommand: "npm run migrate" }), {
+      const base = withProcesses(withPlan(testPlan(), { releaseCommand: "npm run migrate" }), {
         workers: [{ name: "worker", command: "node worker.js" }],
       });
-      const off = withPlan(inEnvironment(prod, { name: "staging" }), {
+      const prod = withPlan(base, { deploy: { snapshots: false } });
+      const off = withPlan(inEnvironment(base, { name: "staging" }), {
         deploy: { snapshots: false },
       });
 
@@ -1973,7 +1974,7 @@ describe("the start script's database lines", () => {
     );
   });
 
-  it("read the approval on prod too, where snapshots are off unless deploy.snapshots is true", () => {
+  it("read the approval on prod too, and snapshot before each release there unless deploy.snapshots is false", () => {
     const prod = DeployPlanSchema.parse({
       ...staging,
       environment: undefined,
@@ -1981,9 +1982,11 @@ describe("the start script's database lines", () => {
     });
     const deployStep = 'if [ "$MODE" = deploy ] && [ -n "$running" ]';
     expect(script(prod)).toContain(".rollback-database");
-    expect(script(prod)).not.toContain(deployStep);
+    expect(script(prod)).toContain(deployStep);
     expect(script(staging)).toContain(deployStep);
-    expect(script(withPlan(prod, { deploy: { snapshots: true } }))).toContain(deployStep);
+    const off = withPlan(prod, { deploy: { snapshots: false } });
+    expect(script(off)).toContain(".rollback-database");
+    expect(script(off)).not.toContain(deployStep);
   });
 });
 

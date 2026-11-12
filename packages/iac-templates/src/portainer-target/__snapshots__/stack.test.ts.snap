@@ -325,6 +325,8 @@ services:
         condition: service_healthy
       cache:
         condition: service_healthy
+      snapshot:
+        condition: service_completed_successfully
       release:
         condition: service_completed_successfully
   release:
@@ -348,6 +350,8 @@ services:
         condition: service_healthy
       cache:
         condition: service_healthy
+      snapshot:
+        condition: service_completed_successfully
     security_opt:
       - no-new-privileges:true
     logging:
@@ -415,6 +419,187 @@ services:
         max-file: "3"
     networks:
       - internal
+  snapshot-db:
+    image: <pin:IMAGES.postgres>
+    restart: no
+    user: 0:0
+    environment:
+      POSTGRES_USER: \${OPSCREW_DB_USER}
+      POSTGRES_DB: \${OPSCREW_DB_NAME}
+      POSTGRES_PASSWORD: \${OPSCREW_DB_PASSWORD}
+      OPSCREW_RELEASE: __OPSCREW_RELEASE__
+      OPSCREW_APP_IMAGE: __OPSCREW_APP_IMAGE__
+    entrypoint:
+      - sh
+      - -c
+      - |-
+        take() {
+          mkdir -p "$$1" && rm -f "$$1"/db.done "$$1"/db.failed "$$1"/db.skipped || return 1
+          t="$$1"/db.dump.tmp
+          (umask 077 && export PGPASSWORD="$$POSTGRES_PASSWORD" && pg_dump -h db -U app -Fc -f "$$t" app); r=$$?
+          if [ "$$r" = 0 ] && mv "$$t" "$$1"/db.dump; then
+            touch "$$1"/db.done
+          elif [ "$$r" = 3 ]; then
+            rm -f "$$t"; touch "$$1"/db.skipped
+          else
+            rm -f "$$t"; touch "$$1"/db.failed
+            echo 'OpsCrew: the snapshot of db failed; its output is above.' >&2
+            return 1
+          fi
+        }
+        if [ "$$OPSCREW_RELEASE" = skip ] || [ ! -f /snapshots/.running ]; then exit 0; fi
+        out=$$(cat /snapshots/.running)
+        if [ "$$out" = "$$OPSCREW_APP_IMAGE" ]; then exit 0; fi
+        hex=$\${out##*@sha256:}
+        case "$$hex" in *[!0-9a-f]*) hex= ;; esac
+        if [ "$\${#hex}" -ne 64 ]; then
+          echo 'OpsCrew: /snapshots/.running in the snapshots volume names no image pinned by digest, so the snapshot before this release can'\\''t be taken.' >&2
+          exit 1
+        fi
+        take /snapshots/"$$hex".partial
+    volumes:
+      - db_data:/var/lib/postgresql/data:ro
+      - snapshots:/snapshots
+    depends_on:
+      db:
+        condition: service_healthy
+    mem_limit: 512m
+    memswap_limit: 512m
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    networks:
+      - internal
+  snapshot-cache:
+    image: <pin:IMAGES.valkey>
+    restart: no
+    user: 0:0
+    environment:
+      VALKEY_PASSWORD: \${OPSCREW_SVC_CACHE_PASSWORD}
+      OPSCREW_RELEASE: __OPSCREW_RELEASE__
+      OPSCREW_APP_IMAGE: __OPSCREW_APP_IMAGE__
+    entrypoint:
+      - sh
+      - -c
+      - |-
+        take() {
+          mkdir -p "$$1" && rm -f "$$1"/cache.done "$$1"/cache.failed "$$1"/cache.skipped || return 1
+          t="$$1"/cache.rdb.tmp
+          (umask 077 && export REDISCLI_AUTH="$$VALKEY_PASSWORD" && valkey-cli -h cache --rdb "$$t"); r=$$?
+          if [ "$$r" = 0 ] && mv "$$t" "$$1"/cache.rdb; then
+            touch "$$1"/cache.done
+          elif [ "$$r" = 3 ]; then
+            rm -f "$$t"; touch "$$1"/cache.skipped
+          else
+            rm -f "$$t"; touch "$$1"/cache.failed
+            echo 'OpsCrew: the snapshot of cache failed; its output is above.' >&2
+            return 1
+          fi
+        }
+        if [ "$$OPSCREW_RELEASE" = skip ] || [ ! -f /snapshots/.running ]; then exit 0; fi
+        out=$$(cat /snapshots/.running)
+        if [ "$$out" = "$$OPSCREW_APP_IMAGE" ]; then exit 0; fi
+        hex=$\${out##*@sha256:}
+        case "$$hex" in *[!0-9a-f]*) hex= ;; esac
+        if [ "$\${#hex}" -ne 64 ]; then
+          echo 'OpsCrew: /snapshots/.running in the snapshots volume names no image pinned by digest, so the snapshot before this release can'\\''t be taken.' >&2
+          exit 1
+        fi
+        take /snapshots/"$$hex".partial
+    volumes:
+      - cache_data:/data:ro
+      - snapshots:/snapshots
+    depends_on:
+      cache:
+        condition: service_healthy
+    mem_limit: 128m
+    memswap_limit: 128m
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    networks:
+      - internal
+  snapshot:
+    image: <pin:IMAGES.busybox>
+    user: 0:0
+    network_mode: none
+    restart: no
+    environment:
+      OPSCREW_RELEASE: __OPSCREW_RELEASE__
+      OPSCREW_APP_IMAGE: __OPSCREW_APP_IMAGE__
+    depends_on:
+      snapshot-db:
+        condition: service_completed_successfully
+      snapshot-cache:
+        condition: service_completed_successfully
+    entrypoint:
+      - sh
+      - -c
+      - |-
+        finish() {
+          img=$$(cat /snapshots/.running 2> /dev/null)
+          {
+            printf '{"id":"%s","kind":"%s","taken":"%s","version":"%s","services":[' "$$2" "$$3" "$$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$\${img##*@}"
+            if [ -f "$$1"/db.done ] && [ -f "$$1"/db.dump ]; then
+              printf '{"name":"db","kind":"postgres","file":"db.dump","size":%s,"image":"<pin:IMAGES.postgres>"}' "$$(stat -c %s "$$1"/db.dump)"
+            elif [ -f "$$1"/db.skipped ]; then
+              printf '{"name":"db","kind":"postgres","skipped":true}'
+            else
+              printf '{"name":"db","kind":"postgres","failed":true}'
+            fi
+            printf ,
+            if [ -f "$$1"/cache.done ] && [ -f "$$1"/cache.rdb ]; then
+              printf '{"name":"cache","kind":"valkey","file":"cache.rdb","size":%s,"image":"<pin:IMAGES.valkey>"}' "$$(stat -c %s "$$1"/cache.rdb)"
+            elif [ -f "$$1"/cache.skipped ]; then
+              printf '{"name":"cache","kind":"valkey","skipped":true}'
+            else
+              printf '{"name":"cache","kind":"valkey","failed":true}'
+            fi
+            printf ']}\\n'
+          } > "$$1"/.about || return 1
+          rm -f "$$1"/*.done "$$1"/*.failed "$$1"/*.skipped "$$1"/*.tmp
+          mv "$$1"/.about "$$1"/about.json && chown -R 0:0 "$$1" && chmod 600 "$$1"/* && chmod 700 "$$1" || return 1
+          rm -rf /snapshots/"$$2" && mv "$$1" /snapshots/"$$2"
+        }
+        prune() {
+          for d in /snapshots/*; do
+            case "$$d" in *.partial|*.taking) continue ;; esac
+            if [ -f "$$d"/about.json ] && grep -q "\\"kind\\":\\"$$1\\"" "$$d"/about.json; then echo "$$(sed -n 's/.*"taken":"\\([^"]*\\)".*/\\1/p' "$$d"/about.json) $$d"; fi
+          done | sort -r | sed "1,$$2d" | while read -r _ d; do rm -rf "$$d"; done
+        }
+        if [ -f /snapshots/.restored ] && [ "$$(sed -n '1s/.*@//p' /snapshots/.restored)" != "$\${OPSCREW_APP_IMAGE##*@}" ]; then
+          echo "OpsCrew: opscrew rollback restored this stack's data for $$(sed -n 1p /snapshots/.restored), so no other version starts on it until that rollback ends (/snapshots/.restored names it). If that rollback is stuck, run $$(sed -n 2p /snapshots/.restored) on the computer that ran it; it finishes the rollback and removes /snapshots/.restored." >&2
+          exit 1
+        fi
+        if [ "$$OPSCREW_RELEASE" = skip ] || [ ! -f /snapshots/.running ]; then exit 0; fi
+        out=$$(cat /snapshots/.running)
+        if [ "$$out" = "$$OPSCREW_APP_IMAGE" ]; then exit 0; fi
+        hex=$\${out##*@sha256:}
+        case "$$hex" in *[!0-9a-f]*) hex= ;; esac
+        if [ "$\${#hex}" -ne 64 ]; then
+          echo 'OpsCrew: /snapshots/.running in the snapshots volume names no image pinned by digest, so the snapshot before this release can'\\''t be taken.' >&2
+          exit 1
+        fi
+        finish /snapshots/"$$hex".partial "$$hex" release && prune release 3
+    volumes:
+      - snapshots:/snapshots
+    mem_limit: 16m
+    memswap_limit: 16m
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
   stamp:
     image: <pin:IMAGES.curl>
     restart: no
@@ -625,6 +810,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      snapshot:
+        condition: service_completed_successfully
       release:
         condition: service_completed_successfully
   release:
@@ -655,6 +842,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      snapshot:
+        condition: service_completed_successfully
     security_opt:
       - no-new-privileges:true
     logging:
@@ -708,6 +897,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      snapshot:
+        condition: service_completed_successfully
       release:
         condition: service_completed_successfully
   cron:
@@ -755,6 +946,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      snapshot:
+        condition: service_completed_successfully
       release:
         condition: service_completed_successfully
   mysql:
@@ -877,6 +1070,224 @@ services:
         max-file: "3"
     networks:
       - internal
+  snapshot-mysql:
+    image: <pin:IMAGES.mysql>
+    restart: no
+    user: 0:0
+    environment:
+      MYSQL_DATABASE: app
+      MYSQL_USER: app
+      MYSQL_PASSWORD: \${OPSCREW_SVC_MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: \${OPSCREW_SVC_MYSQL_ROOT_PASSWORD}
+      OPSCREW_RELEASE: __OPSCREW_RELEASE__
+      OPSCREW_APP_IMAGE: __OPSCREW_APP_IMAGE__
+    entrypoint:
+      - sh
+      - -c
+      - |-
+        take() {
+          mkdir -p "$$1" && rm -f "$$1"/mysql.done "$$1"/mysql.failed "$$1"/mysql.skipped || return 1
+          t="$$1"/mysql.dump.tmp
+          (umask 077 && export MYSQL_PWD="$$MYSQL_ROOT_PASSWORD" && mysqldump -h mysql -u root --single-transaction --routines --events --triggers --no-tablespaces app > "$$t"); r=$$?
+          if [ "$$r" = 0 ] && mv "$$t" "$$1"/mysql.dump; then
+            touch "$$1"/mysql.done
+          elif [ "$$r" = 3 ]; then
+            rm -f "$$t"; touch "$$1"/mysql.skipped
+          else
+            rm -f "$$t"; touch "$$1"/mysql.failed
+            echo 'OpsCrew: the snapshot of mysql failed; its output is above.' >&2
+            return 1
+          fi
+        }
+        if [ "$$OPSCREW_RELEASE" = skip ] || [ ! -f /snapshots/.running ]; then exit 0; fi
+        out=$$(cat /snapshots/.running)
+        if [ "$$out" = "$$OPSCREW_APP_IMAGE" ]; then exit 0; fi
+        hex=$\${out##*@sha256:}
+        case "$$hex" in *[!0-9a-f]*) hex= ;; esac
+        if [ "$\${#hex}" -ne 64 ]; then
+          echo 'OpsCrew: /snapshots/.running in the snapshots volume names no image pinned by digest, so the snapshot before this release can'\\''t be taken.' >&2
+          exit 1
+        fi
+        take /snapshots/"$$hex".partial
+    volumes:
+      - mysql_data:/var/lib/mysql:ro
+      - snapshots:/snapshots
+    depends_on:
+      mysql:
+        condition: service_healthy
+    mem_limit: 512m
+    memswap_limit: 512m
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    networks:
+      - internal
+  snapshot-sqlite:
+    image: <pin:IMAGES.python>
+    restart: no
+    user: 0:0
+    network_mode: none
+    environment:
+      OPSCREW_RELEASE: __OPSCREW_RELEASE__
+      OPSCREW_APP_IMAGE: __OPSCREW_APP_IMAGE__
+    entrypoint:
+      - sh
+      - -c
+      - |-
+        take() {
+          mkdir -p "$$1" && rm -f "$$1"/sqlite.done "$$1"/sqlite.failed "$$1"/sqlite.skipped || return 1
+          t="$$1"/sqlite.tar.tmp
+          (umask 077 && python3 -c 'import os, sqlite3, sys, tarfile, tempfile
+        d = sys.argv[1]
+        s = os.stat(d)
+        os.setgroups([])
+        os.setgid(s.st_gid)
+        os.setuid(s.st_uid)
+        if not os.listdir(d):
+            print("OpsCrew: the app'\\''s SQLite volume is empty, so the snapshot holds nothing of it.", file=sys.stderr)
+            sys.exit(3)
+        def numeric(info):
+            info.uname = info.gname = ""
+            return info
+        def database(path):
+            if os.path.islink(path) or not os.path.isfile(path):
+                return False
+            with open(path, "rb") as f:
+                return f.read(16) == b"SQLite format 3\\x00"
+        with tempfile.TemporaryDirectory() as tmp:
+            copy = os.path.join(tmp, "copy")
+            with tarfile.open(fileobj=sys.stdout.buffer, mode="w|", format=tarfile.GNU_FORMAT) as tar:
+                for root, dirs, files in os.walk(d):
+                    dirs.sort()
+                    tar.add(root, os.path.relpath(root, d), recursive=False, filter=numeric)
+                    for name in sorted(files):
+                        path = os.path.join(root, name)
+                        arcname = os.path.relpath(path, d)
+                        if name.endswith(("-wal", "-shm", "-journal")):
+                            continue
+                        if not database(path):
+                            tar.add(path, arcname, recursive=False, filter=numeric)
+                            continue
+                        src = sqlite3.connect("file:" + path + "?mode=rw", uri=True)
+                        dst = sqlite3.connect(copy)
+                        src.backup(dst)
+                        src.close()
+                        dst.execute("pragma journal_mode=delete")
+                        dst.close()
+                        info = numeric(tar.gettarinfo(path, arcname))
+                        info.size = os.path.getsize(copy)
+                        with open(copy, "rb") as f:
+                            tar.addfile(info, f)
+                        os.remove(copy)' /sqlite > "$$t"); r=$$?
+          if [ "$$r" = 0 ] && mv "$$t" "$$1"/sqlite.tar; then
+            touch "$$1"/sqlite.done
+          elif [ "$$r" = 3 ]; then
+            rm -f "$$t"; touch "$$1"/sqlite.skipped
+          else
+            rm -f "$$t"; touch "$$1"/sqlite.failed
+            echo 'OpsCrew: the snapshot of sqlite failed; its output is above.' >&2
+            return 1
+          fi
+        }
+        if [ "$$OPSCREW_RELEASE" = skip ] || [ ! -f /snapshots/.running ]; then exit 0; fi
+        out=$$(cat /snapshots/.running)
+        if [ "$$out" = "$$OPSCREW_APP_IMAGE" ]; then exit 0; fi
+        hex=$\${out##*@sha256:}
+        case "$$hex" in *[!0-9a-f]*) hex= ;; esac
+        if [ "$\${#hex}" -ne 64 ]; then
+          echo 'OpsCrew: /snapshots/.running in the snapshots volume names no image pinned by digest, so the snapshot before this release can'\\''t be taken.' >&2
+          exit 1
+        fi
+        take /snapshots/"$$hex".partial
+    volumes:
+      - sqlite:/sqlite
+      - snapshots:/snapshots
+    mem_limit: 128m
+    memswap_limit: 128m
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+  snapshot:
+    image: <pin:IMAGES.busybox>
+    user: 0:0
+    network_mode: none
+    restart: no
+    environment:
+      OPSCREW_RELEASE: __OPSCREW_RELEASE__
+      OPSCREW_APP_IMAGE: __OPSCREW_APP_IMAGE__
+    depends_on:
+      snapshot-mysql:
+        condition: service_completed_successfully
+      snapshot-sqlite:
+        condition: service_completed_successfully
+    entrypoint:
+      - sh
+      - -c
+      - |-
+        finish() {
+          img=$$(cat /snapshots/.running 2> /dev/null)
+          {
+            printf '{"id":"%s","kind":"%s","taken":"%s","version":"%s","services":[' "$$2" "$$3" "$$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$\${img##*@}"
+            if [ -f "$$1"/mysql.done ] && [ -f "$$1"/mysql.dump ]; then
+              printf '{"name":"mysql","kind":"mysql","file":"mysql.dump","size":%s,"image":"<pin:IMAGES.mysql>"}' "$$(stat -c %s "$$1"/mysql.dump)"
+            elif [ -f "$$1"/mysql.skipped ]; then
+              printf '{"name":"mysql","kind":"mysql","skipped":true}'
+            else
+              printf '{"name":"mysql","kind":"mysql","failed":true}'
+            fi
+            printf ,
+            if [ -f "$$1"/sqlite.done ] && [ -f "$$1"/sqlite.tar ]; then
+              printf '{"name":"sqlite","kind":"sqlite","file":"sqlite.tar","size":%s}' "$$(stat -c %s "$$1"/sqlite.tar)"
+            elif [ -f "$$1"/sqlite.skipped ]; then
+              printf '{"name":"sqlite","kind":"sqlite","skipped":true}'
+            else
+              printf '{"name":"sqlite","kind":"sqlite","failed":true}'
+            fi
+            printf ']}\\n'
+          } > "$$1"/.about || return 1
+          rm -f "$$1"/*.done "$$1"/*.failed "$$1"/*.skipped "$$1"/*.tmp
+          mv "$$1"/.about "$$1"/about.json && chown -R 0:0 "$$1" && chmod 600 "$$1"/* && chmod 700 "$$1" || return 1
+          rm -rf /snapshots/"$$2" && mv "$$1" /snapshots/"$$2"
+        }
+        prune() {
+          for d in /snapshots/*; do
+            case "$$d" in *.partial|*.taking) continue ;; esac
+            if [ -f "$$d"/about.json ] && grep -q "\\"kind\\":\\"$$1\\"" "$$d"/about.json; then echo "$$(sed -n 's/.*"taken":"\\([^"]*\\)".*/\\1/p' "$$d"/about.json) $$d"; fi
+          done | sort -r | sed "1,$$2d" | while read -r _ d; do rm -rf "$$d"; done
+        }
+        if [ -f /snapshots/.restored ] && [ "$$(sed -n '1s/.*@//p' /snapshots/.restored)" != "$\${OPSCREW_APP_IMAGE##*@}" ]; then
+          echo "OpsCrew: opscrew rollback restored this stack's data for $$(sed -n 1p /snapshots/.restored), so no other version starts on it until that rollback ends (/snapshots/.restored names it). If that rollback is stuck, run $$(sed -n 2p /snapshots/.restored) on the computer that ran it; it finishes the rollback and removes /snapshots/.restored." >&2
+          exit 1
+        fi
+        if [ "$$OPSCREW_RELEASE" = skip ] || [ ! -f /snapshots/.running ]; then exit 0; fi
+        out=$$(cat /snapshots/.running)
+        if [ "$$out" = "$$OPSCREW_APP_IMAGE" ]; then exit 0; fi
+        hex=$\${out##*@sha256:}
+        case "$$hex" in *[!0-9a-f]*) hex= ;; esac
+        if [ "$\${#hex}" -ne 64 ]; then
+          echo 'OpsCrew: /snapshots/.running in the snapshots volume names no image pinned by digest, so the snapshot before this release can'\\''t be taken.' >&2
+          exit 1
+        fi
+        finish /snapshots/"$$hex".partial "$$hex" release && prune release 3
+    volumes:
+      - snapshots:/snapshots
+    mem_limit: 16m
+    memswap_limit: 16m
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
   stamp:
     image: <pin:IMAGES.curl>
     restart: no
@@ -1073,6 +1484,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      snapshot:
+        condition: service_completed_successfully
       release:
         condition: service_completed_successfully
   release:
@@ -1101,6 +1514,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      snapshot:
+        condition: service_completed_successfully
     security_opt:
       - no-new-privileges:true
     logging:
@@ -1152,6 +1567,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      snapshot:
+        condition: service_completed_successfully
       release:
         condition: service_completed_successfully
   cron:
@@ -1197,6 +1614,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      snapshot:
+        condition: service_completed_successfully
       release:
         condition: service_completed_successfully
   mysql:
@@ -1319,6 +1738,125 @@ services:
         max-file: "3"
     networks:
       - internal
+  snapshot-mysql:
+    image: <pin:IMAGES.mysql>
+    restart: no
+    user: 0:0
+    environment:
+      MYSQL_DATABASE: app
+      MYSQL_USER: app
+      MYSQL_PASSWORD: \${OPSCREW_SVC_MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: \${OPSCREW_SVC_MYSQL_ROOT_PASSWORD}
+      OPSCREW_RELEASE: __OPSCREW_RELEASE__
+      OPSCREW_APP_IMAGE: __OPSCREW_APP_IMAGE__
+    entrypoint:
+      - sh
+      - -c
+      - |-
+        take() {
+          mkdir -p "$$1" && rm -f "$$1"/mysql.done "$$1"/mysql.failed "$$1"/mysql.skipped || return 1
+          t="$$1"/mysql.dump.tmp
+          (umask 077 && export MYSQL_PWD="$$MYSQL_ROOT_PASSWORD" && mysqldump -h mysql -u root --single-transaction --routines --events --triggers --no-tablespaces app > "$$t"); r=$$?
+          if [ "$$r" = 0 ] && mv "$$t" "$$1"/mysql.dump; then
+            touch "$$1"/mysql.done
+          elif [ "$$r" = 3 ]; then
+            rm -f "$$t"; touch "$$1"/mysql.skipped
+          else
+            rm -f "$$t"; touch "$$1"/mysql.failed
+            echo 'OpsCrew: the snapshot of mysql failed; its output is above.' >&2
+            return 1
+          fi
+        }
+        if [ "$$OPSCREW_RELEASE" = skip ] || [ ! -f /snapshots/.running ]; then exit 0; fi
+        out=$$(cat /snapshots/.running)
+        if [ "$$out" = "$$OPSCREW_APP_IMAGE" ]; then exit 0; fi
+        hex=$\${out##*@sha256:}
+        case "$$hex" in *[!0-9a-f]*) hex= ;; esac
+        if [ "$\${#hex}" -ne 64 ]; then
+          echo 'OpsCrew: /snapshots/.running in the snapshots volume names no image pinned by digest, so the snapshot before this release can'\\''t be taken.' >&2
+          exit 1
+        fi
+        take /snapshots/"$$hex".partial
+    volumes:
+      - mysql_data:/var/lib/mysql:ro
+      - snapshots:/snapshots
+    depends_on:
+      mysql:
+        condition: service_healthy
+    mem_limit: 512m
+    memswap_limit: 512m
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    networks:
+      - internal
+  snapshot:
+    image: <pin:IMAGES.busybox>
+    user: 0:0
+    network_mode: none
+    restart: no
+    environment:
+      OPSCREW_RELEASE: __OPSCREW_RELEASE__
+      OPSCREW_APP_IMAGE: __OPSCREW_APP_IMAGE__
+    depends_on:
+      snapshot-mysql:
+        condition: service_completed_successfully
+    entrypoint:
+      - sh
+      - -c
+      - |-
+        finish() {
+          img=$$(cat /snapshots/.running 2> /dev/null)
+          {
+            printf '{"id":"%s","kind":"%s","taken":"%s","version":"%s","services":[' "$$2" "$$3" "$$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$\${img##*@}"
+            if [ -f "$$1"/mysql.done ] && [ -f "$$1"/mysql.dump ]; then
+              printf '{"name":"mysql","kind":"mysql","file":"mysql.dump","size":%s,"image":"<pin:IMAGES.mysql>"}' "$$(stat -c %s "$$1"/mysql.dump)"
+            elif [ -f "$$1"/mysql.skipped ]; then
+              printf '{"name":"mysql","kind":"mysql","skipped":true}'
+            else
+              printf '{"name":"mysql","kind":"mysql","failed":true}'
+            fi
+            printf ']}\\n'
+          } > "$$1"/.about || return 1
+          rm -f "$$1"/*.done "$$1"/*.failed "$$1"/*.skipped "$$1"/*.tmp
+          mv "$$1"/.about "$$1"/about.json && chown -R 0:0 "$$1" && chmod 600 "$$1"/* && chmod 700 "$$1" || return 1
+          rm -rf /snapshots/"$$2" && mv "$$1" /snapshots/"$$2"
+        }
+        prune() {
+          for d in /snapshots/*; do
+            case "$$d" in *.partial|*.taking) continue ;; esac
+            if [ -f "$$d"/about.json ] && grep -q "\\"kind\\":\\"$$1\\"" "$$d"/about.json; then echo "$$(sed -n 's/.*"taken":"\\([^"]*\\)".*/\\1/p' "$$d"/about.json) $$d"; fi
+          done | sort -r | sed "1,$$2d" | while read -r _ d; do rm -rf "$$d"; done
+        }
+        if [ -f /snapshots/.restored ] && [ "$$(sed -n '1s/.*@//p' /snapshots/.restored)" != "$\${OPSCREW_APP_IMAGE##*@}" ]; then
+          echo "OpsCrew: opscrew rollback restored this stack's data for $$(sed -n 1p /snapshots/.restored), so no other version starts on it until that rollback ends (/snapshots/.restored names it). If that rollback is stuck, run $$(sed -n 2p /snapshots/.restored) on the computer that ran it; it finishes the rollback and removes /snapshots/.restored." >&2
+          exit 1
+        fi
+        if [ "$$OPSCREW_RELEASE" = skip ] || [ ! -f /snapshots/.running ]; then exit 0; fi
+        out=$$(cat /snapshots/.running)
+        if [ "$$out" = "$$OPSCREW_APP_IMAGE" ]; then exit 0; fi
+        hex=$\${out##*@sha256:}
+        case "$$hex" in *[!0-9a-f]*) hex= ;; esac
+        if [ "$\${#hex}" -ne 64 ]; then
+          echo 'OpsCrew: /snapshots/.running in the snapshots volume names no image pinned by digest, so the snapshot before this release can'\\''t be taken.' >&2
+          exit 1
+        fi
+        finish /snapshots/"$$hex".partial "$$hex" release && prune release 3
+    volumes:
+      - snapshots:/snapshots
+    mem_limit: 16m
+    memswap_limit: 16m
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
   stamp:
     image: <pin:IMAGES.curl>
     restart: no

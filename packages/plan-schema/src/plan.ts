@@ -1754,8 +1754,8 @@ export const DeploySettingsSchema = z.strictObject({
   reason: z.string().min(1).optional(),
   /**
    * A snapshot of the databases on the app's server before each release, which a rollback can
-   * restore. Absent: on in every environment except prod and a preview environment (read it with
-   * `snapshotsOn`).
+   * restore. Absent: on in every environment, prod included, and off in a preview environment (read
+   * it with `snapshotsOn`).
    */
   snapshots: z.boolean().optional(),
   /** How many versions' snapshots stay on the server. Absent: 3 (read it with `keepSnapshotsOf`). */
@@ -1860,11 +1860,19 @@ export function snapshotOffsiteOf(plan: { snapshots?: Snapshots | undefined }):
 }
 
 /**
+ * Whether a release snapshots the app's data when `deploy.snapshots` is absent: in every
+ * environment, prod included whatever the provider's backups, but never in a preview environment.
+ */
+export function snapshotsByDefault(plan: Pick<DeployPlan, "environment">): boolean {
+  return plan.environment?.previews === undefined;
+}
+
+/**
  * True when each release snapshots the app's data: on a cloud server, the user's own server, this
- * computer or the user's Portainer, outside a preview environment, with `deploy.snapshots` true, or
- * absent outside prod, and something a release snapshot copies, on the app's server or an extra
- * one: the `sqlite` or kept-files volume, an enabled service of the {@link ONLINE_SNAPSHOT_KINDS}, or one of a
- * stop-only kind named in `deploy.snapshotStop`.
+ * computer or the user's Portainer, outside a preview environment, with `deploy.snapshots` true or
+ * absent ({@link snapshotsByDefault}), and something a release snapshot copies, on the
+ * app's server or an extra one: the `sqlite` or kept-files volume, an enabled service of the
+ * {@link ONLINE_SNAPSHOT_KINDS}, or one of a stop-only kind named in `deploy.snapshotStop`.
  */
 export function snapshotsOn(
   plan: Pick<DeployPlan, "target" | "environment" | "services" | "deploy" | "storage">,
@@ -1881,7 +1889,7 @@ export function snapshotsOn(
   if (!copied && plan.storage?.sqlite === undefined && plan.storage?.files === undefined) {
     return false;
   }
-  return plan.deploy.snapshots ?? plan.environment?.name !== undefined;
+  return plan.deploy.snapshots ?? snapshotsByDefault(plan);
 }
 
 /**

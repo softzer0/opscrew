@@ -1003,13 +1003,13 @@ describe.skipIf(MISSING.portainer.length > 0)(
           host.fingerprint,
         );
         await designRunApp(run, envs);
-        // As the guide says to: prod takes a snapshot before each release only with
-        // `deploy.snapshots`, which P5's rollback restores.
-        const named = withSnapshotServices(await run.readPlan(), false);
-        await writeArtifact("plan", run.paths().files.plan, {
-          ...named,
-          deploy: { ...named.deploy, snapshots: true },
-        });
+        // Prod takes a snapshot before each release by default (asserted below), which P5's
+        // rollback restores.
+        await writeArtifact(
+          "plan",
+          run.paths().files.plan,
+          withSnapshotServices(await run.readPlan(), false),
+        );
         await run.opscrewOk("design");
         // Design proposes the off-server copy for data that matters in a Portainer; this pass is
         // about snapshots by hand, and the copy has passes of its own.

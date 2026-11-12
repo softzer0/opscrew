@@ -466,13 +466,13 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
 
   A snapshot or down migration is approved like a destroy: the user types the app's name, or a
   script gives `--confirm <name>`; never type or pass it for them. Snapshots exist only where
-  `deploy.snapshots` is on (every environment but prod, by default; `deploy.keepSnapshots` versions
-  are kept), and need this computer to reach the server. The snapshot taken before each release
-  holds every service with data, the app's SQLite files and the databases on other servers; a
-  service that must stop for its copy (Kafka, RabbitMQ, a search engine…) only when
-  `deploy.snapshotStop` names it. Uploads in object storage are never in a snapshot. To put data
-  back without changing the version, or to take a snapshot before a risky change, follow the
-  `opscrew-snapshots` skill.
+  `deploy.snapshots` is on (every environment but previews, prod included, by default;
+  `deploy.keepSnapshots` versions are kept), and need this computer to reach the server. The
+  snapshot taken before each release holds every service with data, the app's SQLite files and
+  the databases on other servers; a service that must stop for its copy (Kafka, RabbitMQ, a search
+  engine…) only when `deploy.snapshotStop` names it. Uploads in object storage are never in a
+  snapshot. To put data back without changing the version, or to take a snapshot before a risky
+  change, follow the `opscrew-snapshots` skill.
 - **This computer.** An environment can run on the user's computer (`localhost`, in Docker, at
   `https://<app>.localhost`). Two steps stay in their terminal: `npx opscrew localhost trust`
   (shows the command that trusts OpsCrew's local certificate authority and asks first;

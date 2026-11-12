@@ -118,10 +118,15 @@ describe("the deploy job with extra servers", () => {
   it("uploads a server's Compose file, its services' settings and env files, then starts them and repairs their ports", () => {
     const plan = splitPlan();
     const data = stepOf(plan, DATA);
+    // The image, the mode and the running image: for the snapshot before each release, which
+    // prod takes by default.
     expect(data.env).toEqual({
       HOST: "${{ secrets.OPSCREW_SERVER_DATA_HOST }}",
+      IMAGE: "${{ needs.build.outputs.image || needs.verify.outputs.image }}",
+      MODE: "${{ inputs.rollback && 'rollback' || 'deploy' }}",
       OPSCREW_SERVICE_DB_ENV: "${{ secrets.OPSCREW_SERVICE_DB_ENV }}",
       OPSCREW_SERVICE_DOCS_ENV: "${{ secrets.OPSCREW_SERVICE_DOCS_ENV }}",
+      RUNNING: "${{ steps.outgoing.outputs.image }}",
     });
     const run = data.run ?? "";
     expect(run).toContain(

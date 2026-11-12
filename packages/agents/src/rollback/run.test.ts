@@ -68,6 +68,12 @@ const shortDigest = (built: Built) => built.digest.slice(0, 19);
 /** Prod, deployed from main on each push. */
 const prodPlan = (): DeployPlan => testPlan({ domain: "shop.example.com", deployed: true });
 
+/** `plan` with its snapshots before each release turned off (`deploy.snapshots: false`). */
+const withoutSnapshots = (plan: DeployPlan): DeployPlan => ({
+  ...plan,
+  deploy: { ...plan.deploy, snapshots: false },
+});
+
 interface WorldOptions {
   /** The environment rolled back (default prod). */
   environment?: string;
@@ -197,6 +203,13 @@ const bound = (
   targetRecord: null,
 });
 
+/**
+ * Prod's rollback hash from `current` to `target`: its releases take snapshots (the default) and
+ * its rollback keeps the database, with nothing taken on the fake server.
+ */
+const prodHash = (world: World, current: Built, target: Built) =>
+  hashOf(world, current, target, "shop/prod", bound("keep"));
+
 /** The pause variable as JSON, `undefined` when GitHub has none. */
 function paused(world: World): Record<string, unknown> | undefined {
   const text = world.github.variables.get(DEPLOY_PAUSED_VARIABLE);
@@ -254,7 +267,7 @@ describe("opscrew rollback on a server", () => {
 
     const result = await world.run();
 
-    const hash = hashOf(world, c, b);
+    const hash = prodHash(world, c, b);
     expect(result).toMatchObject({
       kind: "rolled-back",
       status: "deployed",
@@ -339,7 +352,7 @@ describe("opscrew rollback on a server", () => {
       tag: a.commit,
       rollback: "true",
     });
-    expect(world.handler.requests[0]?.planHash).toBe(hashOf(world, c, a));
+    expect(world.handler.requests[0]?.planHash).toBe(prodHash(world, c, a));
 
     const again = await prodWorld();
     await again.world.run({ to: again.a.digest.slice(0, 19) });
@@ -611,7 +624,9 @@ describe("opscrew rollback on a server", () => {
       const error = await failure(world.run());
       expect(error.code).toBe("APPROVAL_REFUSED");
       expect(error.message).toContain("Nothing was changed.");
-      expect(error.hint).toContain(`${COMMAND} --to ${b.digest} --approve ${hashOf(world, c, b)}`);
+      expect(error.hint).toContain(
+        `${COMMAND} --to ${b.digest} --database keep --approve ${prodHash(world, c, b)}`,
+      );
       expect(world.handler.requests.map((request) => request.kind)).toEqual(["promote"]);
       expect(world.events).toEqual([]);
       expect(paused(world)).toBeUndefined();
@@ -619,12 +634,12 @@ describe("opscrew rollback on a server", () => {
 
     it("refuses an --approve hash of another rollback: PLAN_NOT_APPROVED", async () => {
       const { world, a, b, c } = await prodWorld();
-      const reviewed = hashOf(world, c, a);
+      const reviewed = prodHash(world, c, a);
       const error = await failure(world.run({ approveHash: reviewed }));
       expect(error.code).toBe("PLAN_NOT_APPROVED");
       expect(error.message).toContain(reviewed);
       expect(error.message).toMatch(/Nothing was changed\.$/);
-      expect(error.hint).toContain(`--approve ${hashOf(world, c, b)}`);
+      expect(error.hint).toContain(`--approve ${prodHash(world, c, b)}`);
       expect(world.handler.requests).toEqual([]);
       expect(world.events).toEqual([]);
     });
@@ -649,7 +664,7 @@ describe("opscrew rollback on a server", () => {
 
     it("goes ahead with --approve naming this rollback's hash", async () => {
       const { world, b, c } = await prodWorld();
-      const hash = hashOf(world, c, b);
+      const hash = prodHash(world, c, b);
       await world.run({ approveHash: hash.toUpperCase() });
       expect(world.handler.requests[0]?.planHash).toBe(hash);
       expect(world.github.dispatches).toHaveLength(1);
@@ -746,7 +761,7 @@ describe("opscrew rollback on a server", () => {
         from: { digest: c.digest, commit: c.commit },
         runId: 777,
         at: NOW,
-        hash: hashOf(world, c, b),
+        hash: prodHash(world, c, b),
         pauseBefore: null,
         database: { choice: "keep" },
       });
@@ -945,7 +960,7 @@ describe("opscrew rollback on a server", () => {
           inputs: { digest: b.digest, tag: `${b.commit}-staging`, rollback: "true" },
         },
       ]);
-      expect(world.handler.requests[0]?.planHash).toBe(hashOf(world, c, b));
+      expect(world.handler.requests[0]?.planHash).toBe(prodHash(world, c, b));
       expect(await readPromotion(world.deps.paths)).toEqual({
         digest: b.digest,
         source: "staging",
@@ -1478,8 +1493,8 @@ describe.skipIf(!SH_AVAILABLE)("opscrew rollback and the database (US8)", () => 
     await nothingChanged(world, error);
   });
 
-  it("rolls prod back through GitHub alone when this computer has no address for its server", async () => {
-    const { world, b, c } = await prodWorld();
+  it("rolls prod back through GitHub alone, without snapshots, when this computer has no address for its server", async () => {
+    const { world, b, c } = await prodWorld({ plan: withoutSnapshots(prodPlan()) });
     await recordServerAddress(world.deps.paths, undefined);
     const result = await world.run();
     expect(result).toMatchObject({ status: "deployed", database: { choice: "keep" } });
@@ -1488,8 +1503,18 @@ describe.skipIf(!SH_AVAILABLE)("opscrew rollback and the database (US8)", () => 
     expect(world.folder.commands).toEqual([]);
   });
 
+  it("rolls prod back keeping the database, saying why, when this computer can't reach its server", async () => {
+    // Prod takes snapshots by default, so the rollback tries to read them first.
+    const { world } = await prodWorld();
+    await recordServerAddress(world.deps.paths, undefined);
+    const result = await world.run();
+    expect(result).toMatchObject({ status: "deployed", database: { choice: "keep" } });
+    expect(world.deps.reporter.text()).toContain("This computer can't reach prod's app server");
+    expect(world.folder.commands).toEqual([]);
+  });
+
   it("removes an earlier one-time approval on a keep rollback, even with nothing to read", async () => {
-    const { world, b, c } = await prodWorld();
+    const { world, b, c } = await prodWorld({ plan: withoutSnapshots(prodPlan()) });
     await world.folder.write(
       ROLLBACK_APPROVAL_FILE,
       `${hexOf(b.digest)} snapshot ${EXPIRY - 3600}\n`,
@@ -1573,19 +1598,19 @@ describe.skipIf(!SH_AVAILABLE)("opscrew rollback and the database (US8)", () => 
   });
 
   it("keeps prod's database by default, even with snapshots on and one taken", async () => {
-    const plan = DeployPlanSchema.parse({ ...prodPlan(), deploy: { snapshots: true } });
-    const { world, b } = await prodWorld({ plan });
+    const { world, b } = await prodWorld();
     await world.folder.snapshot(hexOf(b.digest) as string, TAKEN);
     const result = await world.run();
     expect(result).toMatchObject({ database: { choice: "keep" } });
     expect(world.handler.requests[0]?.allowDestroy).toBeUndefined();
   });
 
-  it("offers only keep in prod's Portainer, where releases take no snapshots, nor run down migrations", async () => {
-    const { world } = await prodWorld({ plan: portainerPlan({ deployed: true }) });
+  it("offers only keep in prod's Portainer when its plan turns snapshots off, and runs no down migrations", async () => {
+    const plan = withoutSnapshots(portainerPlan({ deployed: true }));
+    const { world } = await prodWorld({ plan });
     const error = await failure(world.run({ database: "snapshot" }));
     expect(error.message).toBe(
-      "prod takes no snapshots before its releases: deploy.snapshots is off in its plan (prod takes them only with deploy.snapshots: true). Nothing was changed.",
+      "prod takes no snapshots before its releases: its plan turns them off (deploy.snapshots: false). Nothing was changed.",
     );
     await nothingChanged(world, error);
     const migrations = await failure(world.run({ database: "migrations" }));

@@ -151,9 +151,9 @@ How should the rollback treat the database?
 | `migrations` | Runs your migration tool's down migrations, back to that version's migrations | The tables and columns added since, with their data. Rows in the tables that stay are kept | The plan has `app.migrations`, and OpsCrew recorded both versions' migrations |
 | `keep` | Changes nothing: the earlier version runs against today's schema | Nothing, but the earlier version must work with the newer schema | Always |
 
-**The default** is the snapshot on every environment except prod, when there is one, and keep
-otherwise. On prod it is always keep, unless you choose otherwise. A terminal asks with the
-default selected; when only keep is offered, it doesn't ask.
+**The default** is the snapshot on every environment except prod, when the environment takes
+snapshots and there is one, and keep otherwise. On prod it is always keep, unless you choose
+otherwise. A terminal asks with the default selected; when only keep is offered, it doesn't ask.
 
 `--database snapshot|migrations|keep` makes the choice without the question. A choice that isn't
 offered is refused before any change, with the reason (for example "The server keeps no complete
@@ -164,8 +164,10 @@ restored from the snapshot taken 2026-10-31 10:01 UTC.".
 
 ### Snapshots before each release
 
-On every environment except prod, OpsCrew takes a snapshot of the app's data before each release,
-while the running version keeps serving:
+On every environment but previews, prod included, OpsCrew takes a snapshot of the app's data
+before each release, while the running version keeps serving. The cloud provider's daily server
+backups don't replace it: they hold the whole server as it was up to a day earlier, not the data of
+the moment just before the release:
 
 - **When:** at each deploy that replaces a running version, after the services are set up and
   before the release command. The first deploy has nothing to save, and a deploy of the image
@@ -179,7 +181,7 @@ while the running version keeps serving:
   then stops alone while it is copied. The snapshot is filed under the version that was running,
   so it holds the data as it was when that version stopped running.
 - **Where:** in `.snapshots` in the app's folder on each server, for example
-  `/srv/apps/shop-staging/.snapshots`, in the app's folder on your computer, or in the stack's
+  `/srv/apps/shop/.snapshots`, in the app's folder on your computer, or in the stack's
   `snapshots` volume in your Portainer. Only the deploy user can read the files. No password is
   ever on a command line, and no dumped value is printed. `opscrew snapshot list` lists them
   (`before a release`).
@@ -195,12 +197,11 @@ while the running version keeps serving:
   (`.snapshots/snapshot.log` in the app's folder); it can quote data from the database, so it is
   never printed.
 
-To change whether an environment takes snapshots, set `deploy.snapshots` in its plan, then run
-`npx opscrew provision` and merge its pull request:
+To change an environment's snapshots, set them in its plan, then run `npx opscrew provision` and
+merge its pull request:
 
 ```yaml
 deploy:
-  snapshots: true          # prod takes snapshots only with this
   keepSnapshots: 5         # the snapshots of the last 5 versions stay
   snapshotStop: [kafka]    # also copy kafka, stopped alone meanwhile
 ```

@@ -9,6 +9,7 @@ import {
   DeploySettingsSchema,
   keepSnapshotsOf,
   parseArtifact,
+  snapshotsByDefault,
   snapshotsOn,
 } from "./index";
 
@@ -88,10 +89,12 @@ describe("deploy.snapshots and deploy.keepSnapshots", () => {
 });
 
 describe("snapshotsOn", () => {
-  it("is off on prod unless deploy.snapshots is true", async () => {
+  it("is on in prod, whatever the provider's backups, unless deploy.snapshots is false", async () => {
     const plan = await prodPlan();
-    expect(snapshotsOn(plan)).toBe(false);
-    expect(snapshotsOn(parse({ ...plan, deploy: { snapshots: true } }))).toBe(true);
+    expect(plan.target).toMatchObject({ provider: "hetzner", backups: true });
+    expect(snapshotsOn(plan)).toBe(true);
+    expect(snapshotsOn(parse({ ...plan, target: { ...plan.target, backups: false } }))).toBe(true);
+    expect(snapshotsOn(parse({ ...plan, deploy: { snapshots: false } }))).toBe(false);
   });
 
   it("is on in another environment unless deploy.snapshots is false", async () => {
@@ -107,9 +110,12 @@ describe("snapshotsOn", () => {
     }
   });
 
-  it("is on Portainer as on servers: off on prod unless asked, on in another environment", async () => {
+  it("is on Portainer as on servers: on in prod and in another environment unless turned off", async () => {
     const plan = await targetPlan("portainer");
-    expect(snapshotsOn(plan)).toBe(false);
+    expect(snapshotsOn(plan)).toBe(true);
+    expect(snapshotsOn(parse({ ...plan, deploy: { ...plan.deploy, snapshots: false } }))).toBe(
+      false,
+    );
     const named: Loose = {
       ...plan,
       app: { ...plan.app, name: `${plan.app.name}-dev` },
@@ -175,7 +181,17 @@ describe("snapshotsOn", () => {
     const parsed = parse(await devPlan());
     const elsewhere = parsed.services.map((service) => ({ ...service, server: "data" }));
     expect(snapshotsOn({ ...parsed, services: elsewhere })).toBe(true);
-    expect(snapshotsOn({ ...parsed, services: elsewhere, environment: undefined })).toBe(false);
+    const off = { ...parsed.deploy, snapshots: false };
+    expect(snapshotsOn({ ...parsed, services: elsewhere, deploy: off })).toBe(false);
+  });
+});
+
+describe("snapshotsByDefault", () => {
+  it("is true in every environment, prod included, and false in a preview environment", async () => {
+    const prod = await prodPlan();
+    expect(snapshotsByDefault(prod)).toBe(true);
+    expect(snapshotsByDefault(parse(await devPlan()))).toBe(true);
+    expect(snapshotsByDefault(previewPlanOf(prod))).toBe(false);
   });
 });
 

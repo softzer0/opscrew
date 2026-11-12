@@ -836,6 +836,21 @@ jobs:
           ) 9> "$EDGE_DIR"/.lock
           docker compose up -d --no-deps --wait db
           if crontab -l 2> /dev/null | grep -q ' # opscrew-snapshots docs$'; then crontab -l | grep -v ' # opscrew-snapshots docs$' | crontab -; fi
+          if [ "$MODE" = deploy ] && [ -n "$running" ] && [ "$running" != "$target" ]; then
+            OPSCREW_SNAPSHOT_FUNCTIONS=1 . ./snapshot.sh
+            snap=0
+            snapshot_cmd_take release > /dev/null || snap=$?
+            if [ "$snap" -eq 1 ]; then
+              printf '::error::The snapshot of the data before this release failed, so the new version was not started and the previous version keeps serving. The copies'\\'' output stays on the server in %s/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/apps/docs/RUNBOOK.md has the SSH command). Fix its cause and push again, or set deploy.snapshots: false in opscrew/apps/docs/plan.yaml to deploy without snapshots.\\n' "$APPS_DIR"/docs
+              exit 1
+            fi
+            if [ "$snap" -eq 2 ]; then
+              printf '::warning::The disk that holds %s has less than 1 GiB or 10%% free, so OpsCrew takes no snapshot of the data this time, and a rollback can'\\''t restore it to this moment. Free some space, or keep fewer snapshots (deploy.keepSnapshots in opscrew/apps/docs/plan.yaml).\\n' "$APPS_DIR"/docs
+            fi
+            if [ "$snap" -eq 0 ]; then
+              echo 'OpsCrew took a snapshot of the data before this release: a rollback to the previous version can restore it.'
+            fi
+          fi
           if [ "$database" != keep ]; then
             if [ -z "$running" ] || [ "$running" = "$target" ]; then
               echo '::error::The server'\\''s .env names no other version by its image digest, so OpsCrew can'\\''t save its database before changing it, and the rollback changed nothing. Run opscrew rollback again and keep the database as it is.'

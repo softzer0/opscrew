@@ -249,14 +249,17 @@ describe("renderPortainerStack", () => {
       PORTAINER_RELEASE_PLACEHOLDER,
     );
     expect(release?.restart).toBeUndefined();
+    // After the snapshot before each release, which prod takes by default.
     expect(release?.depends_on).toEqual({
       db: { condition: "service_healthy" },
       cache: { condition: "service_healthy" },
+      snapshot: { condition: "service_completed_successfully" },
     });
     expect(fullStack.services.app?.depends_on).toEqual({
       db: { condition: "service_healthy" },
       cache: { condition: "service_healthy" },
       release: { condition: "service_completed_successfully" },
+      snapshot: { condition: "service_completed_successfully" },
     });
     const noRelease = stack(renderPortainerStack(portainerTestPlan(), ctx).content);
     expect(noRelease.services.release).toBeUndefined();
@@ -435,8 +438,13 @@ describe("renderPortainerStack", () => {
         const changed = Object.keys(one?.services ?? {}).filter(
           (name) => JSON.stringify(one?.services[name]) !== JSON.stringify(two?.services[name]),
         );
-        // Only the containers of the app's image and the stamp change.
-        expect(changed.sort()).toEqual(["app", "release", "stamp"]);
+        // Only the containers of the app's image and the stamp change, and the snapshot before each
+        // release's, which file it under the image.
+        expect(changed.filter((name) => !name.startsWith("snapshot")).sort()).toEqual([
+          "app",
+          "release",
+          "stamp",
+        ]);
         expect(one?.configs).toEqual(two?.configs);
         expect(JSON.stringify(one?.services.caddy)).not.toContain("OPSCREW_APP_VERSION");
         expect(JSON.stringify(one?.services.caddy)).not.toContain("c0ffeec0ffee");
@@ -517,6 +525,10 @@ describe("renderPortainerStack", () => {
     expect(images).toEqual([
       IMAGES.postgres.ref,
       IMAGES.valkey.ref,
+      // The snapshot before each release: each service's own image, then busybox.
+      IMAGES.postgres.ref,
+      IMAGES.valkey.ref,
+      IMAGES.busybox.ref,
       IMAGES.curl.ref,
       IMAGES.caddy.ref,
       IMAGES.cloudflared.ref,
@@ -588,6 +600,8 @@ describe("the components in a stack", () => {
       "mysql",
       "rabbitmq",
       "kafka",
+      "snapshot-mysql",
+      "snapshot",
       "stamp",
       "caddy",
       "cloudflared",
@@ -611,6 +625,9 @@ describe("the components in a stack", () => {
       mysql: ["512m", "512m"],
       rabbitmq: ["384m", "384m"],
       kafka: ["1024m", "1024m"],
+      // The snapshot before each release: the dump in MySQL's image, then the version.
+      "snapshot-mysql": ["512m", "512m"],
+      snapshot: ["16m", "16m"],
       // As the server edge's Caddy and connector (SC-1304).
       caddy: ["64m", "64m"],
       // It only writes the version.

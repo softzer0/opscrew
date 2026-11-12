@@ -2834,7 +2834,7 @@ reads the bucket with rclone from its pinned image, and so does the test.
   [Retarget anywhere](#retarget-anywhere). OpsCrew gets the admin's API key as `PORTAINER_API_KEY`.
 - **P2.** The app designed for that Portainer, with the updater and the tunnel
   (`portainer.redeploy: updater`, `portainer.web: tunnel`), the services above and
-  `deploy.snapshots: true` (prod takes snapshots before a release only with it). Then `adapt`,
+  `deploy.snapshots: true` (on by default; the test sets it, as a user may). Then `adapt`,
   provision until done, the first deploy (v1), and the data seeded in the stack's containers
   (`opscrew-<app>`) as root on the host.
 - **P3** (SC-2402): `opscrew snapshot` under load. It must be listed "in your Portainer", copying

@@ -118,13 +118,13 @@ data: see [Snapshots and restores](snapshots.md).
 
 ## Snapshots for a rollback
 
-On every environment except prod, each deploy takes a snapshot of the app's data before its release
-command, so that [a rollback can restore it](rollback.md#the-database): the databases, SQLite, the
-other services with data, and a database on another server. The snapshots stay in `.snapshots` in
-the app's folder, for example `/srv/apps/shop-staging/.snapshots`, readable only by the deploy user:
+On every environment but previews, prod included, each deploy takes a snapshot of the app's data
+before its release command, so that [a rollback can restore it](rollback.md#the-database): the
+databases, SQLite, the other services with data, and a database on another server. The
+snapshots stay in `.snapshots` in the app's folder, for example `/srv/apps/shop/.snapshots`,
+readable only by the deploy user:
 
-- `deploy.snapshots: true` in `opscrew/plan.yaml` turns them on for prod, and `false` turns them
-  off anywhere;
+- `deploy.snapshots: false` in an environment's plan turns them off there;
 - `deploy.keepSnapshots` (1 to 10, default 3) says how many versions' snapshots stay. Each takes
   about as much disk as the database's data; with too little free space a deploy skips its snapshot
   with a warning.

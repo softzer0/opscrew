@@ -31,6 +31,7 @@ import {
   type Migrations,
   ONLINE_SNAPSHOT_KINDS,
   onOneServer,
+  snapshotsByDefault,
   snapshotsOn,
 } from "@opscrew/plan-schema";
 import { formatUtc } from "@opscrew/secops";
@@ -448,7 +449,8 @@ function notOffered(
  *    records exist and a count tool's count did not grow going back, and keep, always;
  * 3. it takes `--database`, refusing a choice not offered with its reason (`PHASE_PRECONDITION`,
  *    nothing changed); else, with several offers, asks `chooseDatabase`; else the default: the
- *    snapshot on an environment other than prod, keep otherwise.
+ *    snapshot on an environment other than prod, when the environment takes snapshots, keep
+ *    otherwise.
  *
  * When this computer cannot reach the app's server (no address or login here, or no answer), it
  * offers only keep and says why, and the rollback goes on through GitHub as without snapshots; an
@@ -618,7 +620,8 @@ export async function databaseStep(
   }
   offers.push(keepOffer);
 
-  // 3. The choice: by default the snapshot outside prod (whose plan names no environment).
+  // 3. The choice: by default the snapshot outside prod (whose plan names no environment), when
+  // the environment takes snapshots.
   const choice = await choose(
     run,
     offers,
@@ -837,8 +840,8 @@ function unreadReason(run: RollbackRun, choice: "snapshot" | "migrations"): stri
     return `${environment}'s plan has no app.migrations, so OpsCrew knows no down migrations for its app. It sets them for Rails, Django, Alembic, Flask-Migrate, Knex, Sequelize, TypeORM and Laravel.`;
   }
   // On, as snapshotsOn reads deploy.snapshots, but with nothing to copy.
-  if (plan.deploy.snapshots ?? plan.environment?.name !== undefined) {
+  if (plan.deploy.snapshots ?? snapshotsByDefault(plan)) {
     return `${environment} has nothing a snapshot before each release copies: no PostgreSQL, MySQL, MariaDB, MongoDB, Valkey, Redis or Dragonfly, no SQLite files, no kept folder, and no other service named in deploy.snapshotStop, so OpsCrew takes no snapshots there.`;
   }
-  return `${environment} takes no snapshots before its releases: deploy.snapshots is off in its plan (prod takes them only with deploy.snapshots: true).`;
+  return `${environment} takes no snapshots before its releases: its plan turns them off (deploy.snapshots: false).`;
 }

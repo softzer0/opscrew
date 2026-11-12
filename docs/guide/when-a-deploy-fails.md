@@ -146,12 +146,12 @@ earlier version than the one running.
 ## The snapshot before the release fails
 
 On environments that take [snapshots before each release](rollback.md#snapshots-before-each-release)
-(every one but prod, by default), the deploy copies the app's data before the release command. When
-a copy fails, the deploy stops there and the previous version keeps serving. The message names the log
-on the server (`.snapshots/snapshot.log` in the app's folder), which can quote data and so is not
-printed. Fix what it shows, or set `deploy.snapshots: false` in the environment's plan and run
-`npx opscrew provision` to deploy without snapshots. Too little disk space doesn't stop a deploy:
-it goes ahead without a snapshot and its log has a warning.
+(every one but previews, by default), the deploy copies the app's data before the release
+command. When a copy fails, the deploy stops there and the previous version keeps serving. The
+message names the log on the server (`.snapshots/snapshot.log` in the app's folder), which can
+quote data and so is not printed. Fix what it shows, or set `deploy.snapshots: false` in the
+environment's plan and run `npx opscrew provision` to deploy without snapshots. Too little disk
+space doesn't stop a deploy: it goes ahead without a snapshot and its log has a warning.
 
 ## Migrations and the previous version
 

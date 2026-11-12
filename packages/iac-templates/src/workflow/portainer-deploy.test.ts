@@ -229,7 +229,7 @@ describe.skipIf(!bashWorks())("the Portainer deploy job's scripts (bash + git)",
       fetchBranch();
       expect(branchFile()).toBe(
         fillPortainerStack(releaseTemplate, NEW)
-          .replace("OPSCREW_RELEASE: run\n", "OPSCREW_RELEASE: skip\n")
+          .replaceAll("OPSCREW_RELEASE: run\n", "OPSCREW_RELEASE: skip\n")
           .trimEnd(),
       );
       expect(branchFile()).not.toContain("__OPSCREW_RELEASE__");
@@ -413,7 +413,14 @@ describe.skipIf(!bashWorks())("the Portainer deploy job's scripts (bash + git)",
       );
       expect(run.output).not.toContain(ACCESS_SECRET);
       fetchBranch();
-      expect(branchFile()).toBe(previousFile.trimEnd());
+      // The previous version with its release switches off: prod takes a snapshot before each
+      // release by default.
+      expect(branchFile()).toBe(
+        fillPortainerStack(
+          template.replaceAll(PORTAINER_RELEASE_PLACEHOLDER, "skip"),
+          OLD,
+        ).trimEnd(),
+      );
       expect(git("rev-parse", "origin-deploy^")).toBe(written.deployed);
       expect(git("log", "-1", "--format=%s", "origin-deploy")).toBe(
         "Roll back to the previous version",

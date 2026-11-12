@@ -135,11 +135,16 @@ const scheduled = render(scheduledPlan);
 describe("the scheduled snapshots in a stack", () => {
   it("runs one loop per online part and the snapshots service, never a stop-only kind (D3)", () => {
     const names = Object.keys(scheduled.stack.services);
+    // Then the snapshot before each release's, which prod takes by default.
     expect(names.filter((name) => name.startsWith("snapshot"))).toEqual([
       "snapshots-db",
       "snapshots-queue",
       "snapshots-sqlite",
       "snapshots",
+      "snapshot-db",
+      "snapshot-queue",
+      "snapshot-sqlite",
+      "snapshot",
     ]);
     expect(names).not.toContain("snapshots-rabbitmq");
   });
@@ -301,10 +306,12 @@ describe("the snapshot before each release in a stack", () => {
     });
   });
 
-  it("is off in prod unless asked, and with deploy.snapshots false", () => {
+  it("is on in prod and elsewhere by default, and off with deploy.snapshots false", () => {
     const has = (plan: DeployPlan) => "snapshot" in render(plan).stack.services;
-    expect(has(snapshotPlan())).toBe(false);
-    expect(has(snapshotPlan({ deploy: { ...snapshotPlan().deploy, snapshots: true } }))).toBe(true);
+    expect(has(snapshotPlan())).toBe(true);
+    expect(has(snapshotPlan({ deploy: { ...snapshotPlan().deploy, snapshots: false } }))).toBe(
+      false,
+    );
     expect(
       has(staging(snapshotPlan(), { deploy: { ...snapshotPlan().deploy, snapshots: false } })),
     ).toBe(false);
@@ -536,7 +543,7 @@ describe("the parts and environments for a snapshot by hand", () => {
 
 describe("a stack without snapshots", () => {
   it("has the snapshots volume a snapshot by hand writes into, and the version there, with data", () => {
-    const plan = snapshotPlan();
+    const plan = snapshotPlan({ deploy: { ...snapshotPlan().deploy, snapshots: false } });
     const { stack } = render(plan);
     expect(Object.keys(stack.services).filter((name) => /^(snapshot|offsite)/.test(name))).toEqual(
       [],
