@@ -481,6 +481,32 @@ names the change.
   - Verify: `pnpm check` (the gate's order: lint, typecheck, ssh-host alone, the rest, iac-engine last)
   - Effort: high
 
+- [ ] T2729 ClickHouse and Neo4j in the snapshot before each release by default
+  - Owns: `deploy.snapshotStop`'s default and its tests in `packages/plan-schema/src/**`; `packages/agents/src/{rollback,design}/**` texts naming what a release snapshot copies; `packages/iac-templates/src/{workflow,portainer-target}/**` snapshot scripts and the expectations that change; `docs/guide/{databases,snapshots,rollback}.md`
+  - Reads: ADR 0028 and its 2026-11-12 amendments; `plan-schema/src/plan.ts` (`ONLINE_SNAPSHOT_KINDS`, `deploy.snapshotStop`, `snapshotsOn`), `iac-templates/src/workflow/snapshot-script.ts`
+  - Depends: T2728
+  - Accept:
+    - When `deploy.snapshotStop` is absent, the snapshot before each release copies the plan's enabled ClickHouse and Neo4j services, each stopped while copied, as a named stop-only service is today; `deploy.snapshotStop` set (also `[]`) decides.
+    - Design's text says such a service stops for a moment on each deploy while it is copied, and how to turn that off.
+    - A rollback that restores the snapshot restores them with the rest.
+    - Expectations and snapshots change only by those services appearing in the release snapshot; nothing else moves.
+    - The guide's pages say so.
+  - Verify: the full gate (lint, typecheck, ssh-host alone, the rest, iac-engine last)
+  - Effort: high
+
+- [ ] T2730 A rollback that names the app's queues
+  - Owns: `packages/agents/src/rollback/**`, `packages/cli/src/commands/rollback.ts`, `packages/mcp-server/src/**` (the rollback tool's input), `docs/guide/rollback.md`
+  - Reads: ADR 0023, ADR 0028 and its 2026-11-12 amendments; `agents/src/rollback/{run,database}.ts`, `agents/src/design/background-jobs.ts`
+  - Depends: T2728, T2729
+  - Accept:
+    - The app's queues are its enabled RabbitMQ, NATS, Kafka and Redpanda services, and a Valkey, Redis or Dragonfly service the app uses for background jobs (design's background-jobs reading).
+    - When a rollback restores the snapshot and the snapshot holds a queue, the approval's text says that restoring it puts back the jobs as they were before the release (jobs queued since are lost, jobs run since can run again) and offers to keep it as it is; `--keep-queues` (and the MCP tool's input) keeps every queue without asking. A kept queue isn't restored.
+    - For every queue not restored (kept, not in the snapshot, or the database kept), the text says jobs the newer version queued may fail on the older one, and retry or fail.
+    - The rollback's hash binds the choice; a script without a TTY and without `--keep-queues` restores what the snapshot holds, as today, after the same text.
+    - Tests for each case, with a fake runner.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server && pnpm lint`
+  - Effort: high
+
 ## Phase 9: Live passes and release (lead)
 
 - [ ] T2722 The cPanel live pass (lead): `docs/e2e-coverage.md` row and results.

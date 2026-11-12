@@ -52,3 +52,12 @@ dump works for every tool and can't stop halfway, but loses what was written sin
   day-old image of the whole server can't. `deploy.snapshots` still sets it either way, and
   hosting accounts follow the same default. A rollback's default database choice stays as it was:
   keep prod's database (the restore is offered), restore the snapshot elsewhere when there is one.
+- **2026-11-12, more databases and the queues (founder).** ClickHouse and Neo4j count as
+  databases: when `deploy.snapshotStop` is absent, the snapshot before each release copies them too,
+  each stopped while it is copied. A set `deploy.snapshotStop` (even empty) still decides. The
+  message brokers (RabbitMQ, NATS, Kafka, Redpanda) stay out of the snapshot unless
+  `deploy.snapshotStop` names them, since putting a queue back loses the jobs queued since the
+  release and can run processed ones again. A rollback names the app's queues (those brokers, and a
+  Redis-protocol service the app uses for background jobs), says what restoring or keeping each
+  does, and lets the user keep the ones its snapshot holds, which it otherwise restores with the
+  rest, as a script does; the choice is bound by the approval's hash.
