@@ -1,0 +1,48 @@
+# OpsCrew's own check of the hosting agent (feature 027): the bash script cron runs on a shared
+# hosting account, and the deploy workflow that publishes its releases. Their switch, lock and PHP
+# cases need real symbolic links, flock and PHP, which only Linux gives; Windows skips them.
+name: Hosting agent
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - packages/iac-templates/src/hosting/**
+      - .github/workflows/hosting-agent.yml
+  pull_request:
+    paths:
+      - packages/iac-templates/src/hosting/**
+      - .github/workflows/hosting-agent.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hosting-agent-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Agent and workflow tests (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: The tools the tests need
+        run: |
+          set -euo pipefail
+          for tool in bash git openssl ssh-keygen flock php tar; do command -v "$tool"; done
+          php -v | head -n 1
+      - name: The agent, env.php and the deploy workflow (with Docker for Composer's checks)
+        env:
+          OPSCREW_DOCKER_TESTS: "1"
+        run: pnpm --filter @opscrew/iac-templates exec vitest run src/hosting
