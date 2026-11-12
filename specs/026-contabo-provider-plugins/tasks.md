@@ -307,6 +307,26 @@ expectation beyond imports and moved fixtures. A diff that does is sent back.
 
 - [x] T2632 The live test after the spike (lead): the SSH key's value from `GET /v1/secrets/{id}`; the firewall checks through the connector's view (`instances` in any of its shapes, each server's `instanceStatus` `ok`, no difference from the wanted firewall); no Contabo login left in the home folder after the run (step 9); the plan guard reads `terraform_data.firewall`. To see live (T2620): deleting a firewall that protects a cancelled server, adding a server while it is still provisioning, and whether Contabo rewrites a source it stores (a sync would then repeat and drift would never settle).
 
+## Phase 6c: What the live pass found (research R8)
+
+- [ ] T2633 [US2] A Contabo server removed through the connector (ADR 0029 D10)
+  - Owns: `packages/iac-engine/src/**`, `packages/providers/contabo/src/**`, `packages/agents/src/{provision,destroy,retarget,shared,testing}/**` (+ tests)
+  - Reads: research R8; ADR 0029 D8 and D10; the contract's `connectorRemoval` and `ServerSnapshotApi.cancelServer`; T2631's `shared/firewalls.ts` (the same apply paths)
+  - Depends: T2631
+  - Accept:
+    - iac-engine: `stateRemove(dir, addresses, options)` takes those addresses out of the state (`state rm`, with the run's env and state encryption); a failure is `ENGINE_FAILED` naming them.
+    - Contabo: `cancelServer` sends `POST /v1/compute/instances/{id}/cancel` with the body `{}` and answers the `cancelDate`; a server already cancelled answers its end date without a second cancel. The definition sets `connectorRemoval: true`.
+    - Every apply of an approved plan (provision's `planAndApply`, destroy's and retarget's deletion steps, destroy's busy-tunnel branch): when the plan deletes the server resource (`serverResourceType`) of a `connectorRemoval` provider, OpsCrew, after the approval and after the shutdown the flow already does, cancels each such server through `cancelServer` (its id from the change's `before`), says and audits it with its end date, removes those addresses from the state, plans again with the same options, and applies that plan only when its resource changes are the approved plan's without those addresses (address and actions); otherwise it stops naming the differences and applies nothing more. A failed cancel stops before the state is touched. The end date read after the apply still works.
+    - Other providers' flows make exactly the same engine calls as before.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-engine --filter=@opscrew/provider-contabo && pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm lint`
+  - Effort: xhigh
+
+- [x] T2634 Design and advise say that a provider without a price API prices from its dated list, credentials set or not (lead; `e56a1f9e`).
+- [x] T2635 A live whole-server snapshot runs `sync` on the server first, on every provider (lead; `76b6aaf2`).
+- [x] T2636 A Contabo snapshot's time comes from OpsCrew's stamp, not Contabo's hour-early `createdDate` (lead; `d21ad684`).
+- [x] T2637 Contabo's module outputs the IPv6 address shortened (the AAAA record never looks changed) and ignores `add_ons` (lead; `a447ae31`).
+- [ ] T2638 The live test (lead): its cleanup removes a leftover Contabo firewall through the connector (servers taken off it first; a direct delete answered 409 with a cancelled server on it).
+
 ## Phase 7: Live, simplify, release (lead)
 
 - [ ] T2620 The live pass on one Cloud VPS 4 (lead; the founder is asked before any rerun that needs another server), recorded on `docs/e2e-coverage.md`.

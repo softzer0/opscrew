@@ -74,6 +74,14 @@ kinds, not on which cloud.
   before and after every command. No command reuses another account's or an earlier run's login,
   and no token stays on disk (Contabo's provider keeps its token in
   `.cache/contabo/terraform/token`, research R6).
+- **D10: a server the provider's Terraform cannot remove is removed through the connector**
+  (`terraform.connectorRemoval`, research R8). The plan still lists the server's deletion, so its
+  hash, approval and typed name cover it. After the approval, and after any shutdown the removal
+  needs, OpsCrew passes each such server to the connector's `cancelServer`. It then takes the
+  server out of the state, plans again, and applies that plan only when it is the approved one
+  without those servers' deletions. Contabo is the first such provider: its Terraform provider
+  sends the cancel without the body Contabo's API requires, so it fails before calling Contabo,
+  while the same cancel with an empty body works.
 
 ## Consequences
 

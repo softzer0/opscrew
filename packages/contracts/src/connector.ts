@@ -165,6 +165,13 @@ export interface ServerSnapshotApi {
   powerOff(serverId: string): Promise<void>;
   /** Powers the server on and resolves when the provider reports it done. */
   powerOn(serverId: string): Promise<void>;
+  /**
+   * Cancels the server at the end of its term through the provider's API, for a provider whose
+   * Terraform cannot (`terraform.connectorRemoval`, ADR 0029 D10), and resolves with the day its
+   * contract ends (`2026-12-11`). A server already cancelled resolves with its end date and is not
+   * cancelled again. Destroy-grade.
+   */
+  cancelServer?(serverId: string): Promise<string>;
 }
 
 /** An inbound rule the connector writes into a firewall: it accepts. */

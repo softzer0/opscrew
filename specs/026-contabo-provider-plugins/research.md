@@ -390,3 +390,36 @@ connector makes Contabo's firewall of that name exactly that (creates it, sets i
 removes servers) and waits until the server's status is `ok`. Destroy deletes it, and drift
 compares it, ignoring Contabo's own drop rule. ADR 0029, D8. When the provider can manage it,
 the firewall can move back into the module.
+
+## R8. The live pass (T2620, 2026-11-12)
+
+Run 3 bought one Cloud VPS 4 (runs 1 and 2 stopped before buying: the design text below, and
+OpenTofu missing from the run's `PATH`). Steps 1 to 5 passed; step 6 failed, and the run waited
+for a fix on the same server (R5 item 3).
+
+- **Design with credentials set:** with Contabo's credentials set, design and advise used the
+  connector's catalogue, which is the dated list, without saying so. Fixed: a provider without a
+  price API says where its prices come from, credentials set or not.
+- **An instant snapshot keeps only what reached the disk.** Contabo takes a snapshot in about two
+  seconds. The app saved a value 5 seconds before the snapshot (SQLite, `synchronous=FULL`), and
+  after the revert its database file was there but empty. On the same server:
+  - a file written and `sync`ed every 2 seconds was in the snapshot up to its last second;
+  - a value saved through the app 6 seconds before a snapshot was lost; with `sync` on the server
+    just before the snapshot, it was kept.
+
+  So a live whole-server snapshot now runs `sync` on the server first (as the deploy user,
+  through the access `opscrew logs` uses), on every provider; a failure is said and the snapshot
+  taken anyway.
+- **`createdDate` an hour early:** a snapshot taken at 08:11:24Z was answered with `createdDate`
+  07:11:24Z (its `autoDeleteDate`, its id `snap1794471084` and Contabo's own audit say 08:11).
+  OpsCrew reads the time from the stamp it ends each description with.
+- **Seen live:** the firewall protects exactly the server with status `ok`, and the connector finds
+  no difference from the wanted one; a revert takes about 8 seconds and the server boots at once;
+  a snapshot of a running server takes about 2 seconds; Contabo's snapshot audits record no revert.
+- **Contabo's Terraform provider cannot cancel a server.** Its destroy of `contabo_instance` failed
+  with "Unexpected API error, no http response" 1 ms after it started, without calling Contabo; it
+  sends the cancel without a body. `POST /v1/compute/instances/{id}/cancel` with the body `{}`
+  answered HTTP 200 with `cancelDate` 2026-12-11 (one month after the purchase). So OpsCrew
+  cancels through its connector (ADR 0029, D10).
+- **A firewall protecting a cancelled server:** a direct `DELETE /v1/firewalls/{id}` answered HTTP
+  409; the connector's `remove`, which takes the servers off it first, deleted it.

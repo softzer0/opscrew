@@ -165,6 +165,12 @@ export interface ProviderTerraform {
    */
   homeCacheFiles: readonly string[];
   /**
+   * True when the provider's Terraform cannot remove its server, so OpsCrew removes it through the
+   * connector's server API (`cancelServer`), takes it out of the state and applies the rest of the
+   * approved plan (ADR 0029, D10).
+   */
+  connectorRemoval: boolean;
+  /**
    * Attributes the provider fills in from a relationship OpsCrew manages on the other resource
    * (Hetzner mirrors the server's `firewall_ids` into the firewall's `apply_to`); drift ignores
    * them.
