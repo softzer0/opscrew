@@ -50,8 +50,13 @@ export interface HostingFacts {
   apps: { selectors: ("nodejs" | "python")[]; slotsLeft?: number };
   /** PHP versions the panel can set per hostname (cPanel's MultiPHP); empty when it can't. */
   phpPerHostname: string[];
-  /** Whether a document root may be outside `public_html`. */
-  rootsOutsidePublicHtml: boolean;
+  /**
+   * Where a new hostname's document root can be: `anywhere` under the home folder (cPanel with
+   * "Restrict document roots to public_html" off), only inside `public_html` (on), or only where
+   * the `panel` puts it (DirectAdmin). Outside `anywhere`, OpsCrew serves the release through a link
+   * at the root the panel takes.
+   */
+  documentRoots: "anywhere" | "public_html" | "panel";
 }
 
 /**
@@ -72,7 +77,12 @@ export type HostingOperation =
   | "removeCertificate"
   | "setPhpVersion";
 
-/** A step the user takes in the panel because its API can't. */
+/**
+ * A step the user takes in the panel because its API can't. `panelStep`'s details use these keys:
+ * `hostname` and `documentRoot` (hostnames), `name` and `user` (databases), `schedule` and
+ * `command` (cron), `key` (removing a cron line), `path` and `mode` (files; never a file's
+ * content), `folder` and `file` (tars), `id` (certificates), `version` (PHP).
+ */
 export interface PanelStep {
   operation: HostingOperation;
   /** What to do, in plain English ("Add this scheduled task"). */
@@ -104,12 +114,31 @@ export interface HostingCertificate {
 }
 
 /**
+ * Files in a hosting account, by the panel's API or over SFTP (`@opscrew/connector-sftp`, for a
+ * panel whose API has no file calls, such as Plesk's: one without `writeFile` in its `operations`
+ * refuses every file call). Paths are relative to the account's home folder and never contain `..`.
+ */
+export interface HostingFiles {
+  /**
+   * Writes a file with the given mode (0600 for values), into an existing folder: under a
+   * temporary name, then renamed. A new name appears whole; an existing file is replaced.
+   */
+  writeFile(path: string, content: Uint8Array, mode: number): Promise<void>;
+  /** Uploads a tar and unpacks it into `folder`, then removes the tar. */
+  uploadTar(folder: string, tar: Uint8Array): Promise<void>;
+  /** A small text file's content, or undefined when it doesn't exist. */
+  readFile(path: string): Promise<string | undefined>;
+  /** Removes a file, or a folder with everything in it. */
+  remove(path: string): Promise<void>;
+}
+
+/**
  * A hosting account's panel. Every answer is validated with zod and the panel's own success flag is
  * read (cPanel answers HTTP 200 for failures); a failure is an `OpsCrewError` `PROVIDER_ERROR`
- * carrying the panel's reason and never the token. Paths are relative to the account's home folder
- * and never contain `..`. A change outside `operations` is refused with `INVALID_INPUT`.
+ * carrying the panel's reason and never the token. A change outside `operations`, its file calls
+ * included, is refused with `INVALID_INPUT` and sends nothing.
  */
-export interface HostingPanel {
+export interface HostingPanel extends HostingFiles {
   readonly kind: HostingPanelKind;
   readonly operations: ReadonlySet<HostingOperation>;
   /** The step the user takes in the panel for an operation outside `operations`. */
@@ -119,7 +148,12 @@ export interface HostingPanel {
 
   /** The hostname's document root, or undefined when the account doesn't serve it. */
   documentRoot(hostname: string): Promise<string | undefined>;
-  addHostname(hostname: string, documentRoot: string): Promise<void>;
+  /**
+   * Adds the hostname and answers the document root the panel made: `documentRoot` where the panel
+   * takes one (`documentRoots` `anywhere` or `public_html`), the panel's own where it chooses
+   * (`panel`, called without one).
+   */
+  addHostname(hostname: string, documentRoot?: string): Promise<string>;
   removeHostname(hostname: string): Promise<void>;
 
   /** Full names, prefix included. */
@@ -134,19 +168,8 @@ export interface HostingPanel {
   addCron(input: { schedule: string; command: string }): Promise<HostingCronJob>;
   removeCron(key: string): Promise<void>;
 
-  /**
-   * Writes a file with the given mode (0600 for values), into an existing folder: under a
-   * temporary name, then renamed. A new name appears whole; an existing file is replaced.
-   */
-  writeFile(path: string, content: Uint8Array, mode: number): Promise<void>;
-  /** Uploads a tar and unpacks it into `folder`, then removes the tar. */
-  uploadTar(folder: string, tar: Uint8Array): Promise<void>;
-  /** A small text file's content, or undefined when it doesn't exist. */
-  readFile(path: string): Promise<string | undefined>;
-  /** Removes a file, or a folder with everything in it. */
-  remove(path: string): Promise<void>;
-
-  certificate(hostname: string): Promise<HostingCertificate>;
+  /** Undefined when the panel's API can't read it (Plesk's customer API). */
+  certificate(hostname: string): Promise<HostingCertificate | undefined>;
   requestCertificate(hostname: string): Promise<void>;
   removeCertificate(id: string): Promise<void>;
 
