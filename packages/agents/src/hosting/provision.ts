@@ -78,12 +78,14 @@ import {
   recordObject,
   replaceObjects,
 } from "./record";
+import { sftpFilesFromEnv } from "./sftp";
+import { provisionSftp, type SftpProvisionServices } from "./sftp-provision";
 
-/** Collaborators a test or a later connector replaces. */
-export interface HostingProvisionServices {
+/** Collaborators a test replaces. */
+export interface HostingProvisionServices extends SftpProvisionServices {
   /**
-   * The account's files where the panel's API has none (Plesk's): the SFTP connector when the user
-   * gives SFTP access.
+   * The account's files where the panel's API has none (Plesk's); by default the SFTP connector
+   * when the user gives SFTP access (`sftpFilesFromEnv`).
    */
   files?: HostingFiles;
   /** Random bytes for the database's password (default: Node's). */
@@ -147,15 +149,7 @@ export async function provisionHosting(
   const planOnly = options.planOnly === true;
   let plan = input.plan;
   const target = hostingTarget(plan);
-  if (target.panel === "sftp") {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      "`opscrew provision` can't set up a host reached over SFTP alone yet. Nothing was changed.",
-      {
-        hint: "Use a hosting account with cPanel, Plesk or DirectAdmin (set OPSCREW_HOSTING_URL, OPSCREW_HOSTING_USER and OPSCREW_HOSTING_TOKEN, then run `opscrew interview`), or a server target.",
-      },
-    );
-  }
+  if (target.panel === "sftp") return provisionSftp(deps, options, input, hostingServices);
   const hostname = hostnameOf(plan);
   const environment = environmentOf(plan);
   const folder = hostingFolder(plan);
@@ -183,12 +177,14 @@ export async function provisionHosting(
   const cloudflare = await setupCloudflare(deps, plan, services);
   const account = await readHostingAccount(panel, deps.fetch);
   requireNewHostname(account.facts, record, hostname);
-  const files = hostingFiles(panel) ?? hostingServices.files;
+  const files = hostingFiles(panel, hostingServices.files ?? sftpFilesFromEnv(deps));
   if (files === undefined) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `${PANEL_NAMES[panel.kind]}'s API can't write files, so OpsCrew can't install its agent on the account without SFTP access, which it doesn't support for ${PANEL_NAMES[panel.kind]} yet. Nothing was changed.`,
-      { hint: "Use a server target with `opscrew interview` for now." },
+      `${PANEL_NAMES[panel.kind]}'s API can't write files, so OpsCrew installs its agent on the account over SFTP, and OPSCREW_SFTP_HOST, OPSCREW_SFTP_USER and OPSCREW_SFTP_KEY aren't set. Nothing was changed.`,
+      {
+        hint: "Set them to the account's SFTP login (OPSCREW_SFTP_KEY is your key file's path), then run `opscrew provision` again.",
+      },
     );
   }
   const deployBranch = await deployBranchFor(deps, {

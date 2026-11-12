@@ -15,6 +15,7 @@ import {
 import { enabledServices, initStepsFor } from "../catalog";
 import { additionsPath, appDir, EDGE_DIR, type LocalhostSite } from "../edge";
 import { httpsPortSuffix, localhostSite } from "../edge/localhost";
+import { renderSftpWorkflow, SFTP_DEPLOY_SECRETS } from "../hosting/sftp-workflow";
 import { RELEASE_SIGNING_KEY_SECRET, renderHostingWorkflow } from "../hosting/workflow";
 import { ACTIONS, type PinArch, TOOLS, toolDownloadUrl } from "../pins";
 import { previousValueVariables } from "../previous-values";
@@ -1445,10 +1446,15 @@ function localDeploy(plan: DeployPlan, upload: Upload): Deploy {
  * the deploy token and the account id ({@link CLOUDFLARE_DEPLOY_SECRETS}).
  *
  * On a hosting account with a panel, only the key that signs the releases
- * ({@link RELEASE_SIGNING_KEY_SECRET}): no credential of the account is in GitHub (ADR 0030).
+ * ({@link RELEASE_SIGNING_KEY_SECRET}): no credential of the account is in GitHub (ADR 0030). On an
+ * SFTP-only host, its reach and the key that logs in there ({@link SFTP_DEPLOY_SECRETS}).
  */
 export function deploySecretNamesFor(plan: DeployPlan): string[] {
-  if (isHostingTarget(plan.target)) return [RELEASE_SIGNING_KEY_SECRET];
+  if (isHostingTarget(plan.target)) {
+    return plan.target.panel === "sftp"
+      ? Object.values(SFTP_DEPLOY_SECRETS)
+      : [RELEASE_SIGNING_KEY_SECRET];
+  }
   if (isServerlessTarget(plan.target)) {
     const values = [
       ...plan.app.env.map((variable) => variable.name),
@@ -1522,7 +1528,8 @@ export function deploySecretNamesFor(plan: DeployPlan): string[] {
  * come up, writes the previous version back.
  *
  * The server-less targets have workflows of their own: {@link renderCloudflareWorkersWorkflow}
- * and {@link renderGithubPagesWorkflow}; so has a hosting account ({@link renderHostingWorkflow}).
+ * and {@link renderGithubPagesWorkflow}; so has a hosting account ({@link renderHostingWorkflow}),
+ * and an SFTP-only host ({@link renderSftpWorkflow}).
  *
  * Every target's push trigger has the path filter {@link pushPaths} makes from what the run reads
  * (here the build's Dockerfile and the uploaded runtime files), with `ctx.otherAppDirs` for an app
@@ -1533,7 +1540,11 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
     return renderCloudflareWorkersWorkflow(plan, ctx);
   }
   if (plan.target.provider === "github-pages") return renderGithubPagesWorkflow(plan, ctx);
-  if (isHostingTarget(plan.target)) return renderHostingWorkflow(plan, ctx);
+  if (isHostingTarget(plan.target)) {
+    return plan.target.panel === "sftp"
+      ? renderSftpWorkflow(plan, ctx)
+      : renderHostingWorkflow(plan, ctx);
+  }
   if (plan.target.provider === "portainer") return renderPortainerWorkflow(plan, ctx);
   checkSshPort(ctx.sshPort);
   // Behind a tunnel the server has no public origin, so no origin certificate (FR-1409).

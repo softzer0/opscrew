@@ -2,13 +2,14 @@
  * `opscrew logs` for an app on a hosting account with a panel (027 plan 6): the agent's last lines
  * (`state/agent.log`, which it keeps to 1,000), read through the panel's files and redacted. The
  * account runs no container whose lines OpsCrew could read, and keeps the web server's logs in the
- * panel.
+ * panel. An SFTP-only host runs no agent: each deploy's lines are in its GitHub Actions run.
  */
 import { OpsCrewError } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { formatUtc } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
 import { type LogLine, type LogRead, logRead } from "../logs/lines";
+import { hostingTarget } from "./provision-plans";
 import { type HostingAccountServices, reachHostingAccount, requireFiles } from "./status";
 
 /** The time the agent writes at the start of each line (`say`). */
@@ -18,7 +19,8 @@ const TIME = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z) (.*)$/;
  * The last `tail` lines of the agent's log on the account, each redacted; a line without the
  * agent's time (a tool's own output) takes the time of the line before it. `service`, `since`,
  * `follow` and `failed` don't apply there and are refused before anything is read. Audited.
- * @throws OpsCrewError `INVALID_INPUT` for a flag that doesn't apply.
+ * @throws OpsCrewError `INVALID_INPUT` for a flag that doesn't apply; `PHASE_PRECONDITION` on an
+ * SFTP-only host, which has no agent log.
  */
 export async function hostingLogs(
   deps: PhaseDeps,
@@ -26,6 +28,15 @@ export async function hostingLogs(
   options: { tail: number; service?: string; since?: string; follow?: boolean; failed?: boolean },
   services: HostingAccountServices = {},
 ): Promise<LogRead> {
+  if (hostingTarget(plan).panel === "sftp") {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      "An SFTP-only host runs no OpsCrew agent, so there is no agent log for `opscrew logs` to show there: GitHub Actions uploads and switches each release.",
+      {
+        hint: `Open the runs of the deploy workflow (${plan.cicd.workflowPath}) in GitHub Actions for each deploy's lines; \`opscrew status\` shows the release that runs and the last attempt. The web server's own logs are in your host's panel.`,
+      },
+    );
+  }
   const given = [
     ...(options.service !== undefined && options.service !== "app" ? ["--service"] : []),
     ...(options.since !== undefined ? ["--since"] : []),

@@ -47,7 +47,7 @@ export function releaseBranch(plan: DeployPlan): string {
 }
 
 /** The build's artifact: the release tree as a tar, which keeps file modes and links. */
-const RELEASE_ARTIFACT = "opscrew-release";
+export const RELEASE_ARTIFACT = "opscrew-release";
 
 /** The PHP CLI image per version a hosting plan can choose (`major.minor`). */
 const PHP_CLI_IMAGES: Readonly<Record<string, ImagePin>> = {
@@ -222,6 +222,37 @@ function buildSteps(
 }
 
 /**
+ * The build job of a hosting account's workflow: the app's release built ({@link buildSteps}) with
+ * `contents: read` and kept as a tar, which keeps file modes and links, in the artifact
+ * {@link RELEASE_ARTIFACT}.
+ */
+export function releaseBuildJob(plan: DeployPlan, target: HostingDeployTarget): string[] {
+  const { steps, release } = buildSteps(plan, target);
+  return job({
+    id: "build",
+    name: "Build the release",
+    permissions: ["contents: read"],
+    steps: [
+      `- uses: ${ACTIONS.checkout}`,
+      "  with:",
+      "    persist-credentials: false",
+      ...steps,
+      "- name: Keep the release",
+      ...run([
+        "set -euo pipefail",
+        `tar -cf "$RUNNER_TEMP/release.tar" -C ${shellQuote(release)} --exclude=.git --exclude=node_modules --exclude=./.github --exclude=./opscrew .`,
+      ]),
+      `- uses: ${ACTIONS.uploadArtifact}`,
+      "  with:",
+      `    name: ${RELEASE_ARTIFACT}`,
+      "    path: ${{ runner.temp }}/release.tar",
+      "    if-no-files-found: error",
+      "    retention-days: 1",
+    ],
+  });
+}
+
+/**
  * The publish step's script: the release tree from the build's tar goes into an orphan commit
  * through a temporary index (`git add --force`, so the app's `.gitignore` can't drop `vendor/` or
  * `dist/`), signed over `<tree id> <run id> <attempt> <env>` with `openssl dgst -sha256 -sign` and
@@ -332,29 +363,7 @@ export function renderHostingWorkflow(
   }
   const env = environmentName(plan);
   const branch = releaseBranch(plan);
-  const { steps, release } = buildSteps(plan, target);
-  const build = job({
-    id: "build",
-    name: "Build the release",
-    permissions: ["contents: read"],
-    steps: [
-      `- uses: ${ACTIONS.checkout}`,
-      "  with:",
-      "    persist-credentials: false",
-      ...steps,
-      "- name: Keep the release",
-      ...run([
-        "set -euo pipefail",
-        `tar -cf "$RUNNER_TEMP/release.tar" -C ${shellQuote(release)} --exclude=.git --exclude=node_modules --exclude=./.github --exclude=./opscrew .`,
-      ]),
-      `- uses: ${ACTIONS.uploadArtifact}`,
-      "  with:",
-      `    name: ${RELEASE_ARTIFACT}`,
-      "    path: ${{ runner.temp }}/release.tar",
-      "    if-no-files-found: error",
-      "    retention-days: 1",
-    ],
-  });
+  const build = releaseBuildJob(plan, target);
   const environment = githubEnvironment(plan);
   const publish = job({
     id: "publish",

@@ -2,36 +2,38 @@
  * The interview's follow-ups for a hosting account (feature 027, US1 scenario 1, US3; plan 7, 10):
  * which panel answers, found without asking; the hostname among the names the account allows,
  * which becomes the app's domain (`dns.domain`); and for an SFTP host, its host key read with
- * `ssh-keyscan` and confirmed, the folder OpsCrew deploys into and the path PHP sees for it.
+ * `ssh-keyscan` and confirmed, the folder OpsCrew deploys into and the path PHP sees for it; for a
+ * panel without file calls (Plesk) given SFTP access too, that SFTP host's key confirmed the same way.
  * Nothing on the account changes here.
  */
 import type { HostingFacts } from "@opscrew/contracts";
-import { listText, normalizeHostName, OpsCrewError, type ProjectPaths } from "@opscrew/core";
+import {
+  listText,
+  normalizeHostName,
+  OpsCrewError,
+  type ProjectPaths,
+  readTextIfExists,
+} from "@opscrew/core";
 import { FqdnSchema, type Question } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import {
-  connectPanel,
-  HOSTING_VARS_HINT,
-  hostingReach,
-  SFTP_HOST_VAR,
-  SFTP_KEY_VAR,
-  SFTP_USER_VAR,
-} from "../hosting/panels";
+import { connectPanel, HOSTING_VARS_HINT, hostingReach, SFTP_HOST_VAR } from "../hosting/panels";
 import {
   type HostingRecord,
   readHostingRecord,
   type SftpRecord,
   updateHostingRecord,
 } from "../hosting/record";
+import { requireSftpLogin, sftpLogin } from "../hosting/sftp";
 import {
   HOST_KEY_FINGERPRINT,
+  hostKeyFingerprint,
+  keysFor,
   knownHostsName,
   type ScannedHostKey,
   scanHostKeys,
   writeKnownHost,
 } from "../shared";
 import { FIX_ANSWERS_HINT, type FollowUps, isBlank, portAnswer, withDefault } from "./follow-ups";
-import { HostSchema } from "./own-server";
 import type { InterviewAnswers } from "./questions";
 
 /** The follow-up answers for a hosting account (`hosting.<field>` in answers files). */
@@ -50,8 +52,11 @@ export interface HostingAnswers {
   hostname: string;
   /** `.opscrew/hosting.json` as the interview leaves it: how OpsCrew reaches the account. */
   record: HostingRecord;
-  /** An SFTP host's key the user confirmed, pinned in OpsCrew's known_hosts file. */
-  hostKey?: Pick<ScannedHostKey, "type" | "key">;
+  /**
+   * An SFTP host's key the user confirmed, pinned in OpsCrew's known_hosts file: an SFTP-only
+   * host's, or the one of a panel without file calls (Plesk) that OpsCrew reaches over SFTP.
+   */
+  hostKey?: { host: string; port: number } & Pick<ScannedHostKey, "type" | "key">;
 }
 
 /** Options of {@link hostingAnswers}. */
@@ -64,8 +69,6 @@ export interface HostingInterviewOptions {
 
 /** A folder as SFTP shows it: no newline, no `..`, never starting with `-`. */
 const SFTP_FOLDER = /^(?!-)(?!.*(?:^|\/)\.\.(?:\/|$))[^\0\r\n]+$/;
-/** An SFTP user: no blanks, never starting with `-`. */
-const SFTP_USER = /^[^\s-]\S*$/;
 /** An absolute path PHP sees, with no newline and no `..`. */
 const PHP_PATH = /^\/(?!.*(?:^|\/)\.\.(?:\/|$))[^\0\r\n]*$/;
 
@@ -213,7 +216,55 @@ async function panelAnswers(
     objects: [],
   };
   requireSameAccount(previous, record);
-  return { hostname, record: { ...record, objects: previous?.objects ?? [] } };
+  // A panel whose API has no file calls (Plesk's): its files go over SFTP on port 22 when the
+  // user gives SFTP access, so its host key is confirmed now, as an SFTP-only host's is.
+  const hostKey =
+    sftpLogin(deps.env) !== undefined && !panel.operations.has("writeFile")
+      ? await panelSftpKey(deps, given.values.hostKey)
+      : undefined;
+  return {
+    hostname,
+    record: { ...record, objects: previous?.objects ?? [] },
+    ...(hostKey !== undefined ? { hostKey } : {}),
+  };
+}
+
+/** `hosting.hostKey`, checked: a SHA-256 fingerprint, or undefined when not answered. */
+function fingerprintAnswer(value: unknown): string | undefined {
+  const fingerprint = text(value);
+  if (fingerprint !== undefined && !HOST_KEY_FINGERPRINT.test(fingerprint)) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      "hosting.hostKey: write the host key's SHA-256 fingerprint, such as SHA256: followed by 43 letters, digits, + or /.",
+      { hint: FIX_ANSWERS_HINT },
+    );
+  }
+  return fingerprint;
+}
+
+/**
+ * The key of the SFTP host a panel's files go over (port 22), confirmed as an SFTP-only host's is:
+ * `hosting.hostKey`, else the key pinned earlier in OpsCrew's known_hosts file, else the user's
+ * approval in a terminal.
+ */
+async function panelSftpKey(
+  deps: Parameters<typeof hostingAnswers>[0],
+  answer: unknown,
+): Promise<NonNullable<HostingAnswers["hostKey"]>> {
+  const { host } = requireSftpLogin(deps.env);
+  const port = 22;
+  const known = (await readTextIfExists(deps.paths.files.knownHosts)) ?? "";
+  const pinned = keysFor(known, knownHostsName(host, port))
+    .map((key) => hostKeyFingerprint(key.split(" ")[1] ?? ""))
+    .at(0);
+  const given = fingerprintAnswer(answer);
+  const key = await confirmHostKey(deps, {
+    host,
+    port,
+    ...(given !== undefined ? { given } : {}),
+    ...(pinned !== undefined ? { pinned } : {}),
+  });
+  return { host, port, type: key.type, key: key.key };
 }
 
 /** An SFTP host's follow-ups: the hostname, port, folder and PHP's path, then its host key. */
@@ -223,26 +274,7 @@ async function sftpAnswers(
   options: HostingInterviewOptions,
   previous: HostingRecord | undefined,
 ): Promise<HostingAnswers> {
-  const host = (deps.env[SFTP_HOST_VAR] ?? "").trim();
-  const user = (deps.env[SFTP_USER_VAR] ?? "").trim();
-  const keyPath = (deps.env[SFTP_KEY_VAR] ?? "").trim();
-  if (!HostSchema.safeParse(host).success) {
-    throw new OpsCrewError("INVALID_INPUT", `${SFTP_HOST_VAR} isn't a host's address.`, {
-      hint: `Set ${SFTP_HOST_VAR} to your SFTP host's name or IP address, such as sftp.example.com.`,
-    });
-  }
-  if (!SFTP_USER.test(user)) {
-    throw new OpsCrewError("INVALID_INPUT", `${SFTP_USER_VAR} isn't a user name.`, {
-      hint: `Set ${SFTP_USER_VAR} to the user your host gave you for SFTP.`,
-    });
-  }
-  if (keyPath.includes("-----BEGIN") || keyPath.includes("PRIVATE KEY")) {
-    throw new OpsCrewError(
-      "INVALID_INPUT",
-      `${SFTP_KEY_VAR} must be the path of your SSH key file, never the key itself.`,
-      { hint: `Set ${SFTP_KEY_VAR} to the key file's path, for example ~/.ssh/id_ed25519.` },
-    );
-  }
+  const { host, user } = requireSftpLogin(deps.env);
   const before = previous?.sftp?.host === host ? previous.sftp : undefined;
   const values = await ask(given, options, [
     {
@@ -311,7 +343,7 @@ async function sftpAnswers(
   return {
     hostname,
     record: { ...record, objects: previous?.objects ?? [] },
-    hostKey: { type: key.type, key: key.key },
+    hostKey: { host, port, type: key.type, key: key.key },
   };
 }
 
@@ -393,17 +425,17 @@ async function confirmHostKey(
 }
 
 /**
- * Records the interview's answers on this computer: `.opscrew/hosting.json`, and an SFTP host's
+ * Records the interview's answers on this computer: `.opscrew/hosting.json`, and the SFTP host's
  * confirmed key in OpsCrew's known_hosts file.
  */
 export async function recordHostingAnswers(
   paths: ProjectPaths,
   answers: HostingAnswers,
 ): Promise<void> {
-  const { sftp } = answers.record;
-  if (sftp !== undefined && answers.hostKey !== undefined) {
-    await writeKnownHost(paths.files.knownHosts, knownHostsName(sftp.host, sftp.port), [
-      answers.hostKey,
+  const { hostKey } = answers;
+  if (hostKey !== undefined) {
+    await writeKnownHost(paths.files.knownHosts, knownHostsName(hostKey.host, hostKey.port), [
+      hostKey,
     ]);
   }
   await updateHostingRecord(paths, () => answers.record);

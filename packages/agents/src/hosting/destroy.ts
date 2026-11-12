@@ -58,7 +58,7 @@ import { type AdapterPlanItem, describeAdapterPlan, hasDeployment, refusalReason
 import { HOSTING_TOKEN_VAR, PANEL_NAMES } from "./panels";
 import { AGENT_SCHEDULE, agentCronCommand } from "./php";
 import { HostnameSchema, PanelStepSchema, PathSchema } from "./plan";
-import { environmentOf } from "./provision-plans";
+import { environmentOf, hostingTarget } from "./provision-plans";
 import {
   type HostingObject,
   type HostingRecord,
@@ -67,6 +67,7 @@ import {
   updateHostingRecord,
 } from "./record";
 import { sendRequest } from "./requests";
+import { destroySftp } from "./sftp-destroy";
 import { type HostingAccountServices, reachHostingAccount } from "./status";
 
 const NameSchema = z.string().regex(/^[A-Za-z0-9_]{1,64}$/);
@@ -629,7 +630,8 @@ const DNS_WORDS: CloudflareRemovalWords = {
  * 6. the destroy plan applied ({@link applyHostingDestroy}), the DNS records at its `dns` step;
  * 7. the release signing key in GitHub (`removeDeploySecrets`, its own `github-secrets` approval),
  *    then OpsCrew's record of the deployment.
- * A refusal or failure leaves everything after it as it was; running it again continues.
+ * A refusal or failure leaves everything after it as it was; running it again continues. An
+ * SFTP-only host has its own (`destroySftp`).
  */
 export async function destroyHosting(
   deps: PhaseDeps,
@@ -637,6 +639,7 @@ export async function destroyHosting(
   options: DestroyOptions,
   services: HostingAccountServices = {},
 ): Promise<DestroyResult> {
+  if (hostingTarget(plan).panel === "sftp") return destroySftp(deps, plan, options);
   const destroyServices = options.services ?? {};
   const sleep = destroyServices.sleep ?? realSleep;
 

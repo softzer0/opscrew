@@ -211,6 +211,68 @@ describe("a hosting account with a panel", () => {
     });
   });
 
+  it("on Plesk given SFTP access too, has the SFTP host's key confirmed and pins it", async () => {
+    const fake = fakePlesk({ token: TOKEN });
+    const runner = keyscan();
+    const deps = await project(
+      { ...PANEL_ENV("https://plesk.example.test", fake.login), ...SFTP_ENV },
+      { fetch: panelHost(8443, "sw-cp-server", fake.fetch), runner },
+    );
+    const answers = {
+      ...BASE,
+      domain: "notes.example.com",
+      "hosting.hostname": "notes.example.com",
+    };
+    // Nobody confirmed it yet: refused, nothing recorded or pinned.
+    const unconfirmed = await runInterview(deps, { answers }).catch((e) => e);
+    expect(unconfirmed.code).toBe("PHASE_PRECONDITION");
+    expect(unconfirmed.hint).toContain(`answer hosting.hostKey: ${FINGERPRINT}`);
+    expect(await readHostingRecord(deps.paths)).toBeUndefined();
+    await runInterview(deps, { answers: { ...answers, "hosting.hostKey": FINGERPRINT } });
+    expect(runner.calls.find((call) => call.command === "ssh-keyscan")?.args).toEqual([
+      "-T",
+      "10",
+      "-p",
+      "22",
+      "-t",
+      "ed25519,ecdsa,rsa",
+      "sftp.example.net",
+    ]);
+    expect(await readFile(deps.paths.files.knownHosts, "utf8")).toBe(
+      `sftp.example.net ssh-ed25519 ${HOST_KEY}\n`,
+    );
+    expect((await readHostingRecord(deps.paths))?.panel?.kind).toBe("plesk");
+    // Pinned now: a run again takes it without the answer, and a changed key stops.
+    await runInterview(deps, { answers });
+    const changed = await createTestPhaseDeps({
+      root: deps.paths.root,
+      env: {
+        OPSCREW_HOME: join(deps.paths.root, ".home-opscrew"),
+        ...PANEL_ENV("https://plesk.example.test", fake.login),
+        ...SFTP_ENV,
+      },
+      fetch: panelHost(8443, "sw-cp-server", fake.fetch),
+      runner: keyscan(Buffer.from("new").toString("base64")),
+    });
+    await expect(runInterview(changed, { answers })).rejects.toThrow(
+      "changed since you confirmed it",
+    );
+  });
+
+  it("on cPanel, whose API writes files, reads no SFTP host key", async () => {
+    const fake = fakeCpanel({ user: "acct", token: TOKEN, mainDomain: "example.com" });
+    const runner = keyscan();
+    const deps = await project(
+      { ...PANEL_ENV("https://panel.example.com", "acct"), ...SFTP_ENV },
+      { fetch: panelHost(2083, "cpsrvd/11.130.0.4", fake.fetch), runner },
+    );
+    await runInterview(deps, {
+      answers: { ...BASE, domain: "notes.example.com", "hosting.hostname": "notes.example.com" },
+    });
+    expect(runner.calls.map((call) => call.command)).not.toContain("ssh-keyscan");
+    expect(await readFile(deps.paths.files.knownHosts, "utf8").catch(() => "")).toBe("");
+  });
+
   it("finds DirectAdmin on 2222", async () => {
     const fake = new FakeDirectAdmin({ token: TOKEN, domains: ["example.org"] });
     const deps = await project(PANEL_ENV("https://panel.example.test", fake.access.user), {

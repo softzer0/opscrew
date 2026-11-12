@@ -13,6 +13,7 @@ import type { RenderContext } from "../types";
 import { deploySecretNamesFor, renderWorkflow } from "../workflow";
 import { serverPlan } from "../workflow/__fixtures__/plans";
 import { renderHostingDns } from "./dns";
+import { renderSftpWorkflow } from "./sftp-workflow";
 import { RELEASE_SIGNING_KEY_SECRET, renderHostingWorkflow } from "./workflow";
 
 /** A plain PHP app on a cPanel account, its hostname on Cloudflare. */
@@ -96,8 +97,9 @@ describe("the hosting branch of the workflow renderer", () => {
     expect(deploySecretNamesFor(plan)).toEqual([RELEASE_SIGNING_KEY_SECRET]);
   });
 
-  it("leaves an SFTP host to its own workflow", () => {
-    expect(() => renderWorkflow(hostingPlan("sftp"), CTX)).toThrow(/hosting account with a panel/);
+  it("renders an SFTP host's own workflow", () => {
+    const plan = hostingPlan("sftp");
+    expect(renderWorkflow(plan, CTX)).toEqual(renderSftpWorkflow(plan, CTX));
   });
 });
 

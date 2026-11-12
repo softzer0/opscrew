@@ -1,10 +1,12 @@
 /**
- * `opscrew rollback` for an app on a hosting account with a panel (027 plan 6, ADR 0023, ADR 0028
- * D7, D10, D11): the agent on the account switches back to a release it keeps, with or without the
+ * `opscrew rollback` for an app on a hosting account (027 plan 6, ADR 0023, ADR 0028 D7, D10,
+ * D11): the agent on a panel account switches back to a release it keeps, with or without the
  * database dump filed under that release, after a `promote` approval bound to the plan's hash, both
- * release ids and the database choice; then the environment's deploys pause. Nothing is rebuilt,
- * and the release command doesn't run.
+ * release ids and the database choice; on an SFTP-only host OpsCrew switches over SFTP itself
+ * (plan 10). Then the environment's deploys pause. Nothing is rebuilt, and the release command
+ * doesn't run.
  */
+import type { SftpFiles } from "@opscrew/connector-sftp";
 import type { HostingFiles } from "@opscrew/contracts";
 import {
   canonicalJson,
@@ -32,13 +34,49 @@ import type { VersionMark, VersionView } from "../rollback/types";
 import { deployPauseOf, setDeployPause } from "../shared/deploy-pause";
 import { hostingTarget } from "./provision-plans";
 import { sendRequest } from "./requests";
+import { reachSftpHost } from "./sftp";
 import {
+  type AgentStatus,
   type HostingAccountServices,
   newestFirst,
   reachHostingAccount,
   readAgentStatus,
   requireFiles,
 } from "./status";
+
+/** A release's id, `<run id>-<attempt>`. */
+const RELEASE_ID = /^[1-9][0-9]*-[1-9][0-9]*$/;
+
+/**
+ * On an SFTP-only host (027 plan 10): points `current` at release `target` with `ln -s` and
+ * `rename` over SFTP, then writes `state/status` as the deploy workflow does, the last attempt
+ * kept as it was.
+ */
+async function switchOverSftp(
+  files: SftpFiles,
+  folder: string,
+  target: string,
+  status: AgentStatus,
+): Promise<void> {
+  await files.link(`${folder}/current`, `releases/${target}`);
+  const ids = ((await files.list(`${folder}/releases`)) ?? [])
+    .filter((id) => RELEASE_ID.test(id))
+    .sort(newestFirst);
+  const kept = ids.filter((id) => id !== target);
+  const previous = kept.find((id) => newestFirst(target, id) < 0) ?? "";
+  const { attempt } = status;
+  const text = [
+    `running=${target}`,
+    `previous=${previous}`,
+    `kept=${kept.join(",")}`,
+    `attempt=${attempt?.release ?? ""}`,
+    `result=${attempt?.result ?? ""}`,
+    `reason=${attempt?.reason ?? ""}`,
+    `at=${attempt?.at ?? ""}`,
+    "",
+  ].join("\n");
+  await files.writeFile(`${folder}/state/status`, new TextEncoder().encode(text), 0o600);
+}
 
 /** How the rollback treats the database, once chosen. */
 interface DatabaseStep {
@@ -126,7 +164,7 @@ const releaseWords = (id: string, commit: string | undefined) =>
   `release ${id}${commit === undefined ? "" : ` (commit ${commit.slice(0, 7)})`}`;
 
 /**
- * `opscrew rollback` on a hosting account with a panel (027 plan 6). With `list`, the releases the
+ * `opscrew rollback` on a hosting account (027 plan 6, plan 10). With `list`, the releases the
  * agent keeps and the pause, read-only. Otherwise, each refusal before any change:
  * 1. the agent's `state/status` names the running release; the target is `--to`, else the newest
  *    kept release older than the running one (`previous`, ADR 0023 D4), and must be kept;
@@ -136,7 +174,8 @@ const releaseWords = (id: string, commit: string | undefined) =>
  *    ids, the plan's hash and the choice; a restore is approved like a destroy, with the hostname
  *    typed (`--confirm` in a script); `--yes` never grants it;
  * 5. the `rollback` request, carried out by the agent (with a restore it dumps the database first,
- *    ADR 0028 D11); a refusal or failure stops with its reason, the deploys not paused;
+ *    ADR 0028 D11), or on an SFTP-only host the switch over SFTP and its `state/status`
+ *    ({@link switchOverSftp}); a refusal or failure stops with its reason, the deploys not paused;
  * 6. the deploy pause, pinned to the release; `rollback.json` records it. The agent's `state/last`
  *    stays, so a push of the release rolled back from can't bring it back.
  */
@@ -146,9 +185,14 @@ export async function rollbackHosting(
 ): Promise<RollbackResult> {
   const { deps, options, plan, environment, command, flags } = run;
   const github = await rollbackRepository(deps, run.services);
-  const reach = await reachHostingAccount(deps, plan, services);
-  const files = requireFiles(reach, "roll the app back");
+  const reach =
+    hostingTarget(plan).panel === "sftp"
+      ? await reachSftpHost(deps, plan)
+      : await reachHostingAccount(deps, plan, services);
+  const sftp = "sftp" in reach ? reach.files : undefined;
+  const files = "sftp" in reach ? reach.files : requireFiles(reach, "roll the app back");
   const { folder, hostname } = reach;
+  const where = `${sftp === undefined ? "the account" : "the SFTP host"} ${reach.account}`;
   deps.reporter.step(`Reading ${environment}'s releases on the hosting account`);
   const status = await readAgentStatus(files, folder);
   const running = status?.running;
@@ -224,8 +268,10 @@ export async function rollbackHosting(
         `Now: ${releaseWords(running, runningCommit)}`,
         `Back to: ${releaseWords(target, targetCommit)}`,
         ...database.lines,
-        `Target: ${environment} (https://${hostname}) on the account ${reach.account}, ${toPosixRelative(deps.paths.root, deps.paths.files.plan)} with plan hash ${targetPlanHash}`,
-        `Switch: the agent on the account points the hostname at release ${target} with one rename, makes PHP and LiteSpeed's cache serve it, and checks that the app answers; nothing is rebuilt. Afterwards ${environment}'s deploys pause until \`${command} --resume\`.`,
+        `Target: ${environment} (https://${hostname}) on ${where}, ${toPosixRelative(deps.paths.root, deps.paths.files.plan)} with plan hash ${targetPlanHash}`,
+        sftp === undefined
+          ? `Switch: the agent on the account points the hostname at release ${target} with one rename, makes PHP and LiteSpeed's cache serve it, and checks that the app answers; nothing is rebuilt. Afterwards ${environment}'s deploys pause until \`${command} --resume\`.`
+          : `Switch: OpsCrew points the app's folder current at release ${target} over SFTP with one rename; nothing is rebuilt, and PHP may run the release before for up to 2 minutes. Afterwards ${environment}'s deploys pause until \`${command} --resume\`.`,
         `Rollback hash: ${hash}`,
       ].join("\n"),
       hash,
@@ -234,32 +280,56 @@ export async function rollbackHosting(
     },
   );
 
-  // 5. The request, carried out by the agent.
-  deps.reporter.step(`Asking the agent on the account to switch to release ${target}`);
-  const answer = await sendRequest(
-    files,
-    folder,
-    { kind: "rollback", release: target, restore: database.choice === "snapshot" },
-    { hash, now: deps.clock.now(), sleep: run.services.sleep ?? realSleep },
-  );
-  await deps.audit.append({
-    kind: "provider-call",
-    actor: "opscrew",
-    action: `ask the agent to roll back to release ${target}`,
-    target: hash,
-    decision: answer.result === "done" ? "approved" : "refused",
-    detail: `${answer.result}${database.choice === "snapshot" ? ", restoring its dump" : ""}`,
-  });
-  if (answer.result !== "done") {
-    throw new OpsCrewError(
-      "COMMAND_FAILED",
-      deps.redactor.redact(
-        `The agent on the hosting account ${answer.result === "refused" ? "refused" : "didn't finish"} the rollback of ${environment} to release ${target}: ${answer.reason ?? "it gave no reason"}. ${environment}'s deploys aren't paused.`,
-      ),
-      {
-        hint: `\`opscrew status${flags}\` shows the release that runs now and \`opscrew logs${flags}\` the agent's lines. Then roll back to another release (\`${command} --list\` lists them) or deploy a fix forward.`,
-      },
+  // 5. The switch over SFTP, or the request, carried out by the agent.
+  if (sftp !== undefined) {
+    deps.reporter.step(`Switching ${environment} to release ${target} over SFTP`);
+    try {
+      await switchOverSftp(sftp, folder, target, status);
+    } catch (error) {
+      if (!(error instanceof OpsCrewError)) throw error;
+      throw new OpsCrewError(
+        error.code,
+        `${error.message} ${environment}'s deploys aren't paused.`,
+        {
+          hint: `${error.hint ?? "Fix the cause shown above."} Then run \`${command} --to ${target}\` again.`,
+          cause: error,
+        },
+      );
+    }
+    await deps.audit.append({
+      kind: "provider-call",
+      actor: "opscrew",
+      action: `switch to release ${target} over SFTP`,
+      target: hash,
+      decision: "approved",
+    });
+  } else {
+    deps.reporter.step(`Asking the agent on the account to switch to release ${target}`);
+    const answer = await sendRequest(
+      files,
+      folder,
+      { kind: "rollback", release: target, restore: database.choice === "snapshot" },
+      { hash, now: deps.clock.now(), sleep: run.services.sleep ?? realSleep },
     );
+    await deps.audit.append({
+      kind: "provider-call",
+      actor: "opscrew",
+      action: `ask the agent to roll back to release ${target}`,
+      target: hash,
+      decision: answer.result === "done" ? "approved" : "refused",
+      detail: `${answer.result}${database.choice === "snapshot" ? ", restoring its dump" : ""}`,
+    });
+    if (answer.result !== "done") {
+      throw new OpsCrewError(
+        "COMMAND_FAILED",
+        deps.redactor.redact(
+          `The agent on the hosting account ${answer.result === "refused" ? "refused" : "didn't finish"} the rollback of ${environment} to release ${target}: ${answer.reason ?? "it gave no reason"}. ${environment}'s deploys aren't paused.`,
+        ),
+        {
+          hint: `\`opscrew status${flags}\` shows the release that runs now and \`opscrew logs${flags}\` the agent's lines. Then roll back to another release (\`${command} --list\` lists them) or deploy a fix forward.`,
+        },
+      );
+    }
   }
 
   // 6. The pause, and the record.

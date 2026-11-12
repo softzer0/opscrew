@@ -14,13 +14,17 @@ import { commandFlags } from "../environments/choice";
 import { hasDeployment } from "../shared";
 import { hostingAccountLines, readHostingAccount } from "./facts";
 import { connectPanel, hostingFiles, PANEL_NAMES } from "./panels";
-import { hostingFolder, hostnameOf } from "./provision-plans";
+import { hostingFolder, hostingTarget, hostnameOf } from "./provision-plans";
 import { type HostingRecord, readHostingRecord } from "./record";
 import { keyValues } from "./requests";
+import { reachSftpHost, sftpFilesFromEnv } from "./sftp";
 
-/** What a test, or the SFTP connector for a panel without file calls, gives the hosting commands. */
+/** What a test gives the hosting commands. */
 export interface HostingAccountServices {
-  /** The account's files where the panel's API has none (Plesk's): over SFTP when the user gives it. */
+  /**
+   * The account's files where the panel's API has none (Plesk's); by default the SFTP connector
+   * when the user gives SFTP access (`sftpFilesFromEnv`).
+   */
   files?: HostingFiles;
 }
 
@@ -61,7 +65,7 @@ export async function reachHostingAccount(
   return {
     record,
     panel,
-    files: hostingFiles(panel) ?? services.files,
+    files: hostingFiles(panel, services.files ?? sftpFilesFromEnv(deps)),
     account: `${user} at ${new URL(url).hostname}`,
     folder: hostingFolder(plan),
     hostname: hostnameOf(plan),
@@ -69,16 +73,18 @@ export async function reachHostingAccount(
 }
 
 /**
- * The account's files, or the stop where its panel has no file calls: `what` is what OpsCrew
- * can't do then (`roll the app back`).
+ * The account's files, or the stop where its panel has no file calls and no SFTP login is set:
+ * `what` is what OpsCrew can't do then (`roll the app back`).
  */
 export function requireFiles(reach: HostingReach, what: string): HostingFiles {
   if (reach.files !== undefined) return reach.files;
   const name = PANEL_NAMES[reach.panel.kind];
   throw new OpsCrewError(
     "PHASE_PRECONDITION",
-    `${name}'s API can't read or write files, so OpsCrew can't ${what} without SFTP access, which it doesn't support for ${name} yet.`,
-    { hint: `Do it in ${name}'s File Manager for now.` },
+    `${name}'s API can't read or write files, so OpsCrew reaches them over SFTP, and OPSCREW_SFTP_HOST, OPSCREW_SFTP_USER and OPSCREW_SFTP_KEY aren't set: it can't ${what}.`,
+    {
+      hint: "Set them to the account's SFTP login (OPSCREW_SFTP_KEY is your key file's path), then run the command again.",
+    },
   );
 }
 
@@ -151,11 +157,14 @@ export function newestFirst(a: string, b: string): number {
 
 const RESULT_WORDS = { deployed: "deployed", refused: "was refused", failed: "failed" } as const;
 
-/** The status's lines on the releases and the last attempt. */
-function releaseLines(status: AgentStatus | undefined): string[] {
+/** The status's lines on the releases and the last attempt; `first` says who deploys the first. */
+function releaseLines(
+  status: AgentStatus | undefined,
+  first = "the agent deploys the first one the deploy workflow publishes",
+): string[] {
   if (status?.running === undefined) {
     return [
-      "Release: none runs yet; the agent deploys the first one the deploy workflow publishes.",
+      `Release: none runs yet; ${first}.`,
       ...(status === undefined ? [] : attemptLines(status)),
     ];
   }
@@ -220,6 +229,30 @@ export async function hostingStatusReport(
     return [`OpsCrew could not read ${what}. ${errorText(error)}`];
   };
   const lines: string[] = [];
+  if (hostingTarget(plan).panel === "sftp") {
+    try {
+      const reach = await reachSftpHost(deps, plan);
+      deps.reporter.step("Reading the app on the SFTP host (read-only)");
+      lines.push(
+        `SFTP host: ${reach.account}; the app is in ${reach.folder}/ and answers on https://${reach.hostname}.`,
+        ...releaseLines(
+          await readAgentStatus(reach.files, reach.folder),
+          "the deploy workflow uploads the first one",
+        ),
+        `${reach.hostname}, its document root ${reach.documentRoot} and its certificate are yours to manage in your host's panel.`,
+      );
+      await deps.audit.append({
+        kind: "provider-call",
+        actor: "opscrew",
+        action: "read the app on the SFTP host (read-only)",
+        target: "SFTP host",
+        decision: "allow",
+      });
+    } catch (error) {
+      lines.push(...note("the SFTP host", error));
+    }
+    return { lines: lines.map((line) => deps.redactor.redact(line)) };
+  }
   try {
     const reach = await reachHostingAccount(deps, plan, services);
     deps.reporter.step("Reading the app on the hosting account (read-only)");

@@ -86,10 +86,10 @@ describe("status on a hosting account", () => {
     expect(lines).toContain(
       "Certificate: Plesk's API doesn't show certificates; check notes.example.com's in Plesk.",
     );
-    // Without SFTP, Plesk's API can't read the agent's files: said in its place.
+    // Without an SFTP login, Plesk's API can't read the agent's files: said in its place.
     const without = await hostingStatusReport(deps, app.plan);
     expect(without.lines[1]).toBe(
-      "OpsCrew could not read the agent's status. Plesk's API can't read or write files, so OpsCrew can't read it without SFTP access, which it doesn't support for Plesk yet. Do it in Plesk's File Manager for now.",
+      "OpsCrew could not read the agent's status. Plesk's API can't read or write files, so OpsCrew reaches them over SFTP, and OPSCREW_SFTP_HOST, OPSCREW_SFTP_USER and OPSCREW_SFTP_KEY aren't set: it can't read it. Set them to the account's SFTP login (OPSCREW_SFTP_KEY is your key file's path), then run the command again.",
     );
   });
 

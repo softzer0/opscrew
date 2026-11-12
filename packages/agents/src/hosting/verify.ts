@@ -23,6 +23,7 @@ import type { VerifyResult } from "../verify/run";
 import { PANEL_NAMES } from "./panels";
 import { hostingTarget, hostnameOf } from "./provision-plans";
 import { type HostingRecord, readHostingRecord } from "./record";
+import { sftpFilesFromEnv } from "./sftp";
 import { type HostingAccountServices, reachHostingAccount } from "./status";
 
 /** How long each request may take. */
@@ -47,8 +48,9 @@ export interface CheckedAccount {
 
 /**
  * The account `opscrew provision` recorded on this computer: through its panel (the token from the
- * environment, `reachHostingAccount`), or an SFTP host through `services.files`, the SFTP
- * connector's files, in the folder its record names.
+ * environment, `reachHostingAccount`), or an SFTP host through the SFTP connector's files
+ * (`services.files`, else `sftpFilesFromEnv` when `OPSCREW_SFTP_*` are set), in the folder its
+ * record names.
  * @throws OpsCrewError `PHASE_PRECONDITION` without a record of the account.
  */
 export async function reachCheckedAccount(
@@ -79,7 +81,7 @@ export async function reachCheckedAccount(
   }
   return {
     record,
-    files: services.files,
+    files: services.files ?? sftpFilesFromEnv(deps, record.sftp.port),
     folder: record.sftp.folder,
     hostname: hostnameOf(plan),
     words: "your SFTP host",

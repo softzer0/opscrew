@@ -225,10 +225,9 @@ export async function connectPanel(
 
 /**
  * Where the account's files are written: the panel itself when its API writes files (`writeFile`
- * in its `operations`). Otherwise `undefined`: the file steps are steps the user takes in the
- * panel (`panel.panelStep`), until the SFTP connector (`@opscrew/connector-sftp`) writes them over
- * SFTP when `OPSCREW_SFTP_*` are set.
+ * in its `operations`), otherwise `sftp`, the account's files over SFTP when the user gives SFTP
+ * access (`sftpFilesFromEnv`), else `undefined`.
  */
-export function hostingFiles(panel: HostingPanel): HostingFiles | undefined {
-  return panel.operations.has("writeFile") ? panel : undefined;
+export function hostingFiles(panel: HostingPanel, sftp?: HostingFiles): HostingFiles | undefined {
+  return panel.operations.has("writeFile") ? panel : sftp;
 }
