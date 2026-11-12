@@ -133,13 +133,11 @@ export function registerPortainerTools(
     },
     ({ projectDir, subdomain, allowEmails }, extra: CallExtra) =>
       runTool(deps, "opscrew_portainer_enable", projectDir, async (call) => {
-        await refuseOnHosting(
-          (await call.phaseDeps()).paths.files.plan,
-          "opscrew_portainer_enable",
-        );
-        requireDialogs(server, "npx opscrew portainer enable");
+        // The phase deps are built once per call, so they carry the dialog's handler from the start.
         const handler = dialogHandler(server, deps, extra);
         const phase = await call.phaseDeps({ approvalHandler: handler });
+        await refuseOnHosting(phase.paths.files.plan, "opscrew_portainer_enable");
+        requireDialogs(server, "npx opscrew portainer enable");
         const result = await portainerEnable(phase, {
           ...(subdomain === undefined ? {} : { subdomain }),
           ...(allowEmails === undefined || allowEmails.length === 0 ? {} : { allowEmails }),
@@ -195,13 +193,11 @@ export function registerPortainerTools(
             },
           );
         }
-        await refuseOnHosting(
-          (await call.phaseDeps()).paths.files.plan,
-          "opscrew_portainer_disable",
-        );
-        requireDialogs(server, "npx opscrew portainer disable");
+        // The phase deps are built once per call, so they carry the dialog's handler from the start.
         const handler = dialogHandler(server, deps, extra);
         const phase = await call.phaseDeps({ approvalHandler: handler });
+        await refuseOnHosting(phase.paths.files.plan, "opscrew_portainer_disable");
+        requireDialogs(server, "npx opscrew portainer disable");
         const result = await portainerDisable(phase, { ...services });
         return {
           text: changeText("disable", result),
