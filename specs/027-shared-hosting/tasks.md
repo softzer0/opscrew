@@ -281,7 +281,7 @@ names the change.
 
 ## Phase 4: Wave 3
 
-- [ ] T2711 [US1] [US4] The hosting plans, requests and provision
+- [x] T2711 [US1] [US4] The hosting plans, requests and provision
   - Owns: `packages/agents/src/hosting/{plan,apply,provision,php,requests,dns}*.ts`, `packages/agents/src/hosting/record*.ts` (extending T2710's), the hosting branch in `packages/agents/src/provision/run.ts` and in `packages/iac-templates/src/workflow/index.ts`, `hosting.json` in `packages/agents/src/secrets/files.ts`'s state files, the hosting mode of the `cloudflare-dns` module and its renderer in `packages/iac-templates`
   - Reads: plan 2–6; ADR 0011, ADR 0030; research R10, R11; `agents/src/serverless/pages/{plan,provision,step}.ts`, `connectors/ssh-host/src/{plan,apply,hash}.ts`, `agents/src/provision/{run,secrets}.ts`, the `cloudflare-dns` module's GitHub Pages mode
   - Depends: T2702–T2706, T2710
