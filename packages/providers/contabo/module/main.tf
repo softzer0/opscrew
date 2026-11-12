@@ -55,8 +55,9 @@ resource "contabo_instance" "this" {
   lifecycle {
     # Changing these would reinstall the server and lose its data; OpsCrew never does that silently.
     # The provider never reads default_user or period back, so a server taken over with an import
-    # block would otherwise show them as changes, and a default_user change reinstalls it.
-    ignore_changes = [user_data, image_id, ssh_keys, default_user, period]
+    # block would otherwise show them as changes, and a default_user change reinstalls it. Contabo
+    # lists add-ons OpsCrew never orders (one comes with a snapshot), which OpsCrew leaves alone.
+    ignore_changes = [user_data, image_id, ssh_keys, default_user, period, add_ons]
   }
 }
 

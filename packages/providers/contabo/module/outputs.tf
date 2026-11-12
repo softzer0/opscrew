@@ -3,9 +3,11 @@ output "ipv4_address" {
   value       = contabo_instance.this.ip_config[0].v4[0].ip
 }
 
+# Contabo answers the address in full (…:0000:0000:0000:0001); cidrhost gives it back shortened
+# (…::1), as Cloudflare stores the AAAA record, so the record never looks changed.
 output "ipv6_address" {
-  description = "Public IPv6 address of the server, or null when it has none."
-  value       = try(contabo_instance.this.ip_config[0].v6[0].ip, null)
+  description = "Public IPv6 address of the server, shortened, or null when it has none."
+  value       = try(cidrhost("${contabo_instance.this.ip_config[0].v6[0].ip}/128", 0), null)
 }
 
 output "server_id" {

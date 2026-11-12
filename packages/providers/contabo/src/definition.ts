@@ -209,7 +209,7 @@ export const definition: CloudProviderDefinition = {
     connectorFirewall: true,
     homeCacheFiles: [".cache/contabo/terraform/token"],
     mirroredAttributes: {},
-    lifecycleIgnored: ["default_user", "image_id", "period", "ssh_keys", "user_data"],
+    lifecycleIgnored: ["add_ons", "default_user", "image_id", "period", "ssh_keys", "user_data"],
     module: { name: "contabo-vps", files: MODULE_FILES },
     credentialsComment: `Credentials from the ${listText(ENV_VARS)} environment variables (never stored in files or state).`,
     deleteProtectionVariable: false,

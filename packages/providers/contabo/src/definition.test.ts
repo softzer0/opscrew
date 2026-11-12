@@ -258,6 +258,8 @@ describe("Contabo's cloud provider definition", () => {
 
   it("ignores the instance's attributes whose change would reinstall it, and says so to drift", () => {
     expect(definition.terraform.lifecycleIgnored).toEqual([
+      // Contabo lists add-ons OpsCrew never ordered (1501 after a snapshot, research R8).
+      "add_ons",
       "default_user",
       "image_id",
       "period",
@@ -265,9 +267,17 @@ describe("Contabo's cloud provider definition", () => {
       "user_data",
     ]);
     expect(definition.terraform.module.files["main.tf"]).toContain(
-      "ignore_changes = [user_data, image_id, ssh_keys, default_user, period]",
+      "ignore_changes = [user_data, image_id, ssh_keys, default_user, period, add_ons]",
     );
     expect(definition.terraform.module.files["versions.tf"]).toContain('version = "~> 0.1.44"');
+  });
+
+  it("outputs the IPv6 address shortened, as Cloudflare stores the AAAA record", () => {
+    // Contabo answers 2a02:…:0000:0000:0000:0001; cidrhost gives back 2a02:…::1 (research R8).
+    expect(definition.terraform.module.files["outputs.tf"]).toContain(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: an HCL interpolation, not JavaScript.
+      'value       = try(cidrhost("${contabo_instance.this.ip_config[0].v6[0].ip}/128", 0), null)',
+    );
   });
 });
 
