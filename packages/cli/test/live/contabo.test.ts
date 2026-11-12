@@ -241,9 +241,9 @@ describe.skipIf(MISSING.length > 0)(
           "backups in the price",
         ).toEqual([]);
         expect(
-          unsaid(designed.output, designTexts(STATIC_PRICES_AS_OF)),
-          "what design said",
-        ).toEqual([]);
+          unsaid(designed.output, designTexts(STATIC_PRICES_AS_OF)).join("\n"),
+          `what design said:\n${run.tail(designed.output)}`,
+        ).toBe("");
         await run.snapshotCloudflare(() => [run.appHost, `www.${run.appHost}`]);
         // The pass tests Contabo, not off-server copies, whose R2 bucket needs a key only the user
         // can make in Cloudflare's dashboard; the recovery copy still needs its age key, which a
