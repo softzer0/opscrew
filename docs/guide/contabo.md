@@ -11,7 +11,7 @@ with TLS, health checks and rollback, and the `verify`, `secure` and `drift` che
   most other providers.
 - **Monthly contracts:** a server is bought for at least a month, and removing it ends the contract
   only at the end of its term (see [Removing the app](#removing-the-app)).
-- **Prices in EUR.**
+- **Prices in EUR, before VAT.**
 
 Choose Hetzner Cloud or DigitalOcean instead when you want a server billed by the hour, removed at
 once, resized in place or backed up by the provider.
@@ -62,7 +62,7 @@ export CNTB_OAUTH2_CLIENT_ID=… CNTB_OAUTH2_CLIENT_SECRET=… CNTB_OAUTH2_USER=
 
 ## Plans and prices
 
-| Plan | vCPU | Memory | Disk (SSD) | Snapshots included | EUR a month |
+| Plan | vCPU | Memory | Disk (SSD) | Snapshots included | EUR a month, before VAT |
 |---|---|---|---|---|---|
 | Cloud VPS 4 | 4 | 8 GB | 100 GB | 1 | 5.50 |
 | Cloud VPS 6 | 6 | 12 GB | 200 GB | 2 | 7.50 |
@@ -70,12 +70,14 @@ export CNTB_OAUTH2_CLIENT_ID=… CNTB_OAUTH2_CLIENT_SECRET=… CNTB_OAUTH2_USER=
 | Cloud VPS 12 | 12 | 48 GB | 400 GB | 3 | 25.00 |
 
 - **From a dated list.** Contabo has no price API, so OpsCrew's prices come from
-  [Contabo's VPS page](https://contabo.com/en/vps/), read on 2026-11-11, with VAT included as that
-  page shows them. Design and advise show that date next to every Contabo price. The page names
-  no extra charge for other regions, so OpsCrew uses the same prices everywhere.
-- **A setup fee on Cloud VPS 4.** Contabo charges a one-time setup fee for Cloud VPS 4 on a monthly
-  contract. Its page doesn't say how much, so OpsCrew's price doesn't include it: check it on
-  Contabo's order page.
+  [Contabo's VPS page](https://contabo.com/en/vps/), read on 2026-11-11. Design and advise show
+  that date next to every Contabo price. The page names no extra charge for other regions, so
+  OpsCrew uses the same prices everywhere.
+- **Before VAT.** Contabo adds your country's VAT when you order. OpsCrew shows every provider's
+  prices before VAT.
+- **A setup fee on Cloud VPS 4.** Contabo charges €2.00 once, before VAT, for a Cloud VPS 4 on a
+  monthly contract. Design shows it under the monthly price, and advise counts it before it
+  proposes a move to Contabo.
 - **Monthly contracts only.** Contabo's 12- and 24-month contracts cost less a month, but a removal
   would then keep billing for up to two years. OpsCrew offers only the monthly one.
 

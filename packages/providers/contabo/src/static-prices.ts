@@ -3,11 +3,11 @@
  * dated table, and it is checked against contabo.com before each release.
  *
  * Source: https://contabo.com/en/vps/, read 2026-11-11. EUR a month at the standard (monthly
- * term) rate, including VAT as the page shows its prices; the cheaper 12- and 24-month rates are
- * not offered (plan decision 5). The page names no regional surcharge, so every region has the
- * EU price. It says a one-time setup fee applies to Cloud VPS 4 on a monthly term but not its
- * amount, so that offer has no `setupFee` yet. Product ids: https://api.contabo.com/ (create
- * instance, `productId`).
+ * term) rate, excluding VAT, which Contabo adds at checkout at the buyer's country's rate; the
+ * cheaper 12- and 24-month rates are not offered (plan decision 5). The page names no regional
+ * surcharge, so every region has the EU price. Cloud VPS 4's one-time setup fee on a monthly term,
+ * which the page names without its amount, is from a checkout on 2026-11-12. Product ids:
+ * https://api.contabo.com/ (create instance, `productId`).
  */
 export const STATIC_PRICES_AS_OF = "2026-11-11T00:00:00.000Z";
 
@@ -22,9 +22,9 @@ export interface StaticPlan {
   memoryGb: number;
   /** SSD. */
   diskGb: number;
-  /** EUR a month on a monthly term, including VAT. */
+  /** EUR a month on a monthly term, excluding VAT. */
   monthly: number;
-  /** EUR once, when the server is created on a monthly term. */
+  /** EUR once, excluding VAT, when the server is created on a monthly term. */
   setupFee?: number;
   /** Whole-server snapshots the plan includes. */
   includedSnapshots: number;
@@ -39,6 +39,7 @@ export const STATIC_PLANS: readonly StaticPlan[] = [
     memoryGb: 8,
     diskGb: 100,
     monthly: 5.5,
+    setupFee: 2,
     includedSnapshots: 1,
   },
   {

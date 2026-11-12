@@ -15,6 +15,13 @@ describe("StaticContaboCatalog", () => {
       ["V156", "Cloud VPS 12", 12, 48, 400, 25],
     ]);
     expect(offers.map((o) => o.includedSnapshots)).toEqual([1, 2, 3, 3]);
+    // A monthly Cloud VPS 4 costs a setup fee once (a checkout on 2026-11-12); the others none.
+    expect(offers.map((o) => o.setupFee)).toEqual([
+      { amount: 2, currency: "EUR" },
+      undefined,
+      undefined,
+      undefined,
+    ]);
     for (const offer of offers) {
       expect(offer).toMatchObject({
         provider: "contabo",
@@ -22,7 +29,7 @@ describe("StaticContaboCatalog", () => {
         cpuType: "shared",
         architecture: "x86",
         monthly: { currency: "EUR" },
-        pricesIncludeVat: true,
+        pricesIncludeVat: false,
         available: true,
         deprecated: false,
         source: "static",
@@ -55,7 +62,7 @@ describe("StaticContaboCatalog", () => {
     const extras = await new StaticContaboCatalog().extras("SIN");
     expect(extras).toEqual({
       snapshotsIncluded: true,
-      pricesIncludeVat: true,
+      pricesIncludeVat: false,
       source: "static",
       asOf: STATIC_PRICES_AS_OF,
     });

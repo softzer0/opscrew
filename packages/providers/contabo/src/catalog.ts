@@ -28,7 +28,7 @@ export class StaticContaboCatalog implements ComputeCatalog {
           architecture: "x86",
           location: region,
           monthly: { amount: plan.monthly, currency: "EUR" },
-          pricesIncludeVat: true,
+          pricesIncludeVat: false,
           deprecated: false,
           available: true,
           source: "static",
@@ -52,7 +52,7 @@ export class StaticContaboCatalog implements ComputeCatalog {
     }
     return {
       snapshotsIncluded: true,
-      pricesIncludeVat: true,
+      pricesIncludeVat: false,
       source: "static",
       asOf: STATIC_PRICES_AS_OF,
     };

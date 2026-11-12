@@ -170,7 +170,9 @@ on the API page. `/v1/data-centers` lists them with their capabilities. Whether 
 more is unverified.
 
 **Prices.** There is no price or catalogue API. From contabo.com/en/vps/ on 2026-11-11, in EUR a
-month including tax, on a 24-month term, with the standard rate in brackets:
+month before VAT (the founder's checkout on 2026-11-12 showed €5.50 for Cloud VPS 4 as the net
+price, with the buyer's country's VAT on top), on a 24-month term, with the standard rate in
+brackets:
 
 | Plan | vCPU | RAM | Disk | EUR a month |
 |---|---|---|---|---|
@@ -179,8 +181,8 @@ month including tax, on a 24-month term, with the standard rate in brackets:
 | Cloud VPS 8 | 8 | 24 GB | 300 GB SSD | 11.20 (14.00) |
 | Cloud VPS 12 | 12 | 48 GB | 400 GB SSD | 20.00 (25.00) |
 
-Monthly terms add a setup fee on Cloud VPS 4 (amount unverified); longer terms have none. The
-NVMe variants cost more.
+Monthly terms add a setup fee on Cloud VPS 4, €2.00 before VAT (the checkout of 2026-11-12); longer
+terms have none. The NVMe variants cost more.
 
 **The Terraform provider `contabo/contabo`.**
 - Official (Contabo's GitHub organisation, MIT) and pre-1.0. v0.1.44 came out on 2026-07-16, and
@@ -375,9 +377,9 @@ command (T2630).
 **Left for the live pass (T2620):** the snapshot-limit refusal, whether a snapshot is usable as
 soon as the create answers, a revert's statuses, the cancel date before a cancel, whether
 `period` or `default_user` read back differently, an import by instance id, the `unavailable`
-and `serverLimit` texts, and the firewall's `instances` shape with an instance. The setup fee
-comes from the founder's checkout; whether prices differ by region and which VAT they include,
-from Contabo's order page.
+and `serverLimit` texts, and the firewall's `instances` shape with an instance. The founder's
+checkout (2026-11-12) settled the setup fee (€2.00) and that the prices exclude VAT; whether
+prices differ by region is still unverified.
 
 ## R7. Contabo's firewall through the connector (lead, 2026-11-12)
 

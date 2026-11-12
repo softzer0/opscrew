@@ -84,12 +84,8 @@ a proposal: what it needs, without a price, and what to do yourself.
 | **A cheaper type** | Where the server runs, a type with at least its CPUs, memory and disk costs less |
 | **Another provider** | A server with at least the vCPUs, memory and disk of yours costs less at another provider in your region. It names [`opscrew retarget`](retarget.md), which moves an app on one server with a short maintenance window. It is proposed only when the saving holds whatever VAT you pay, is at least 10% of the current server's monthly price, and pays any setup fee back within 3 months |
 
-Prices are monthly, with the server's IPv4 address and backups when they are on. Each price says
-whether it includes VAT (Contabo's prices do, Hetzner's and DigitalOcean's don't) and gives its
-date: live, or the date of OpsCrew's price list. OpsCrew doesn't know your VAT rate, so a saving
-counts, here and toward the budget, only when it holds whatever VAT you pay: moving off a price
-that includes VAT, the new price is compared with 27% VAT on top, the highest standard rate in the
-EU.
+Prices are monthly and before VAT, with the server's IPv4 address and backups when they are on.
+Each price says so and gives its date: live, or the date of OpsCrew's price list.
 
 A move to another provider compares both servers with the same data protection: where the new
 provider offers no automated backups, the current server is priced without them too, and OpsCrew's

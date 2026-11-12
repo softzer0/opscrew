@@ -280,25 +280,24 @@ describe("costRules: the other provider on the same basis (Contabo)", () => {
     const move = await moveOf(cpx22, [await hetznerTable(), await contaboTable()]);
     expect(move).toMatchObject({
       title: "Move the app to Contabo: V153 (4 vCPU, 8 GB memory, 100 GB disk) in Germany",
-      // cpx22 with its IPv4 address and without its 20% for backups, against Contabo's price with VAT.
+      // cpx22 with its IPv4 address and without its 20% for backups, against Contabo's price, both
+      // without VAT.
       price: {
         before: 19.99,
         after: 5.5,
         currency: "EUR",
         source: "static",
         asOf: STATIC_PRICES_AS_OF,
-        includesVat: { before: false, after: true },
       },
       apply: { kind: "command", command: "opscrew retarget --to contabo" },
     });
     const why = texts(move);
     expect(why).toContain(
-      "A server with at least the vCPUs, memory and disk of cpx22 costs less at Contabo: V153 there against cpx22 at Hetzner [€5.50 (incl. VAT, estimate as of 2026-11-11) against €19.99 (excl. VAT, estimate as of 2026-10-14) a month]",
+      "A server with at least the vCPUs, memory and disk of cpx22 costs less at Contabo: V153 there against cpx22 at Hetzner [€5.50 (excl. VAT, estimate as of 2026-11-11) against €19.99 (excl. VAT, estimate as of 2026-10-14) a month]",
     );
+    expect(move?.price).not.toHaveProperty("includesVat");
     expect(why).not.toContain("same server");
-    expect(why).toContain(
-      "Contabo's price includes VAT and Hetzner's doesn't: without VAT the saving is larger still (OpsCrew doesn't know your VAT rate to take it off)",
-    );
+    expect(why).not.toContain("includes VAT");
     expect(why).toContain(
       "Contabo offers no automatic backups through OpsCrew: OpsCrew's own snapshots of the app's data (`opscrew snapshot`) cover it instead",
     );
@@ -311,7 +310,8 @@ describe("costRules: the other provider on the same basis (Contabo)", () => {
     expect(why).toContain("Contabo can't change a server's size in place");
     expect(why).toContain("Whole-server snapshots are included in the price, up to 1");
     expect(why).toContain("`--finish` deletes the old server");
-    expect(why).not.toContain("setup fee");
+    // Cloud VPS 4's €2.00 setup fee against a saving of €14.49 a month.
+    expect(why).toContain("The saving covers the setup fee in 1 month");
   });
 
   it("counts a move's saving toward the budget from the server's whole price, backups included", async () => {
@@ -331,7 +331,6 @@ describe("costRules: the other provider on the same basis (Contabo)", () => {
         before: 23.89,
         after: 5.5,
         currency: "EUR",
-        includesVat: { before: false, after: true },
       },
       apply: { kind: "command", command: "opscrew advise --apply cost.app.other-provider" },
     });
