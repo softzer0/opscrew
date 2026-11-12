@@ -3320,7 +3320,8 @@ Each step below is one numbered test, so a run reads as "N of 9 steps":
 9. **Nothing leaked** (SC-2604), always run: none of the four credentials, and no other known
    secret, in any CLI output, the deploy job's log, any audit entry, saved plan, state file,
    report or Cloudflare record, any commit (every branch) or pull request of the run, as for
-   environments. Step 3's findings fail this step too.
+   environments. No Contabo login may be left in the home folder (`.cache/contabo/terraform/token`,
+   ADR 0029 D9). Step 3's findings fail this step too.
 
 ### Waiting for a fix
 

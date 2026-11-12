@@ -15,6 +15,7 @@ import {
   dayText,
   designTexts,
   type FixWait,
+  leftLogins,
   pauseMs,
   serverSnapshotId,
   shownEndDate,
@@ -96,10 +97,22 @@ describe("what the pass reads in OpsCrew's output", () => {
     );
   });
 
+  it("finds a provider's login left under the home folder the environment names", () => {
+    const files = [".cache/contabo/terraform/token"];
+    const left = (env: Record<string, string>, present: string[]) =>
+      leftLogins(env, files, (path) => present.includes(path));
+    const home = join("home", "me");
+    const token = join(home, ".cache/contabo/terraform/token");
+    expect(left({ HOME: home }, [token])).toEqual([token]);
+    expect(left({ HOME: home }, [])).toEqual([]);
+    expect(left({ USERPROFILE: home }, [token])).toEqual([token]);
+    expect(left({}, [token])).toEqual([]);
+  });
+
   it("tells a plan that buys a server from one that does not", () => {
     expect(createsServer("  + create  module.server.contabo_instance.this\n")).toBe(true);
     expect(createsServer("  ± replace module.server.contabo_instance.this\n")).toBe(true);
-    expect(createsServer("  + create  module.server.contabo_firewall.this\n")).toBe(false);
+    expect(createsServer("  + create  module.server.terraform_data.firewall\n")).toBe(false);
     expect(createsServer("  ~ update  module.server.contabo_instance.this\n")).toBe(false);
   });
 

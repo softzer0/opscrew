@@ -41,6 +41,7 @@ import {
   createsServer,
   dayText,
   designTexts,
+  leftLogins,
   pauseMs,
   serverSnapshotId,
   shownEndDate,
@@ -453,12 +454,15 @@ describe.skipIf(MISSING.length > 0)(
     );
 
     run.step(
-      "9. none of the four Contabo credentials, nor any other secret, in any output, deploy job's log, audit entry, state file, plan or commit (SC-2604)",
+      "9. none of the four Contabo credentials, nor any other secret, in any output, deploy job's log, audit entry, state file, plan or commit, and no Contabo login left in the home folder (SC-2604, ADR 0029 D9)",
       minutes(10),
       async () =>
         run.expectNothingLeaked([
           ...(await envs.leaks({ cloudflare: true })),
           ...(await deployLogLeaks(run, deployRuns)),
+          ...leftLogins(run.env, definition.terraform.homeCacheFiles).map(
+            (path) => `Contabo's Terraform provider left its login in ${path}`,
+          ),
         ]),
       { always: true },
     );

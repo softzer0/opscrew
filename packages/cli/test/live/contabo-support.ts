@@ -9,6 +9,7 @@
  * is ever printed.
  */
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { access, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { AppServer, FetchLike, ServerSnapshotApi } from "@opscrew/contracts";
@@ -129,6 +130,22 @@ export function takeoverLines(output: string): string[] {
         line.includes("takes it over with an import") ||
         line.includes("OpsCrew cannot take back a cancelled"),
     );
+}
+
+/**
+ * The provider's login caches (`files`, its `homeCacheFiles`) still under the home folder `env`
+ * names, as the engine finds it (ADR 0029, D9): after a run, none may be left.
+ */
+export function leftLogins(
+  env: Record<string, string | undefined>,
+  files: readonly string[],
+  exists: (path: string) => boolean = existsSync,
+): string[] {
+  const home =
+    env.HOME ||
+    env.USERPROFILE ||
+    (env.HOMEDRIVE && env.HOMEPATH ? env.HOMEDRIVE + env.HOMEPATH : "");
+  return home ? files.map((file) => join(home, file)).filter((path) => exists(path)) : [];
 }
 
 // ---------------------------------------------------------------------------------------------
