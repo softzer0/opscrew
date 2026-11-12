@@ -145,7 +145,7 @@ names the change.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates && pnpm lint`
   - Effort: xhigh
 
-- [ ] T2705 [P] [US1] The deploy workflow for a panel account
+- [x] T2705 [P] [US1] The deploy workflow for a panel account
   - Owns: `packages/iac-templates/src/hosting/workflow*.ts`, `packages/iac-templates/src/hosting/__snapshots__/workflow*`
   - Reads: plan 4; ADR 0023, ADR 0026 (D4), ADR 0030; `iac-templates/src/workflow/{github-pages,build,pause,jobs,shared}.ts`, `iac-templates/src/pins.ts`
   - Depends: T2701
