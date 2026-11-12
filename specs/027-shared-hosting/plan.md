@@ -267,14 +267,15 @@ CLI validates with zod; it reads no JSON.
   pause set. The agent's `state/last` stays, so the release rolled back from can't come back by a
   push of its old commit.
 - **Destroy,** a hosting plan with `allowDestroy` and the typed hostname:
-  - a final dump offered (kept in `~/opscrew-dumps/` when accepted);
+  - a final dump offered: when accepted, the agent takes it into the app's `dumps/` folder, which
+    destroy keeps with only that file (so `~/opscrew` stays too), saying where it is;
   - every cron line OpsCrew made, the agent's first;
   - the hostname and its `public_html` link;
   - the certificate AutoSSL issued for the hostname when it is installed nowhere, with its key when
     no other certificate uses it;
   - the database and its user, checked again at the end and, if it is back (R10), made and removed
     once more;
-  - the app's folder, then `~/opscrew` when empty; the DNS record;
+  - the rest of the app's folder, then `~/opscrew` when empty; the DNS record;
   - on GitHub: the deploy key, the signing key and the release branch.
 
   Nothing the record doesn't list.
