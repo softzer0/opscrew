@@ -1354,7 +1354,13 @@ async function provisionFlow(
     iac: applied,
     approvals,
   });
-  plan = record(false);
+  // An apply whose run stopped before recording it (setting a firewall after it failed, say) is
+  // recorded now: the state holds the deployment, though nothing new was applied (026 R8).
+  const applyUnrecorded =
+    !applied.applied &&
+    plan.deployment.lastApplyAt === undefined &&
+    Object.keys(applied.outputs).length > 0;
+  plan = record(applyUnrecorded);
   await writePlanIfChanged(deps, persisted(plan));
 
   let secretsTarget: {

@@ -365,6 +365,38 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     expect((await readServerAddresses(deps.paths)).deployment?.ipv4).toBe(SERVER_IPV4);
   });
 
+  it("records an apply whose run stopped before recording it, when the next run has nothing to apply", async () => {
+    // The Contabo pass, run 4: the apply went through, setting the firewall failed, and the run
+    // again planned nothing new, so drift said nothing was deployed (026 research R8).
+    const { deps, services, engine, github } = await setup();
+    await runProvision(deps, { services });
+    // The first run's pull request is still open: the second run adds to it.
+    github.openPulls.set(DEPLOY_SETUP_BRANCH, {
+      number: 7,
+      url: "https://github.com/acme/shop/pull/7",
+    });
+    const first = await readArtifact("plan", deps.paths.files.plan);
+    const { lastApplyAt: _lost, ...deployment } = first.deployment;
+    await writeArtifact("plan", deps.paths.files.plan, { ...first, deployment });
+    engine.scenario.changes = [];
+    await runProvision(deps, { services });
+    const after = await readArtifact("plan", deps.paths.files.plan);
+    expect(after.deployment.lastApplyAt).toBe(deps.clock.now().toISOString());
+    expect(deps.reporter.text()).toContain("The infrastructure is already up to date.");
+  });
+
+  it("records no apply when nothing is deployed and nothing is applied", async () => {
+    const plan = testPlan();
+    const { lastApplyAt: _none, ...deployment } = plan.deployment;
+    const { deps, services } = await setup({
+      plan: { ...plan, deployment },
+      engine: new FakeEngine({ changes: [], outputs: {} }),
+    });
+    await runProvision(deps, { services }).catch(() => undefined);
+    const after = await readArtifact("plan", deps.paths.files.plan);
+    expect(after.deployment.lastApplyAt).toBeUndefined();
+  });
+
   it("keeps the app's defaults and fills host lists with the address only in the deploy secrets", async () => {
     const base = testPlan();
     const plan = {
