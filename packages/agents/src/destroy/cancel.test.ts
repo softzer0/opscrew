@@ -599,6 +599,51 @@ describe.skipIf(!findExecutable("git"))(
       }
     });
 
+    it("an app on the user's own server: a failed apply after the connector's cancel says it is cancelled and out of the state", async () => {
+      removal.throughConnector = true;
+      try {
+        const { s, events, services } = await ownWithCancelledData("Error: Cloudflare timed out");
+        const error = await runDestroy(s.deps, { services, confirm: async () => true }).catch(
+          (e: unknown) => e,
+        );
+        expect(error).toMatchObject({
+          code: "ENGINE_FAILED",
+          hint: `The Droplet shop-data is cancelled already through DigitalOcean's API and out of the infrastructure state, so plan again rather than apply the approved plan again (without \`--approve\`). Fix the cause shown above and run \`opscrew destroy\` again; it continues with what is left. The Droplet shop-data is shut down; you can start it again in ${CONSOLE}.`,
+        });
+        expect(events).toEqual([
+          "power-off:3164444",
+          "cancel:3164444",
+          "state-rm:module.server_data.digitalocean_droplet.this",
+          "apply",
+        ]);
+      } finally {
+        removal.throughConnector = false;
+      }
+    });
+
+    it("an app on the user's own server: a failed state removal after the connector's cancel keeps its own words", async () => {
+      removal.throughConnector = true;
+      try {
+        const { s, services } = await ownWithCancelledData();
+        s.engine.stateRemove = async () => {
+          throw new OpsCrewError("ENGINE_FAILED", "OpenTofu state rm failed (exit code 1).", {
+            hint: "Check the state passphrase, then try again.",
+          });
+        };
+        const error = await runDestroy(s.deps, { services, confirm: async () => true }).catch(
+          (e: unknown) => e,
+        );
+        expect(error).toMatchObject({
+          code: "ENGINE_FAILED",
+          message:
+            "OpenTofu state rm failed (exit code 1). The DigitalOcean Droplet 3164444 is cancelled already.",
+          hint: "Check the state passphrase, then try again. Run `opscrew destroy` again without `--approve` to plan afresh: a server cancelled already is not cancelled again.",
+        });
+      } finally {
+        removal.throughConnector = false;
+      }
+    });
+
     it("an app on the user's own server: a refused cancel names the provider's console", async () => {
       const reason =
         "Error: cancelling instance 3164444: 422 Unprocessable Entity: instance was not created via the API";

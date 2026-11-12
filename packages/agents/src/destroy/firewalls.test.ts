@@ -192,7 +192,13 @@ describe.skipIf(!findExecutable("git"))("runDestroy on Contabo's server and fire
     // The approved plan listed the server's deletion; the plan applied is it without that.
     const [, approved, again] = s.engine.planFiles;
     expect(s.engine.applied.map((a) => a.planFile)).toEqual([again]);
-    expect(again).toBe(approved?.replace(/.tfplan$/, "-rest.tfplan"));
+    expect(again).toBe(approved?.replace(/\.tfplan$/, "-rest.tfplan"));
+    // The state removal and the plan made again run with the approved plan's environment, its
+    // state encryption included, and its options.
+    const [, approvedOptions, againOptions] = s.engine.planOptions;
+    expect(approvedOptions?.env?.TF_ENCRYPTION).toBeDefined();
+    expect(againOptions).toEqual(approvedOptions);
+    expect(s.engine.stateRemoveOptions).toEqual([{ env: approvedOptions?.env }]);
     const audit = s.deps.audit.entries;
     expect(audit).toContainEqual(
       expect.objectContaining({
@@ -212,6 +218,17 @@ describe.skipIf(!findExecutable("git"))("runDestroy on Contabo's server and fire
     );
     const plan = await readArtifact("plan", s.deps.paths.files.plan);
     expect(plan.deployment.destroyedAt).toBeDefined();
+  });
+
+  it("says the server is cancelled and out of the state when the apply after its cancel fails", async () => {
+    const s = await setup();
+    s.engine.script.applyOk = { destroy: false };
+    const error = await runDestroy(s.deps, { services: s.services }).catch((e: unknown) => e);
+    expect(error).toMatchObject({
+      code: "ENGINE_FAILED",
+      hint: "The server shop is cancelled already through Contabo's API and out of the infrastructure state, so plan again rather than apply the approved plan again (without `--approve`). Fix the cause shown above and run `opscrew destroy` again; it continues with what is left. The server shop is shut down; you can start it again in the Contabo Customer Control Panel.",
+    });
+    expect((error as OpsCrewError).hint).not.toContain("refused");
   });
 
   it("stops before the state is touched when the cancel fails: nothing is deleted", async () => {

@@ -213,10 +213,9 @@ async function destroyInfrastructure(
       ? `Run \`opscrew provision\` to turn delete protection back on, or ${lowerFirst(hint)}`
       : hint;
   deps.reporter.step("Planning the teardown");
-  const summary = await savePlan(session, "destroy", {
-    ...(ctx.vars ? { vars: ctx.vars } : {}),
-    destroy: true,
-  });
+  // The teardown plan's options, which a plan made again after a connector's cancel reuses.
+  const planOptions = { ...(ctx.vars ? { vars: ctx.vars } : {}), destroy: true };
+  const summary = await savePlan(session, "destroy", planOptions);
   try {
     if (summary.changes.length === 0) {
       deps.reporter.info("Nothing is left to delete.");
@@ -354,7 +353,7 @@ async function destroyInfrastructure(
     try {
       await applyApprovedPlan(tunnel ? { ...session, engine } : session, summary, {
         allowDestroy: true,
-        planOptions: { ...(ctx.vars ? { vars: ctx.vars } : {}), destroy: true },
+        planOptions,
         what: cancel
           ? `cancelling ${cancel.text} and deleting the rest`
           : "deleting the infrastructure",

@@ -813,16 +813,13 @@ export async function destroyOwnServer(
   const applyRemoval = async (session: DeletionSession, approved: CloudflareRemoval) => {
     const inPlan = cancelledIn(cancelling, approved.summary.changes);
     await shutDown(session, inPlan, services);
-    const deleted = await applyCloudflareRemoval(session, approved, services.sleep).catch(
-      (error: unknown) => {
-        // A provider may have refused the cancel: where to cancel by hand, and that they are off.
-        if (inPlan.length === 0 || !(error instanceof OpsCrewError)) throw error;
-        if (error.code !== "ENGINE_FAILED") throw error;
-        throw new OpsCrewError(error.code, error.message, {
-          hint: cancelFailedHint(inPlan, name, command),
-          cause: error,
-        });
-      },
+    // A failed apply: a provider may have refused the cancel (where to cancel by hand), or its
+    // connector cancelled them already; either way they are off.
+    const deleted = await applyCloudflareRemoval(
+      session,
+      approved,
+      services.sleep,
+      inPlan.length > 0 ? cancelFailedHint(inPlan, name, command) : undefined,
     );
     const lines = await cancelDates(session, inPlan, services);
     for (const line of lines) deps.reporter.info(line);

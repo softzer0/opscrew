@@ -325,9 +325,11 @@ export async function deletionStep(
   input: DeletionStepInput,
 ): Promise<PlanStep> {
   const { deps } = session;
+  // The step's plan options, which a plan made again after a connector's cancel reuses.
+  const planOptions = input.vars ? { vars: input.vars } : {};
   let summary: DeletionPlan | undefined = await approvedPending(session, input.action, input.check);
   if (summary === undefined) {
-    const fresh = await saveDeletionPlan(del, input.suffix, input.vars ? { vars: input.vars } : {});
+    const fresh = await saveDeletionPlan(del, input.suffix, planOptions);
     if (fresh.changes.length === 0) {
       await discardSaved(fresh.planFile);
       return { kind: "unchanged", outputs: {} };
@@ -359,7 +361,7 @@ export async function deletionStep(
     deps.reporter.step(upperFirst(input.what));
     await applyApprovedPlan(del, summary, {
       allowDestroy: input.allowDestroy,
-      planOptions: input.vars ? { vars: input.vars } : {},
+      planOptions,
       what: input.what,
       hint: input.hint,
     });

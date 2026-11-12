@@ -524,6 +524,8 @@ export async function applyCloudflareRemoval(
   session: DeletionSession,
   removal: CloudflareRemoval,
   sleep: ((ms: number) => Promise<void>) | undefined,
+  /** The hint of a failed apply instead of the default (the cancelled extra servers'). */
+  failedHint?: string,
 ): Promise<ResourceChange[]> {
   const { deps } = session;
   const { summary, planOptions, words } = removal;
@@ -543,9 +545,11 @@ export async function applyCloudflareRemoval(
         allowDestroy: true,
         planOptions,
         what: "deleting the Cloudflare resources",
-        hint: removal.tunnel
-          ? `${left} Fix the cause shown above, then run \`opscrew destroy\` again to finish; it continues with what is left.`
-          : CONTINUES_WITH_LEFT,
+        hint:
+          failedHint ??
+          (removal.tunnel
+            ? `${left} Fix the cause shown above, then run \`opscrew destroy\` again to finish; it continues with what is left.`
+            : CONTINUES_WITH_LEFT),
       });
     } catch (error) {
       if (!engine.refusedBusyTunnel) throw error;

@@ -282,9 +282,17 @@ export class ScriptedDestroyEngine implements IacEngine {
     return {};
   }
 
+  /** Each `stateRemove`'s options, in order. */
+  readonly stateRemoveOptions: (IacRunOptions | undefined)[] = [];
+
   /** Takes `addresses` out of the state: the destroy plans that follow no longer delete them. */
-  async stateRemove(_dir: string, addresses: readonly string[]): Promise<void> {
+  async stateRemove(
+    _dir: string,
+    addresses: readonly string[],
+    options?: IacRunOptions,
+  ): Promise<void> {
     this.calls.push("state-rm");
+    this.stateRemoveOptions.push(options);
     this.events.push(`state-rm:${addresses.join(",")}`);
     const resources = this.script.resources ?? deployedResources();
     this.script.resources = resources.filter((change) => !addresses.includes(change.address));

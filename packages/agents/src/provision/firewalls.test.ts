@@ -225,6 +225,17 @@ describe.skipIf(!findExecutable("git"))("runProvision on Contabo and its firewal
     expect(s.engine.stateRemoved).toEqual([]);
   });
 
+  it("says the server is cancelled and out of the state when the apply after its cancel fails", async () => {
+    const s = await setup({ ...removal(), applyOk: false, applyLog: "Error: Contabo timed out" });
+    const error = await runProvision(s.deps, { services: s.services }).catch((e: unknown) => e);
+    expect(error).toMatchObject({ code: "ENGINE_FAILED" });
+    const { hint } = error as OpsCrewError;
+    expect(hint).toContain(
+      "The server shop-data is cancelled already through Contabo's API and out of the infrastructure state, so plan again rather than apply the approved plan again (without `--approve`).",
+    );
+    expect(hint).not.toContain("refused");
+  });
+
   it("still shows and audits when a cancelled server's contract ends when the firewall cannot be set", async () => {
     const s = await setup(removal());
     s.firewalls.syncError = new OpsCrewError("PROVIDER_ERROR", "Contabo answered 503.");

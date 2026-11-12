@@ -17,6 +17,7 @@ import {
   servicesOn,
   snapshotOffsiteOf,
 } from "@opscrew/plan-schema";
+import { cloudProvider } from "@opscrew/providers";
 import { deletesServer, serverData } from "./checks";
 import { type DeletionScope, failureReason, type ServerApiInput, serverApi } from "./deletion";
 import type { ServerSnapshot } from "./servers";
@@ -291,8 +292,10 @@ export async function cancelDates(
 /**
  * The hint when the destroy plan's apply fails with cancelled `servers` in it: a provider may have
  * refused the cancel (Contabo refuses one for a server not created through its API), whose reason
- * the log above shows. The servers were shut down before the apply. Without `command` it leaves out
- * what to do otherwise, for a caller whose own hint says it (provision's).
+ * the log above shows. A provider whose connector cancels its servers did so before the apply,
+ * which took them out of the state (ADR 0029, D10): then only planning again goes on. The servers
+ * were shut down before the apply. Without `command` it leaves out what to do otherwise, for a
+ * caller whose own hint says it (provision's).
  */
 export function cancelFailedHint(
   servers: readonly CancelledServer[],
@@ -302,20 +305,23 @@ export function cancelFailedHint(
   const groups = byProvider(servers).map(([provider, group]) => ({
     texts: destroyTexts(provider),
     names: group.map((server) => nameOf(server, app)),
+    connector: cloudProvider(provider).terraform.connectorRemoval,
   }));
-  const refused = groups.map(
-    ({ texts, names }) =>
-      `If ${texts.company} refused to cancel ${serversText(texts.noun, names)} (its reason is in the log above; it refuses one not created through its API, for example), cancel ${names.length === 1 ? "it" : "them"} by hand in ${texts.console}.`,
+  const refused = groups.map(({ texts, names, connector }) =>
+    connector
+      ? `${upperFirst(serversText(texts.noun, names))} ${names.length === 1 ? "is" : "are"} cancelled already through ${texts.company}'s API and out of the infrastructure state, so plan again rather than apply the approved plan again (without \`--approve\`).`
+      : `If ${texts.company} refused to cancel ${serversText(texts.noun, names)} (its reason is in the log above; it refuses one not created through its API, for example), cancel ${names.length === 1 ? "it" : "them"} by hand in ${texts.console}.`,
   );
   const off = groups.map(
     ({ texts, names }) =>
       `${upperFirst(serversText(texts.noun, names))} ${names.length === 1 ? "is" : "are"} shut down; you can start ${names.length === 1 ? "it" : "them"} again in ${texts.console}.`,
   );
+  const fix = groups.every((group) => group.connector) ? "Fix" : "Otherwise fix";
   return [
     ...refused,
     ...(command !== undefined
       ? [
-          `Otherwise fix the cause shown above and run \`${command}\` again; it continues with what is left.`,
+          `${fix} the cause shown above and run \`${command}\` again; it continues with what is left.`,
         ]
       : []),
     ...off,

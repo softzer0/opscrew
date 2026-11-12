@@ -580,6 +580,47 @@ describe("planAndApply and the firewalls a provider's connector applies (ADR 002
     await planAndApply(s.deps, s.options);
     expect(s.events).toEqual(["apply"]);
   });
+
+  // A plan saved by `--plan-only` and applied with `--approve <hash>` meets the files on disk now
+  // when it is made again after the server's cancel (ADR 0029, D10).
+  it("stops, audited, when a saved plan made again comes from other files, and a rerun of its hash says to plan afresh", async () => {
+    const s = await setup({
+      changes: REMOVAL,
+      planJson: removalPlanJson,
+      outputs: { wanted_firewalls: { server: APP } },
+    });
+    const options = { ...s.options, env: { TF_ENCRYPTION: "kept" } };
+    const saved = await planAndApply(s.deps, { ...options, planOnly: true });
+    const stateRemove = s.engine.stateRemove.bind(s.engine);
+    s.engine.stateRemove = async (dir, addresses, runOptions) => {
+      await stateRemove(dir, addresses, runOptions);
+      // The infrastructure files were changed after the plan was saved.
+      s.engine.scenario.planJson = { ...removalPlanJson, configuration: { root_module: {} } };
+    };
+    const approve = { ...options, approvePlanHash: saved.planHash };
+    const stopped = await planAndApply(s.deps, approve).catch((e: unknown) => e);
+    expect(stopped).toMatchObject({ code: "PHASE_PRECONDITION" });
+    const { message, hint } = stopped as OpsCrewError;
+    expect(message).toContain("  the infrastructure configuration: not the approved plan's");
+    expect(hint).toContain(
+      "run `opscrew provision` again without `--approve`: it plans what is left",
+    );
+    // The state removal and the plan made again ran with the run's environment.
+    expect(s.engine.stateRemoveOptions).toEqual([{ env: options.env }]);
+    expect(s.engine.planOptions.at(-1)).toEqual({ env: options.env });
+    expect(s.engine.applied).toEqual([]);
+    expect(s.deps.audit.entries).toContainEqual(
+      expect.objectContaining({ kind: "iac", action: "plan again", decision: "refused" }),
+    );
+
+    // The same hash again: the server is cancelled and out of the state, so plan afresh.
+    const rerun = await planAndApply(s.deps, approve).catch((e: unknown) => e);
+    expect(rerun).toMatchObject({
+      code: "ENGINE_FAILED",
+      hint: "Nothing in the cloud changed. Run `opscrew provision` again without `--approve` to plan afresh: a server cancelled already is not cancelled again.",
+    });
+    expect(s.engine.applied).toEqual([]);
+  });
 });
 
 describe("planAndApply for the user's Portainer", () => {

@@ -449,6 +449,8 @@ export class FakeEngine implements IacEngine {
   readonly info = { name: "tofu" as const, version: "1.13.1", binary: "/fake/tofu" };
   readonly calls: string[] = [];
   readonly applied: { planFile: string; approval: IacApproval }[] = [];
+  /** Each plan's options, in order. */
+  readonly planOptions: Parameters<IacEngine["plan"]>[2][] = [];
   initOptions: IacInitOptions | undefined;
   #counter = 0;
   /** As OpenTofu: an apply sees the root's terraform.tfvars.json again, which the plan must match. */
@@ -484,6 +486,7 @@ export class FakeEngine implements IacEngine {
     options: Parameters<IacEngine["plan"]>[2] = {},
   ): Promise<PlanSummary> {
     this.calls.push("plan");
+    this.planOptions.push(options);
     const content = `fake plan ${++this.#counter} for ${dir}`;
     await writeFile(planFile, content);
     await this.#variables.record(dir, sha256(content), options.vars);
@@ -562,15 +565,28 @@ export class FakeEngine implements IacEngine {
     }
   }
 
-  /** The addresses `stateRemove` took out of the state, in order. */
+  /** The addresses `stateRemove` took out of the state, in order, and each call's options. */
   readonly stateRemoved: string[] = [];
+  readonly stateRemoveOptions: (IacRunOptions | undefined)[] = [];
 
   /**
    * Takes `addresses` out of the state. The plans that follow, as a real engine's, no longer delete
-   * them, and create those a plan replaced.
+   * them, and create those a plan replaced; an address taken out already fails, as it does there.
    */
-  async stateRemove(_dir: string, addresses: readonly string[]): Promise<void> {
+  async stateRemove(
+    _dir: string,
+    addresses: readonly string[],
+    options?: IacRunOptions,
+  ): Promise<void> {
     this.calls.push("state-rm");
+    this.stateRemoveOptions.push(options);
+    if (addresses.some((address) => this.stateRemoved.includes(address))) {
+      throw new OpsCrewError(
+        "ENGINE_FAILED",
+        `OpenTofu state rm ${addresses.join(" ")} failed (exit code 1).\nError: Invalid target address\nNo matching objects found.`,
+        { hint: "Nothing in the cloud changed." },
+      );
+    }
     this.stateRemoved.push(...addresses);
   }
 

@@ -10,29 +10,42 @@ import { APP, type MoveEvent, type MoveHarness } from "../../testing";
  * SC-502: every apply follows an approval of the same plan hash, and an apply that deletes follows
  * an approval with `allowDestroy` and the typed app name (plus the typed confirmation hook when
  * `typed` is set, as in interactive runs). A plan made again after a server was removed through
- * its connector (ADR 0029, D10) is the approved plan without that server's deletion: the approval
- * of the plan that the server's cancel and state removal followed gates it.
+ * its connector (ADR 0029, D10) is the approved plan without that server's deletion: it is gated
+ * only when it is the first plan after the state removal, the last approval before that removal is
+ * of the plan made right before it, and a cancel lies between that approval and the removal.
  */
 export function expectGated(events: readonly MoveEvent[], typed = false): void {
   const applies = events.flatMap((event, index) =>
     event.type === "apply" ? [{ event, index }] : [],
   );
+  const approvedApply = (e: MoveEvent) => e.type === "approval" && e.kind === "iac-apply" && e.approved;
   for (const { event, index } of applies) {
     const before = events.slice(0, index);
     const removal = before.findLastIndex((e) => e.type === "state-rm");
     const planned = before.findLastIndex((e) => e.type === "plan" && e.hash === event.hash);
-    // The first plan right after the state removal, no other plan in between.
     const madeAgain =
       removal >= 0 &&
       planned > removal &&
       !before.slice(removal + 1, planned).some((e) => e.type === "plan");
-    const approval = (madeAgain ? before.slice(0, removal) : before).findLast(
-      (e) =>
-        e.type === "approval" &&
-        e.kind === "iac-apply" &&
-        e.approved &&
-        (madeAgain || e.planHash === event.hash),
-    );
+    let approval: MoveEvent | undefined;
+    if (madeAgain) {
+      const gate = before.slice(0, removal).findLastIndex(approvedApply);
+      const original = before.slice(0, removal).findLast((e) => e.type === "plan");
+      const gating = before[gate];
+      const cancelled = before.slice(gate + 1, removal).some((e) => e.type === "cancel");
+      if (
+        gating?.type === "approval" &&
+        original?.type === "plan" &&
+        gating.planHash === original.hash &&
+        cancelled
+      ) {
+        approval = gating;
+      }
+    } else {
+      approval = before.findLast(
+        (e) => approvedApply(e) && e.type === "approval" && e.planHash === event.hash,
+      );
+    }
     expect(approval, `approval before apply ${event.hash}`).toBeDefined();
     if (event.deletes.length > 0 && approval?.type === "approval") {
       expect(approval.allowDestroy).toBe(true);
