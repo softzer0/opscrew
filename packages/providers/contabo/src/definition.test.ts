@@ -160,8 +160,22 @@ describe("Contabo's cloud provider definition", () => {
     expect(main).toContain('resource "terraform_data" "firewall" {');
     expect(main).toContain("server_ids  = [tostring(contabo_instance.this.id)]");
     // A family with no network gets a source that matches nobody, never an empty list.
-    expect(main).toContain('["127.0.0.1/32"]');
-    expect(main).toContain('["::1/128"]');
+    for (const [list, family, nobody] of [
+      ["ssh", "ipv4", '"127.0.0.1/32"'],
+      ["ssh", "ipv6", '"::1/128"'],
+      ["http", "ipv4", '"127.0.0.1/32"'],
+      ["http", "ipv6", '"::1/128"'],
+    ]) {
+      const local = `${list}_${family}`;
+      const colon = family === "ipv4" ? '!strcontains(cidr, ":")' : 'strcontains(cidr, ":")';
+      const line = main.split("\n").find((text) => text.trimStart().startsWith(`${local} `));
+      expect(line?.trim().replace(/\s+=\s+/, " = ")).toBe(
+        `${local} = coalescelist([for cidr in var.${list}_allowed_cidrs : cidr if ${colon}], [${nobody}])`,
+      );
+    }
+    // The SSH rule only with allowed networks, the web's only on a server that serves the web.
+    expect(main).toContain('for port in length(var.ssh_allowed_cidrs) == 0 ? [] : ["22"] :');
+    expect(main).toContain("for rule in var.web ? local.web_rules : [] :");
     expect(terraform.module.files["outputs.tf"]).toMatch(
       /output "wanted_firewall" \{[^}]*value\s+= terraform_data\.firewall\.input\n\}/,
     );

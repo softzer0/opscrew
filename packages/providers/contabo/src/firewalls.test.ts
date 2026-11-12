@@ -385,6 +385,29 @@ describe("firewalls.remove", () => {
     ]);
   });
 
+  it("leaves alone a server Contabo is already removing from the firewall", async () => {
+    const { api, calls } = setup({
+      "GET /v1/firewalls?": page([
+        firewall({
+          instances: [101, 103],
+          instanceStatus: [
+            { instanceId: 101, status: "ok" },
+            { instanceId: 102, status: "deleting" },
+            { instanceId: 103, status: "deleting" },
+          ],
+        }),
+      ]),
+      [`DELETE /v1/firewalls/${ID}/instances/101`]: LINKS,
+      [`DELETE /v1/firewalls/${ID}`]: { status: 204 },
+    });
+    expect(await api.remove(NAME)).toBe(true);
+    expect(calls()).toEqual([
+      LIST,
+      `DELETE /v1/firewalls/${ID}/instances/101`,
+      `DELETE /v1/firewalls/${ID}`,
+    ]);
+  });
+
   it("deletes a firewall that protects no server at once", async () => {
     const { api, calls } = setup({
       "GET /v1/firewalls?": page([firewall({ instances: [], instanceStatus: "[]" })]),

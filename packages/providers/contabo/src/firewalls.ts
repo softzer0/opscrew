@@ -125,11 +125,17 @@ export function contaboFirewallApi(client: ContaboClient): FirewallApi {
     async remove(name: string): Promise<boolean> {
       const firewall = await find(name);
       if (firewall === undefined) return false;
+      // A server whose status is `deleting` is already being removed.
+      const removing = new Set(
+        firewall.instanceStatus
+          .filter((entry) => entry.status === "deleting")
+          .map((entry) => entry.instanceId),
+      );
       const servers = new Set([
         ...firewall.instances,
         ...firewall.instanceStatus.map((entry) => entry.instanceId),
       ]);
-      for (const server of servers) {
+      for (const server of [...servers].filter((id) => !removing.has(id))) {
         await client.unassignFirewall(firewall.firewallId, instanceId(server));
       }
       await client.deleteFirewall(firewall.firewallId);
