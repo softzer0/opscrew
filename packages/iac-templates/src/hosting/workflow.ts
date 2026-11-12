@@ -61,6 +61,12 @@ const PHP_CLI_IMAGES: Readonly<Record<string, ImagePin>> = {
 };
 
 /**
+ * The PHP versions (`major.minor`) the deploy workflow builds a release with, oldest first: a
+ * hosting plan can choose only these.
+ */
+export const HOSTING_PHP_VERSIONS: readonly string[] = Object.keys(PHP_CLI_IMAGES);
+
+/**
  * The PHP CLI image of the target's PHP version.
  * @throws OpsCrewError `INVALID_INPUT` for a version OpsCrew has no image of.
  */

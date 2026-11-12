@@ -17,6 +17,7 @@ import {
   APP_SERVER,
   type DeployPlan,
   ghcrImageFor,
+  isHostingTarget,
   isServerlessProvider,
   readArtifact,
   snapshotOffsiteOf,
@@ -39,6 +40,7 @@ import { builderBranch, workflowBranch } from "../environments/branches";
 import { commandFlags } from "../environments/choice";
 import { requireOwnHostnames } from "../environments/hostnames";
 import { requireSharedParts } from "../environments/shared-parts";
+import { provisionHosting } from "../hosting/provision";
 import { localPlanFile } from "../localhost/plan";
 import { provisionLocalhost } from "../localhost/provision";
 import { finishMove, recordSwitchedMove, runMove } from "../move";
@@ -519,6 +521,20 @@ async function provisionFlow(
     return plan.target.provider === "cloudflare-workers"
       ? provisionCloudflareWorkers(deps, options, input)
       : provisionGithubPages(deps, options, input);
+  }
+  // A hosting account (ADR 0030): no Dockerfile, server or deploy key; its changes are hosting
+  // plans approved by their hash (`hosting-apply`), and provision manages its DNS record too.
+  if (isHostingTarget(plan.target)) {
+    if (phase !== "provision") {
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        "`opscrew dns` does not change the DNS record of an app on a hosting account: `opscrew provision` manages it with the app.",
+        {
+          hint: `To move the app to another hostname, answer \`opscrew interview\` again, run \`opscrew design\`, then \`opscrew provision\`.`,
+        },
+      );
+    }
+    return provisionHosting(deps, options, { plan, requirements, git });
   }
   await requireDockerfile(deps, git, plan);
   if (plan.target.provider === "portainer") {

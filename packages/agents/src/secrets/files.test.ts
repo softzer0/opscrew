@@ -1,8 +1,9 @@
-// Feature 025 (T2508): the preview key joins the recovery copy.
+// Feature 025 (T2508): the preview key joins the recovery copy; feature 027 (T2711): the hosting record.
 import { randomBytes } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { describe, expect, it } from "vitest";
+import { hostingRecordFile, updateHostingRecord } from "../hosting/record";
 import { createTestPhaseDeps } from "../testing";
 import { fileMode, isCopyPath, localPath, readLocalFiles, registerGeneratedValues } from "./files";
 
@@ -19,6 +20,18 @@ describe("the recovery copy's files", () => {
     await writeFile(deps.paths.files.previewKeyPub, "ssh-ed25519 AAAA opscrew-preview@x\n");
     const files = await readLocalFiles(deps.paths, deps.redactor);
     expect(Object.keys(files).sort()).toEqual(["home/preview_key", "home/preview_key.pub"]);
+  });
+
+  it("hold the hosting account's record, which lists what OpsCrew made there (027)", async () => {
+    const deps = await createTestPhaseDeps();
+    expect(isCopyPath("state/hosting.json")).toBe(true);
+    expect(localPath(deps.paths, "state/hosting.json")).toBe(hostingRecordFile(deps.paths));
+    await updateHostingRecord(deps.paths, (current) => ({
+      ...current,
+      objects: [{ kind: "hostname", key: "notes.example.com" }],
+    }));
+    const files = await readLocalFiles(deps.paths, deps.redactor);
+    expect(Object.keys(files)).toEqual(["state/hosting.json"]);
   });
 
   it("register each value a previous-value variable holds on its own, beside the whole", async () => {

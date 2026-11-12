@@ -116,6 +116,11 @@ describe("renderAgentSettings", () => {
     );
   });
 
+  it("takes a PHP app without its CLI until provision chooses the version (T2711)", () => {
+    const { phpCli: _cli, ...unchosen } = LARAVEL;
+    expect(renderAgentSettings(unchosen)).toContain("\nPHP_CLI=''\n");
+  });
+
   it("refuses PHP settings for an app that isn't PHP", () => {
     expect(() => renderAgentSettings({ ...STATIC_SITE, phpCli: "/usr/local/bin/php" })).toThrow(
       /phpCli/,

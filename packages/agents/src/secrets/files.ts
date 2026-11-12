@@ -46,7 +46,7 @@ const HOME_FILES = [
  * From the project's `.opscrew/`, besides `tfstate/*.tfstate`. Not `state.json`: it only records
  * phase outcomes and times, and would change the copy on every run.
  */
-const STATE_FILES = ["server.json", "cloudflare.json"] as const;
+const STATE_FILES = ["server.json", "cloudflare.json", "hosting.json"] as const;
 
 const TFSTATE = /^[A-Za-z0-9][A-Za-z0-9_.-]*\.tfstate$/;
 

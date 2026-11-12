@@ -23,7 +23,11 @@ export interface AgentSettings {
   /** The path the agent asks for after a switch, from `/`. */
   healthPath: string;
   appKind: "static" | "php" | "node" | "python";
-  /** A PHP app's CLI, the version the plan chose (`/opt/alt/php85/usr/bin/php`); PHP apps only. */
+  /**
+   * A PHP app's CLI, the version the plan chose (`/opt/alt/php85/usr/bin/php`); PHP apps only.
+   * Absent before the agent's first report lets provision choose one: the agent then runs no PHP
+   * release command.
+   */
   phpCli?: string;
   /** The handler line's type when the hostname gets its PHP through one (`application/x-httpd-alt-php85___lsphp`). */
   phpHandler?: string;
@@ -69,10 +73,8 @@ function problemOf(s: AgentSettings): [field: string, rule: string] | undefined 
     ["appKind", APP_KINDS.includes(s.appKind), APP_KINDS.join(", ")],
     [
       "phpCli",
-      php
-        ? /^\/./.test(s.phpCli ?? "") && isPath((s.phpCli ?? "").slice(1))
-        : s.phpCli === undefined,
-      "an absolute path for a PHP app, absent otherwise",
+      s.phpCli === undefined || (php && /^\/./.test(s.phpCli) && isPath(s.phpCli.slice(1))),
+      "an absolute path for a PHP app (or absent until its version is chosen), absent otherwise",
     ],
     [
       "phpHandler",

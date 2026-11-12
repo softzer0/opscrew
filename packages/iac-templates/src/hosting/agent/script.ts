@@ -378,8 +378,13 @@ load() {
 # In release folder $1: Laravel's caches first, as they change nothing outside the release, then
 # the release command; Laravel's cached config, which either can write, is made 0600 after both.
 # The lock's descriptor stays out of the release command, so nothing it leaves running can hold
-# the lock. PREPARE_SAID says what failed.
+# the lock. A PHP app's release command needs the PHP CLI provision chose. PREPARE_SAID says what
+# failed.
 prepare() {
+  if [ "$APP_KIND" = php ] && [ -z "$PHP_CLI" ] && { [ -f "$1/artisan" ] || [ -n "$RELEASE_COMMAND" ]; }; then
+    PREPARE_SAID="no PHP CLI is chosen for the app yet, so its release command can't run (run opscrew provision)"
+    return 1
+  fi
   if [ "$APP_KIND" = php ] && [ -f "$1/artisan" ]; then
     (cd "$1" && php artisan optimize) || { PREPARE_SAID="Laravel's caches (php artisan optimize) failed"; return 1; }
   fi

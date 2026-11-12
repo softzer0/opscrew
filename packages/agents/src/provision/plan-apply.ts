@@ -34,6 +34,7 @@ import {
   type CloudProvider,
   type DeployPlan,
   isCloudTarget,
+  isHostingTarget,
   isServerlessProvider,
   readArtifact,
   writeArtifact,
@@ -741,10 +742,13 @@ export async function planAndApply(
   const cloudflare = deployPlan.dns.provider === "cloudflare";
   // A server the user owns has no provider API: only Cloudflare resources are planned. The user's
   // Portainer has only Cloudflare resources (tunnels, their routes and Access), and so do the
-  // server-less targets (a Worker and its custom domains, or GitHub Pages' DNS records).
+  // server-less targets (a Worker and its custom domains, or GitHub Pages' DNS records) and a
+  // hosting account (its hostname's record).
   const cloud = () => providerProfile(planProvider(deployPlan)).displayName;
   const providers =
-    portainer || isServerlessProvider(deployPlan.target.provider)
+    portainer ||
+    isServerlessProvider(deployPlan.target.provider) ||
+    isHostingTarget(deployPlan.target)
       ? "Cloudflare"
       : ownServer
         ? cloudflare

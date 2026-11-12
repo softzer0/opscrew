@@ -274,6 +274,18 @@ describe.skipIf(reason !== undefined)("the hosting agent", { timeout: 180_000 },
     if (CAN_LINK) expect(current(a)).toBe("releases/0-0");
   });
 
+  it("runs no PHP release command before provision chose the app's PHP (T2711)", () => {
+    const a = account({ phpCli: undefined });
+    a.run();
+    a.publish(laravelRelease("two"), { run: 310 });
+    const run = a.run();
+    expect(run.output).toContain(
+      "Release 310-1 failed: no PHP CLI is chosen for the app yet, so its release command can't run (run opscrew provision). The running release is untouched.",
+    );
+    expect(a.releases()).toEqual(["0-0"]);
+    expect(a.stubFile("php.log")).not.toContain("artisan");
+  });
+
   it("leaves the running release untouched when the release command fails, and refuses older releases after it", () => {
     const a = account();
     a.run();

@@ -2,7 +2,14 @@
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { createTestPhaseDeps } from "../testing";
-import { hostingRecordFile, readHostingRecord, updateHostingRecord } from "./record";
+import {
+  forgetObject,
+  hostingRecordFile,
+  readHostingRecord,
+  recordedObject,
+  recordObject,
+  updateHostingRecord,
+} from "./record";
 
 const PANEL = { kind: "cpanel", url: "https://panel.example.com:2083", user: "acct" } as const;
 
@@ -68,5 +75,22 @@ describe("the hosting record", () => {
       code: "ARTIFACT_INVALID",
       message: expect.stringContaining("objects.0.kind is not valid"),
     });
+  });
+  it("records each object made right away, one per kind and key, and forgets one removed (T2711)", async () => {
+    const deps = await createTestPhaseDeps();
+    await recordObject(deps.paths, { kind: "cron", key: "7", value: "* * * * * one" });
+    await recordObject(deps.paths, { kind: "deploy-key", key: "4000", value: "ssh-ed25519 AAAA" });
+    await recordObject(deps.paths, { kind: "cron", key: "7", value: "* * * * * two" });
+    await recordObject(deps.paths, { kind: "panel-step", key: "agent-cron" });
+    const record = await readHostingRecord(deps.paths);
+    expect(record?.objects).toEqual([
+      { kind: "deploy-key", key: "4000", value: "ssh-ed25519 AAAA" },
+      { kind: "cron", key: "7", value: "* * * * * two" },
+      { kind: "panel-step", key: "agent-cron" },
+    ]);
+    expect(recordedObject(record, "cron")?.value).toBe("* * * * * two");
+    expect(recordedObject(record, "cron", "8")).toBeUndefined();
+    await forgetObject(deps.paths, "cron", "7");
+    expect(recordedObject(await readHostingRecord(deps.paths), "cron")).toBeUndefined();
   });
 });

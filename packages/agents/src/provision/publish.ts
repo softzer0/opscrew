@@ -23,12 +23,13 @@ import {
   runnerLabel,
   runtimeDir,
 } from "@opscrew/iac-templates";
-import { type DeployPlan, isServerlessProvider } from "@opscrew/plan-schema";
+import { type DeployPlan, isHostingTarget, isServerlessProvider } from "@opscrew/plan-schema";
 import { parse } from "yaml";
 import type { PhaseDeps } from "../context";
 import { OWN_SERVER_BACKUPS_NOTE } from "../design/own";
 import { PORTAINER_HOST_NOTE, portainerBackupsNote, portainerHasData } from "../design/portainer";
 import { workflowBranch } from "../environments/branches";
+import { hostingPullRequestBody } from "../hosting/provision-pr";
 import { planProvider, providerProfile } from "../providers";
 import { planFile, planWhere } from "../runners/words";
 import {
@@ -139,6 +140,7 @@ export function deploySetupPullRequestBody(
   if (isServerlessProvider(plan.target.provider)) {
     return sitePullRequestBody(plan, version, options);
   }
+  if (isHostingTarget(plan.target)) return hostingPullRequestBody(plan, version, options);
   const profile = providerProfile(planProvider(plan));
   const own = plan.target.provider === "own";
   const tunnel = plan.target.provider === "own" && plan.target.access === "tunnel";

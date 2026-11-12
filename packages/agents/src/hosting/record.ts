@@ -37,14 +37,37 @@ const SftpSchema = z.strictObject({
   phpPath: z.string().regex(/^\//),
 });
 
-/** An object OpsCrew made on the account, with the panel's key for it. */
+/**
+ * An object OpsCrew made for the app, with the key it goes by. Besides the account's own objects:
+ * the GitHub deploy key the agent fetches with (`deploy-key`), the release signing key whose
+ * private half is the GitHub secret (`signing-key`), and a step the user took in the panel at
+ * OpsCrew's request (`panel-step`).
+ */
 const HostingObjectSchema = z.strictObject({
-  kind: z.enum(["hostname", "database", "cron", "folder", "file", "certificate", "php"]),
+  kind: z.enum([
+    "hostname",
+    "database",
+    "cron",
+    "folder",
+    "file",
+    "link",
+    "certificate",
+    "php",
+    "deploy-key",
+    "signing-key",
+    "panel-step",
+  ]),
   /**
    * The panel's key: the hostname, the database's full name, the cron line's key, the path below
-   * the home folder, the certificate's id.
+   * the home folder, the certificate's id; GitHub's id of the deploy key; the SHA-256 of the
+   * signing key's public half; the panel step's id.
    */
   key: z.string().min(1),
+  /**
+   * What a later run compares: a cron line's `<schedule> <command>`, a PHP version, the digest of
+   * the values in the app's settings file, the deploy key's public half, a panel step's value.
+   */
+  value: z.string().min(1).optional(),
 });
 
 export const HostingRecordSchema = z.strictObject({
@@ -112,4 +135,52 @@ export async function updateHostingRecord(
   await ensureStateDir(paths);
   await writeFileAtomic(hostingRecordFile(paths), `${JSON.stringify(next, null, 2)}\n`);
   return next;
+}
+
+/** The recorded object of `kind` with `key`, if any. */
+export function recordedObject(
+  record: Pick<HostingRecord, "objects"> | undefined,
+  kind: HostingObject["kind"],
+  key?: string,
+): HostingObject | undefined {
+  return record?.objects.find(
+    (object) => object.kind === kind && (key === undefined || object.key === key),
+  );
+}
+
+/**
+ * Records `object` in `.opscrew/hosting.json`, replacing one of the same kind and key, right after
+ * OpsCrew made it, so a stop later still leaves it recorded.
+ */
+export function recordObject(paths: ProjectPaths, object: HostingObject): Promise<HostingRecord> {
+  return updateHostingRecord(paths, (current) => ({
+    ...current,
+    objects: [
+      ...current.objects.filter((o) => !(o.kind === object.kind && o.key === object.key)),
+      object,
+    ],
+  }));
+}
+
+/**
+ * Records `object` in place of every recorded object of its kind: OpsCrew keeps one of that kind
+ * (the release signing key, the agent's deploy key), and a new one replaces the old.
+ */
+export function replaceObjects(paths: ProjectPaths, object: HostingObject): Promise<HostingRecord> {
+  return updateHostingRecord(paths, (current) => ({
+    ...current,
+    objects: [...current.objects.filter((o) => o.kind !== object.kind), object],
+  }));
+}
+
+/** Removes the recorded object of `kind` with `key` (one OpsCrew removed or replaced). */
+export function forgetObject(
+  paths: ProjectPaths,
+  kind: HostingObject["kind"],
+  key: string,
+): Promise<HostingRecord> {
+  return updateHostingRecord(paths, (current) => ({
+    ...current,
+    objects: current.objects.filter((o) => !(o.kind === kind && o.key === key)),
+  }));
 }
