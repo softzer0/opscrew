@@ -55,6 +55,11 @@ shell, and the tools show "your Portainer" instead of its address. Removing the 
 data stay in your terminal (`npx opscrew destroy`). See
 [An existing Portainer as a deploy target](../docs/guide/portainer-target.md).
 
+On a hosting account (cPanel, Plesk, DirectAdmin or SFTP), the panel's token or SFTP key comes only
+from `OPSCREW_HOSTING_TOKEN` or the file `OPSCREW_SFTP_KEY` names in your shell, never from the chat,
+and the account is set up only in your terminal (`npx opscrew provision`), where you approve each
+plan by its hash.
+
 The add-ons (Beszel and Grafana Cloud) are turned on and off through plans you approve in a dialog.
 Their tokens come only from `OPSCREW_BESZEL_TOKEN` and `OPSCREW_GRAFANA_CLOUD_TOKEN` in the MCP
 server's environment, never from the chat, so Claude never sees them. Opening Beszel's dashboard and
@@ -83,7 +88,8 @@ steps you run:
   (cloudflare-dns.com) when it checks a site.
 - **Porkbun, Namecheap and GoDaddy**, only in the `domain` steps: availability, prices, purchases
   and nameservers.
-- **Your own servers** over SSH, and **your Portainer** through its API, when you deploy there.
+- **Your own servers** over SSH, **your Portainer** through its API, and **your hosting account**
+  through its panel (cPanel, Plesk, DirectAdmin) or over SFTP, when you deploy there.
 - **OSV** (api.osv.dev): the scan sends your dependencies' names and versions to look up known
   vulnerabilities.
 - **npm and container registries** (Docker Hub, ghcr.io and others), read anonymously for the

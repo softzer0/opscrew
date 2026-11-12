@@ -55,7 +55,7 @@ export function registerLogsTool(
     "opscrew_logs",
     {
       title: "OpsCrew logs",
-      description: `Read the app's latest log lines (newest last, each with its time and part) where it runs: on a server over SSH, in the user's Portainer, in local Docker, or a server-rendered app's requests on Cloudflare's hosting. GitHub Pages and a static site on Cloudflare keep no request logs: their last deploy runs instead. Read-only, never follows, secrets masked; at most ${MAX_LOG_LINES} lines and 64 KiB (truncated: true when more were left out). Call opscrew_status first, then read the failing part with a short since (for example 15m). After a deploy whose new version failed its checks, failed: true reads the lines OpsCrew kept of that removed copy.`,
+      description: `Read the app's latest log lines (newest last, each with its time and part) where it runs: on a server over SSH, in the user's Portainer, in local Docker, a server-rendered app's requests on Cloudflare's hosting, or on a hosting account with a panel the agent's last lines (its deploys and their checks; the app's own errors are in the user's panel). GitHub Pages and a static site on Cloudflare keep no request logs: their last deploy runs instead. Read-only, never follows, secrets masked; at most ${MAX_LOG_LINES} lines and 64 KiB (truncated: true when more were left out). Call opscrew_status first, then read the failing part with a short since (for example 15m). After a deploy whose new version failed its checks, failed: true reads the lines OpsCrew kept of that removed copy.`,
       inputSchema: {
         ...projectDirInput,
         ...appInput,

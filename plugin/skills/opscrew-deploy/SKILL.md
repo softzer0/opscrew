@@ -1,6 +1,6 @@
 ---
 name: opscrew-deploy
-description: Take the user's app from this repository to a hardened production deployment on their own cloud, a server they already have, a Portainer they already run (on a NAS or any Docker host), or for a site with no server Cloudflare's hosting or GitHub Pages, with OpsCrew (scan, analyze, interview, design, prepare the code, then provision), and turn Portainer on or off. Use when the user wants to deploy, host, launch or "put online" their app, deploy to their own server, home server, NAS or Portainer, or move it off Lovable, Bolt, Replit or v0 hosting.
+description: Take the user's app from this repository to a hardened production deployment on their own cloud, a server they already have, a Portainer they already run (on a NAS or any Docker host), a shared hosting account they already pay for (cPanel, Plesk, DirectAdmin or SFTP), or for a site with no server Cloudflare's hosting or GitHub Pages, with OpsCrew (scan, analyze, interview, design, prepare the code, then provision), and turn Portainer on or off. Use when the user wants to deploy, host, launch or "put online" their app, deploy to their own server, home server, NAS, Portainer or shared hosting (cPanel and the like), or move it off Lovable, Bolt, Replit or v0 hosting.
 ---
 
 # Deploy this app with OpsCrew
@@ -93,6 +93,15 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
      user's own reverse proxy on a host port they choose; OpsCrew prints the DNS record and the
      route to set up and does not manage the certificate) or `caddy` (Caddy on ports 80 and 443,
      only when they are free; OpsCrew prints the DNS record to create).
+
+   For `hosting` (a shared hosting account the user already pays for, with cPanel, Plesk or
+   DirectAdmin, or a host reached only over SFTP), ask the returned `hosting.` questions. The
+   choice is offered only when the MCP server's environment has `OPSCREW_HOSTING_URL`,
+   `OPSCREW_HOSTING_USER` and `OPSCREW_HOSTING_TOKEN`, or `OPSCREW_SFTP_HOST`, `OPSCREW_SFTP_USER`
+   and `OPSCREW_SFTP_KEY` (the path to the key file). The panel's token reaches the whole account,
+   every site and mailbox on it (cPanel can't limit a token), so it stays in the user's
+   environment: never ask for it, a password or the SFTP key in the chat, and never write it into a
+   file. The panel's address and user stay on the user's computer (`.opscrew/hosting.json`).
 4. **Design.** Call `opscrew_design_options`. Present each option with its monthly cost, whether it
    fits the budget and its trade-offs; say which one OpsCrew recommends and why. When prices are
    marked as static estimates, say so. After the user chooses, call `opscrew_select_design`.
@@ -115,14 +124,22 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
      restart the app instead: requests wait meanwhile, so visitors see a short pause, not an
      error. Tell the user that migrations must keep working with the version still running. They change these settings in `opscrew/plan.yaml` (the
      builder needs `app.build.chosen: user`); then call `opscrew_select_design` again.
-   - **The reverse proxy.** The server's proxy is Caddy (the default) or nginx with certbot, set as
-     `target.edge` in `opscrew/plan.yaml`; both give visitors the same TLS and headers. Every app on
+   - **The reverse proxy.** The server's proxy is Caddy (the default), nginx with certbot or
+     OpenLiteSpeed with certbot (`caddy`, `nginx`, `openlitespeed`), set as `target.edge` in
+     `opscrew/plan.yaml`; all three give visitors the same TLS and headers. Every app on
      one server uses the same proxy, so OpsCrew refuses a different one while other OpsCrew apps are
      there; with one app the switch is planned, with a short interruption it states. The user's own
-     rules for the app go in `opscrew/proxy/additions.caddy` or `.nginx`; OpsCrew checks them before
-     they go live and refuses unsafe ones. For an app leaving Vercel, design writes the
-     `vercel.json` routing rules it can translate into that file and lists the ones it left out:
-     pass that list on. A Portainer stack always uses Caddy and does not use additions yet.
+     rules for the app go in `opscrew/proxy/additions.caddy`, `.nginx` or `.openlitespeed`; OpsCrew
+     checks them before they go live and refuses unsafe ones. For an app leaving Vercel, design
+     writes the `vercel.json` routing rules it can translate into that file (none for
+     OpenLiteSpeed) and lists the ones it left out: pass that list on. A Portainer stack and
+     previews always use Caddy, and a Portainer stack does not use additions yet.
+     Before the user picks OpenLiteSpeed, say what differs: a hostname the server doesn't serve
+     gets a 403 page instead of a closed connection; a deploy, a rollback or a certificate renewal
+     ends WebSockets open longer than five minutes; every app on the server shares one request
+     time limit (300 s) and one request size limit; its page cache stays off unless the app opts
+     its pages in with `X-LiteSpeed-Cache-Control` (each deploy and rollback empties it); and its
+     image is about 1.1 GB.
    - **Currencies.** When the user's budget is in another currency than the provider's prices,
      OpsCrew converts with a fixed approximate rate. If the user wants exact numbers, search the
      web for today's exchange rate, recalculate the monthly costs with it and say which rate and
@@ -164,6 +181,20 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
        provision the new size, then `npx opscrew restore <id> --from offsite --key-file <path>`.
      - No provider backups (OpsCrew's data snapshots cover the data) and no Contabo object storage
        (the bucket is Garage on the server, or Cloudflare R2).
+   - **On a hosting account.** There is one option, the account, without a price, with what the
+     app gets there (the hostname, its PHP version, the database, the cron jobs). Say what differs
+     from a server:
+     - The account serves requests and runs cron jobs, nothing in between: no workers, queues,
+       Redis, WebSockets served from PHP or containers. When the app needs one, design says why and
+       names a server target instead (or a hosted service the app can keep).
+     - An SFTP-only host takes static sites and plain PHP apps only, without a database.
+     - OpsCrew never changes the account's PHP version, which every site on it shares. Where the
+       panel allows it, the app's hostname gets its own version; otherwise provision stops and
+       names the ways out.
+     - On LiteSpeed, each release restarts every PHP process of the account for a moment, other
+       sites' included.
+     - Commands that need a server (`retarget`, previews, runner machines, the private network,
+       Portainer and the add-ons) refuse a hosting account and say what to use instead.
 5. **Prepare the code.** Read `opscrew/plan.yaml` (`codeChanges`). Apply the pending changes by
    following the `opscrew-adapt` skill. Show the user the diff and let them commit it (or commit it
    for them only after they say so). The changes must be merged into the deploy branch before the
@@ -188,6 +219,18 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
    dialog (a destroying plan needs them to type the server name); never claim approval yourself.
    Unless `OPSCREW_APP_ENV_FILE` is set, the deploy secrets still have to be stored by running
    `npx opscrew provision` in their terminal afterwards (it resumes without changing the server).
+
+   **On a hosting account** provision runs only in the user's terminal, `npx opscrew provision`;
+   `opscrew_apply` refuses it. With a panel it has two hosting plans, each approved by its own
+   hash (in scripts `--approve <hash>`; `--yes` never approves one): plan A installs OpsCrew's
+   agent on the account and its cron line (every minute, as the account's user), and the agent's
+   first report builds plan B, the app's part. `opscrew_plan` shows plan A and the DNS plan, never applies them. GitHub
+   gets no credential to the account: GitHub Actions builds and signs each release and pushes it to
+   the `opscrew/release/<env>` branch, and the agent fetches it with its own read-only deploy key,
+   checks the signature, switches and checks the app, so a release is live within about a minute.
+   An SFTP-only host has one hosting plan, and GitHub Actions uploads each release over SFTP with a
+   key kept as a deploy secret. The app's secrets go from the user's computer to files on the
+   account outside the web root; GitHub never gets them.
 
    **The recovery copy of the app's secrets.** The first provision that generates secrets makes an
    encrypted copy of them, of the deploy key and of the infrastructure state, committed as
@@ -428,8 +471,8 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   beside that environment's data and secrets, which escaping its container would reach, and
   reaches what its server serves on its web ports, so only for an environment with test data and
   test keys. It is refused for prod or a server prod runs on, a server with other apps, without
-  public SSH (closed, or a Cloudflare Tunnel), with nginx as its proxy, on a private network, not
-  yet provisioned, or with a cap that doesn't fit (it says the cap that fits). While previews run
+  public SSH (closed, or a Cloudflare Tunnel), with nginx or OpenLiteSpeed as its proxy, on a
+  private network, not yet provisioned, or with a cap that doesn't fit (it says the cap that fits). While previews run
   there, that environment's `destroy`, `retarget`, proxy switch and `env remove` are refused, and
   `npx opscrew destroy --env preview` removes the previews, recipe and wildcard but never the
   server. `--app-zone` with `--domain previews.<app's domain>` puts previews below the app's own
@@ -567,7 +610,9 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   stack, and keeps the app's data volumes unless they add `--delete-data`. A site on Cloudflare's
   hosting or GitHub Pages is removed after they type the app's name (on GitHub Pages its DNS
   records first, then the site, so nobody can take the domain over); GitHub's domain
-  verification record stays unless they add `--delete-verification`. On every target it
+  verification record stays unless they add `--delete-verification`. On a hosting account it
+  removes only what OpsCrew made there after they type the hostname; what the panel can't remove
+  through its API is a step it names for the panel. On every target it
   also removes the app's hostnames from OpsCrew's shared Cloudflare rules (deleting a rule only
   when no other OpsCrew app is in it), and the account's Zero Trust organization and one-time PIN
   login stay for the other apps.
