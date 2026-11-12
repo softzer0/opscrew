@@ -146,34 +146,37 @@ describe.skipIf(!findExecutable("git"))("runProvision on Contabo and its firewal
     expect(s.events).toEqual(["apply", "sync shop-firewall"]);
   });
 
-  it("deletes the firewall of a server design dropped after the apply that cancels it", async () => {
-    const s = await setup({
-      changes: REMOVAL,
-      planJson: {
-        format_version: "1.2",
-        resource_changes: [
-          {
-            address: REMOVAL[0]?.address,
-            type: "contabo_instance",
-            change: {
-              actions: ["delete"],
-              before: { id: DATA_ID, name: "shop-data" },
-              after: null,
-            },
+  /** The plan that cancels the extra server data, whose state wanted both firewalls. */
+  const removal = () => ({
+    changes: REMOVAL,
+    planJson: {
+      format_version: "1.2",
+      resource_changes: [
+        {
+          address: REMOVAL[0]?.address,
+          type: "contabo_instance",
+          change: {
+            actions: ["delete"],
+            before: { id: DATA_ID, name: "shop-data" },
+            after: null,
           },
-        ],
-        output_changes: {
-          wanted_firewalls: {
-            actions: ["update"],
-            before: {
-              server: fakeWantedFirewall("contabo", APP_ID),
-              server_data: fakeWantedFirewall("contabo", DATA_ID, "shop-data"),
-            },
+        },
+      ],
+      output_changes: {
+        wanted_firewalls: {
+          actions: ["update"],
+          before: {
+            server: fakeWantedFirewall("contabo", APP_ID),
+            server_data: fakeWantedFirewall("contabo", DATA_ID, "shop-data"),
           },
         },
       },
-      outputs: OUTPUTS,
-    });
+    },
+    outputs: OUTPUTS,
+  });
+
+  it("deletes the firewall of a server design dropped after the apply that cancels it", async () => {
+    const s = await setup(removal());
     s.firewalls.seed(fakeWantedFirewall("contabo", DATA_ID, "shop-data"));
     await runProvision(s.deps, { services: s.services });
     expect(s.events).toEqual([
@@ -184,6 +187,31 @@ describe.skipIf(!findExecutable("git"))("runProvision on Contabo and its firewal
     ]);
     expect(s.deps.reporter.text()).toContain(
       "success: Deleted Contabo's firewall shop-data-firewall.",
+    );
+  });
+
+  it("still shows and audits when a cancelled server's contract ends when the firewall cannot be set", async () => {
+    const s = await setup(removal());
+    s.firewalls.syncError = new OpsCrewError("PROVIDER_ERROR", "Contabo answered 503.");
+    await expect(runProvision(s.deps, { services: s.services })).rejects.toMatchObject({
+      code: "PROVIDER_ERROR",
+    });
+    expect(s.events).toEqual([
+      `power-off:${DATA_ID}`,
+      "apply",
+      "remove shop-data-firewall",
+      "sync shop-firewall",
+    ]);
+    expect(s.deps.reporter.text()).toContain(
+      "The Contabo server shop-data is cancelled: its contract ends on 11 December 2026",
+    );
+    expect(s.deps.audit.entries).toContainEqual(
+      expect.objectContaining({
+        kind: "provider-call",
+        action: "cancel date",
+        target: `contabo server ${DATA_ID}`,
+        detail: "contract ends 2026-12-11T00:00:00.000Z",
+      }),
     );
   });
 });

@@ -1,13 +1,22 @@
 // `opscrew destroy` on Contabo, whose firewall its connector applies (ADR 0029, D8): the firewall
-// the state wanted is deleted after the teardown's apply, which cancels the server.
+// the state wanted is deleted after the teardown's apply, which cancels the server, and also when
+// Cloudflare refused only the tunnel of Portainer's subdomain in that apply (error 1022).
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { ResourceChange } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
+import { fakeSecret } from "@opscrew/core/testing";
 import { cloudTarget } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { ensureStatePassphrase } from "../shared";
+import {
+  BUSY_TUNNEL_LOG,
+  fakeTunnelApi,
+  tunnelDeletePlanJson,
+  tunnelDeletes,
+} from "../shared/__fixtures__/tunnel";
+import { TUNNEL_RESOURCE_TYPE } from "../shared/tunnel-connections";
 import {
   createProject,
   createTestPhaseDeps,
@@ -49,23 +58,76 @@ class CancellingServers extends FakeServers {
   }
 }
 
-/** A deployed app on Contabo, without OpsCrew's data snapshot to offer. */
-function contaboPlan(): DeployPlan {
-  const plan = testPlan({ deployed: true, provider: "contabo", postgres: false });
-  return { ...plan, target: { ...cloudTarget(plan.target), backups: false } };
+/**
+ * A deployed app on Contabo, without OpsCrew's data snapshot to offer; with `tunnel`, Portainer on
+ * a subdomain, whose tunnel's connector runs on the server.
+ */
+function contaboPlan(tunnel: boolean): DeployPlan {
+  const plan = testPlan({
+    deployed: true,
+    provider: "contabo",
+    postgres: false,
+    ...(tunnel ? { domain: "shop.example.com" } : {}),
+  });
+  return {
+    ...plan,
+    target: { ...cloudTarget(plan.target), backups: false },
+    ...(tunnel
+      ? {
+          dns: { ...plan.dns, zone: "example.com" },
+          portainer: {
+            enabled: true,
+            version: "2.45.2",
+            access: "subdomain" as const,
+            hostname: "portainer.example.com",
+            allowedEmails: ["owner@example.com"],
+          },
+        }
+      : {}),
+  };
 }
 
-async function setup() {
-  const plan = contaboPlan();
+/**
+ * With `tunnel`, the teardown's first apply cancels the server and deletes everything but the
+ * tunnel, which Cloudflare refuses (1022) while its connections outlast the server; the state then
+ * has no outputs any more.
+ */
+async function setup(tunnel = false) {
+  const plan = contaboPlan(tunnel);
   const project = await createProject(plan);
   const events: string[] = [];
   const engine = new ScriptedDestroyEngine(
     {
-      resources: RESOURCES,
+      resources: [...RESOURCES, ...(tunnel ? tunnelDeletes() : [])],
       wantedFirewalls: { server: fakeWantedFirewall("contabo", SERVER_ID) },
     },
     events,
   );
+  if (tunnel) {
+    // The plan JSON names the tunnel's id and account, as tofu writes it.
+    const plan = engine.plan.bind(engine);
+    engine.plan = async (dir, planFile, options) => {
+      const summary = await plan(dir, planFile, options);
+      const json = summary.planJson as { resource_changes: { address: string }[] };
+      const tunnel = tunnelDeletePlanJson(summary.changes).resource_changes;
+      const resourceChanges = json.resource_changes.map(
+        (entry) =>
+          tunnel.find((t) => t.address === entry.address && t.type === TUNNEL_RESOURCE_TYPE) ??
+          entry,
+      );
+      return { ...summary, planJson: { ...json, resource_changes: resourceChanges } };
+    };
+    let busy = true;
+    const apply = engine.apply.bind(engine);
+    engine.apply = async (dir, planFile, approval) => {
+      if (!busy) return apply(dir, planFile, approval);
+      busy = false;
+      events.push("apply:destroy");
+      engine.script.resources = tunnelDeletes().filter((c) => c.type === TUNNEL_RESOURCE_TYPE);
+      engine.script.wantedFirewalls = undefined;
+      return { ok: false, outputs: {}, log: BUSY_TUNNEL_LOG };
+    };
+  }
   const firewalls = new FakeFirewalls((call) => events.push(call));
   firewalls.seed(fakeWantedFirewall("contabo", SERVER_ID));
   const deps = await createTestPhaseDeps({
@@ -73,12 +135,15 @@ async function setup() {
     env: {
       ...process.env,
       OPSCREW_HOME: join(project.root, ".home-opscrew"),
-      CLOUDFLARE_API_TOKEN: undefined,
+      CLOUDFLARE_API_TOKEN: tunnel ? fakeSecret("cloudflare-token", "destroy-contabo") : undefined,
       GITHUB_TOKEN: undefined,
       GH_TOKEN: undefined,
     },
     runner: projectRunner(),
     approvalHandler: new ScriptedApprovalHandler(() => true),
+    ...(tunnel
+      ? { fetch: fakeTunnelApi({ events, connectorRunning: () => false, closeAfter: 1 }).fetch }
+      : {}),
   });
   await ensureStatePassphrase(deps.paths);
   await mkdir(deps.paths.files.tfstateDir, { recursive: true });
@@ -125,6 +190,32 @@ describe.skipIf(!findExecutable("git"))("runDestroy on Contabo and its firewall"
     await runDestroy(s.deps, { services: s.services });
     expect(s.deps.reporter.text()).toContain(
       "warn: OpsCrew could not delete Contabo's firewall shop-firewall: Contabo answered 503. No server of this app needs it any more; delete it in the Contabo Customer Control Panel.",
+    );
+    const plan = await readArtifact("plan", s.deps.paths.files.plan);
+    expect(plan.deployment.destroyedAt).toBeDefined();
+  });
+
+  it("deletes the firewall in the same run when Cloudflare refused only the tunnel, once the server is gone", async () => {
+    const s = await setup(true);
+    await runDestroy(s.deps, { services: s.services });
+    const teardown = s.events.filter((event) =>
+      ["power-off", "apply:", "remove", "poll"].some((kind) => event.startsWith(kind)),
+    );
+    expect(teardown).toEqual([
+      `power-off:${SERVER_ID}`,
+      "apply:destroy",
+      "remove shop-firewall",
+      "poll",
+      "poll",
+      "apply:destroy",
+    ]);
+    expect(s.firewalls.firewalls.size).toBe(0);
+    expect(s.deps.audit.entries).toContainEqual(
+      expect.objectContaining({
+        kind: "provider-call",
+        action: "delete firewall",
+        target: "contabo firewall shop-firewall",
+      }),
     );
     const plan = await readArtifact("plan", s.deps.paths.files.plan);
     expect(plan.deployment.destroyedAt).toBeDefined();

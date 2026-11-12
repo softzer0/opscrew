@@ -379,6 +379,9 @@ describe("planAndApply hooks", () => {
         order.push("before");
         seen.before.push(plan.planHash);
       },
+      afterApply: async () => {
+        order.push("after");
+      },
       applyFailed: (log: string, plan: SavedPlan) => {
         order.push("failed");
         seen.failed.push(`${plan.planHash}:${log}`);
@@ -391,7 +394,7 @@ describe("planAndApply hooks", () => {
     const s = await hooked({ changes: DNS_UPDATE });
     const result = await planAndApply(s.deps, s.options);
     expect(result.applied).toBe(true);
-    expect(s.order).toEqual(["notes", "approve", "before", "apply"]);
+    expect(s.order).toEqual(["notes", "approve", "before", "apply", "after"]);
     expect(s.seen.notes).toEqual([result.planHash]);
     expect(s.seen.before).toEqual([result.planHash]);
     expect(s.seen.failed).toEqual([]);
@@ -417,7 +420,7 @@ describe("planAndApply hooks", () => {
       approvePlanHash: planned.planHash as string,
     });
     expect(applied.applied).toBe(true);
-    expect(s.order).toEqual(["notes", "approve", "before", "apply"]);
+    expect(s.order).toEqual(["notes", "approve", "before", "apply", "after"]);
     expect(s.seen.notes).toEqual([planned.planHash]);
     expect(s.seen.before).toEqual([planned.planHash]);
     expect(s.handler.requests[0]?.details).toContain("Note for 1 change(s).");

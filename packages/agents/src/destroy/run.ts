@@ -19,6 +19,7 @@ import {
   serverRunnerName,
 } from "../runners";
 import { describeChanges, hasDeployment, planStop, refusalReason, serverAddress } from "../shared";
+import { removeFirewalls } from "../shared/firewalls";
 import { extraCloudProviders, extraCloudServers } from "../shared/servers";
 import {
   deletedTunnels,
@@ -363,6 +364,9 @@ async function destroyInfrastructure(
     } catch (error) {
       if (!engine.refusedBusyTunnel || !(error instanceof OpsCrewError)) throw error;
       if (engine.onlyBusyTunnel && serverDeleted) {
+        // The server went, so its firewall that its provider's connector applies goes too: nothing
+        // is wanted any more, and the plan for what is left no longer knows it (ADR 0029, D8).
+        await removeFirewalls(session, summary.planJson, {});
         // The connector went with the server, but its connections outlasted it: wait, then show
         // and apply the plan for the tunnel that is left, in this same run.
         const tunnelApproval = await deleteTunnelLeft(ctx, summary, {

@@ -30,12 +30,13 @@ export async function firewallDrift(
   for (const { module, provider, wanted } of wantedFirewalls((await outputs()) ?? {})) {
     const differences = await firewallApi({ deps, firewalls }, provider).differences(wanted);
     if (differences.length === 0) continue;
+    // `<type>.<name>` for a provider whose connector applies its firewalls (ADR 0029, D8).
     const resource = cloudProvider(provider).terraform.firewallResourceType;
-    const [type = resource, name = resource] = resource.split(".");
+    const dot = resource.indexOf(".");
     drift.push({
       address: `module.${module}.${resource}`,
-      type,
-      name,
+      type: resource.slice(0, dot),
+      name: resource.slice(dot + 1),
       provider: BUILTIN_PROVIDER,
       action: "update",
       attributes: [],

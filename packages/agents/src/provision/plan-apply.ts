@@ -78,6 +78,12 @@ export interface PlanAndApplyOptions {
    */
   beforeApply?: (plan: SavedPlan) => Promise<void>;
   /**
+   * Awaited once the plan is applied and recorded as applied, before the firewalls are set (which
+   * may fail): what must follow every successful apply (the cancel dates of the servers it
+   * cancelled), which a run that plans nothing new could not do again.
+   */
+  afterApply?: (plan: SavedPlan) => Promise<void>;
+  /**
    * Hears of a failed apply, with the redacted engine log, before the error is thrown; it may throw
    * a plainer error of its own instead (the `storage` root's bucket name taken).
    */
@@ -811,6 +817,7 @@ export async function planAndApply(
       ? "Renamed the resources in the infrastructure state; nothing changed in the cloud."
       : "Infrastructure applied.",
   );
+  await options.afterApply?.(saved);
   // The firewalls the providers' Terraform cannot manage (ADR 0029, D8): those of the servers the
   // apply removed go, the others become exactly what the state wants.
   await removeFirewalls(firewallRun, saved.planJson, result.outputs);

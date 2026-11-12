@@ -140,6 +140,7 @@ export function firewallApi(
   throw new OpsCrewError(
     "CREDENTIALS_MISSING",
     `OpsCrew cannot reach ${displayName}: its credentials (${listText(credentials.envVars)}) are not set.`,
+    { hint: "Set them, then run the command again." },
   );
 }
 
@@ -179,7 +180,9 @@ export async function syncFirewalls(
         ),
         {
           hint: deps.redactor.redact(
-            `${hint}${hint === "" ? "Run" : "Then run"} \`${run.command}\` again: it plans nothing new and sets the firewall again.`,
+            hint === ""
+              ? `Run \`${run.command}\` again: it plans nothing new and sets the firewall again.`
+              : `${hint}Running \`${run.command}\` again plans nothing new and sets the firewall again.`,
           ),
           cause: error,
         },

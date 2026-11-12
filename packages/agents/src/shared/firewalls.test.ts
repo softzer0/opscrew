@@ -142,7 +142,7 @@ describe("syncFirewalls", () => {
       code: "PROVIDER_ERROR",
       message:
         "Setting Contabo's firewall shop-firewall failed: Contabo has 2 firewalls named shop-firewall. The server may not be protected yet.",
-      hint: "Delete or rename the ones OpsCrew did not create in Contabo's Customer Control Panel, then try again. Then run `opscrew provision` again: it plans nothing new and sets the firewall again.",
+      hint: "Delete or rename the ones OpsCrew did not create in Contabo's Customer Control Panel, then try again. Running `opscrew provision` again plans nothing new and sets the firewall again.",
     });
     expect(s.contabo.calls).toEqual(["sync shop-firewall"]);
     expect(s.audited()).toEqual([
@@ -164,7 +164,7 @@ describe("syncFirewalls", () => {
       code: "PROVIDER_ERROR",
       message:
         "Setting Contabo's firewall shop-firewall failed: OpsCrew cannot reach Contabo: its credentials (CNTB_OAUTH2_CLIENT_ID, CNTB_OAUTH2_CLIENT_SECRET, CNTB_OAUTH2_USER and CNTB_OAUTH2_PASS) are not set. The server may not be protected yet.",
-      hint: "Run `opscrew provision` again: it plans nothing new and sets the firewall again.",
+      hint: "Set them, then run the command again. Running `opscrew provision` again plans nothing new and sets the firewall again.",
     });
   });
 });

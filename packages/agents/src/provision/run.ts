@@ -1148,6 +1148,11 @@ async function provisionFlow(
         await shutDownCancelled(cancel, saved);
         await markApplyStarted(deps, plan, saved);
       },
+      // The servers the apply cancelled: when each one's contract ends, shown and audited before
+      // the firewalls are set, whose failure would end the run.
+      afterApply: async (saved) => {
+        await showCancelDates(cancel, saved);
+      },
       // A server the plan cancels stays billed until its term ends: no cost change is claimed.
       withoutCostDelta: (saved) => cancelledByPlan(plan, saved).length > 0,
       failedNote: (saved) => cancelFailedNote(plan, saved),
@@ -1163,8 +1168,6 @@ async function provisionFlow(
   }
   // Applied, or nothing left to apply: no apply of this environment stopped halfway any more.
   if (options.planOnly !== true) await clearApplyMarker(deps);
-  // The servers the apply cancelled: when each one's contract ends, shown and audited.
-  if (applied.applied && applied.plan !== undefined) await showCancelDates(cancel, applied.plan);
   // After an apply that imported servers the state holds them, so the root's main.tf goes back to
   // what OpsCrew renders without the imports (a plan from it changes nothing; drift compares the
   // files with that render) before anything below commits it.

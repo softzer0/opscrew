@@ -405,7 +405,9 @@ describe.skipIf(!findExecutable("git"))("runDrift", () => {
 
   it("names a firewall the connector applies that differs at Contabo, with how it differs", async () => {
     const wanted = fakeWantedFirewall("contabo", "202611001");
-    const engine = new DriftEngine();
+    // The engine's own drift sorts after the firewall's, which is found later.
+    const record = drifted("module.tunnel.cloudflare_dns_record.route", "update", ["content"]);
+    const engine = new DriftEngine({ drift: [record] });
     engine.output = async () => {
       engine.calls.push("output");
       return { wanted_firewalls: { server: wanted } };
@@ -419,6 +421,7 @@ describe.skipIf(!findExecutable("git"))("runDrift", () => {
     const report = await runDrift(deps, { services });
     const address = "module.server.terraform_data.firewall";
     expect(report.clean).toBe(false);
+    // Sorted by address, as every drift.
     expect(report.drift).toEqual([
       {
         address,
@@ -429,6 +432,7 @@ describe.skipIf(!findExecutable("git"))("runDrift", () => {
         attributes: [],
         differences: ["Contabo has no firewall named shop-firewall."],
       },
+      record,
     ]);
     expect(contabo.calls).toEqual(["differences shop-firewall"]);
     expect(engine.calls).not.toContain("apply");
@@ -436,9 +440,9 @@ describe.skipIf(!findExecutable("git"))("runDrift", () => {
     expect(text).toContain(`  ~ ${address}:\n      Contabo has no firewall named shop-firewall.`);
     expect(text).toContain("`opscrew provision` would undo these changes");
 
-    // As the plan wants it: no drift.
+    // As the plan wants it: only the engine's drift is left.
     contabo.seed(wanted);
-    expect((await runDrift(deps, { services })).drift).toEqual([]);
+    expect((await runDrift(deps, { services })).drift).toEqual([record]);
   });
 
   it("names a firewall changed outside OpsCrew and its attribute, and explains both choices", async () => {
