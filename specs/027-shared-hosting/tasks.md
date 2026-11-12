@@ -369,8 +369,9 @@ names the change.
       - the additions file checked by OpsCrew's rules and by `openlitespeed -t`;
       - the switch between proxies, localhost, retarget, status, secure, own-server inspection and teardown.
     - Previews and Portainer refuse it plainly.
+    - From T2712's Docker test: the pull certificate OpsCrew makes for Cloudflare's authenticated origin pulls (`selfSignedClientCertificate` in `packages/core`, joining your Owns for this) carries `keyCertSign`, which OpenLiteSpeed's TLS library needs (Caddy and nginx accept it either way); the visitor's address behind Cloudflare's proxy through `useIpInProxyHeader` trusting only Cloudflare's ranges, proved in the Docker test; `renderEdgeSite` and `otherProxy` handle OpenLiteSpeed; the CI check starts kamal-proxy, since `openlitespeed -t` needs it to resolve.
     - Caddy's and nginx's output and tests unchanged; tests mirroring nginx's for each place.
-  - Verify: `pnpm check`
+  - Verify: lint, typecheck, and the test files the change touches (the lead runs the full gate at merge)
   - Effort: xhigh
 
 ## Phase 6: Wave 5 (parallel)

@@ -53,6 +53,11 @@ spike found that OpenLiteSpeed gives most of it, with gaps:
 - The image is about 1.1 GB, PHP included; there is no server-only image.
 - An app behind Cloudflare's authenticated origin pulls that presents no client certificate fails
   its TLS handshake instead of getting a 400.
+- `name` and `www.name` share one vhost (OpenLiteSpeed maps them together): a rule answers 403 for
+  the twin a plan doesn't list, and both get the same certificate.
+- The request size limit is server-wide (no per-app limit), as Caddy sets none.
+- OpenLiteSpeed's TLS library accepts a client certificate's CA only with `keyCertSign`, so the
+  pull certificate OpsCrew makes for Cloudflare carries it (found in T2712's Docker test).
 
 ## Alternatives considered
 
