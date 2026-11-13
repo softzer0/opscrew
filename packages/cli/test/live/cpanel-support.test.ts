@@ -400,6 +400,21 @@ describe("the selector's files", () => {
     ).toBeUndefined();
   });
 
+  it("puts a registry the selector rewrote back when only the run's entries were added (run 11)", () => {
+    const run = '{"opscrew/e2e-ffee12-node-prod/releases/0-0": {"domain": "x", "env_vars": {}}}';
+    expect(selectorRestore("{}", run, "ffee12")).toBe("{}");
+    const mine = '{"nodeapp": {"domain": "mine"}}';
+    const both = '{\n  "nodeapp": {"domain": "mine"},\n  "opscrew/e2e-ffee12-node-prod/x": {}\n}';
+    expect(selectorRestore(mine, both, "ffee12")).toBe(mine);
+    // One of the founder's entries changed, or another entry appeared: left for a fix by hand.
+    expect(
+      selectorRestore(mine, '{"nodeapp": {"domain": "other"}, "e2e-ffee12": {}}', "ffee12"),
+    ).toBeUndefined();
+    expect(
+      selectorRestore(mine, '{"nodeapp": {"domain": "mine"}, "shop": {}}', "ffee12"),
+    ).toBeUndefined();
+  });
+
   it("shows where the selector placed the app's root, and the names of its variables", () => {
     const text =
       '{"/home/u/opscrew/e2e-ffee12-node-prod/current": {"app_root": "opscrew/e2e-ffee12-node-prod/current", "env_vars": {"PORT": "1", "SECRET": "x"}}}';

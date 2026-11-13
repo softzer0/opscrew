@@ -597,9 +597,33 @@ export function selectorRestore(
   ) {
     tail++;
   }
-  if (head + tail !== was.length) return undefined;
+  if (head + tail !== was.length) return jsonRestore(before, now, tag);
   const added = lines.slice(head, lines.length - tail);
   return added.some((line) => namesRun(line, tag)) ? before : undefined;
+}
+
+/**
+ * A selector registry (`node-selector.json`, `python-selector.json`) the selector rewrote whole:
+ * the bytes before when it now holds every entry it held, unchanged, and besides them only entries
+ * whose key names the run (run 11 left `{}` as one app keyed by its folder).
+ */
+function jsonRestore(before: string, now: string, tag: string): string | undefined {
+  let was: unknown;
+  let is: unknown;
+  try {
+    was = JSON.parse(before);
+    is = JSON.parse(now);
+  } catch {
+    return undefined;
+  }
+  const isObject = (value: unknown): value is Record<string, unknown> =>
+    typeof value === "object" && value !== null && !Array.isArray(value);
+  if (!isObject(was) || !isObject(is)) return undefined;
+  const kept = Object.keys(was).every(
+    (key) => key in is && JSON.stringify(was[key]) === JSON.stringify(is[key]),
+  );
+  const added = Object.keys(is).filter((key) => !(key in was));
+  return kept && added.length > 0 && added.every((key) => namesRun(key, tag)) ? before : undefined;
 }
 
 /**

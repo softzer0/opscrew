@@ -510,9 +510,15 @@ describe.skipIf(MISSING.length > 0)(
             );
             const logs = await run.opscrewOk("logs");
             log(`the agent's log after the first deploy:\n${run.scrub(logs.output)}`);
+            if (leg.key === "node") await selectorFindings();
             const verified = await run.opscrew("verify");
             if (verified.exitCode !== 0) {
-              // Evidence for a failed check: how long HTTPS takes to be forced, and the agent's log.
+              // Evidence for a failed check: what a release folder's path answers, how long HTTPS
+              // takes to be forced, and the agent's log.
+              const folderAnswer = await request(url(`/releases/${first}/`));
+              log(
+                `observed: /releases/${first}/ answered ${folderAnswer.status} (${folderAnswer.headers["content-type"] ?? "no type"}, release header ${folderAnswer.headers["x-opscrew-release"] ?? "none"}): ${run.scrub(folderAnswer.body.slice(0, 120))}`,
+              );
               const http = url("/").replace(/^https:/, "http:");
               const since = Date.now();
               const redirected = await waitFor(`${http} redirecting`, minutes(5), async () => {
@@ -544,7 +550,6 @@ describe.skipIf(MISSING.length > 0)(
               });
               log(`observed: ${cron}`);
             }
-            if (leg.key === "node") await selectorFindings();
             log(`observed: ${leg.key}: the first release ${first} answers`);
           },
         );
@@ -651,6 +656,10 @@ describe.skipIf(MISSING.length > 0)(
           `finding: ~/nodevenv/${folder} holds ${((await panel.list(`nodevenv/${folder}`)) ?? []).join(", ") || "nothing"}`,
         );
         const served = (await panel.readFile(`${folder}/current/public/.htaccess`)) ?? "";
+        const passenger = /^\s*Passenger(AppRoot|StartupFile|AppType|BaseURI|Nodejs|Python)\b/i;
+        for (const line of served.split("\n").filter((entry) => passenger.test(entry))) {
+          log(`finding: the served .htaccess says ${run.scrub(line.trim())}`);
+        }
         const names = envNames(served);
         log(
           names.length > 0
