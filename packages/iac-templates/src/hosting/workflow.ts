@@ -312,8 +312,9 @@ function waitScript(plan: DeployPlan): string[] {
   return [
     "set -uo pipefail",
     "for attempt in $(seq 1 40); do",
+    "  # Served only by a 2xx or 3xx answer with the release, as the agent's health check keeps it;",
     "  # awk reads to the end, so no writer in the pipe breaks; || true makes a failed curl a retry.",
-    '  served="$(curl -sS --max-time 5 -o /dev/null -D - "$URL" 2> /dev/null | tr -d \'\\r\' | awk \'!found && tolower($0) ~ /^x-opscrew-release:/ { sub(/^[^:]*: */, ""); print; found = 1 }\' || true)"',
+    '  served="$(curl -sS --max-time 5 -o /dev/null -D - "$URL" 2> /dev/null | tr -d \'\\r\' | awk \'/^HTTP\\// { ok = $2 ~ /^[23][0-9][0-9]$/ } ok && !found && tolower($0) ~ /^x-opscrew-release:/ { sub(/^[^:]*: */, ""); print; found = 1 }\' || true)"',
     '  if [[ "$served" == "$RELEASE" ]]; then',
     '    echo "The account serves release $RELEASE."',
     "    exit 0",

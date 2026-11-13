@@ -497,6 +497,37 @@ describe.skipIf(skipped)("the build's and publish's scripts (bash, git, openssl,
     expect(missing.stdout).toContain("::error::The account didn't switch to this release");
   });
 
+  it("counts the release served only on a 2xx or 3xx answer, as the agent's health check does", () => {
+    const wait = step(flow.jobs.wait, "Wait for the account to switch to the release");
+    const fakes = ['curl() { echo x >> "$CALLS"; cat "$ANSWER"; }', "sleep() { :; }"].join("\n");
+    const run = (status: string) => {
+      writeFileSync(`${work}/calls`, "");
+      writeFileSync(`${work}/answer`, `HTTP/1.1 ${status}\r\nX-OpsCrew-Release: 1001-1\r\n\r\n`);
+      const result = spawnSync("bash", ["-e", "-o", "pipefail", "-c", `${fakes}\n${wait.run}`], {
+        cwd: work,
+        env: {
+          ...process.env,
+          ...wait.env,
+          RELEASE: "1001-1",
+          ANSWER: `${work}/answer`,
+          CALLS: `${work}/calls`,
+        },
+        encoding: "utf8",
+      });
+      return { ...result, calls: readFileSync(`${work}/calls`, "utf8").length / 2 };
+    };
+    for (const status of ["200 OK", "301 Moved Permanently"]) {
+      const served = run(status);
+      expect(served.status, `${status}: ${served.stderr}`).toBe(0);
+      expect(served.stdout).toContain("The account serves release 1001-1.");
+      expect(served.calls).toBe(1);
+    }
+    const failing = run("500 Internal Server Error");
+    expect(failing.status, failing.stderr).toBe(1);
+    expect(failing.calls).toBe(40);
+    expect(failing.stdout).toContain("::error::The account didn't switch to this release");
+  });
+
   it("keeps asking while curl fails, under bash -e and pipefail", () => {
     const wait = step(flow.jobs.wait, "Wait for the account to switch to the release");
     const fakes = ['curl() { echo x >> "$CALLS"; return 7; }', "sleep() { :; }"].join("\n");
