@@ -628,6 +628,19 @@ names the change.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-cpanel --filter=@opscrew/connector-directadmin --filter=@opscrew/contracts && npx vitest run --root packages/agents src/hosting && pnpm lint`
   - Effort: medium
 
+- [ ] T2744 Node.js and Python apps: the selector keeps one fixed folder, Passenger follows the release (research R14)
+  - Owns: `packages/iac-templates/src/hosting/agent/**`, `packages/iac-templates/src/hosting/agent.ts`, `packages/agents/src/hosting/**`, `docs/guide/hosting-accounts.md`
+  - Reads: research R10, R11, R14; T2717 and T2741 (the selector's install, the switch back and reinstall); `iac-templates/src/hosting/agent/script.ts` (`app_root`, `selector_*`, `compose`, `link_shared`, the selector's create/set/destroy); `agents/src/hosting/{destroy,provision-plans,apply}.ts` (their text about the selector and `~/nodevenv`)
+  - Accept:
+    - The selector's app is registered at a real folder `opscrew/<app>-<env>/app/` the agent makes (never a link, never under `releases/`, never pruned), and every selector command (`create`, `install-modules`, `set`, `destroy`) is given that folder.
+    - Each release's `.htaccess` carries the selector's Passenger block with `PassengerAppRoot` set to that release's own absolute folder (every other line byte for byte), so the switch of `current`, a rollback and a switch back run that release's code.
+    - Before `install-modules` the release's package files (`package.json` and `package-lock.json`, or the requirements file) are put into `app/`; each release gets `node_modules` (Node.js) linked to the same environment the selector made for `app/`; a failed release's switch back reinstalls the running release's packages from its own files, as now; T2741's note stays.
+    - Destroy runs the selector's `destroy` on `app/`, then removes the folder; its plan text names `app/`.
+    - Linux tests with the fake selector (it resolves `--app-root` like the real one, R14): a first and a second release each run their own code (each `.htaccess` names its own root), a rollback runs the first again, destroy finds the app; the fake's registry keys by the resolved folder.
+    - The guide's hosting page says in one sentence where the selector's app lives.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates --filter=@opscrew/agents && npx vitest run --root packages/iac-templates src/hosting/agent && npx vitest run --root packages/agents src/hosting && pnpm lint`
+  - Effort: xhigh
+
 ## Phase 9: Live passes and release (lead)
 
 - [ ] T2722 The cPanel live pass (lead): `docs/e2e-coverage.md` row and results.
