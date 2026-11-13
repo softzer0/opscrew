@@ -558,6 +558,16 @@ names the change.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates --filter=opscrew && npx vitest run --root packages/iac-templates src/hosting/workflow && npx vitest run --root packages/cli test/live/cpanel-support.test.ts && pnpm lint`
   - Effort: medium
 
+- [ ] T2736 A PHP app's paths reach its index.php, as on a server (research R13)
+  - Owns: `packages/iac-templates/src/hosting/agent/**`, `packages/iac-templates/src/hosting/sftp-workflow.ts`, `packages/iac-templates/src/hosting/sftp-workflow.test.ts`, `packages/iac-templates/src/hosting/__snapshots__/sftp-workflow.test.ts.snap`, `docs/guide/hosting-accounts.md`, `docs/guide/sftp.md`
+  - Reads: research R4, R13; `iac-templates/src/hosting/agent/script.ts` (`htaccess_block`, `compose`), `iac-templates/src/hosting/sftp-workflow.ts` (its `.htaccess` block)
+  - Accept:
+    - When the release's served folder has `index.php` and the app's own `.htaccess` there has no `RewriteRule`, OpsCrew's `.htaccess` block (the agent's and the SFTP workflow's) ends with `RewriteCond %{REQUEST_FILENAME} !-f`, `RewriteCond %{REQUEST_FILENAME} !-d`, `RewriteRule ^ index.php [L]`, after its own rules. An app whose `.htaccess` rewrites (Laravel, WordPress) keeps its own routing; a static site gets none. The block rewritten in place when HTTPS is forced keeps the same choice.
+    - Tests: a plain PHP release gets the fallback; one with its own rewriting `.htaccess` and a static site don't (agent on Linux, SFTP workflow's rendering).
+    - The guide's hosting and SFTP pages say it in one sentence each.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates && npx vitest run --root packages/iac-templates src/hosting && pnpm lint`
+  - Effort: medium
+
 ## Phase 9: Live passes and release (lead)
 
 - [ ] T2722 The cPanel live pass (lead): `docs/e2e-coverage.md` row and results.
