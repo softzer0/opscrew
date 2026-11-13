@@ -534,6 +534,17 @@ describe.skipIf(MISSING.length > 0)(
             const logs = await run.opscrewOk("logs");
             log(`the agent's log after the first deploy:\n${run.scrub(logs.output)}`);
             if (leg.key === "node") await selectorFindings();
+            // The agent forces HTTPS once its own check of the new hostname's certificate passes,
+            // which can come a run after the first deploy: verify asks once that has happened.
+            const plain = url("/").replace(/^https:/, "http:");
+            const waited = Date.now();
+            const redirects = await waitFor(`${plain} redirecting`, minutes(2), async () => {
+              const answer = await request(plain);
+              return answer.status >= 300 && answer.status < 400 ? true : undefined;
+            }).catch(() => false);
+            log(
+              `observed: ${leg.key}: HTTP ${redirects ? "redirected" : "didn't redirect yet"} ${duration(Date.now() - waited)} after the first deploy's job`,
+            );
             const verified = await run.opscrew("verify");
             if (verified.exitCode !== 0) {
               // Evidence for a failed check: what a release folder's path answers, how long HTTPS
