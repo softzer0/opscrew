@@ -605,7 +605,7 @@ names the change.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-cpanel && pnpm lint`
   - Effort: medium
 
-- [ ] T2741 The selector's "operation was performed" counts as installed; the agent's health check decides (research R13)
+- [x] T2741 The selector's "operation was performed" counts as installed; the agent's health check decides (research R13)
   - Owns: `packages/iac-templates/src/hosting/agent/**`
   - Reads: research R13; `iac-templates/src/hosting/agent/script.ts` (the selector's install before the switch, the switch back and reinstall)
   - Accept:
