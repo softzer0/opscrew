@@ -641,6 +641,15 @@ names the change.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates --filter=@opscrew/agents && npx vitest run --root packages/iac-templates src/hosting/agent && npx vitest run --root packages/agents src/hosting && pnpm lint`
   - Effort: xhigh
 
+- [ ] T2745 Each Node.js release links node_modules to the selector's environment (research R14)
+  - Owns: `packages/iac-templates/src/hosting/agent/**`, `packages/iac-templates/src/hosting/agent-apps.test.ts`, `packages/iac-templates/src/hosting/__fixtures__/shims/cloudlinux-selector.sh`
+  - Reads: research R14 (its last paragraph); `iac-templates/src/hosting/agent/script.ts` (the node_modules link, the carried Passenger block)
+  - Accept:
+    - Each Node.js release that ships no `node_modules` gets `node_modules` linked, by its full path, to `<env>/lib/node_modules`, where `<env>` is the folder two levels above the `PassengerNodejs` binary the selector's block names (the running release's carried block); the old `app/node_modules` rule goes. A release whose block names no `PassengerNodejs` gets no link.
+    - The fake selector makes no `node_modules` link in the app's root (as the real one, R14) and installs packages into `<env>/lib/node_modules`. A Linux test: an ES-module app imports a package installed through the selector, in a first and a second release.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates && npx vitest run --root packages/iac-templates src/hosting/agent && pnpm lint`
+  - Effort: medium
+
 ## Phase 9: Live passes and release (lead)
 
 - [ ] T2722 The cPanel live pass (lead): `docs/e2e-coverage.md` row and results.
