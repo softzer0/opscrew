@@ -590,3 +590,77 @@ summarised here.
   any other selector command given `current`) answers "No such application or it's broken. Unable
   to find app-root folder by this path …/releases/<id>". Passenger still ran each new release, so
   what the selector wrote for Passenger follows `current`.
+
+## R14. CloudLinux's selector and the release switch (cPanel pass, runs 11–13, 2026-11-13)
+
+What the selector made for `cloudlinux-selector create --app-root opscrew/<app>-<env>/current`,
+while `current` pointed at the placeholder release `releases/0-0`:
+- `~/.cl.selector/node-selector.json` keys the app by the resolved folder,
+  `opscrew/<app>-<env>/releases/0-0`; `htaccess_cache` names both `current/public/.htaccess` and
+  `releases/0-0/public/.htaccess`.
+- The Passenger block it wrote into the served `.htaccess`: `PassengerAppRoot
+  "/home/<user>/opscrew/<app>-<env>/releases/0-0"`, `PassengerNodejs
+  "/home/<user>/nodevenv/opscrew/<app>-<env>/releases/0-0/22/bin/node"`, `PassengerAppType node`,
+  `PassengerStartupFile dist/index.js`, `PassengerBaseURI "/"`; no variable of the app.
+- The virtual environment is `~/nodevenv/opscrew/<app>-<env>/releases/0-0/`.
+- It put its own placeholder app into `releases/0-0` (it answers `200 text/plain` "It works!" on
+  every path), and Passenger ran that: the agent carried the Passenger block into each release
+  byte for byte, so every release's `.htaccess` sent Passenger to `releases/0-0`. The health checks
+  passed on the placeholder; the app's own code never ran.
+- Every later selector command given `current` (`install-modules`, `set`, `destroy`) looks the app
+  up by the folder `current` resolves to then, and once that is another release it answers "No such
+  application or it's broken. Unable to find app-root folder by this path …".
+
+So the selector resolves the app root once, for its registry, its environment and Passenger. A
+release switch through `current` reaches Passenger only if each release's `.htaccess` names that
+release as `PassengerAppRoot`; the selector's commands need the one folder it registered, which must
+then stay. Open: whether the selector's environment variables reach an app whose `PassengerAppRoot`
+isn't the registered folder (none were set on these runs).
+
+After T2744 (run 15): Passenger ran the release's own code, and the app stopped with
+`ERR_MODULE_NOT_FOUND: Cannot find package '@hono/node-server' imported from
+…/releases/<id>/dist/index.js` ("Did you mean to import @hono/node-server/dist/index.cjs?"). The
+selector made no `node_modules` link in the app's root, so the agent linked none into the release;
+an ES module resolves packages only through a `node_modules` folder above it (CommonJS would also
+read the `NODE_PATH` the hint suggests the selector sets). The packages are in the environment the
+selector's `PassengerNodejs` line names: `<env>/bin/node`, packages in `<env>/lib/node_modules`.
+
+After T2745 (runs 16 and 17): the first release ran its own code and passed verify, and the
+release's `node_modules` link to `<env>/lib/node_modules` let its ES modules load. On the second
+release every answer after the switch carried the new release's `X-OpsCrew-Release` (LiteSpeed read
+the new `.htaccess` at once) but the old release's page: the Node.js process started for the first
+release kept serving, since nothing restarted it. Passenger's restart signal is `tmp/restart.txt` in
+the app's root (what `cloudlinux-selector restart` touches).
+
+With `tmp/restart.txt` touched in both releases after the switch (run 18), one answer at the switch
+still showed the old release's page; with the new release's also touched before the rename (run 19),
+all 30 answers of the 20 s watch did (runs 16 and 17, with no touch: 25 and 29). LiteSpeed acts on
+the restart file on its own timing, so a release switch can't rely on it: the old release's
+processes must end, so that the next request starts the code the new `.htaccess` names.
+
+Ending the old release's processes (run 20): at the second switch the agent found and ended 2
+processes whose working folder was the old release (`/proc` is readable on the account) and the
+health check passed 2 s later, yet every answer of the watch still showed the old page with the new
+release's header. LiteSpeed re-reads `.htaccess` for headers at once but starts the app again from
+the `PassengerAppRoot` it already holds for the site. So the `PassengerAppRoot` OpsCrew writes is the
+`current` link, the same in every release: a new process follows the link to the release `current`
+names.
+
+`PassengerAppRoot` as the `current` link (runs 21–23): the selector's `install-modules` then failed
+within seconds with "Node.js module installation failed without a diagnostic", before npm ran (no
+`~/.npm`), twice of twice; with each release's own folder as the root (runs 16–20) it installed every
+time. So the selector wants the Passenger block it wrote, and LiteSpeed holds the site's first
+`PassengerAppRoot`: the root must be the one the selector registered, `app/`, unchanged. The release
+is then reached through the startup file: the app is created with `--startup-file
+current/<startup>`, `app/current` a link to `../current`, so Node runs the file through the link
+(resolving it to the release's folder, whose `node_modules` link it uses), and a switch restarts the
+app through `app/tmp/restart.txt`, the restart file of the one root LiteSpeed knows.
+
+Leftover processes (runs 16–24): destroy removed each Node.js app's files, hostname and selector
+entry but not its processes, so LiteSpeed's `lsnode` processes of removed apps stayed (15 after nine
+runs) until the account reached CloudLinux's limit of 100 processes (`ResourceUsage::get_usages`:
+`lvenproc` 100/100, `lveep` 15/20). Then nothing new could start: the selector's `install-modules`
+failed "without a diagnostic" and the agent logged `fork: retry: Resource temporarily unavailable`
+(runs 21–24), so those runs say nothing about `PassengerAppRoot`. A one-time cron job of the founder's
+OK ended the 15 `lsnode` processes; the account went back to 0/100. Each `lsnode` process names the
+app's folder on its command line.
