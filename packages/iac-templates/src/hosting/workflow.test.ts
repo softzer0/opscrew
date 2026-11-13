@@ -458,6 +458,57 @@ describe.skipIf(skipped)("the build's and publish's scripts (bash, git, openssl,
       "::error::The account didn't switch to this release: run `opscrew status --env staging` to see why.",
     );
   });
+
+  it("finds the release among many headers under bash -e and pipefail, as GitHub runs it", () => {
+    const wait = step(flow.jobs.wait, "Wait for the account to switch to the release");
+    // More headers than a pipe holds, so a reader that stopped at the release's would break the pipe.
+    const others = Array.from({ length: 4000 }, (_, i) => `X-Header-${i}: ${"v".repeat(20)}\r\n`);
+    const answers = {
+      first: ["HTTP/2 200\r\n", "x-opscrew-release: 1001-1\r\n", ...others],
+      last: ["HTTP/2 200\r\n", ...others, "X-OpsCrew-Release: 1001-1\r\n"],
+      missing: ["HTTP/2 200\r\n", ...others],
+    };
+    const fakes = ['curl() { echo x >> "$CALLS"; cat "$ANSWER"; }', "sleep() { :; }"].join("\n");
+    const run = (answer: keyof typeof answers) => {
+      writeFileSync(`${work}/calls`, "");
+      writeFileSync(`${work}/answer`, `${answers[answer].join("")}\r\n`);
+      const result = spawnSync("bash", ["-e", "-o", "pipefail", "-c", `${fakes}\n${wait.run}`], {
+        cwd: work,
+        env: {
+          ...process.env,
+          ...wait.env,
+          RELEASE: "1001-1",
+          ANSWER: `${work}/answer`,
+          CALLS: `${work}/calls`,
+        },
+        encoding: "utf8",
+      });
+      return { ...result, calls: readFileSync(`${work}/calls`, "utf8").length / 2 };
+    };
+    for (const answer of ["first", "last"] as const) {
+      const served = run(answer);
+      expect(served.status, `${answer}: ${served.stderr}`).toBe(0);
+      expect(served.stdout).toContain("The account serves release 1001-1.");
+      expect(served.calls).toBe(1);
+    }
+    const missing = run("missing");
+    expect(missing.status, missing.stderr).toBe(1);
+    expect(missing.calls).toBe(40);
+    expect(missing.stdout).toContain("::error::The account didn't switch to this release");
+  });
+
+  it("keeps asking while curl fails, under bash -e and pipefail", () => {
+    const wait = step(flow.jobs.wait, "Wait for the account to switch to the release");
+    const fakes = ['curl() { echo x >> "$CALLS"; return 7; }', "sleep() { :; }"].join("\n");
+    writeFileSync(`${work}/calls`, "");
+    const result = spawnSync("bash", ["-e", "-o", "pipefail", "-c", `${fakes}\n${wait.run}`], {
+      cwd: work,
+      env: { ...process.env, ...wait.env, RELEASE: "1001-1", CALLS: `${work}/calls` },
+      encoding: "utf8",
+    });
+    expect(result.status, result.stderr).toBe(1);
+    expect(readFileSync(`${work}/calls`, "utf8").length / 2).toBe(40);
+  });
 });
 
 /** Why the Docker run below is skipped, or undefined when it runs. */
