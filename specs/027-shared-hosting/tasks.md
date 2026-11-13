@@ -549,6 +549,15 @@ names the change.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates && npx vitest run --root packages/iac-templates src/hosting/agent && pnpm lint`
   - Effort: medium
 
+- [ ] T2735 The deploy job passes only when the agent's health check would (research R13)
+  - Owns: `packages/iac-templates/src/hosting/workflow.ts`, `packages/iac-templates/src/hosting/workflow.test.ts`, `packages/iac-templates/src/hosting/__snapshots__/workflow.test.ts.snap`, `packages/cli/test/live/cpanel.test.ts`, `packages/cli/test/live/cpanel-support.ts`, `packages/cli/test/live/cpanel-support.test.ts`
+  - Reads: research R13; `iac-templates/src/hosting/workflow.ts` (the wait step), `iac-templates/src/hosting/agent/script.ts` (the health check)
+  - Accept:
+    - The wait step counts the release as served only when the answer is 2xx or 3xx and carries its `X-OpsCrew-Release`, as the agent's health check does; a 5xx with the header is another try. Tests with a fake `curl`, under `bash -e` and `pipefail`.
+    - The cPanel pass waits (up to 3 minutes) for `opscrew status` to name the first deploy's release and logs how long it took; its cleanup also removes a certificate new since the run started, installed nowhere, whose every name is one of the run's hostnames (or `www.` of one) or the wildcard of the account's domain, with its key when no other certificate uses it. A unit test for the certificate rule.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates --filter=opscrew && npx vitest run --root packages/iac-templates src/hosting/workflow && npx vitest run --root packages/cli test/live/cpanel-support.test.ts && pnpm lint`
+  - Effort: medium
+
 ## Phase 9: Live passes and release (lead)
 
 - [ ] T2722 The cPanel live pass (lead): `docs/e2e-coverage.md` row and results.
