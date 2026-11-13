@@ -644,7 +644,7 @@ describe.skipIf(MISSING.length > 0)(
           const roots = appRootSuffixes(content, folder);
           if (roots.length > 0) {
             log(
-              `finding: ~/.cl.selector/${file} names the app's root as ${roots.map((root) => `${folder}${root}`).join(", ")} (${roots.every((root) => root === "/current") ? "the current link, kept" : "not only the current link"})`,
+              `finding: ~/.cl.selector/${file} names the app's root as ${roots.map((root) => `${folder}${root}`).join(", ")} (${roots.every((root) => root === "/app") ? "the fixed app/ folder, as OpsCrew registers it (R14)" : "not only the app/ folder"})`,
             );
           }
           const names = selectorEnvNames(content, tag);
