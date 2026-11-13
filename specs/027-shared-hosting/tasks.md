@@ -558,7 +558,7 @@ names the change.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates --filter=opscrew && npx vitest run --root packages/iac-templates src/hosting/workflow && npx vitest run --root packages/cli test/live/cpanel-support.test.ts && pnpm lint`
   - Effort: medium
 
-- [ ] T2736 A PHP app's paths reach its index.php, as on a server (research R13)
+- [x] T2736 A PHP app's paths reach its index.php, as on a server (research R13)
   - Owns: `packages/iac-templates/src/hosting/agent/**`, `packages/iac-templates/src/hosting/sftp-workflow.ts`, `packages/iac-templates/src/hosting/sftp-workflow.test.ts`, `packages/iac-templates/src/hosting/__snapshots__/sftp-workflow.test.ts.snap`, `docs/guide/hosting-accounts.md`, `docs/guide/sftp.md`
   - Reads: research R4, R13; `iac-templates/src/hosting/agent/script.ts` (`htaccess_block`, `compose`), `iac-templates/src/hosting/sftp-workflow.ts` (its `.htaccess` block)
   - Accept:
