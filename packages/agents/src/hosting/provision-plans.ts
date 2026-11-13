@@ -5,7 +5,12 @@
  */
 import type { HostingFacts, HostingFiles, HostingPanel } from "@opscrew/contracts";
 import { OpsCrewError, sha256Hex } from "@opscrew/core";
-import { AGENT_SH, releaseBranch, renderAgentSettings } from "@opscrew/iac-templates";
+import {
+  AGENT_SH,
+  hostingKeptFolders,
+  releaseBranch,
+  renderAgentSettings,
+} from "@opscrew/iac-templates";
 import {
   type DeployPlan,
   type HostingDeployTarget,
@@ -72,6 +77,21 @@ export function databaseNames(
   return { name, user: name };
 }
 
+/**
+ * The paths the agent links into each release from `shared/`: `.env` for a Laravel, Node.js or
+ * Python app (a Node.js or Python app reads its settings from its environment, which the selector
+ * gives it, or from the linked file), Laravel's `storage`, and the plan's kept folders
+ * (`hostingKeptFolders`), as a server's volumes. Each once, and none inside another (Laravel's
+ * kept `storage/app` is in its `storage`): the agent would link it through the first one's link.
+ */
+function sharedPaths(plan: DeployPlan, laravel: boolean): string[] {
+  const settings = laravel || hostingTarget(plan).runtime !== undefined ? [".env"] : [];
+  const paths = [...settings, ...(laravel ? ["storage"] : []), ...hostingKeptFolders(plan)];
+  return paths.filter(
+    (path, i) => !paths.slice(0, i).some((p) => path === p || path.startsWith(`${p}/`)),
+  );
+}
+
 /** The agent's `settings.sh` (`opscrew/hosting/<env>.sh` in the repository). */
 export function agentSettingsText(
   plan: DeployPlan,
@@ -92,9 +112,7 @@ export function agentSettingsText(
     ...(input.php !== undefined ? { phpCli: input.php.cli } : {}),
     ...(input.php?.handler !== undefined ? { phpHandler: input.php.handler } : {}),
     ...(plan.app.releaseCommand !== undefined ? { releaseCommand: plan.app.releaseCommand } : {}),
-    // A Node.js or Python app reads its settings from its environment (the selector gives it them)
-    // or from the linked file.
-    sharedPaths: input.laravel ? [".env", "storage"] : target.runtime !== undefined ? [".env"] : [],
+    sharedPaths: sharedPaths(plan, input.laravel),
     keep: 3,
     snapshots: hostingSnapshots(plan) && input.database !== undefined,
     ...(input.database !== undefined ? { database: input.database } : {}),

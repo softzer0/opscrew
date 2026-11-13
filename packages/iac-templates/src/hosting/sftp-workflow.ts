@@ -1,6 +1,6 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are bash and GitHub Actions syntax, not JavaScript templates.
 import { OpsCrewError } from "@opscrew/core";
-import { type DeployPlan, isHostingTarget } from "@opscrew/plan-schema";
+import { cleanRepoPath, type DeployPlan, isHostingTarget } from "@opscrew/plan-schema";
 import { ACTIONS } from "../pins";
 import { wrongTarget } from "../providers";
 import { BASELINE_HEADERS, HSTS, shellQuote } from "../runtime/services";
@@ -53,6 +53,18 @@ export function sftpUrl(
 const KEEP = 3;
 
 /**
+ * The app's kept folders on a hosting account, relative to its release: the plan's
+ * `storage.files.dir` and `storage.sqlite.dir`, which a server keeps in volumes. Each lives in the
+ * app's `shared/` and is linked into every release, so what the app writes there outlives it: by
+ * the agent on a panel account (its shared paths), by the deploy on an SFTP-only host.
+ */
+export function hostingKeptFolders(plan: Pick<DeployPlan, "storage">): string[] {
+  return [plan.storage?.files?.dir, plan.storage?.sqlite?.dir].flatMap((dir) =>
+    dir === undefined ? [] : [cleanRepoPath(dir)],
+  );
+}
+
+/**
  * The lines an app's releases get to load its settings on an SFTP-only host (027 plan 10):
  * `shared/env.htaccess`, inside OpsCrew's `.htaccess` block, and `shared/env.user.ini`, the
  * release's `.user.ini` block, both naming `envPhp` (`shared/env.php`'s path as PHP sees it).
@@ -91,9 +103,66 @@ const printLines = (lines: readonly string[]) =>
   `printf '%s\\n' ${lines.map((line) => shellQuote(line)).join(" ")}`;
 
 /**
+ * The deploy step's lines for the app's kept folders ({@link hostingKeptFolders}), none without
+ * one, as the agent's shared paths on a panel account. Before the upload (`prepare`), a folder
+ * `shared/` holds already is left out of the release, and one it doesn't hold yet is in it (an
+ * empty one when the app has none). After the upload (`link`), each new one is renamed into
+ * `shared/` (a rename never replaces a folder that holds files), and the release gets every kept
+ * folder as a relative link to `shared/<folder>`, as the agent's `../../shared/<folder>`.
+ */
+function keptFolderLines(kept: readonly string[]): { prepare: string[]; link: string[] } {
+  if (kept.length === 0) return { prepare: [], link: [] };
+  return {
+    prepare: [
+      "# The app's kept folders, as a server's volumes: one shared/ holds already stays out of the",
+      "# release, which links it; on the first deploy the release's folder (or an empty one) moves there.",
+      `kept=(${kept.map(shellQuote).join(" ")})`,
+      "new=()",
+      'for dir in "${kept[@]}"; do',
+      '  if printf \'@ls -1a %s\\n\' "$(q "$FOLDER/shared/$dir")" | on_host > /dev/null 2>&1; then',
+      '    rm -rf "${work:?}/release/$dir"',
+      '    mkdir -p "$(dirname "$work/release/$dir")"',
+      "  else",
+      '    mkdir -p "$work/release/$dir"',
+      '    new+=("$dir")',
+      "  fi",
+      "done",
+    ],
+    link: [
+      "# The new kept folders moved into shared/ (its parents made first), then each linked from the",
+      "# release, relative: releases/<id>/<folder> leads to ../../shared/<folder>, one ../ more per /.",
+      "link_kept() {",
+      "  local dir path left up",
+      "  {",
+      '    for dir in "${new[@]}"; do',
+      '      path="$FOLDER/shared"',
+      "      left=$dir",
+      "      while [[ $left == */* ]]; do",
+      '        path="$path/${left%%/*}"',
+      "        left=${left#*/}",
+      '        printf -- \'-@mkdir %s\\n\' "$(q "$path")"',
+      "      done",
+      '      printf \'@rename %s %s\\n\' "$(q "$FOLDER/releases/$release/$dir")" "$(q "$FOLDER/shared/$dir")"',
+      "    done",
+      '    for dir in "${kept[@]}"; do',
+      "      up=$(printf '%s' \"$dir\" | sed 's|[^/]||g; s|/|../|g')",
+      '      printf \'@ln -s %s %s\\n\' "$(q "../../${up}shared/$dir")" "$(q "$FOLDER/releases/$release/$dir")"',
+      "    done",
+      '  } | on_host > /dev/null 2> "$work/sftp.err" || { cat "$work/sftp.err" >&2; return 1; }',
+      "}",
+      "if ! link_kept; then",
+      '  remove_tree "$FOLDER/releases/$release" || true',
+      "  failed \"the app's kept folders couldn't be moved into or linked from shared/ over SFTP; ${running:-nothing} still runs\"",
+      "fi",
+    ],
+  };
+}
+
+/**
  * The deploy step's script (027 plan 10), over SFTP alone: the host's `state/status` and OpsCrew's
  * PHP lines read; the release's `.htaccess` (OpsCrew's block, then the app's own) and `.user.ini`
- * composed; the release uploaded into `releases/<run id>-<attempt>/`; `current` switched to it
+ * composed; the release uploaded into `releases/<run id>-<attempt>/`, with the app's kept folders
+ * ({@link keptFolderLines}) linked from `shared/`; `current` switched to it
  * with `ln -s` and `rename` (OpenSSH's posix-rename, one step); the hostname asked until it serves
  * the release; then the newest {@link KEEP} other releases kept, or on a failure `current`
  * switched back and the release removed; `state/status` written either way.
@@ -125,6 +194,7 @@ function deployScript(plan: DeployPlan, webRoot: string, app: "static" | "php"):
     ...BASELINE_HEADERS.map(([name, value]) => `Header always set ${name} "${value}"`),
   ];
   const status = opscrew(plan, "status");
+  const kept = keptFolderLines(hostingKeptFolders(plan));
   return [
     "set -euo pipefail",
     'release="$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"',
@@ -268,10 +338,12 @@ function deployScript(plan: DeployPlan, webRoot: string, app: "static" | "php"):
     "fi",
     "",
     "# 3. The upload into its own folder, then the switch.",
+    ...kept.prepare,
     'if ! printf \'@put -r %s %s\\n\' "$(q "$work/release")" "$(q "$FOLDER/releases/$release")" | on_host > /dev/null; then',
     '  remove_tree "$FOLDER/releases/$release" || true',
     '  failed "the upload over SFTP failed; ${running:-nothing} still runs"',
     "fi",
+    ...kept.link,
     "# A failed switch keeps the release: the rename may have happened before the connection broke.",
     'if ! switch_to "releases/$release"; then',
     '  failed "the switch over SFTP failed; ${running:-nothing} still runs unless the rename went through"',

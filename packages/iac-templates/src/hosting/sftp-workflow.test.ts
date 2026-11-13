@@ -1,7 +1,17 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: bash and GitHub Actions syntax, not JavaScript templates.
-// Feature 027 (T2714): the deploy workflow of an app on an SFTP-only host.
+// Feature 027 (T2714): the deploy workflow of an app on an SFTP-only host. The cases that switch
+// a release need real symbolic links, which Git for Windows' `ln -s` doesn't make: they skip there.
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
@@ -10,7 +20,14 @@ import { parse } from "yaml";
 import { NPM_SITE } from "../serverless/__fixtures__/plans";
 import { inEnvironment, serverPlan } from "../workflow/__fixtures__/plans";
 import { deploySecretNamesFor, renderWorkflow } from "../workflow/index";
-import { renderSftpPhpLines, renderSftpWorkflow, SFTP_DEPLOY_SECRETS, sftpUrl } from "./index";
+import { CAN_LINK } from "./__fixtures__/account";
+import {
+  hostingKeptFolders,
+  renderSftpPhpLines,
+  renderSftpWorkflow,
+  SFTP_DEPLOY_SECRETS,
+  sftpUrl,
+} from "./index";
 
 type Step = { name?: string; uses?: string; run?: string; env?: Record<string, string> };
 type Job = {
@@ -167,6 +184,163 @@ describe("renderSftpWorkflow", () => {
     );
     expect(block(STATIC, { "index.html": "<h1>Site</h1>\n" })).not.toContain("index.php");
   });
+
+  it("keeps the plan's kept folders in shared/ and links them into the release before the switch", () => {
+    const kept = { ...planFor(PHP), storage: { files: { dir: "./storage/" } } };
+    expect(hostingKeptFolders(kept)).toEqual(["storage"]);
+    expect(
+      hostingKeptFolders({ storage: { files: { dir: "uploads" }, sqlite: { dir: "var/db" } } }),
+    ).toEqual(["uploads", "var/db"]);
+    const script = deployStep(parse(renderSftpWorkflow(kept).content) as Workflow).run ?? "";
+    expect(script).toContain("kept=('storage')");
+    const upload = script.indexOf("@put -r");
+    expect(script.indexOf('for dir in "${kept[@]}"; do')).toBeLessThan(upload);
+    expect(script.indexOf("if ! link_kept; then")).toBeGreaterThan(upload);
+    expect(script.indexOf("if ! link_kept; then")).toBeLessThan(
+      script.indexOf('if ! switch_to "releases/$release"; then'),
+    );
+    expect(spawnSync("bash", ["-n"], { input: script, encoding: "utf8" }).stderr ?? "").toBe("");
+    // Without one, nothing of it.
+    expect(deployStep(doc(PHP)).run).not.toContain("shared/$dir");
+  });
+
+  /**
+   * Steps 1 to 3 of the deploy step (up to the check) for `plan`, run by bash with `sftp` played
+   * by a function that runs each batch line on `host` (OpenSSH's posix-rename as `mv -T`), and
+   * `curl` failing; the release is `files`. Returns the batch lines it ran.
+   */
+  function deployTo(plan: DeployPlan, host: string, run: number, files: Record<string, string>) {
+    const script = deployStep(parse(renderSftpWorkflow(plan).content) as Workflow).run ?? "";
+    const temp = mkdtempSync(join(tmpdir(), "opscrew-sftp-run-")).replaceAll("\\", "/");
+    try {
+      const src = `${temp}/src`;
+      for (const [name, text] of Object.entries(files)) {
+        mkdirSync(join(src, name, ".."), { recursive: true });
+        writeFileSync(join(src, name), text);
+      }
+      mkdirSync(src, { recursive: true });
+      spawnSync("tar", ["-cf", `${temp}/release.tar`, "-C", src, "."]);
+      const stub = `curl() { return 1; }
+sftp() {
+  (
+    set +e
+    cd "$HOST" || exit 1
+    while IFS= read -r line; do
+      ignore=no
+      if [[ $line == -* ]]; then ignore=yes; line=\${line#-}; fi
+      line=\${line#@}
+      printf '%s\\n' "$line" >> "$LOG"
+      eval "set -- $line"
+      cmd=$1
+      shift
+      case $cmd in
+        get) cp "$1" "$2" ;;
+        put) cp -R "$2" "$3" ;;
+        ls) [ -e "$2" ] ;;
+        mkdir) mkdir "$1" ;;
+        rename) mv -T "$1" "$2" ;;
+        ln) ln -s "$2" "$3" ;;
+        rm) rm "$1" ;;
+        rmdir) rmdir "$1" ;;
+        chmod) chmod "$1" "$2" ;;
+        *) false ;;
+      esac 2> /dev/null
+      if [ $? -ne 0 ] && [ $ignore = no ]; then echo "sftp: $line failed" >&2; exit 1; fi
+    done
+  )
+}
+`;
+      const ran = spawnSync("bash", ["-s"], {
+        input: `${stub}${script.slice(0, script.indexOf("# 4. "))}`,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          HOST: host,
+          LOG: `${temp}/batch.log`,
+          GITHUB_RUN_ID: String(run),
+          GITHUB_RUN_ATTEMPT: "1",
+          RUNNER_TEMP: temp,
+          SFTP_URL: sftpUrl({ host: "sftp.example.net", port: 22, user: "web" }, "opscrew/notes"),
+          SFTP_KEY: "key",
+          KNOWN_HOSTS: "known",
+        },
+      });
+      expect(ran.status, `${ran.stdout}\n${ran.stderr}`).toBe(0);
+      return readFileSync(`${temp}/batch.log`, "utf8").split("\n");
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  }
+
+  /** A host with the app's folder as provision leaves it. */
+  function sftpHost(): { host: string; app: string; remove: () => void } {
+    const host = mkdtempSync(join(tmpdir(), "opscrew-sftp-host-")).replaceAll("\\", "/");
+    const app = `${host}/opscrew/notes`;
+    for (const dir of ["releases/0-0", "shared", "state"]) {
+      mkdirSync(`${app}/${dir}`, { recursive: true });
+    }
+    symlinkSync("releases/0-0", `${app}/current`);
+    return { host, app, remove: () => rmSync(host, { recursive: true, force: true }) };
+  }
+
+  it.skipIf(!CAN_LINK)(
+    "moves the release's kept folder into shared/ on the first deploy, and a second release sees what the app wrote there",
+    () => {
+      const { host, app, remove } = sftpHost();
+      try {
+        const plan = { ...planFor(PHP), storage: { files: { dir: "storage" } } };
+        const release = (marker: string) => ({
+          "public/index.php": `<?php echo '${marker}';\n`,
+          "storage/.htaccess": "Require all denied\n",
+        });
+        const first = deployTo(plan, host, 101, release("one"));
+        expect(first).toContain(
+          'rename "opscrew/notes/releases/101-1/storage" "opscrew/notes/shared/storage"',
+        );
+        expect(readlinkSync(`${app}/current`)).toBe("releases/101-1");
+        expect(readlinkSync(`${app}/releases/101-1/storage`)).toBe("../../shared/storage");
+        expect(readFileSync(`${app}/shared/storage/.htaccess`, "utf8")).toBe(
+          "Require all denied\n",
+        );
+        // The app writes into its kept folder.
+        writeFileSync(`${app}/current/storage/note.txt`, "kept\n");
+
+        const second = deployTo(plan, host, 102, release("two"));
+        expect(second.some((line) => line.startsWith("rename") && line.includes("shared"))).toBe(
+          false,
+        );
+        expect(readlinkSync(`${app}/current`)).toBe("releases/102-1");
+        expect(readlinkSync(`${app}/releases/102-1/storage`)).toBe("../../shared/storage");
+        expect(readFileSync(`${app}/current/storage/note.txt`, "utf8")).toBe("kept\n");
+        expect(readdirSync(`${app}/shared/storage`).sort()).toEqual([".htaccess", "note.txt"]);
+        // A rollback's release keeps its link.
+        expect(readFileSync(`${app}/releases/101-1/storage/note.txt`, "utf8")).toBe("kept\n");
+      } finally {
+        remove();
+      }
+    },
+  );
+
+  it.skipIf(!CAN_LINK)(
+    "makes an empty kept folder the release has none of, with its parents, linked one ../ more per /",
+    () => {
+      const { host, app, remove } = sftpHost();
+      try {
+        const plan = { ...planFor(PHP), storage: { files: { dir: "storage/app" } } };
+        const index = { "public/index.php": "<?php echo 'notes';\n" };
+        deployTo(plan, host, 101, index);
+        expect(readdirSync(`${app}/shared/storage/app`)).toEqual([]);
+        expect(readlinkSync(`${app}/releases/101-1/storage/app`)).toBe(
+          "../../../shared/storage/app",
+        );
+        writeFileSync(`${app}/current/storage/app/upload.txt`, "kept\n");
+        deployTo(plan, host, 102, index);
+        expect(readFileSync(`${app}/current/storage/app/upload.txt`, "utf8")).toBe("kept\n");
+      } finally {
+        remove();
+      }
+    },
+  );
 
   it("reads the login and the folder back from the app's URL, and hides the host in the log", () => {
     const script = deployStep(doc(PHP)).run ?? "";

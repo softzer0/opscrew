@@ -65,6 +65,10 @@ On each push to the deploy branch, GitHub Actions builds the release, uploads it
 its own, and switches `current` to it with a new link and one rename (OpenSSH's atomic
 `posix-rename`). It then checks the hostname until the app answers with the release, and switches
 back when it doesn't. It keeps the 3 releases before the running one.
+The app's kept folders (`storage.files.dir`, `storage.sqlite.dir` in `opscrew/plan.yaml`) live in
+the app's `shared/` folder, beside its settings, as volumes do on a server: the first deploy moves
+the release's folder there (or makes an empty one), and each release links it, so what the app
+writes there outlives every release, and a rollback's release sees it too.
 A PHP app with an `index.php` but no rewrite rules of its own in `.htaccess` gets every path that
 isn't a file or folder sent to that `index.php`, as on a server.
 
