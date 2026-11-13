@@ -185,15 +185,22 @@ describe.skipIf(MISSING.length > 0)(
       httpRequest(url, { timeoutMs: 30_000, ...options });
 
     /** Waits for the deploy run of commit `sha` to succeed with its wait job; its id. */
-    async function deployed(sha: string, what: string): Promise<number> {
+    async function deployed(sha: string, what: string, folder?: string): Promise<number> {
       log(`waiting for the deploy run of ${what} (up to 30 minutes)`);
       const found = await run.github.waitForDeploy({ headSha: sha });
       const problem = hostingRunProblem(found, PANEL_DEPLOY_JOB);
       if (problem !== undefined) {
-        // Evidence for a deploy the account didn't take: what the agent recorded and logged.
+        // Evidence for a deploy the account didn't take: what the agent recorded and logged, and
+        // the app's own errors the agent kept from a Node.js or Python release that didn't start.
         for (const command of ["status", "logs"]) {
           const shown = await run.opscrew(command);
           log(`opscrew ${command} after the failed deploy:\n${run.scrub(shown.output)}`);
+        }
+        const kept =
+          folder === undefined ? [] : ((await cpanel().panel.list(`${folder}/state`)) ?? []);
+        for (const name of kept.filter((file) => file.endsWith(".stderr.log"))) {
+          const errors = (await cpanel().panel.readFile(`${folder}/state/${name}`)) ?? "";
+          log(`the app's errors in state/${name}:\n${run.scrub(errors)}`);
         }
         throw new Error(`The deploy run ${found.id} (${what}) did not deploy: ${problem}.`);
       }
@@ -494,7 +501,7 @@ describe.skipIf(MISSING.length > 0)(
             const sha = await run.mergeDeploySetup(`${leg.key}: the first deploy`);
             if (sha === undefined)
               throw new Error("provision opened no deploy-setup pull request.");
-            await deployed(sha, `${leg.key}: the first deploy`);
+            await deployed(sha, `${leg.key}: the first deploy`, folder);
             const health = await answering(url((plan as DeployPlan).app.healthPath));
             first = releaseOf(health) ?? "";
             if (first === "")
@@ -564,7 +571,8 @@ describe.skipIf(MISSING.length > 0)(
               url: markerUrl,
               from: first,
               pages: { isNew: leg.marker.isSecond, isOld: leg.marker.isFirst },
-              during: async () => deployed(await run.merge(title, leg.marker.file, text), title),
+              during: async () =>
+                deployed(await run.merge(title, leg.marker.file, text), title, folder),
             });
             expect((await run.opscrewOk("status")).output, "status").toContain(
               `Release: ${second} runs`,
