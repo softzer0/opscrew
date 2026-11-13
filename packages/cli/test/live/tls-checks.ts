@@ -80,7 +80,7 @@ export async function originCheck(
   const problems: string[] = [];
   const findings: string[] = [];
   const image = IMAGES.testssl.ref;
-  for (const check of originHostChecks(hostnames)) {
+  for (const check of originHostChecks(hostnames, proxy)) {
     const direct = await run(check.command);
     let result = check.evaluate(direct);
     const unreachable =
