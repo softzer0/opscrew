@@ -904,6 +904,29 @@ export class CpanelAccount {
   }
 
   /**
+   * The account's processes and entry processes against CloudLinux's limits
+   * (`ResourceUsage::get_usages`), as `nproc 3/100, ep 1/20`: a Node.js app whose processes outlive
+   * it uses the account's processes up (R14), so the pass logs them before and after.
+   */
+  async processes(): Promise<string> {
+    const usages = z
+      .array(
+        z.object({
+          id: z.string(),
+          usage: z.coerce.number(),
+          maximum: z.coerce.number().nullish(),
+        }),
+      )
+      .parse(await this.uapi("ResourceUsage", "get_usages"));
+    return ["lvenproc", "lveep"]
+      .map((id) => {
+        const usage = usages.find((entry) => entry.id === id);
+        return `${id === "lvenproc" ? "nproc" : "ep"} ${usage?.usage ?? "?"}/${usage?.maximum ?? "?"}`;
+      })
+      .join(", ");
+  }
+
+  /**
    * The account's inventory: its domains (with their document roots), databases and their users,
    * cron lines, SSH keys (also the public ones), API token names, the home folder's top level, the
    * SHA-256 of each file in `~/.cl.selector`, what `~/opscrew` and `~/nodevenv/opscrew` hold, the

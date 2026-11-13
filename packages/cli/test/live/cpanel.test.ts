@@ -730,6 +730,7 @@ describe.skipIf(MISSING.length > 0)(
             .map(([field, entries]) => `${field} ${entries.length}`)
             .join(", ")}`,
         );
+        log(`observed: the account's processes before the run: ${await cpanel().processes()}`);
       },
     );
 
@@ -743,6 +744,7 @@ describe.skipIf(MISSING.length > 0)(
         const after = await cpanel().inventory();
         const { problems, observed } = inventoryProblems(before.fields, after.fields, tag);
         for (const line of observed) log(`observed: ${line}`);
+        log(`observed: the account's processes after the run: ${await cpanel().processes()}`);
         for (const field of Object.keys(after.fields)) {
           if (!problems.some((problem) => problem.startsWith(`${field}:`))) {
             log(`the account after: ${field} as before (${after.fields[field]?.length})`);
