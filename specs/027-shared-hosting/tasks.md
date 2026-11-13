@@ -605,6 +605,15 @@ names the change.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-cpanel && pnpm lint`
   - Effort: medium
 
+- [ ] T2741 The selector's "operation was performed" counts as installed; the agent's health check decides (research R13)
+  - Owns: `packages/iac-templates/src/hosting/agent/**`
+  - Reads: research R13; `iac-templates/src/hosting/agent/script.ts` (the selector's install before the switch, the switch back and reinstall)
+  - Accept:
+    - When `cloudlinux-selector install-modules` answers an error whose text says "The operation was performed" (its own availability check failed), the agent logs that answer as a note and goes on to switch and run its health check, which keeps the release or switches back and reinstalls the running release's packages, as for any failed release. Any other error still fails the release before the switch.
+    - Linux tests with the fake selector: that answer on a first release deploys it; on a later release whose health check fails, the switch back reinstalls the running release's packages; another error still fails before the switch.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates && npx vitest run --root packages/iac-templates src/hosting/agent && pnpm lint`
+  - Effort: medium
+
 ## Phase 9: Live passes and release (lead)
 
 - [ ] T2722 The cPanel live pass (lead): `docs/e2e-coverage.md` row and results.
