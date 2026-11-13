@@ -20,7 +20,7 @@ OpsCrew is an open-source crew of AI agents that does the DevOps and SecOps work
 You approve every change before it is applied. Everything OpsCrew produces is a plain file in your repo: infrastructure code, workflows, reports, a runbook. Delete OpsCrew and your deployment keeps working. `npx opscrew scan` checks your repository for leaked secrets, exposed Supabase/Firebase data and risky config at any time, free and without AI.
 
 Where it deploys:
-- **Hetzner Cloud, DigitalOcean (Droplets) or Contabo:** the interview asks which one. For Contabo's monthly contracts, see [Deploy to Contabo](docs/guide/contabo.md).
+- **A new server at Hetzner Cloud, DigitalOcean or Contabo:** see [Hetzner Cloud](docs/guide/hetzner.md), [DigitalOcean](docs/guide/digitalocean.md) and [Contabo](docs/guide/contabo.md).
 - **A server you already have, shared by several OpsCrew apps if you like:** see [Deploy to a server you already have](docs/guide/own-server.md).
 - **A Portainer you already run, for example on a NAS:** see [Deploy to a Portainer you already run](docs/guide/portainer-target.md). OpsCrew can also add [Portainer](docs/guide/portainer.md) to a server as a web UI for your containers.
 - **Your own computer, with the same production stack in your Docker:** see [Your app's production stack on your own computer](docs/guide/localhost.md). No server, no cloud account and no domain needed.
@@ -61,7 +61,7 @@ How you watch it, for free:
 
 ## Quickstart
 
-You need Node.js 22.9+, git, OpenTofu or Terraform, a GitHub repository with your app, and an API token for Hetzner Cloud (`HCLOUD_TOKEN`) or DigitalOcean (`DIGITALOCEAN_TOKEN`), or Contabo's four API credentials (`CNTB_OAUTH2_*`, see [Deploy to Contabo](docs/guide/contabo.md#the-credentials)). For a custom domain, add a Cloudflare token (`CLOUDFLARE_API_TOKEN`) and a domain whose DNS is on Cloudflare. A GitHub token (`GITHUB_TOKEN`, or a logged-in `gh`) lets OpsCrew open pull requests and set the deploy secrets. A model (`ANTHROPIC_API_KEY`) is optional: pass `--no-ai` to `analyze` and `adapt` to run without one.
+You need Node.js 22.9+, git, OpenTofu or Terraform, a GitHub repository with your app, and your cloud provider's API token ([Hetzner Cloud](docs/guide/hetzner.md#the-token), [DigitalOcean](docs/guide/digitalocean.md#the-token) or [Contabo](docs/guide/contabo.md#the-credentials)). For a custom domain, add a Cloudflare token (`CLOUDFLARE_API_TOKEN`) and a domain whose DNS is on Cloudflare. A GitHub token (`GITHUB_TOKEN`, or a logged-in `gh`) lets OpsCrew open pull requests and set the deploy secrets. A model (`ANTHROPIC_API_KEY`) is optional: pass `--no-ai` to `analyze` and `adapt` to run without one.
 
 Run these in your app's repository, in order:
 

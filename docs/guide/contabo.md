@@ -1,7 +1,7 @@
 # Deploy to Contabo
 
 OpsCrew can create your app's server at [Contabo](https://contabo.com/), on your own account, as it
-does at [Hetzner Cloud](https://www.hetzner.com/cloud) and [DigitalOcean](https://www.digitalocean.com/).
+does at [Hetzner Cloud](hetzner.md) and [DigitalOcean](digitalocean.md).
 You get the same result: a hardened server, the app deployed from [GitHub](https://github.com/)
 with TLS, health checks and rollback, and the `verify`, `secure` and `drift` checks.
 

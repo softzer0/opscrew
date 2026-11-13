@@ -5,6 +5,8 @@ an app yet.
 
 ## Where your app runs
 
+- [Deploy to Hetzner Cloud](hetzner.md)
+- [Deploy to DigitalOcean](digitalocean.md)
 - [Deploy to Contabo](contabo.md)
 - [Deploy to a server you already have](own-server.md)
 - [Deploy to a Portainer you already run](portainer-target.md)
