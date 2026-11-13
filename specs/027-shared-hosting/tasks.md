@@ -376,7 +376,7 @@ names the change.
 
 ## Phase 6: Wave 5 (parallel)
 
-- [ ] T2714 [US3] SFTP-only hosts
+- [x] T2714 [US3] SFTP-only hosts
   - Owns: `packages/connectors/sftp/src/**`, `packages/agents/src/hosting/sftp*.ts`, `packages/iac-templates/src/hosting/sftp*.ts`, `packages/iac-templates/src/hosting/__snapshots__/sftp*`, and the SFTP branch in `packages/agents/src/hosting/{provision,rollback,destroy,status}.ts` and `packages/iac-templates/src/workflow/index.ts`
   - Reads: plan 10; ADR 0011, ADR 0030 (D6); `agents/src/addons/status.ts` (running `ssh` through the runner), `connectors/ssh-host/src/shell.ts`
   - Depends: T2711, T2713
