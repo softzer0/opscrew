@@ -329,13 +329,16 @@ carry() {
 }
 
 # Links each shared path of release folder $1 to shared/<path>. A path shared/ doesn't hold yet
-# is moved there from the release first (Laravel's storage folder, for example).
+# is moved there from the release first (Laravel's storage folder, for example), or made an empty
+# folder when the release lacks it too (a kept folder the app fills at runtime).
 link_shared() {
   local release=$1 path up
   for path in $SHARED_PATHS; do
     if [ ! -e "shared/$path" ] && [ -e "$release/$path" ]; then
       mkdir -p "$(dirname "shared/$path")"
       mv "$release/$path" "shared/$path"
+    elif [ ! -e "shared/$path" ]; then
+      mkdir -p "shared/$path"
     fi
     rm -rf "\${release:?}/$path"
     mkdir -p "$(dirname "$release/$path")"

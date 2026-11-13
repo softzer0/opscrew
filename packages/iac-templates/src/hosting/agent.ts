@@ -33,7 +33,7 @@ export interface AgentSettings {
   phpHandler?: string;
   /** The release command, run in the release's folder; `php` in it is {@link phpCli}. */
   releaseCommand?: string;
-  /** Paths in each release linked to `shared/` (`.env`, Laravel's `storage`). */
+  /** Paths in each release linked to `shared/`: `.env`, Laravel's `storage` and the plan's kept folders. */
   sharedPaths: readonly string[];
   /** How many releases are kept besides the running one. */
   keep: number;

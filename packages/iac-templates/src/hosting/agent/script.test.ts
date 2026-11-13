@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { statSync, writeFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   Account,
@@ -37,6 +37,23 @@ describe.skipIf(!runs)("the hosting agent's files", { timeout: 180_000 }, () => 
     const found = spawnSync("find", [a.dir, "!", "-perm", "-u+w"], { encoding: "utf8" });
     expect(found.status, found.stderr).toBe(0);
     expect(found.stdout).toBe("");
+  });
+});
+
+describe.skipIf(!runs)("the hosting agent's kept folders", { timeout: 180_000 }, () => {
+  it("makes one the release doesn't ship empty in shared/, so the app writes through its link", () => {
+    const a = new Account({ sharedPaths: [".env", "storage", "public/uploads"] });
+    accounts.push(a);
+    a.run();
+    a.publish(laravelRelease("one"), { run: 101 });
+    expect(a.run().output).toContain("Release 101-1 serves.");
+    expect(statSync(`${a.dir}/shared/public/uploads`).mode & 0o777).toBe(0o755);
+    writeFileSync(`${a.dir}/releases/101-1/public/uploads/photo.jpg`, "photo");
+    expect(a.file("shared/public/uploads/photo.jpg")).toBe("photo");
+
+    a.publish(laravelRelease("two"), { run: 102 });
+    expect(a.run().output).toContain("Release 102-1 serves.");
+    expect(a.file("releases/102-1/public/uploads/photo.jpg")).toBe("photo");
   });
 });
 
