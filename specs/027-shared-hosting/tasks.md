@@ -707,8 +707,13 @@ The founder added these to 0.2.8.
   - Accept: per R15, `target.backups` on Contabo turns Auto Backup on through the API and off again, priced in design; the same prod-only default as T2750. Tests with the fake; the Contabo guide says what it keeps and costs.
 
 - [ ] T2752 Contabo's Object Storage as a bucket provider (after T2749)
-  - Owns: `packages/iac-templates/src/infra/storage.ts`, `packages/agents/src/design/storage.ts`, `packages/agents/src/infra/**`, `packages/providers/contabo/**`, `docs/guide/object-storage.md`
-  - Accept: per R15, an app on Contabo is offered Contabo's Object Storage beside Garage and R2, priced; its bucket is planned and approved like the others'; the S3 key as R15 says it is made (by the user in the panel where the API can't). Tests; the object storage guide lists it.
+  - Owns: `packages/iac-templates/src/infra/storage.ts`, `packages/iac-templates/src/prices.ts`, `packages/iac-templates/src/runbook/components.ts`, `packages/agents/src/design/**` (the storage lines), `packages/agents/src/interview/components.ts`, `packages/agents/src/infra/**`, `packages/agents/src/provision/**`, `packages/agents/src/destroy/**`, `packages/agents/src/drift/**`, `packages/agents/src/retarget/bucket.ts`, `packages/agents/src/shared/{s3,app-env}.ts`, `packages/agents/src/testing/storage.ts`, `packages/providers/contabo/**`, `packages/contracts/src/connector.ts` (`ObjectStorageApi`, lead-sanctioned), `packages/plan-schema/src/components.ts` (the `contabo` bucket provider), `packages/mcp-server/src/tools/{deploy.ts,interview.test.ts}`, `docs/guide/object-storage.md`, `docs/guide/contabo.md` (its Object Storage line)
+  - Accept:
+    - Per R15, an app on Contabo is offered Contabo's Object Storage beside Garage and R2, priced, when the expected storage fits the 0.25 TB OpsCrew orders.
+    - The storage is ordered only after its own plan is approved by its SHA-256 hash. An existing storage in the region is reused. An interrupted order is never ordered twice. An unknown region in Contabo's answer stops with an error, never a second order.
+    - The bucket is planned and approved like the others'. The S3 key is read through the API, never written to a file or state.
+    - OpsCrew never cancels the storage: it is one per region for the whole account and may hold other buckets. `destroy --delete-data` deletes the app's bucket and says how to cancel the storage in the Customer Control Panel. (Lead, after the review: an automatic cancel could end the user's own or another app's storage.)
+    - Tests; the object storage guide lists it.
 
 - [x] T2753 Guide pages: Deploy to Hetzner Cloud, Deploy to DigitalOcean; the README links them (lead)
   - Owns: `docs/guide/hetzner.md`, `docs/guide/digitalocean.md`, `docs/guide/index.md`, `README.md`
