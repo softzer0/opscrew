@@ -374,9 +374,8 @@ export async function provisionHosting(
     (step) => step.kind === "hostname" || step.kind === "certificate",
   );
   const certificate = await certificateOf(deps, panel, hostname, waits ? sleep : undefined);
-  if (certificate?.installed === true && certificate.id !== undefined) {
-    await recordObject(deps.paths, { kind: "certificate", key: certificate.id });
-  }
+  const own = ownCertificateId(certificate, hostname);
+  if (own !== undefined) await recordObject(deps.paths, { kind: "certificate", key: own });
   const approvals = [a.approval, b.approval, dns?.approval].flatMap((approval) =>
     approval === undefined ? [] : [approvalEntry(approval)],
   );
@@ -705,6 +704,22 @@ async function addDeployKey(
  * the hostname points at the account); what is left is said either way. `undefined` where the
  * panel's API can't read it.
  */
+/**
+ * The installed certificate's id when OpsCrew may count it as its own: it names nothing but the
+ * hostname and `www.` of it (R13). A wildcard, a certificate shared with other hosts, or one whose
+ * names the panel doesn't give is the account's, never recorded, so never removed.
+ */
+export function ownCertificateId(
+  certificate: HostingCertificate | undefined,
+  hostname: string,
+): string | undefined {
+  if (certificate?.installed !== true || certificate.id === undefined) return undefined;
+  const host = hostname.toLowerCase();
+  const names = certificate.names ?? [];
+  const own = names.every((name) => [host, `www.${host}`].includes(name.toLowerCase()));
+  return names.length > 0 && own ? certificate.id : undefined;
+}
+
 async function certificateOf(
   deps: PhaseDeps,
   panel: HostingPanel,

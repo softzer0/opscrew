@@ -561,8 +561,11 @@ describe("provision on a cPanel account", () => {
       "opscrew/release/prod",
     );
 
-    // Everything made is recorded with the panel's key.
+    // Everything made is recorded with the panel's key, the hostname's own certificate too.
     const made = await record(s.root);
+    expect(made.objects.find((o) => o.kind === "certificate")?.key).toBe(
+      s.fake.state.installed.get(HOSTNAME),
+    );
     expect(made.objects.map((o) => o.kind).sort()).toEqual([
       "certificate",
       "cron",
@@ -664,6 +667,22 @@ describe("provision on a cPanel account", () => {
     expect(changes(s.fake).length).toBe(before);
     expect(said(again.deps)).toContain("Hosting plan A (the agent) has nothing to change");
     expect(said(again.deps)).toContain("Hosting plan B (the app) has nothing to change");
+  });
+
+  it("records the hostname's own certificate, in any case, and never one it didn't make (R13)", async () => {
+    const certificates = async (certificateNames: (hostname: string) => string[]) => {
+      const s = await setup({ cpanel: { certificateNames } });
+      expect((await s.run()).error).toBeUndefined();
+      expect(s.fake.state.installed.has(HOSTNAME)).toBe(true);
+      const made = await record(s.root);
+      return made.objects.filter((o) => o.kind === "certificate").map((o) => o.key);
+    };
+    const upper = await certificates((h) => [h.toUpperCase(), `WWW.${h.toUpperCase()}`]);
+    expect(upper).toHaveLength(1);
+    // The domain's AutoSSL wildcard, installed on the new hostname.
+    expect(await certificates(() => ["*.example.com", "example.com"])).toEqual([]);
+    // A certificate that also names another host.
+    expect(await certificates((h) => [h, `www.${h}`, "shop.example.com"])).toEqual([]);
   });
 
   it("writes .env.next and an env request when only the values changed", async () => {

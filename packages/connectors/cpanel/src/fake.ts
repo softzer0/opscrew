@@ -31,6 +31,12 @@ export interface FakeCpanelOptions {
   reappearingDatabases?: boolean;
   /** AutoSSL records this problem for a new hostname instead of issuing its certificate. */
   autoSslProblem?: string;
+  /**
+   * The names AutoSSL's certificate for a hostname covers (default the hostname and `www.` of
+   * it). A certificate with the same names already there is installed instead of a new one, as the
+   * domain's wildcard (`*.example.com`) is on a new subdomain (R13).
+   */
+  certificateNames?: (hostname: string) => string[];
   /** Epoch milliseconds, for certificate dates (default `Date.now`). */
   now?: () => number;
 }
@@ -203,13 +209,21 @@ export function fakeCpanel(options: FakeCpanelOptions): FakeCpanel {
       state.autosslProblems.push({ domain: hostname, problem: options.autoSslProblem });
       return;
     }
+    const domains = options.certificateNames?.(hostname) ?? [hostname, `www.${hostname}`];
+    const same = state.certificates.find((entry) => entry.domains.join() === domains.join());
+    if (same !== undefined) {
+      state.installed.set(hostname, same.id);
+      return;
+    }
     const modulus = `${next()}${"ab".repeat(16)}`;
     const key = { id: `${next()}_${next()}`, modulus };
-    const id = `${hostname.replace(/[.-]/g, "_")}_${key.id}_${next()}`;
+    // cPanel names a wildcard's id `_wildcard__example_com_…`.
+    const label = (domains[0] ?? hostname).replace("*", "_wildcard_").replace(/[.-]/g, "_");
+    const id = `${label}_${key.id}_${next()}`;
     state.keys.push(key);
     state.certificates.push({
       id,
-      domains: [hostname, `www.${hostname}`],
+      domains,
       notAfter: Math.floor(now() / 1000) + 90 * 86_400,
       modulus,
     });

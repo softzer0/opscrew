@@ -594,7 +594,7 @@ export class CpanelPanel implements HostingPanel {
       hostname: name,
       installed,
       ...(notAfter !== undefined && { notAfter: new Date(notAfter * 1000).toISOString() }),
-      ...(certificate !== undefined && { id: certificate.id }),
+      ...(certificate !== undefined && { id: certificate.id, names: certificate.domains }),
       inProgress: inProgress === 1,
       ...(problem !== undefined && { problem: problem.problem }),
     };

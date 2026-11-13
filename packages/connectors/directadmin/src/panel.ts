@@ -509,7 +509,7 @@ export class DirectAdminPanel implements HostingPanel {
   /**
    * `GET /api/domain-tls/domains/{domain}/certs` for the domain the hostname belongs to. The id is
    * given only for a certificate covering the hostname alone, so removing it touches no other
-   * name.
+   * name; `names` are the certificate's DNS names.
    */
   async certificate(hostname: string): Promise<HostingCertificate> {
     const name = hostnameOf(hostname);
@@ -535,6 +535,7 @@ export class DirectAdminPanel implements HostingPanel {
         installed: true,
         notAfter: new Date(valid.certificate.notAfter).toISOString(),
         ...(only ? { id: `${domain}/${valid.id}` } : {}),
+        names: valid.certificate.dnsNames,
         inProgress: false,
       };
     }

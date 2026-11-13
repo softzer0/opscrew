@@ -27,6 +27,7 @@ import {
 } from "../../testing";
 import { hostingFiles, panelConnector } from "../panels";
 import { AGENT_SCHEDULE, agentCronCommand } from "../php";
+import { ownCertificateId } from "../provision";
 import { type HostingObject, recordObject, updateHostingRecord } from "../record";
 import { keyValues } from "../requests";
 
@@ -440,9 +441,8 @@ export async function hostedApp(o: HostedOptions = {}): Promise<HostedApp> {
     await made({ kind: "database", key: name });
   }
   const certificate = await panel.certificate(HOSTNAME);
-  if (certificate?.installed === true && certificate.id !== undefined) {
-    await made({ kind: "certificate", key: certificate.id });
-  }
+  const own = ownCertificateId(certificate, HOSTNAME);
+  if (own !== undefined) await made({ kind: "certificate", key: own });
 
   // GitHub: the agent's deploy key and the release signing key.
   await made({ kind: "deploy-key", key: "4001", value: AGENT_KEY });

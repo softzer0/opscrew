@@ -417,6 +417,7 @@ describe("DirectAdminPanel", () => {
       });
       expect(cert.notAfter).toMatch(/^\d{4}-\d\d-\d\dT/);
       expect(cert.id).toMatch(/^example\.com\/cert-\d+$/);
+      expect(cert.names).toEqual(["app.example.com"]);
       await panel.removeCertificate(cert.id as string);
       expect(
         fake.certificates.get("example.com")?.some((c) => c.dnsNames.includes("app.example.com")),
@@ -441,6 +442,7 @@ describe("DirectAdminPanel", () => {
         installed: true,
         inProgress: false,
         notAfter: "2027-02-01T00:00:00.000Z",
+        names: ["example.com", "*.example.com"],
       });
       fake.certificates.set("example.com", [
         {

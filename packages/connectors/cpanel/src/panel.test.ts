@@ -650,8 +650,22 @@ describe("certificates", () => {
       installed: true,
       notAfter: new Date(NOW + 90 * 86_400_000).toISOString(),
       id,
+      names: [host, `www.${host}`],
       inProgress: false,
     });
+  });
+
+  it("names the domain's wildcard AutoSSL installed on a new hostname (R13)", async () => {
+    const { fake, panel } = setup({ certificateNames: () => ["*.example.com", "example.com"] });
+    await panel.addHostname(host, ROOT);
+    const certificate = await panel.certificate(host);
+    expect(certificate).toMatchObject({
+      installed: true,
+      id: fake.state.installed.get("example.com"),
+      names: ["*.example.com", "example.com"],
+    });
+    expect(certificate.id).toMatch(/^_wildcard__example_com_/);
+    expect(fake.state.certificates).toHaveLength(1);
   });
 
   it("names AutoSSL's problem, a check in progress, and an expired certificate", async () => {
