@@ -259,6 +259,34 @@ describe.skipIf(reason !== undefined)("the hosting agent", { timeout: 180_000 },
     expect(a.file("releases/901-1/.user.ini")).toBeUndefined();
   });
 
+  switching(
+    "forces HTTPS in the same run when the certificate verifies by the end of the deploy",
+    () => {
+      // The release command makes the certificate verify: after the run's first check, before the switch.
+      const a = account({
+        appKind: "static",
+        releaseBranch: "opscrew/release/site-prod",
+        webRoot: ".",
+        phpCli: undefined,
+        releaseCommand: 'touch "$STUB/certificate"',
+        sharedPaths: [],
+        database: undefined,
+      });
+      a.run();
+      a.publish({ "index.html": "<h1>Site</h1>\n" }, { run: 901 });
+      const run = a.run().output;
+      expect(run).toContain("Release 901-1 serves.");
+      expect(run).toContain(
+        "The certificate on notes.example.com verifies: HTTPS is forced from now on.",
+      );
+      expect(run.indexOf("Release 901-1 serves.")).toBeLessThan(run.indexOf("HTTPS is forced"));
+      expect(existsSync(`${a.dir}/state/https`)).toBe(true);
+      expect(a.file("releases/901-1/.htaccess")).toContain(
+        "RewriteCond %{HTTPS} !=on\nRewriteRule ^ https://notes.example.com%{REQUEST_URI} [R=301,L]\n",
+      );
+    },
+  );
+
   it("refuses a release signed with another key or for another environment, and switches nothing", () => {
     const a = account();
     a.run();

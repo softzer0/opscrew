@@ -1375,6 +1375,9 @@ main() {
   requests
   https_check
   new_release
+  # A first release's certificate often verifies by the end of its deploy: HTTPS is forced now, not
+  # a run later.
+  https_check
 }
 
 main "$@"; exit
