@@ -76,6 +76,16 @@ export function renderSftpPhpLines(envPhp: string): { htaccess: string; userIni:
   };
 }
 
+/** A `.htaccess` line that rewrites, comments aside (grep -iE). */
+const REWRITE_RULE = "^[[:space:]]*RewriteRule([[:space:]]|$)";
+
+/** A PHP app's routing where its `.htaccess` has none, as a server's php_fastcgi (research R13). */
+const FALLBACK = [
+  "RewriteCond %{REQUEST_FILENAME} !-f",
+  "RewriteCond %{REQUEST_FILENAME} !-d",
+  "RewriteRule ^ index.php [L]",
+];
+
 /** `printf '%s\n'` of each line, shell-quoted. */
 const printLines = (lines: readonly string[]) =>
   `printf '%s\\n' ${lines.map((line) => shellQuote(line)).join(" ")}`;
@@ -233,6 +243,10 @@ function deployScript(plan: DeployPlan, webRoot: string, app: "static" | "php"):
     `  if [ "$https" = yes ]; then ${printLines([`Header always set Strict-Transport-Security "${HSTS}"`])}; fi`,
     '  printf \'Header always set X-OpsCrew-Release "%s"\\n\' "$release"',
     '  if [ -f "$work/env.htaccess" ]; then cat "$work/env.htaccess"; fi',
+    "  # A PHP app without rewrite rules of its own: a path that is no file goes to index.php.",
+    `  if [ -f "$served/index.php" ] && ! grep -qiE ${shellQuote(REWRITE_RULE)} "$served/.htaccess" 2> /dev/null; then`,
+    `    ${printLines(FALLBACK)}`,
+    "  fi",
     "  printf '%s\\n' '# END OpsCrew'",
     '  if [ -s "$served/.htaccess" ]; then',
     "    printf '%s\\n' '# BEGIN OpsCrew: app'",

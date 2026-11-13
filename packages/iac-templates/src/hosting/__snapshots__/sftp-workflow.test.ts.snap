@@ -257,6 +257,10 @@ jobs:
             if [ "$https" = yes ]; then printf '%s\\n' 'Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"'; fi
             printf 'Header always set X-OpsCrew-Release "%s"\\n' "$release"
             if [ -f "$work/env.htaccess" ]; then cat "$work/env.htaccess"; fi
+            # A PHP app without rewrite rules of its own: a path that is no file goes to index.php.
+            if [ -f "$served/index.php" ] && ! grep -qiE '^[[:space:]]*RewriteRule([[:space:]]|$)' "$served/.htaccess" 2> /dev/null; then
+              printf '%s\\n' 'RewriteCond %{REQUEST_FILENAME} !-f' 'RewriteCond %{REQUEST_FILENAME} !-d' 'RewriteRule ^ index.php [L]'
+            fi
             printf '%s\\n' '# END OpsCrew'
             if [ -s "$served/.htaccess" ]; then
               printf '%s\\n' '# BEGIN OpsCrew: app'
@@ -579,6 +583,10 @@ jobs:
             if [ "$https" = yes ]; then printf '%s\\n' 'Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"'; fi
             printf 'Header always set X-OpsCrew-Release "%s"\\n' "$release"
             if [ -f "$work/env.htaccess" ]; then cat "$work/env.htaccess"; fi
+            # A PHP app without rewrite rules of its own: a path that is no file goes to index.php.
+            if [ -f "$served/index.php" ] && ! grep -qiE '^[[:space:]]*RewriteRule([[:space:]]|$)' "$served/.htaccess" 2> /dev/null; then
+              printf '%s\\n' 'RewriteCond %{REQUEST_FILENAME} !-f' 'RewriteCond %{REQUEST_FILENAME} !-d' 'RewriteRule ^ index.php [L]'
+            fi
             printf '%s\\n' '# END OpsCrew'
             if [ -s "$served/.htaccess" ]; then
               printf '%s\\n' '# BEGIN OpsCrew: app'

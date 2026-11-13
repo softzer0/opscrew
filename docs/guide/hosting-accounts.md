@@ -219,6 +219,8 @@ OpsCrew's `.htaccess` block comes first in each release's `.htaccess`; what the 
 and your app's own `.htaccess` follow it, unchanged. The block turns directory listings off, refuses
 dotfiles and every other hostname, redirects to HTTPS once there is a certificate, and sets the
 security headers.
+When your PHP app has an `index.php` but no rewrite rules of its own in `.htaccess`, the block
+also sends every path that isn't a file or folder to that `index.php`, as a server does.
 
 ## Status, logs and checks
 

@@ -1,6 +1,9 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: bash and GitHub Actions syntax, not JavaScript templates.
 // Feature 027 (T2714): the deploy workflow of an app on an SFTP-only host.
 import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
@@ -128,6 +131,41 @@ describe("renderSftpWorkflow", () => {
   it("is valid bash", () => {
     const parsed = spawnSync("bash", ["-n"], { input: deployStep(doc(PHP)).run, encoding: "utf8" });
     if (parsed.error === undefined) expect(parsed.stderr).toBe("");
+  });
+
+  it("sends a path that is no file to index.php where the app's .htaccess has no rewrite rules", () => {
+    const fallback =
+      "RewriteCond %{REQUEST_FILENAME} !-f\nRewriteCond %{REQUEST_FILENAME} !-d\nRewriteRule ^ index.php [L]\n# END OpsCrew\n";
+    /** OpsCrew's block the deploy step composes for a release of `files` (its step 2 run alone). */
+    function block(target: Record<string, unknown>, files: Record<string, string>): string {
+      const script = deployStep(doc(target)).run ?? "";
+      const step = script.slice(script.indexOf("# 2. "), script.indexOf("# 3. "));
+      const work = mkdtempSync(join(tmpdir(), "opscrew-sftp-")).replaceAll("\\", "/");
+      try {
+        const served = `${work}/release/${target.webRoot}`;
+        mkdirSync(served, { recursive: true });
+        for (const [name, text] of Object.entries(files)) writeFileSync(`${served}/${name}`, text);
+        const ran = spawnSync("bash", ["-c", `curl() { return 1; }\nset -euo pipefail\n${step}`], {
+          encoding: "utf8",
+          env: { ...process.env, work, release: "7-1" },
+        });
+        expect(ran.stderr).toBe("");
+        const htaccess = readFileSync(`${served}/.htaccess`, "utf8");
+        return htaccess.slice(0, htaccess.indexOf("# END OpsCrew\n") + "# END OpsCrew\n".length);
+      } finally {
+        rmSync(work, { recursive: true, force: true });
+      }
+    }
+    const php = { "index.php": "<?php echo 'notes';\n" };
+    expect(block(PHP, php).endsWith(`X-OpsCrew-Release "7-1"\n${fallback}`)).toBe(true);
+    expect(
+      block(PHP, { ...php, ".htaccess": "# RewriteRule ^old$ /new\nOptions -MultiViews\n" }),
+    ).toContain(fallback);
+    // An app that rewrites keeps its own routing; a static site gets none.
+    expect(block(PHP, { ...php, ".htaccess": "  rewriterule ^ index.php [L]\n" })).not.toContain(
+      "index.php",
+    );
+    expect(block(STATIC, { "index.html": "<h1>Site</h1>\n" })).not.toContain("index.php");
   });
 
   it("reads the login and the folder back from the app's URL, and hides the host in the log", () => {

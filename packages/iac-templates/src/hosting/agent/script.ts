@@ -225,7 +225,8 @@ header_of() {
 # OpsCrew's .htaccess block for release $1 (plan 5): every other hostname refused, HTTPS forced
 # once the certificate verifies, no listings, dotfiles refused (and with the web root ".", the
 # app's packages and its storage), the security headers and the release's, the PHP handler, and
-# the app's settings loaded before each PHP request where shared/env.php is.
+# the app's settings loaded before each PHP request where shared/env.php is; last, where
+# fallback_needed says so, every path that is no file or folder sent to index.php.
 htaccess_block() {
   local host module
   host=$(printf '%s' "$HOST_NAME" | sed 's/\\./\\\\./g')
@@ -249,7 +250,25 @@ htaccess_block() {
       printf '<IfModule %s>\\nphp_value auto_prepend_file "%s"\\n</IfModule>\\n' "$module" "$DIR/shared/env.php"
     done
   fi
+  if fallback_needed "$1"; then
+    printf '%s\\n' 'RewriteCond %{REQUEST_FILENAME} !-f' 'RewriteCond %{REQUEST_FILENAME} !-d' \\
+      'RewriteRule ^ index.php [L]'
+  fi
   printf '%s\\n' '# END OpsCrew'
+}
+
+# Whether release $1 needs the fallback a server's php_fastcgi gives (research R13): its served
+# folder has index.php, and the app's own .htaccess there has no RewriteRule outside comments.
+# The app's own is the whole file until compose has run, then its part between the markers.
+fallback_needed() {
+  local file="releases/$1/$WEB_ROOT/.htaccess" rule='^[[:space:]]*RewriteRule([[:space:]]|$)'
+  [ -f "releases/$1/$WEB_ROOT/index.php" ] || return 1
+  [ -f "$file" ] || return 0
+  if grep -qxF '# BEGIN OpsCrew' "$file"; then
+    ! sed -n '/^# BEGIN OpsCrew: app$/,/^# END OpsCrew: app$/p' "$file" | grep -qiE "$rule"
+  else
+    ! grep -qiE "$rule" "$file"
+  fi
 }
 
 # OpsCrew's .user.ini block: the app's settings loaded where PHP runs as FPM or CGI.
