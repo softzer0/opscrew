@@ -614,6 +614,20 @@ names the change.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates && npx vitest run --root packages/iac-templates src/hosting/agent && pnpm lint`
   - Effort: medium
 
+- [x] T2742 The deploy job asks the app's health path, as the agent's health check does (research R13; lead)
+  - Owns: `packages/iac-templates/src/hosting/workflow.ts`, its test and snapshot
+  - Accept: the wait step's URL is `https://<hostname><plan.app.healthPath>`.
+
+- [ ] T2743 A certificate counts as OpsCrew's only when it names nothing but the hostname (research R13)
+  - Owns: `packages/connectors/cpanel/src/**`, `packages/connectors/directadmin/src/**`, `packages/agents/src/hosting/**`
+  - Reads: research R13; `contracts/src/hosting.ts` (`HostingCertificate.names`, added by the lead), `agents/src/hosting/{provision,destroy}.ts`, the connectors' `certificate()`
+  - Accept:
+    - cPanel's and DirectAdmin's `certificate()` give `names`, the installed certificate's names as the panel lists them.
+    - Provision records the certificate only when `names` is given and every name is the hostname or `www.` of it (case-insensitive); a wildcard, a certificate naming other hosts, or one without `names` is never recorded, so destroy never removes it. Destroy's plan text stays as it is for a recorded one.
+    - Tests: the hostname's own certificate is recorded; the domain's wildcard and a shared certificate aren't (fakes); the connectors give `names`.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-cpanel --filter=@opscrew/connector-directadmin --filter=@opscrew/contracts && npx vitest run --root packages/agents src/hosting && pnpm lint`
+  - Effort: medium
+
 ## Phase 9: Live passes and release (lead)
 
 - [ ] T2722 The cPanel live pass (lead): `docs/e2e-coverage.md` row and results.
