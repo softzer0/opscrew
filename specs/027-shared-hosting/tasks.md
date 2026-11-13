@@ -417,7 +417,7 @@ names the change.
 
 ## Phase 7: Wave 6 (parallel)
 
-- [ ] T2717 [US5] Node.js and Python apps through CloudLinux's selector
+- [x] T2717 [US5] Node.js and Python apps through CloudLinux's selector
   - Owns: `packages/agents/src/hosting/apps*.ts`, the `app` request and the selector's part of the agent (`packages/iac-templates/src/hosting/agent*`, `packages/iac-templates/src/hosting/agent/**`), the app steps in `packages/agents/src/hosting/{provision,destroy}.ts`
   - Reads: plan 8; research R4, R10; T2704's agent
   - Depends: T2711, T2713, T2714
