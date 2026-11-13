@@ -596,7 +596,7 @@ names the change.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates && npx vitest run --root packages/iac-templates src/hosting/agent && pnpm lint`
   - Effort: medium
 
-- [ ] T2740 cPanel: an empty file reads as empty (research R13)
+- [x] T2740 cPanel: an empty file reads as empty (research R13)
   - Owns: `packages/connectors/cpanel/src/**`
   - Reads: research R13; `connectors/cpanel/src/{panel,fake}.ts` (`readFile`, `get_file_content`)
   - Accept:
