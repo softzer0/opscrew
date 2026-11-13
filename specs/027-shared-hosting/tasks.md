@@ -673,6 +673,22 @@ names the change.
   - Owns: `packages/agents/src/hosting/sftp-provision.ts`, `packages/agents/src/hosting/sftp.test.ts`
   - Accept: `--plan-only` returns `hostingPlanHashes` (the CLI and the MCP tool print the `--approve` command from it); a refused plan says "The hosting plan was not approved" (not "The The"). Tests for both.
 
+- [ ] T2754 A PHP app serves the new release within about 2 minutes of a switch on Apache with PHP-FPM (the SFTP pass, run 3; research R16)
+  - Owns: `packages/iac-templates/src/hosting/agent/**`, `packages/iac-templates/src/hosting/sftp-workflow.ts`, `packages/iac-templates/src/hosting/sftp-workflow.test.ts`, `packages/iac-templates/src/hosting/agent-*.test.ts`, `packages/iac-templates/src/hosting/__snapshots__/**`, `packages/agents/src/hosting/sftp-provision.ts`, `packages/agents/src/hosting/sftp-plan.ts` (the shared files' descriptions), `packages/agents/src/hosting/sftp.test.ts`, `packages/agents/src/hosting/rollback.ts`, `packages/agents/src/hosting/rollback.test.ts`, `packages/agents/src/hosting/status.ts`, `packages/agents/src/hosting/status.test.ts`, `packages/agents/src/hosting/requests.ts`, `packages/agents/src/hosting/requests.test.ts`, `docs/guide/hosting-accounts.md`, `docs/guide/sftp.md`
+  - Reads: research R16; `iac-templates/src/hosting/agent/script.ts` (`htaccess_block`, `user_ini_block`, `health_check`); `iac-templates/src/hosting/sftp-workflow.ts` (the `.htaccess` and `.user.ini` composition, `check`); `agents/src/hosting/rollback.ts` (`switchOverSftp`)
+  - Accept:
+    - Every release of a PHP app gets `opcache.revalidate_path` on in OpsCrew's blocks, on the agent's releases and the SFTP workflow's, with or without the app's values:
+      - in `.user.ini`, `opcache.revalidate_path = 1`;
+      - in `.htaccess`, `php_flag opcache.revalidate_path on` inside the same three `IfModule` blocks as `auto_prepend_file`.
+      `auto_prepend_file` stays only where `shared/env.php` exists. A static site gets neither.
+    - The agent's `health_check` and the SFTP workflow's `check` count a PHP app's answer only from 130 s after the switch (try 27 of 28). Behind LiteSpeed the first answer still counts, as does a static site's. The comments say why (R16).
+    - `opscrew rollback` on an SFTP-only host, for a PHP app, asks the health path after the switch as the workflow's check does: 2xx or 3xx naming the target release, the first answer counting behind LiteSpeed, elsewhere from 130 s after the switch. It says it is waiting for PHP's path cache, and it reports a failed check in the workflow's terms. A static site's rollback doesn't wait. The clock, the waits and HTTP are injected.
+    - `opscrew status`'s text, `hosting-accounts.md` (its "On Apache" point) and `sftp.md` say it plainly: on Apache with PHP-FPM, some requests may run the release before for about 2 minutes after a deploy or a rollback; OpsCrew turns on `opcache.revalidate_path` so PHP's code cache follows the switch; the checks wait that long.
+    - A panel account's request (a rollback's) is waited for 5 minutes, not 3: cron takes up to 60 s to start the agent, then the carry and the restart, then up to 135 s of the check. The constant's texts and tests say 5 minutes.
+    - Tests: the blocks of a PHP app with and without values, and none for a static site; a PHP answer counts only from try 27; an SFTP rollback of a PHP app waits and checks, and a static site's doesn't.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates --filter=@opscrew/agents && npx vitest run --root packages/iac-templates src/hosting && npx vitest run --root packages/agents src/hosting && pnpm lint`
+  - Effort: high
+
 ## Phase 8d: In the same release (founder, 2026-11-13)
 
 The founder added these to 0.2.8.

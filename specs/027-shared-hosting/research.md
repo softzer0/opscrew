@@ -776,3 +776,45 @@ add-on price could be read from it.
 - Permissions: no role or scope for the API user was found. The API user is the account login (026
   R2: no scoped keys), so it reaches the whole account, credentials included. The `userId` for the
   credentials path comes from the users API (`GET /v1/users`, not read here: *unverified*).
+
+## R16. PHP keeps the old release after a switch on Apache with PHP-FPM (SFTP pass, run 3, 2026-11-13)
+
+The SFTP pass (run 3) deployed a second release of a plain PHP app on Apache 2.4 with PHP 8.3 FPM
+(Ubuntu 24.04, `pm = ondemand`). After the switch, Apache's `X-OpsCrew-Release` header named the new
+release at once, but PHP kept serving the old page. Ten minutes after the deploy job ended, the new
+page had still not answered six times in a row. Waiting doesn't end it.
+
+A local copy of that setup (the same packages and pool in a container, `current` switched with a new
+link and one rename, each release's `.user.ini` with `auto_prepend_file`, three requests a second)
+measured four variants for five minutes after the switch:
+
+| Variant | The old page after the switch |
+|---|---|
+| As deployed (PHP's defaults: `opcache.revalidate_path` off, `realpath_cache_ttl` 120) | every answer, all five minutes |
+| `opcache.revalidate_path = 1` in each release's `.user.ini` | every answer until 120 s, mixed at 120–140 s, none after |
+| A one-time file calling `opcache_reset()` and `clearstatcache(true)`, asked right after the switch | every answer: the request got "No input file specified." (the worker resolved `current` to the old release, where the file isn't) |
+| The same file asked again at 125 s | none from 125 s |
+
+Why: with `revalidate_path` off, OPcache finds a script by the path as written
+(`…/current/public/x.php`) and links it to the entry it compiled from the real path the first time
+(`…/releases/<old>/…`). Each check compares that entry with its own file, which is still there,
+unchanged (older releases are kept), so the entry stays valid and the old code runs until PHP-FPM
+restarts. An SFTP-only account has no way to restart it. With `revalidate_path` on, OPcache resolves
+the real path on every request through PHP's path cache. That cache keeps an answer for
+`realpath_cache_ttl` (120 s) in each PHP process, so the old release ends at most about 120 s after
+the switch. `opcache.revalidate_path` can be set per directory (`.user.ini`, and `php_flag` in
+`.htaccess` under mod_php or LiteSpeed). `realpath_cache_ttl` can't (`PHP_INI_SYSTEM`). A reset
+needs the new release reachable first, so it only helps after the path cache expired. It isn't
+needed once `revalidate_path` is on.
+
+The same applies to the hosting agent on Apache with PHP-FPM (Plesk, DirectAdmin, cPanel without
+LiteSpeed): its `.user.ini` and `.htaccess` blocks set only `auto_prepend_file`, and only when the app
+has values. Behind LiteSpeed the agent restarts the account's PHP (the cPanel pass), so it never
+showed there. `opscrew rollback` on an SFTP-only host switched and returned without asking the app.
+
+What 0.2.8 does (T2754):
+- Every PHP release gets `opcache.revalidate_path` on in OpsCrew's blocks.
+- The checks count a PHP app's answer only from 130 s after the switch, except behind LiteSpeed. That
+  is the 120 s path cache plus a margin: a path first resolved after the switch through a parent
+  folder cached before it can add a little.
+- The SFTP rollback waits the same way.
