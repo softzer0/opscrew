@@ -490,6 +490,14 @@ export function inventoryProblems(
   before: Inventory,
   after: Inventory,
   tag: string,
+  /**
+   * The run's AutoSSL certificates and their keys ({@link runCertificates}): destroy rightly leaves
+   * what OpsCrew didn't make, and the cleanup removes them, so they are observations here.
+   */
+  autossl: { certificates: readonly string[]; keys: readonly string[] } = {
+    certificates: [],
+    keys: [],
+  },
 ): { problems: string[]; observed: string[] } {
   const problems: string[] = [];
   const observed: string[] = [];
@@ -497,6 +505,13 @@ export function inventoryProblems(
     for (const entry of added) {
       if (field === "home" && (ACCOUNT_TRACES as readonly string[]).includes(entry)) {
         observed.push(`the home folder has ${entry.split("|")[0]} now, which it had not before`);
+      } else if (
+        (field === "certificates" && autossl.certificates.includes(entry.split("|")[0] ?? "")) ||
+        (field === "keys" && autossl.keys.includes(entry))
+      ) {
+        observed.push(
+          `${field}: AutoSSL's ${entry.split("|")[0]} for the run's hostname, which destroy leaves (OpsCrew didn't make it); the cleanup removes it`,
+        );
       } else if (field === "zone" && runChallengeRecord(entry, tag)) {
         observed.push(
           `zone: AutoSSL's challenge record ${entry.split("|")[0]} (TXT) of the run's hostname is left; remove it by hand in cPanel's Zone Editor`,

@@ -245,6 +245,29 @@ describe("the account's inventory (SC-2702)", () => {
     });
   });
 
+  it("observes the run's AutoSSL certificates and keys, which destroy leaves and the cleanup removes", () => {
+    const after = {
+      ...before,
+      certificates: [
+        "_wildcard__example_org_aa|*.example.org,www.e2e-ffee12-node.example.org",
+        "mine|shop.example.org",
+      ],
+      keys: ["aa_key", "mine_key"],
+    };
+    const result = inventoryProblems({ ...before, certificates: [], keys: [] }, after, "ffee12", {
+      certificates: ["_wildcard__example_org_aa"],
+      keys: ["aa_key"],
+    });
+    expect(result.observed).toEqual([
+      "certificates: AutoSSL's _wildcard__example_org_aa for the run's hostname, which destroy leaves (OpsCrew didn't make it); the cleanup removes it",
+      "keys: AutoSSL's aa_key for the run's hostname, which destroy leaves (OpsCrew didn't make it); the cleanup removes it",
+    ]);
+    expect(result.problems).toEqual([
+      "certificates: mine|shop.example.org appeared",
+      "keys: mine_key appeared",
+    ]);
+  });
+
   it("observes an earlier run's entry that cPanel lists again or no longer (R10)", () => {
     const earlier = { ...before, databases: ["acct_e2e_8ec540_php|"] };
     const after = { ...before, databases: ["acct_e2e_0b18fd_php|"] };

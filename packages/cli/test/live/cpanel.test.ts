@@ -49,6 +49,7 @@ import {
   PHP_MARKER,
   panelAccess,
   releaseOf,
+  runCertificates,
   runTag,
   SFTP_VARIABLES,
   SITE_MARKER,
@@ -742,7 +743,8 @@ describe.skipIf(MISSING.length > 0)(
       async () => {
         if (before === undefined) throw new Error("There is no inventory from before the run.");
         const after = await cpanel().inventory();
-        const { problems, observed } = inventoryProblems(before.fields, after.fields, tag);
+        const autossl = runCertificates({ now: after, before, tag, domain: DOMAIN });
+        const { problems, observed } = inventoryProblems(before.fields, after.fields, tag, autossl);
         for (const line of observed) log(`observed: ${line}`);
         log(`observed: the account's processes after the run: ${await cpanel().processes()}`);
         for (const field of Object.keys(after.fields)) {
