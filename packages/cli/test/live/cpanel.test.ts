@@ -140,6 +140,12 @@ const LEGS: readonly Leg[] = [
   },
 ];
 
+/** `OPSCREW_E2E_CPANEL_LEGS` (`node,laravel`): only those legs run; all of them without it. */
+const ONLY = process.env.OPSCREW_E2E_CPANEL_LEGS?.split(",")
+  .map((key) => key.trim())
+  .filter((key) => key !== "");
+const RUN_LEGS = ONLY === undefined ? LEGS : LEGS.filter((leg) => ONLY.includes(leg.key));
+
 /** The names of the app's settings that hold secrets (the database's password, Laravel's key). */
 const SECRET_SETTING = /PASSWORD|SECRET|KEY|TOKEN/i;
 
@@ -150,7 +156,7 @@ const PHP_REFUSAL =
 describe.skipIf(MISSING.length > 0)(
   MISSING.length > 0
     ? `live cPanel account (skipped: set ${MISSING.join(", ")}; see docs/e2e.md, "A cPanel account")`
-    : `live cPanel account: ${LEGS.map((leg) => `examples/${leg.example}`).join(", ")}`,
+    : `live cPanel account: ${RUN_LEGS.map((leg) => `examples/${leg.example}`).join(", ")}`,
   () => {
     const run = new LiveRun({
       label: "cPanel",
@@ -184,6 +190,11 @@ describe.skipIf(MISSING.length > 0)(
       const found = await run.github.waitForDeploy({ headSha: sha });
       const problem = hostingRunProblem(found, PANEL_DEPLOY_JOB);
       if (problem !== undefined) {
+        // Evidence for a deploy the account didn't take: what the agent recorded and logged.
+        for (const command of ["status", "logs"]) {
+          const shown = await run.opscrew(command);
+          log(`opscrew ${command} after the failed deploy:\n${run.scrub(shown.output)}`);
+        }
         throw new Error(`The deploy run ${found.id} (${what}) did not deploy: ${problem}.`);
       }
       log(`deploy run ${found.id} (${what}) succeeded`);
@@ -279,7 +290,7 @@ describe.skipIf(MISSING.length > 0)(
       }
     }
 
-    function legSteps(leg: Leg, index: number): void {
+    function legSteps(leg: Leg): void {
       const { app, hostname } = legNames(tag, leg.key, DOMAIN);
       const folder = folderOf(app);
       const url = (path: string) => `https://${hostname}${path}`;
@@ -289,7 +300,7 @@ describe.skipIf(MISSING.length > 0)(
       let first = "";
       let second = "";
       const value = (n: number) => `value-${tag}-${n}`;
-      const n = (step: number) => `${index + 1}.${step} ${leg.key}`;
+      const n = (step: number) => `${LEGS.indexOf(leg) + 1}.${step} ${leg.key}`;
 
       run.step(
         `${n(1)}: examples/${leg.example} as ${app}: init, analyze, the interview (it finds cPanel by itself) and design`,
@@ -690,7 +701,7 @@ describe.skipIf(MISSING.length > 0)(
       },
     );
 
-    LEGS.forEach(legSteps);
+    RUN_LEGS.forEach(legSteps);
 
     run.step(
       "10. the account after the run, field by field: nothing of the run is left and nothing else changed (SC-2702)",

@@ -3600,6 +3600,7 @@ they weren't there before the run. In the Zone Editor, remove the TXT records
 | `OPSCREW_E2E_CPANEL_USER`, `OPSCREW_E2E_CPANEL_TOKEN` | The account's user and an API token (Security → Manage API Tokens). The token reaches the whole account (R10): give it an expiry date. |
 | `OPSCREW_E2E_CPANEL_DOMAIN` | A domain the account serves, whose DNS the account keeps: each app gets a subdomain of it. In `.env.e2e`, never in the repository. |
 | `OPSCREW_E2E_CPANEL_LARAVEL` | Optional: `1` runs the Laravel leg whole instead of checking its refusal. |
+| `OPSCREW_E2E_CPANEL_LEGS` | Optional: the legs to run, by key (`php`, `site`, `node`, `laravel`), comma-separated; all of them without it. Each leg keeps its number. |
 | `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN` | The throwaway repository and its token, as for environments; the token also needs Administration: Read and write, for the agent's deploy key. |
 
 ```bash
