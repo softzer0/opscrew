@@ -673,7 +673,7 @@ names the change.
   - Owns: `packages/agents/src/hosting/sftp-provision.ts`, `packages/agents/src/hosting/sftp.test.ts`
   - Accept: `--plan-only` returns `hostingPlanHashes` (the CLI and the MCP tool print the `--approve` command from it); a refused plan says "The hosting plan was not approved" (not "The The"). Tests for both.
 
-- [ ] T2754 A PHP app serves the new release within about 2 minutes of a switch on Apache with PHP-FPM (the SFTP pass, run 3; research R16)
+- [x] T2754 A PHP app serves the new release within about 2 minutes of a switch on Apache with PHP-FPM (the SFTP pass, run 3; research R16)
   - Owns: `packages/iac-templates/src/hosting/agent/**`, `packages/iac-templates/src/hosting/sftp-workflow.ts`, `packages/iac-templates/src/hosting/sftp-workflow.test.ts`, `packages/iac-templates/src/hosting/agent-*.test.ts`, `packages/iac-templates/src/hosting/__snapshots__/**`, `packages/agents/src/hosting/sftp-provision.ts`, `packages/agents/src/hosting/sftp-plan.ts` (the shared files' descriptions), `packages/agents/src/hosting/sftp.test.ts`, `packages/agents/src/hosting/rollback.ts`, `packages/agents/src/hosting/rollback.test.ts`, `packages/agents/src/hosting/status.ts`, `packages/agents/src/hosting/status.test.ts`, `packages/agents/src/hosting/requests.ts`, `packages/agents/src/hosting/requests.test.ts`, `docs/guide/hosting-accounts.md`, `docs/guide/sftp.md`
   - Reads: research R16; `iac-templates/src/hosting/agent/script.ts` (`htaccess_block`, `user_ini_block`, `health_check`); `iac-templates/src/hosting/sftp-workflow.ts` (the `.htaccess` and `.user.ini` composition, `check`); `agents/src/hosting/rollback.ts` (`switchOverSftp`)
   - Accept:
@@ -697,7 +697,7 @@ The founder added these to 0.2.8.
   - Owns: `specs/027-shared-hosting/research.md` (R15 only)
   - Accept: R15 says, from Contabo's API and Terraform provider docs: how Auto Backup is turned on and off for an instance (at order, as an upgrade), its price, what it keeps and how a restore works; how an Object Storage is ordered, its regions, price, S3 endpoint, how S3 credentials are made (API or panel), cancellation, and the Terraform resources and their limits (import); what OpsCrew's Contabo connector would call. Unverified items marked.
 
-- [ ] T2750 The provider's automated backups on by default only in prod
+- [x] T2750 The provider's automated backups on by default only in prod
   - Owns: `packages/agents/src/design/**`, `packages/agents/src/interview/**`, `docs/guide/**` (the backup lines only)
   - Accept: design turns on `target.backups` by default only for the prod environment (when the data matters, as now); dev, staging and previews default to off, and `target.backups` in an environment's plan still turns them on. Design's text says which, and why. Tests for prod, staging and an override.
   - Effort: medium
@@ -710,7 +710,7 @@ The founder added these to 0.2.8.
   - Owns: `packages/iac-templates/src/infra/storage.ts`, `packages/agents/src/design/storage.ts`, `packages/agents/src/infra/**`, `packages/providers/contabo/**`, `docs/guide/object-storage.md`
   - Accept: per R15, an app on Contabo is offered Contabo's Object Storage beside Garage and R2, priced; its bucket is planned and approved like the others'; the S3 key as R15 says it is made (by the user in the panel where the API can't). Tests; the object storage guide lists it.
 
-- [ ] T2753 Guide pages: Deploy to Hetzner Cloud, Deploy to DigitalOcean; the README links them (lead)
+- [x] T2753 Guide pages: Deploy to Hetzner Cloud, Deploy to DigitalOcean; the README links them (lead)
   - Owns: `docs/guide/hetzner.md`, `docs/guide/digitalocean.md`, `docs/guide/index.md`, `README.md`
   - Accept: each page as Contabo's: when to choose it, the token, regions and server types, hourly billing, the provider's backups (prod by default), what OpsCrew makes, removing the app; the README's provider lines shrink to links, as for Contabo.
 
