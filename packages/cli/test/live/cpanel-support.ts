@@ -502,23 +502,36 @@ export function inventoryProblems(
 /**
  * The certificates the cleanup removes (R10, R11): those new since `before`, whose id is named
  * after one of the run's hostnames (`e2e_<tag>_…`, or `www_e2e_<tag>_…`), that name such a
- * hostname, installed nowhere; and the keys new since `before` that only those use. `installed`
- * lists such certificates still installed, which the cleanup leaves.
+ * hostname, installed nowhere; those new since `before`, installed nowhere, whose every name is a
+ * run hostname (`e2e-<tag>-<leg>.<domain>`, or `www.` of one) or `*.<domain>`, one at least a run
+ * hostname, as AutoSSL issues `_wildcard__<domain>_…` (R13); and the keys new since `before` that
+ * only those use. `installed` lists such certificates still installed, which the cleanup leaves.
  */
 export function runCertificates(input: {
   now: Pick<AccountInventory, "certificates" | "keys" | "installed">;
   before: Pick<AccountInventory, "certificates" | "keys">;
   tag: string;
+  /** The account domain the run's hostnames are under. */
+  domain: string;
 }): { certificates: string[]; keys: string[]; installed: string[] } {
   const { now, before, tag } = input;
+  const domain = input.domain.trim().toLowerCase().replace(/\.$/, "");
+  const runHost = (name: string) => {
+    const label = name.replace(/^www\./, "");
+    if (!label.endsWith(`.${domain}`)) return false;
+    const leg = label.slice(0, -domain.length - 1);
+    return leg.startsWith(`e2e-${tag}-`) && !leg.includes(".");
+  };
+  const wildcardOfRun = (domains: readonly string[]) =>
+    domains.some(runHost) && domains.every((name) => runHost(name) || name === `*.${domain}`);
   const old = new Set(before.certificates.map((certificate) => certificate.id));
   const oldKeys = new Set(before.keys.map((key) => key.id));
   const idOfRun = new RegExp(`^(www_)?e2e_${tag}_`, "i");
   const ofRun = now.certificates.filter(
     (certificate) =>
       !old.has(certificate.id) &&
-      idOfRun.test(certificate.id) &&
-      certificate.domains.some((domain) => namesRun(domain, tag)),
+      ((idOfRun.test(certificate.id) && certificate.domains.some((name) => namesRun(name, tag))) ||
+        wildcardOfRun(certificate.domains)),
   );
   const installed = ofRun.filter((certificate) =>
     now.installed.some((host) => host.certificate === certificate.id),
@@ -1021,7 +1034,7 @@ export class CpanelAccount {
       }
     }
     const now = await this.inventory();
-    const chosen = runCertificates({ now, before, tag });
+    const chosen = runCertificates({ now, before, tag, domain: this.zone });
     for (const id of chosen.installed) {
       problems.push(
         `the certificate ${id} AutoSSL issued for the run is still installed; it was left`,

@@ -297,9 +297,42 @@ describe("the account's inventory (SC-2702)", () => {
       ],
       installed: [{ servername: "e2e-ffee12-node.example.org", certificate: installed.id }],
     };
-    expect(runCertificates({ now, before, tag: "ffee12" })).toEqual({
+    expect(runCertificates({ now, before, tag: "ffee12", domain: "example.org" })).toEqual({
       certificates: [mine.id, www.id, shared.id],
       keys: ["key-1", "key-2"],
+      installed: [installed.id],
+    });
+  });
+
+  it("removes AutoSSL's wildcard certificate of the run, not one naming another hostname or installed", () => {
+    const before: Pick<AccountInventory, "certificates" | "keys"> = { certificates: [], keys: [] };
+    const wildcard = certificate(
+      "_wildcard__example_org_aa",
+      ["*.example.org", "www.e2e-ffee12-php.example.org"],
+      "k1",
+    );
+    const wider = certificate(
+      "_wildcard__example_org_bb",
+      ["*.example.org", "www.e2e-ffee12-php.example.org", "shop.example.org"],
+      "k2",
+    );
+    const onlyWildcard = certificate("_wildcard__example_org_cc", ["*.example.org"], "k3");
+    const installed = certificate(
+      "_wildcard__example_org_dd",
+      ["*.example.org", "e2e-ffee12-site.example.org"],
+      "k4",
+    );
+    const now = {
+      certificates: [wildcard, wider, onlyWildcard, installed],
+      keys: [
+        { id: "key-1", publicKey: "k1" },
+        { id: "key-2", publicKey: "k2" },
+      ],
+      installed: [{ servername: "e2e-ffee12-site.example.org", certificate: installed.id }],
+    };
+    expect(runCertificates({ now, before, tag: "ffee12", domain: "example.org" })).toEqual({
+      certificates: [wildcard.id],
+      keys: ["key-1"],
       installed: [installed.id],
     });
   });

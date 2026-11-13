@@ -488,9 +488,14 @@ describe.skipIf(MISSING.length > 0)(
             first = releaseOf(health) ?? "";
             if (first === "")
               throw new Error("The app answered without its X-OpsCrew-Release header.");
-            const status = await run.opscrewOk("status");
-            expect(status.output, "status names the running release").toContain(
-              `Release: ${first} runs`,
+            // The agent writes state/status after its health check, which may end after the job.
+            const deployedAt = Date.now();
+            await waitFor(`status naming release ${first}`, minutes(3), async () => {
+              const status = await run.opscrewOk("status");
+              return status.output.includes(`Release: ${first} runs`) ? true : undefined;
+            });
+            log(
+              `status named release ${first} ${duration(Date.now() - deployedAt)} after the deploy`,
             );
             const logs = await run.opscrewOk("logs");
             log(`the agent's log after the first deploy:\n${run.scrub(logs.output)}`);
