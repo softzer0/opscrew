@@ -573,6 +573,12 @@ describe("files", () => {
     expect(error.message).toBe(`cPanel refused to read ${APP}/state/report: Permission denied.`);
   });
 
+  it("reads an empty file, which cPanel answers with content null, as empty", async () => {
+    const { fake, panel } = setup();
+    fake.writeText(`${APP}/shared/.env`, "");
+    await expect(panel.readFile(`${APP}/shared/.env`)).resolves.toBe("");
+  });
+
   it("removes a folder with everything in it, counts a missing one as removed, and passes on other refusals", async () => {
     const { fake, panel } = setup();
     fake.writeText(`${APP}/agent.sh`, "#!/bin/bash\n");

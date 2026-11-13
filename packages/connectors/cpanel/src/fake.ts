@@ -430,7 +430,8 @@ export function fakeCpanel(options: FakeCpanelOptions): FakeCpanel {
       const entry = state.files.get(path);
       if (entry?.kind !== "file") throw missing(path);
       return {
-        content: new TextDecoder().decode(entry.content),
+        // cPanel answers null, not "", for a file of 0 bytes (research R13).
+        content: entry.content.length === 0 ? null : new TextDecoder().decode(entry.content),
         dir: `${home}/${dir}`,
         filename: file,
         path: `${home}/${path}`,

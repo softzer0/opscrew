@@ -62,3 +62,21 @@ describe("fakeCpanel's domains_data", () => {
     expect(data.parked_domains).toEqual(["parked.example.org"]);
   });
 });
+
+describe("fakeCpanel's get_file_content", () => {
+  it("answers content null for an empty file, as cPanel does", async () => {
+    const fake = fakeCpanel({ user: "acct", token: TOKEN, mainDomain: "example.com" });
+    fake.writeText("app/shared/.env", "");
+    fake.writeText("app/shared/notes", "hi");
+    const read = async (file: string) => {
+      const answer = await fake.fetch(
+        `https://panel.example.com:2083/execute/Fileman/get_file_content?dir=%2Fhome%2Facct%2Fapp%2Fshared&file=${file}`,
+        { headers: { authorization: `cpanel acct:${TOKEN}` } },
+      );
+      return ((await answer.json()) as { result: { data: { content: unknown } } }).result.data
+        .content;
+    };
+    expect(await read(".env")).toBeNull();
+    expect(await read("notes")).toBe("hi");
+  });
+});

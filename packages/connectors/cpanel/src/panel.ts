@@ -90,7 +90,8 @@ const PhpVersionsSchema = z.object({ versions: z.array(z.string()) });
 const DatabasesSchema = z.array(z.object({ database: z.string() }));
 const UsersSchema = z.array(z.object({ user: z.string() }));
 const FilesSchema = z.array(z.object({ file: z.string(), type: z.string() }));
-const ContentSchema = z.object({ content: z.string() });
+/** cPanel answers `content: null` for a file of 0 bytes (research R13). */
+const ContentSchema = z.object({ content: z.string().nullable() });
 
 const CronLineSchema = z.object({
   linekey: z.union([z.string(), z.number()]).transform(String),
@@ -531,7 +532,7 @@ export class CpanelPanel implements HostingPanel {
         what: `read ${path}`,
         schema: ContentSchema,
       });
-      return answer.content;
+      return answer.content ?? "";
     } catch (error) {
       if (error instanceof CpanelRefusal && MISSING_FILE.test(error.reason)) return undefined;
       throw error;
