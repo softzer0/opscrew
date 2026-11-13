@@ -473,8 +473,8 @@ exports[`the deploy job on a runner machine > runs on the environment's label an
               echo 'A restore needs its one-time approval on this server (.restore-snapshot), which opscrew restore writes once you approve it, so nothing was changed. Run opscrew restore.' >&2
               return 1
             fi
-            approved=""; choice=""; expiry=""
-            read -r approved choice expiry < .restore-snapshot || true
+            approved=""; choice=""; expiry=""; kept=""
+            read -r approved choice expiry kept < .restore-snapshot || true
             rm -f .restore-snapshot
             if [ "$approved" != "$_id" ] || [ "$choice" != "\${_only:--}" ]; then
               echo 'The one-time approval on this server (.restore-snapshot) is for another restore, so OpsCrew removed it and changed nothing. Run opscrew restore again.' >&2
@@ -629,8 +629,8 @@ exports[`the deploy job on a runner machine > runs on the environment's label an
           }
           running="$(snapshot_running)"
           if [ "$MODE" = rollback ] && [ -f .rollback-database ]; then
-            approved=""; choice=""; expiry=""
-            read -r approved choice expiry < .rollback-database || true
+            approved=""; choice=""; expiry=""; kept=""
+            read -r approved choice expiry kept < .rollback-database || true
             rm -f .rollback-database
             if [ "$approved" != "$target" ]; then
               echo '::warning::The approval to change the database on a rollback (.rollback-database on the server) is for another version, so OpsCrew removed it: this rollback keeps the database as it is.'

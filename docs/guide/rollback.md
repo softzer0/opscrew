@@ -213,12 +213,33 @@ A set `deploy.snapshotStop` replaces the default, so name your ClickHouse or Neo
 too to keep copying it; `snapshotStop: []` keeps every service running at each deploy, and the
 snapshot then holds no copy of them. `opscrew design` says which services stop for the snapshot.
 A rollback that restores the snapshot puts back every service it holds, ClickHouse and Neo4j
-included.
+included, unless you keep the app's queues as they are (below).
 
 `deploy.snapshots: false` turns them off on any environment. Preview environments never take
 snapshots. In your Portainer, `deploy.snapshotStop` doesn't apply: only the services copied while
 they run are included, so ClickHouse and Neo4j are left out there. The snapshots stay on the
 server, so they are not backups: for those, see [Snapshots and restores](snapshots.md).
+
+### The app's queues
+
+The app's queues are its RabbitMQ, NATS, Kafka and Redpanda services, and a Valkey, Redis or
+Dragonfly that holds its background jobs (design runs that one in `queue` mode). The approval
+names each one and says what the rollback does to its jobs:
+
+- **Restored with the snapshot:** the queue goes back to how it was before the release. Jobs
+  queued since then are lost, and jobs that ran since then can run again.
+- **Kept as it is:** jobs the newer version queued may fail on the older version, and then
+  retry or fail. This applies to a queue you keep, a queue the snapshot holds no copy of, and
+  every queue when the rollback keeps the database or migrates it down.
+
+When the snapshot to restore holds a queue, the terminal asks whether to restore the queues too
+or keep them as they are. `--keep-queues` keeps every queue without asking. A script without
+`--keep-queues` restores everything the snapshot holds, after the same text. The rollback's hash
+covers this choice, so `--approve` applies only the choice you reviewed.
+
+```bash
+npx opscrew rollback --env staging --database snapshot --keep-queues    # restore the data, keep the queues
+```
 
 ### Down migrations
 
@@ -460,8 +481,9 @@ anything the hash covers changed in between (a deploy ran, or the plan changed),
 and shows the rollback again with its new hash.
 
 Without `--database`, a script gets the default (see [The database](#the-database)). The printed
-command names the choice, and for a restore or down migrations adds `--confirm` with the app's
-name, which approves the change of data as typing it would:
+command names the choice (with `--keep-queues` when you gave it), and for a restore or down
+migrations adds `--confirm` with the app's name, which approves the change of data as typing it
+would:
 
 ```bash
 npx opscrew rollback --env staging --database snapshot                  # shows the rollback and its hash

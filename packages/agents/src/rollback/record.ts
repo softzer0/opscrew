@@ -17,8 +17,8 @@ export type DatabaseChoice = (typeof DATABASE_CHOICES)[number];
 
 /**
  * What a rollback's hash binds of the database once OpsCrew read the server: the choice, the
- * target's snapshot (`taken`) and both versions' migration records, as the server holds them
- * (`null` when it has none).
+ * target's snapshot (`taken`), both versions' migration records, as the server holds them
+ * (`null` when it has none), and the app's queues the snapshot's restore keeps as they are.
  */
 export interface DatabaseBinding {
   choice: DatabaseChoice;
@@ -27,6 +27,8 @@ export interface DatabaseBinding {
   currentRecord: string | null;
   /** The migration record of the version it goes back to. */
   targetRecord: string | null;
+  /** The queues the snapshot holds that its restore keeps as they are; absent when none. */
+  keptQueues?: string[];
 }
 
 /** What a rollback's `promote` approval binds (ADR 0023 D5). */

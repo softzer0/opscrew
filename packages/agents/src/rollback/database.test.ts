@@ -36,6 +36,7 @@ import {
   writeScript,
 } from "./database";
 import type { RollbackOptions } from "./index";
+import type { QueueQuestion } from "./queues";
 import { type RollbackRun, rollbackRun } from "./run";
 
 /** The version running now and the one a rollback goes back to. */
@@ -557,6 +558,162 @@ describe.skipIf(!SH_AVAILABLE)("the database step on a server", () => {
     expect(shown).not.toContain("secret_marker");
     expect(shown).not.toContain("earlier");
     expect(shown).not.toContain(SERVER_IPV4);
+  });
+});
+
+describe.skipIf(!SH_AVAILABLE)("the app's queues on a rollback (ADR 0028, 2026-11-12)", () => {
+  /** Staging with PostgreSQL `db`, a Valkey queue `jobs`, a Valkey cache and RabbitMQ `mq`. */
+  const queuedPlan = (o: { migrations?: boolean } = {}) => {
+    const base = serverPlan({ environment: "staging" });
+    const db = base.services[0];
+    const service = (name: string, kind: string, version: string, options: object) => ({
+      ...db,
+      name,
+      kind,
+      version,
+      options,
+    });
+    return serverPlan({
+      environment: "staging",
+      extra: {
+        services: [
+          db,
+          service("jobs", "valkey", "8", { mode: "queue" }),
+          service("cache", "valkey", "8", { mode: "cache" }),
+          service("mq", "rabbitmq", "4.3", {}),
+        ],
+        ...(o.migrations === true ? { app: { ...base.app, name: "shop-staging", ...KNEX } } : {}),
+      },
+    });
+  };
+  /** The target's snapshot: `db`, `jobs` and the cache copied, `mq` left out. */
+  const snapshotted = async (folder: FakeAppFolder) =>
+    folder.snapshot(hex(TARGET), TAKEN, [
+      { name: "db", kind: "postgres", file: "db.dump", size: 4 },
+      { name: "jobs", kind: "valkey", file: "jobs.rdb", size: 4 },
+      { name: "cache", kind: "valkey", file: "cache.rdb", size: 4 },
+      { name: "mq", kind: "rabbitmq", skipped: true },
+    ]);
+  const RESTORED =
+    "Queues: Restoring the snapshot puts jobs back as it was before the release: the jobs queued since are lost, and jobs run since can run again. --keep-queues keeps it as it is.";
+  const MQ_STAYS =
+    "Queues: mq stays as it is: jobs the newer version queued there may fail on the older version, and retry or fail.";
+  const BOTH_STAY =
+    "Queues: jobs and mq stay as they are: jobs the newer version queued there may fail on the older version, and retry or fail.";
+
+  it("restores the queues the snapshot holds in a script, after saying what that does and what keeping the others does", async () => {
+    const { folder, step } = await world(queuedPlan());
+    await snapshotted(folder);
+    const chosen = await step();
+    expect(chosen.choice).toBe("snapshot");
+    expect(chosen.lines).toContain(RESTORED);
+    expect(chosen.lines).toContain(MQ_STAYS);
+    expect(chosen.binding?.keptQueues).toBeUndefined();
+    expect(chosen.flags).toBe(" --database snapshot --confirm shop-staging");
+    await chosen.leave();
+    expect(await folder.read(ROLLBACK_APPROVAL_FILE)).toBe(`${hex(TARGET)} snapshot ${EXPIRY}\n`);
+  });
+
+  it("keeps every queue with --keep-queues: the approval line names it, and the hash binds it", async () => {
+    const { folder, step } = await world(queuedPlan());
+    await snapshotted(folder);
+    let asked = false;
+    const chosen = await step({
+      keepQueues: true,
+      chooseKeepQueues: async () => {
+        asked = true;
+        return false;
+      },
+    });
+    expect(asked).toBe(false);
+    expect(chosen.choice).toBe("snapshot");
+    expect(chosen.lines).toContain(BOTH_STAY);
+    expect(chosen.lines.join("\n")).not.toContain("Restoring the snapshot puts");
+    expect(chosen.binding).toEqual({
+      choice: "snapshot",
+      taken: TAKEN,
+      currentRecord: null,
+      targetRecord: null,
+      keptQueues: ["jobs"],
+    });
+    expect(chosen.flags).toBe(" --database snapshot --keep-queues --confirm shop-staging");
+    await chosen.leave();
+    expect(await folder.read(ROLLBACK_APPROVAL_FILE)).toBe(
+      `${hex(TARGET)} snapshot ${EXPIRY} jobs\n`,
+    );
+  });
+
+  it("asks a terminal whether to keep the queues the snapshot holds, and does as it answers", async () => {
+    for (const answer of [true, false]) {
+      const { step, folder } = await world(queuedPlan());
+      await snapshotted(folder);
+      const asked: QueueQuestion[] = [];
+      const chosen = await step({
+        chooseKeepQueues: async (question) => {
+          asked.push(question);
+          return answer;
+        },
+      });
+      expect(asked).toEqual([
+        {
+          restore:
+            "Restoring the snapshot puts jobs back as it was before the release: the jobs queued since are lost, and jobs run since can run again.",
+          keep: "jobs stays as it is: jobs the newer version queued there may fail on the older version, and retry or fail.",
+        },
+      ]);
+      expect(chosen.binding?.keptQueues).toEqual(answer ? ["jobs"] : undefined);
+      expect(chosen.lines).toContain(answer ? BOTH_STAY : RESTORED);
+    }
+  });
+
+  it("asks nothing and says every queue stays when the database is kept or migrated down", async () => {
+    for (const database of ["keep", "migrations"] as const) {
+      const { folder, step } = await world(queuedPlan({ migrations: true }));
+      await snapshotted(folder);
+      await folder.write(`.schema/${hex(CURRENT)}`, "count=3");
+      await folder.write(`.schema/${hex(TARGET)}`, "count=2");
+      let asked = false;
+      const chosen = await step({
+        database,
+        chooseKeepQueues: async () => {
+          asked = true;
+          return true;
+        },
+      });
+      expect(asked).toBe(false);
+      expect(chosen.lines).toContain(BOTH_STAY);
+      expect(chosen.binding?.keptQueues).toBeUndefined();
+      expect(chosen.flags).not.toContain("--keep-queues");
+    }
+  });
+
+  it("keeps the database as it is when the kept queues are all the snapshot holds", async () => {
+    const { folder, step } = await world(queuedPlan());
+    await folder.snapshot(hex(TARGET), TAKEN, [
+      { name: "db", kind: "postgres", skipped: true },
+      { name: "jobs", kind: "valkey", file: "jobs.rdb", size: 4 },
+    ]);
+    const chosen = await step({ keepQueues: true });
+    expect(chosen.choice).toBe("keep");
+    expect(chosen.binding).toEqual({
+      choice: "keep",
+      taken: TAKEN,
+      currentRecord: null,
+      targetRecord: null,
+    });
+    expect(chosen.confirmPhrase).toBeUndefined();
+    expect(chosen.flags).toBe(" --database keep");
+    expect(chosen.lines).toContain(BOTH_STAY);
+    await chosen.leave();
+    expect(await folder.read(ROLLBACK_APPROVAL_FILE)).toBeUndefined();
+  });
+
+  it("adds nothing for an app without queues", async () => {
+    const { folder, step } = await world(serverPlan({ environment: "staging" }));
+    await folder.snapshot(hex(TARGET), TAKEN);
+    const chosen = await step({ keepQueues: true });
+    expect(chosen.lines.join("\n")).not.toContain("Queues:");
+    expect(chosen.binding?.keptQueues).toBeUndefined();
   });
 });
 

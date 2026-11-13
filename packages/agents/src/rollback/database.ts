@@ -46,6 +46,7 @@ import { type About, aboutOf } from "../snapshot/store";
 import { serverShell } from "../status/servers";
 import type { RollbackServices } from "./index";
 import { type PortainerRestore, portainerRestore, readPortainerSnapshot } from "./portainer";
+import { heldQueues, keepsEverything, keptQueues, queueLines } from "./queues";
 import type { DatabaseBinding, DatabaseChoice, DatabaseRecord } from "./record";
 import type { RollbackRepository, RollbackRun } from "./run";
 
@@ -501,7 +502,7 @@ export async function databaseStep(
     const step: DatabaseStep = {
       choice: "keep",
       ...(binding !== undefined ? { binding } : {}),
-      lines: [KEEP_LINE],
+      lines: [KEEP_LINE, ...queueLines(plan, [])],
       flags: binding !== undefined ? " --database keep" : "",
       record: { choice: "keep" },
       outcome: databaseOutcome({ choice: "keep" }, plan, input.words),
@@ -629,13 +630,23 @@ export async function databaseStep(
     why,
     plan.environment?.name !== undefined && offers[0]?.choice === "snapshot" ? "snapshot" : "keep",
   );
-  const binding: DatabaseBinding = {
-    choice,
+  const read: DatabaseBinding = {
+    choice: "keep",
     taken: taken ?? null,
     currentRecord: currentRecord ?? null,
     targetRecord: targetRecord ?? null,
   };
-  if (choice === "keep") return keep(binding);
+  if (choice === "keep") return keep(read);
+  // The app's queues the snapshot holds, and those of them the restore keeps as they are.
+  const held = choice === "snapshot" ? heldQueues(plan, abouts.values()) : [];
+  const kept = await keptQueues(run, held);
+  // Keeping every part the snapshot holds changes no data: the database stays as it is.
+  if (kept.length > 0 && keepsEverything(abouts.values(), kept)) return keep(read);
+  const binding: DatabaseBinding = {
+    ...read,
+    choice,
+    ...(kept.length > 0 ? { keptQueues: kept } : {}),
+  };
 
   // Only a target with a digest has a snapshot or a record to offer.
   const hex = targetHex as string;
@@ -658,16 +669,20 @@ export async function databaseStep(
     lines: [
       `Database: ${offer.text}`,
       ...(choice === "snapshot" ? leftOutLines(plan, abouts) : []),
+      ...queueLines(
+        plan,
+        held.filter((queue) => !kept.includes(queue)),
+      ),
       "The app's settings and secrets stay as they are now. The release command does not run.",
       `Typing ${name} approves it. OpsCrew then leaves a one-time approval in the app's folder${where}, valid for ${APPROVAL_SECONDS / 60} minutes, which the deploy uses once.`,
     ],
     confirmPhrase: name,
-    flags: ` --database ${choice} --confirm ${name}`,
+    flags: ` --database ${choice}${kept.length > 0 ? " --keep-queues" : ""} --confirm ${name}`,
     record,
     outcome: databaseOutcome(record, plan, input.words),
     leave: async () => {
       const expiry = Math.floor(deps.clock.now().getTime() / 1000) + APPROVAL_SECONDS;
-      const line = rollbackApprovalLine(hex, choice, expiry);
+      const line = rollbackApprovalLine(hex, choice, expiry, kept);
       try {
         for (const server of changing) await (await extra(server)())?.approval(line);
         await folder.approval(line);
@@ -737,10 +752,17 @@ async function portainerStep(
     targetRecord: null,
   };
   if (choice !== "snapshot" || snapshot === undefined) return shared.keep(binding);
+  // The app's queues the snapshot holds, and those of them the restore keeps as they are.
+  const held = heldQueues(plan, [snapshot.about]);
+  const kept = await keptQueues(run, held);
+  // Keeping every part the snapshot holds changes no data: the database stays as it is.
+  if (snapshot.parts.every((part) => kept.includes(part.name))) {
+    return shared.keep({ ...binding, choice: "keep" });
+  }
   const restore = portainerRestore(run, {
     hex,
     words,
-    snapshot,
+    snapshot: { ...snapshot, parts: snapshot.parts.filter((part) => !kept.includes(part.name)) },
     images: facts.images,
     github: facts.github,
   });
@@ -748,15 +770,19 @@ async function portainerStep(
   const name = plan.app.name;
   return {
     choice,
-    binding,
+    binding: kept.length > 0 ? { ...binding, keptQueues: kept } : binding,
     lines: [
       `Database: ${(offers[0] as DatabaseOffer).text}`,
       ...leftOutLines(plan, new Map([[APP_SERVER, snapshot.about]])),
+      ...queueLines(
+        plan,
+        held.filter((queue) => !kept.includes(queue)),
+      ),
       "The app's settings and secrets stay as they are now. The release command does not run.",
       `Typing ${name} approves it. OpsCrew then stops the app in your Portainer, copies its data as it is now, restores the snapshot and starts the rollback's run, which starts ${words}: until the rollback ends, no other version starts on that data. If the run fails, OpsCrew puts the copy back and starts the version that runs now again.`,
     ],
     confirmPhrase: name,
-    flags: ` --database snapshot --confirm ${name}`,
+    flags: ` --database snapshot${kept.length > 0 ? " --keep-queues" : ""} --confirm ${name}`,
     record,
     outcome: databaseOutcome(record, plan, words),
     leave: async () => {

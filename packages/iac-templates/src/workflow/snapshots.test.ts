@@ -256,11 +256,14 @@ function snapshot(hex: string, taken: string, content: Record<string, string> = 
   write(at(`.snapshots/${hex}/about.json`), `${JSON.stringify(about)}\n`);
 }
 
-/** The one-time approval for `hex`, valid for `seconds` more (negative: expired). */
-function approve(hex: string, choice: string, seconds = 1800): void {
+/**
+ * The one-time approval for `hex`, valid for `seconds` more (negative: expired), keeping the
+ * queues `kept` names.
+ */
+function approve(hex: string, choice: string, seconds = 1800, kept: string[] = []): void {
   const expiresAt = Math.floor(Date.now() / 1000) + seconds;
   // `choice` may be one the script refuses: the line is the exported format all the same.
-  const line = rollbackApprovalLine(hex, choice as "snapshot" | "migrations", expiresAt);
+  const line = rollbackApprovalLine(hex, choice as "snapshot" | "migrations", expiresAt, kept);
   write(
     at(ROLLBACK_APPROVAL_FILE),
     `${line}
@@ -1057,6 +1060,38 @@ describe.skipIf(!shWorks())(
         expect(order.every((index) => index > -1)).toBe(true);
       });
 
+      it("keeps the queues the approval names as they are, and restores the rest", () => {
+        deployedB();
+        approve(A, "snapshot", 1800, ["queue", "kafka"]);
+        const result = run(switchCommands(every, []), A, "rollback");
+        expect(result.status, result.output).toBe(0);
+        for (const part of ["db", "sqlite"]) expect(db(part)).toBe(`${part} rows of A\n`);
+        for (const part of ["queue", "kafka", "mq"]) expect(db(part)).toBe(`${part} rows of B\n`);
+        // The copy under the running version holds only what the restore changes.
+        expect(snapshots()).toContain(B);
+        expect(existsSync(at(`.snapshots/${B}/db.dump`))).toBe(true);
+        expect(existsSync(at(`.snapshots/${B}/queue.rdb`))).toBe(false);
+        expect(existsSync(at(`.snapshots/${B}/kafka.tar`))).toBe(false);
+        expect(callAt("docker compose stop -t 120 kafka")).toBe(-1);
+        expect(read(".env")).toBe(`APP_IMAGE=${image(A)}\n`);
+      });
+
+      it("changes nothing with an approval that keeps a service that isn't one of the app's queues", () => {
+        deployedB();
+        for (const kept of [["db"], ["queue", "db"], ["queue;id"]]) {
+          approve(A, "snapshot", 1800, kept);
+          const result = run(switchCommands(every, []), A, "rollback");
+          expect(result.status).toBe(1);
+          expect(result.output).toContain(
+            "::error::The one-time approval to change the database on this rollback (.rollback-database on the server) keeps a service that isn't one of the app's queues, so nothing was changed.",
+          );
+          for (const part of PARTS) expect(db(part)).toBe(`${part} rows of B\n`);
+          expect(read(".env")).toBe(`APP_IMAGE=${image(B)}\n`);
+          expect(existsSync(at(ROLLBACK_APPROVAL_FILE))).toBe(false);
+        }
+        expect(callAt("compose stop app")).toBe(-1);
+      });
+
       it("puts every kind back when the restore fails", () => {
         deployedB();
         approve(A, "snapshot");
@@ -1150,6 +1185,27 @@ describe.skipIf(!shWorks())(
           expect(paused()).toBe(false);
         });
       }
+
+      it("changes nothing when the approval keeps the only part, a queue, and switches", () => {
+        upload(valkeyOnly);
+        write(at(".env"), `APP_IMAGE=${image(A)}\n`);
+        setDb("queue rows of A\n", "queue");
+        expect(run(switchCommands(valkeyOnly, []), B, "deploy").status).toBe(0);
+        setDb("queue rows of B\n", "queue");
+        approve(A, "snapshot", 1800, ["queue"]);
+        const back = run(switchCommands(valkeyOnly, []), A, "rollback");
+        expect(back.status, back.output).toBe(0);
+        expect(back.output).toContain(
+          "OpsCrew kept the data on the server as it is: the rollback keeps the app's queues.",
+        );
+        expect(back.output).not.toContain("OpsCrew restored the database");
+        expect(db("queue")).toBe("queue rows of B\n");
+        expect(existsSync(at(`.snapshots/${B}/queue.rdb`))).toBe(false);
+        expect(read(".database.changed")).toBe(
+          `target=${A}\nAPP_IMAGE=${image(B)}\nsaved=\nchanged=0\n`,
+        );
+        expect(read(".env")).toBe(`APP_IMAGE=${image(A)}\n`);
+      });
 
       it.each([
         ["the kept folder", filesOnly, "files"],
@@ -1346,10 +1402,11 @@ describe.skipIf(!shWorks() || !BASH_WORKS)(
         choice?: "snapshot" | "migrations";
         seconds?: number;
         servers?: ("data" | "more")[];
+        kept?: string[];
       } = {},
     ) => {
       const expiry = Math.floor(Date.now() / 1000) + (o.seconds ?? 1800);
-      const line = `${rollbackApprovalLine(hex, o.choice ?? "snapshot", expiry)}\n`;
+      const line = `${rollbackApprovalLine(hex, o.choice ?? "snapshot", expiry, o.kept)}\n`;
       write(at(ROLLBACK_APPROVAL_FILE), line);
       for (const server of o.servers ?? (["data", "more"] as const)) {
         write(on(server, ROLLBACK_APPROVAL_FILE), line);
@@ -1528,6 +1585,55 @@ describe.skipIf(!shWorks() || !BASH_WORKS)(
         expect(paused()).toBe(false);
         expect(step(STEPS.running, {}).status).toBe(0);
         expect(readOn("more", RUNNING_FILE)).toBe(`${image(A)}\n`);
+      });
+
+      it("keeps the queue the approval names, and a server that holds only it changes nothing", () => {
+        // A Valkey queue on the server more instead of MongoDB.
+        const queued = DeployPlanSchema.parse({
+          ...plan,
+          services: plan.services.map((service) =>
+            service.name === "docs"
+              ? {
+                  ...service,
+                  name: "queue",
+                  kind: "valkey",
+                  version: "8",
+                  options: { mode: "queue" },
+                }
+              : service,
+          ),
+        });
+        const steps = stepsOf(queued);
+        upload(queued);
+        setDb("queue while A ran\n", "queue");
+        runningB(steps);
+        setDb("queue of B\n", "queue");
+        approve(A, { kept: ["queue"] });
+        const { common } = deploy(A, "rollback", {}, steps);
+        const others = step(steps.others, common);
+        expect(others.status, others.output).toBe(0);
+        expect(others.outputs.restored).toBe("data,more");
+        expect(others.output).toContain(
+          "OpsCrew kept the data on the server more as it is: the rollback keeps the app's queues there.",
+        );
+        expect([db("db"), db("queue")]).toEqual(["rows while A ran\n", "queue of B\n"]);
+        expect(readOn("more", `.snapshots/${B}/queue.rdb`)).toBeUndefined();
+        for (const server of ["data", "more"] as const) {
+          expect(existsSync(on(server, ".rollback-kept"))).toBe(false);
+        }
+        const start = step(steps.start, { ...common, RESTORED: others.outputs.restored ?? "" });
+        expect(start.status, start.output).toBe(0);
+        expect(read(".env")).toBe(`APP_IMAGE=${image(A)}\n`);
+
+        // A kept service that isn't a queue: nothing changes.
+        runningB(steps);
+        approve(A, { kept: ["db"] });
+        const refused = step(steps.others, deploy(A, "rollback", {}, steps).common);
+        expect(refused.status).toBe(1);
+        expect(refused.output).toContain(
+          "::error::The one-time approval on the server data (.rollback-database) keeps a service that isn't one of the app's queues, so nothing was changed.",
+        );
+        expect(callAt("compose stop app")).toBe(-1);
       });
 
       it("changes nothing unless every server the choice changes approved it", () => {

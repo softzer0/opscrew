@@ -46,6 +46,7 @@ import {
 import {
   holdsData,
   migratedParts,
+  queueServices,
   ROLLBACK_APPROVAL_FILE,
   RUNNING_FILE,
   releaseSnapshotOn,
@@ -1088,8 +1089,8 @@ export const DATABASE_CHANGED = ".database.changed";
  */
 export function readApproval(file: string): string[] {
   return [
-    'approved=""; choice=""; expiry=""',
-    `read -r approved choice expiry < ${file} || true`,
+    'approved=""; choice=""; expiry=""; kept=""',
+    `read -r approved choice expiry kept < ${file} || true`,
     `rm -f ${file}`,
   ];
 }
@@ -1108,14 +1109,50 @@ export function approvalExpiry(refuse: readonly string[]): string[] {
 }
 
 /**
+ * Runs `refuse` (lines that stop the script) when the approval's `$kept` names anything but the
+ * app's queues ({@link queueServices}), comma-joined: only those a rollback keeps as they are. None
+ * without queues, whose restore reads no `$kept`.
+ */
+function keptCheck(plan: DeployPlan, refuse: readonly string[]): string[] {
+  const queues = queueServices(plan);
+  if (queues.length === 0) return [];
+  return [
+    'kept_rest="$kept"',
+    'while [ -n "$kept_rest" ]; do',
+    `  case "\${kept_rest%%,*}" in ${queues.join(" | ")}) ;; *)`,
+    ...refuse.map((line) => `    ${line}`),
+    "  ;; esac",
+    '  case "$kept_rest" in *,*) kept_rest="${kept_rest#*,}" ;; *) kept_rest="" ;; esac',
+    "done",
+  ];
+}
+
+/** True when `server` holds a part of one of the app's queues, which a rollback may keep. */
+function keepsQueues(plan: DeployPlan, server: string): boolean {
+  const queues = queueServices(plan);
+  return snapshotParts(plan, server).some((part) => queues.includes(part.name));
+}
+
+/**
+ * The file in the app's folder on an extra server where `check` leaves the queues the approval
+ * keeps, `<target> <kept>`, for `change` ({@link serverRollbackCommands}).
+ */
+const ROLLBACK_KEPT_FILE = ".rollback-kept";
+
+/** `$parts` without the queues the approval's `$kept` names. */
+const KEPT_OUT =
+  'parts="$(for kept_part in $parts; do case ",$kept," in *",$kept_part,"*) ;; *) echo "$kept_part" ;; esac; done)"';
+
+/**
  * The approval's check, first in the script: `$target` is `$1`'s digest and `$running` the one
  * `.env` names, if any. In `MODE` `rollback`, {@link ROLLBACK_APPROVAL_FILE} is read and removed
  * at once ({@link readApproval}), so it is used once:
  * - one for another version is ignored with a note, and the rollback keeps the data;
  * - one for `$target` sets `$database` to its choice (`snapshot` with a part a snapshot holds on
  *   the app's server or an extra server's; `migrations` with `app.migrations`), or, past its time
- *   ({@link approvalExpiry}) or with another choice, stops the script before any change: the user
- *   approved the switch and the database step together.
+ *   ({@link approvalExpiry}), with another choice, or keeping a service that is not one of the
+ *   app's queues ({@link keptCheck}), stops the script before any change: the user approved the
+ *   switch and the database step together.
  * With `others` ({@link changesOthers}), `$others` is `$3` with its commas as spaces: the extra
  * servers whose data the workflow changed for this rollback. They must be exactly those the
  * choice changes ({@link rollbackServers}; none to keep the data); otherwise the script stops
@@ -1158,6 +1195,10 @@ function approvalCheck(plan: DeployPlan, others: boolean): string[] {
     `      echo ${shellQuote(`::error::The one-time approval to change the database on this rollback (${file} on the server) names a choice this server can't carry out, so nothing was changed. Run opscrew rollback again.`)}`,
     "      exit 1 ;;",
     "    esac",
+    ...keptCheck(plan, [
+      `echo ${shellQuote(`::error::The one-time approval to change the database on this rollback (${file} on the server) keeps a service that isn't one of the app's queues, so nothing was changed. Run opscrew rollback again.`)}`,
+      "exit 1",
+    ]).map((line) => `    ${line}`),
     ...approvalExpiry([
       `echo ${shellQuote("::error::The one-time approval to restore or migrate the database on this rollback expired before the run started, so nothing was changed. Run opscrew rollback again.")}`,
       "exit 1",
@@ -1189,6 +1230,7 @@ function snapshotLogNote(plan: DeployPlan): string {
  *    exits 1;
  * 4. the marker says `changed=1`, and the snapshot is restored (`snapshot_restore`), or the down
  *    migrations run ({@link migrationDown}) in a subshell.
+ * A snapshot's copy and restore leave out the queues the approval keeps ({@link KEPT_OUT}).
  * The copies and restores are {@link SNAPSHOT_FUNCTIONS}'. The switch to `$1` that follows is always
  * `recreate`'s. When step 4 fails, step 3's copy is restored, the running version's web, workers
  * and cron start again (the ones {@link PREVIOUS_PROCESSES} lists), the marker goes, and the script
@@ -1211,9 +1253,16 @@ function databaseStep(plan: DeployPlan, others: boolean): string[] {
   /** The marker with `changed` (0 before step 4, 1 from it on). */
   const mark = (changed: 0 | 1) =>
     `  (umask 077; printf 'target=%s\\nAPP_IMAGE=%s\\nsaved=%s\\nchanged=%s\\n' "$target" "$before" "$saved" ${changed} > ${DATABASE_CHANGED})`;
+  // The app's queues here the approval may keep as they are ({@link KEPT_OUT}).
+  const keeps = keepsQueues(plan, APP_SERVER);
   const changing =
     // Without a part here, the extra servers' own markers cover the data the step changes.
-    parts.length > 0 || !others ? [mark(1)] : [];
+    parts.length > 0 || !others
+      ? keeps
+        ? // A snapshot whose every part here is a kept queue changes nothing here.
+          ['  if [ "$database" != snapshot ] || [ -n "$parts" ]; then', `  ${mark(1)}`, "  fi"]
+        : [mark(1)]
+      : [];
   /** Changes nothing more: the running version starts again, the marker goes, the script stops. */
   const giveUp = [
     `rm -f ${DATABASE_CHANGED}`,
@@ -1227,7 +1276,7 @@ function databaseStep(plan: DeployPlan, others: boolean): string[] {
       ? [
           '  parts=""',
           '  case "$database" in',
-          '    snapshot) parts="$(snapshot_parts "$target")" ;;',
+          `    snapshot) parts="$(snapshot_parts "$target")"${keeps ? `; ${KEPT_OUT}` : ""} ;;`,
           ...(migrations === undefined
             ? []
             : [`    migrations) parts=${shellQuote(migrated.join(" "))} ;;`]),
@@ -1274,7 +1323,13 @@ function databaseStep(plan: DeployPlan, others: boolean): string[] {
       : [
           "    snapshot)",
           '      what="Restoring the snapshot of the database"',
-          '      if snapshot_restore "$target" $parts; then',
+          ...(keeps
+            ? [
+                '      if [ -z "$parts" ]; then',
+                `        echo ${shellQuote("OpsCrew kept the data on the server as it is: the rollback keeps the app's queues.")}`,
+                '      elif snapshot_restore "$target" $parts; then',
+              ]
+            : ['      if snapshot_restore "$target" $parts; then']),
           `        echo "OpsCrew restored the database from the snapshot taken $(cat ${snapshotTakenPath('"$target"')})."`,
           "      else",
           "        failed=1",
@@ -1582,11 +1637,14 @@ export function serverCommands(
  * - `check <target>` reads and removes the server's one-time approval
  *   ({@link ROLLBACK_APPROVAL_FILE}) and prints its choice, `snapshot` (the target's snapshot there
  *   must be complete) or `migrations`, or `keep` without one (one for another version is removed
- *   with a note); an expired one, or a choice it can't carry out, exits 1;
+ *   with a note); an expired one, a choice it can't carry out, or one keeping a service that is not
+ *   one of the app's queues ({@link keptCheck}), exits 1. It leaves the queues a snapshot's
+ *   approval keeps for `change` ({@link ROLLBACK_KEPT_FILE});
  * - `change <choice> <target> <running>` (the app held and stopped): writes the marker, copies the
  *   parts the choice changes under the running version, as the app's server does (the target
  *   snapshot's parts, or the databases the down migrations change), marks `changed=1`, and for
- *   the snapshot restores it. It exits 1 when nothing was changed (the copy failed, or the restore
+ *   the snapshot restores it, leaving out the queues `check` left (with none other there, it
+ *   changes nothing and exits 0). It exits 1 when nothing was changed (the copy failed, or the restore
  *   failed and the copy is back; the marker goes), 2 when putting the copy back failed too (the
  *   marker stays);
  * - `marked <target> <running>` prints `marked <choice>` when this run's marker (the same target and
@@ -1602,6 +1660,8 @@ export function serverRollbackCommands(plan: DeployPlan, server: string): string
   const marker = DATABASE_CHANGED;
   const log = serverLogWords(server);
   const migrated = migratedParts(plan, server).map((part) => part.name);
+  // The app's queues here the approval may keep as they are ({@link KEPT_OUT}).
+  const keeps = keepsQueues(plan, server);
   const choices = (["snapshot", "migrations"] as const).filter((choice) =>
     rollbackServers(plan, choice).includes(server),
   );
@@ -1648,6 +1708,10 @@ export function serverRollbackCommands(plan: DeployPlan, server: string): string
     `      echo ${shellQuote(`::error::The one-time approval on ${where} (${file}) names a choice it can't carry out, so nothing was changed. Run opscrew rollback again.`)} >&2`,
     "      exit 1 ;;",
     "    esac",
+    ...keptCheck(plan, [
+      `echo ${shellQuote(`::error::The one-time approval on ${where} (${file}) keeps a service that isn't one of the app's queues, so nothing was changed. Run opscrew rollback again.`)} >&2`,
+      "exit 1",
+    ]).map((line) => `    ${line}`),
     ...approvalExpiry([
       `echo ${shellQuote(`::error::The one-time approval to change the data on ${where} on this rollback expired before the run started, so nothing was changed. Run opscrew rollback again.`)} >&2`,
       "exit 1",
@@ -1656,6 +1720,15 @@ export function serverRollbackCommands(plan: DeployPlan, server: string): string
     `      echo ${shellQuote(`::error::The snapshot this rollback was approved to restore is no longer complete on ${where} (in ${SNAPSHOTS_DIR}), so the rollback changed nothing. Run opscrew rollback again to choose again.`)} >&2`,
     "      exit 1",
     "    fi",
+    // `change` runs after `check` removed the approval: it reads the queues kept there.
+    ...(keeps
+      ? [
+          `    rm -f ${ROLLBACK_KEPT_FILE}`,
+          '    if [ "$choice" = snapshot ] && [ -n "$kept" ]; then',
+          `      (umask 077; printf '%s %s\\n' "$target" "$kept" > ${ROLLBACK_KEPT_FILE})`,
+          "    fi",
+        ]
+      : []),
     '    echo "$choice" ;;',
     "  change)",
     ...usage(
@@ -1664,11 +1737,30 @@ export function serverRollbackCommands(plan: DeployPlan, server: string): string
     ),
     '    target="${3##*@sha256:}"',
     '    running="${4##*@sha256:}"',
+    ...(keeps
+      ? [
+          '    kept=""; kept_for=""',
+          `    if [ -f ${ROLLBACK_KEPT_FILE} ]; then read -r kept_for kept < ${ROLLBACK_KEPT_FILE} || true; rm -f ${ROLLBACK_KEPT_FILE}; fi`,
+          '    if [ "$kept_for" != "$target" ]; then kept=""; fi',
+          ...keptCheck(plan, [
+            `echo ${shellQuote(`::error::The queues the rollback keeps on ${where} (${ROLLBACK_KEPT_FILE}) name a service that isn't one of the app's queues, so nothing was changed there. Run opscrew rollback again.`)} >&2`,
+            "exit 1",
+          ]).map((line) => `    ${line}`),
+        ]
+      : []),
     '    case "$2" in',
-    '      snapshot) snapshot_complete "$target" || exit 1; parts="$(snapshot_parts "$target")" ;;',
+    `      snapshot) snapshot_complete "$target" || exit 1; parts="$(snapshot_parts "$target")"${keeps ? `; ${KEPT_OUT}` : ""} ;;`,
     `      migrations) parts=${shellQuote(migrated.join(" "))} ;;`,
     "      *) exit 1 ;;",
     "    esac",
+    ...(keeps
+      ? [
+          '    if [ -z "$parts" ]; then',
+          `      echo ${shellQuote(`OpsCrew kept the data on ${where} as it is: the rollback keeps the app's queues there.`)} >&2`,
+          "      exit 0",
+          "    fi",
+        ]
+      : []),
     '    mark 0 "$2"',
     '    if ! snapshot_take "$running" release "$running" $parts; then',
     `      rm -f ${marker}`,

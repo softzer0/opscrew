@@ -87,10 +87,18 @@ describe("opscrew rollback: the flags, checked before any work", () => {
     [["--list", "--approve", HASH], "--list stands alone"],
     [["--resume", "--to", "1a2b3c4"], "--resume takes no --to, --approve, --allow-old-secrets"],
     [["--resume", "--approve", HASH], "--resume takes no --to, --approve, --allow-old-secrets"],
-    [["--resume", "--database", "keep"], "--database or --confirm: it ends the pause"],
-    [["--resume", "--confirm", "shop"], "--database or --confirm: it ends the pause"],
+    [
+      ["--resume", "--database", "keep"],
+      "--database, --confirm or --keep-queues: it ends the pause",
+    ],
+    [
+      ["--resume", "--confirm", "shop"],
+      "--database, --confirm or --keep-queues: it ends the pause",
+    ],
+    [["--resume", "--keep-queues"], "--database, --confirm or --keep-queues: it ends the pause"],
     [["--list", "--database", "keep"], "--list stands alone"],
     [["--list", "--confirm", "shop"], "--list stands alone"],
+    [["--list", "--keep-queues"], "--list stands alone"],
     [["--database", "later"], "--database takes snapshot, migrations or keep, not later."],
   ])("refuses %j with exit code 2", async (flags, message) => {
     const ctx = await setup();
@@ -118,6 +126,7 @@ describe("opscrew rollback: the flags, checked before any work", () => {
       "--allow-old-secrets <names>",
       "--database <snapshot|migrations|keep>",
       "--confirm <name>",
+      "--keep-queues",
       "--app <key>",
       "--env <name>",
     ]) {
@@ -435,6 +444,48 @@ describe("opscrew rollback and the database", () => {
     fake.answer = async () => rolledBack();
     expect(await run(ctx, "rollback"), ctx.errors).toBe(0);
     expect(fake.calls[0]?.options.chooseDatabase).toBeUndefined();
+    expect(fake.calls[0]?.options.chooseKeepQueues).toBeUndefined();
+  });
+
+  it("passes --keep-queues and asks nothing about the queues", async () => {
+    const ctx = await setup();
+    fake.answer = async () => rolledBack();
+    expect(await run(ctx, "rollback", "--keep-queues"), ctx.errors).toBe(0);
+    expect(fake.calls[0]?.options).toEqual({ keepQueues: true });
+  });
+
+  it("asks a terminal whether to keep the app's queues, starting on restoring them", async () => {
+    const question = {
+      restore: "Restoring the snapshot puts jobs back as it was before the release.",
+      keep: "jobs stays as it is.",
+    };
+    for (const [answer, kept] of [
+      ["keep", true],
+      ["restore", false],
+    ] as const) {
+      const prompts = new ScriptedPrompts([answer]);
+      project = await withEnvironments({});
+      const ctx = projectContext(project, { interactive: true, services: { prompts } });
+      let chosen: boolean | undefined;
+      fake.answer = async (options) => {
+        chosen = await options.chooseKeepQueues?.(question);
+        return rolledBack();
+      };
+      expect(await run(ctx, "rollback"), ctx.errors).toBe(0);
+      expect(chosen).toBe(kept);
+      expect(prompts.calls).toEqual([
+        {
+          kind: "select",
+          message:
+            "The snapshot holds the app's queues too. Restore them, or keep them as they are?",
+          options: [
+            { value: "restore", label: question.restore },
+            { value: "keep", label: question.keep },
+          ],
+          initial: "restore",
+        },
+      ]);
+    }
   });
 
   it("approves a choice that changes data in a script only with --confirm <name> and --approve <hash>", async () => {

@@ -13,6 +13,7 @@ import type { PortainerServices, ProvisionServices } from "../provision/types";
 import type { DeployPause } from "../shared/deploy-pause";
 import type { DatabaseQuestion } from "./database";
 import { rollbackLocal } from "./local";
+import type { QueueQuestion } from "./queues";
 import type { DatabaseChoice, DatabaseRecord } from "./record";
 import { resumeDeploys } from "./resume";
 import { requireRollbackable, rollbackRun } from "./run";
@@ -22,6 +23,7 @@ import type { LeftOutVersion, VersionsGitHubApi, VersionView } from "./types";
 
 export { pinnedText, rotationWindowText } from "../shared/deploy-pause";
 export type { DatabaseOffer } from "./database";
+export type { QueueQuestion } from "./queues";
 export { DATABASE_CHOICES } from "./record";
 export type {
   DatabaseChoice,
@@ -105,6 +107,16 @@ export interface RollbackOptions {
   database?: DatabaseChoice;
   /** A terminal's question, asked when more than keep is offered and `database` is not given. */
   chooseDatabase?: (question: DatabaseQuestion) => Promise<DatabaseChoice>;
+  /**
+   * `--keep-queues`: a restore of the snapshot keeps every one of the app's queues as it is (ADR
+   * 0028, 2026-11-12). Without it, `chooseKeepQueues` asks, or the restore puts them back.
+   */
+  keepQueues?: boolean;
+  /**
+   * A terminal's question, asked when the snapshot to restore holds a queue and `keepQueues` is
+   * not given: true keeps them as they are.
+   */
+  chooseKeepQueues?: (question: QueueQuestion) => Promise<boolean>;
   services?: RollbackServices;
 }
 

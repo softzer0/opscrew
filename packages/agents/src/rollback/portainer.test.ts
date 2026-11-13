@@ -397,6 +397,76 @@ describe.skipIf(!SH_AVAILABLE)(
       await nothingLeaked(w);
     });
 
+    it("keeps the app's queues with --keep-queues: the restore leaves their copy, and the hash binds it", async () => {
+      const plan = stagingPlan(
+        [
+          { kind: "postgres", name: "db" },
+          { kind: "valkey", name: "jobs", options: { mode: "queue" } },
+        ],
+        { sqlite: true, base: portainerPlan({ deployed: true }) },
+      );
+      const w = await world({ plan });
+      w.store(
+        w.hexB,
+        about(w.hexB, w.b, [
+          { name: "db", kind: "postgres", file: "db.dump", size: 4, image: IMAGES.postgres.ref },
+          { name: "jobs", kind: "valkey", file: "jobs.rdb", size: 4, image: IMAGES.valkey.ref },
+          { name: "sqlite", kind: "sqlite", file: "sqlite.tar", size: 4 },
+        ]),
+      );
+
+      await w.run({ database: "snapshot", keepQueues: true });
+
+      const request = w.handler.requests[0] as ApprovalRequest;
+      expect(request.planHash).toBe(
+        hashOf(w, {
+          choice: "snapshot",
+          taken: TAKEN,
+          currentRecord: null,
+          targetRecord: null,
+          keptQueues: ["jobs"],
+        }),
+      );
+      expect(request.details).toContain(
+        "Queues: jobs stays as it is: jobs the newer version queued there may fail on the older version, and retry or fail.",
+      );
+      expect(w.deps.audit.entries).toContainEqual(
+        expect.objectContaining({
+          action: "restore a snapshot for a rollback",
+          detail: `${w.hexB}: db, sqlite: restored for the rollback to ${imageOf(w.b)}`,
+        }),
+      );
+    });
+
+    it("keeps the data as it is, touching nothing in Portainer, when the kept queues are all the snapshot holds", async () => {
+      const plan = stagingPlan(
+        [
+          { kind: "postgres", name: "db" },
+          { kind: "valkey", name: "jobs", options: { mode: "queue" } },
+        ],
+        { base: portainerPlan({ deployed: true }) },
+      );
+      const w = await world({ plan });
+      w.store(
+        w.hexB,
+        about(w.hexB, w.b, [
+          { name: "db", kind: "postgres", skipped: true },
+          { name: "jobs", kind: "valkey", file: "jobs.rdb", size: 4, image: IMAGES.valkey.ref },
+        ]),
+      );
+
+      const result = await w.run({ database: "snapshot", keepQueues: true });
+
+      expect(result).toMatchObject({ database: { choice: "keep" } });
+      const request = w.handler.requests[0] as ApprovalRequest;
+      expect(request.allowDestroy).toBeUndefined();
+      expect(request.planHash).toBe(
+        hashOf(w, { choice: "keep", taken: TAKEN, currentRecord: null, targetRecord: null }),
+      );
+      expect(w.events).toEqual(["ran b"]);
+      expect(w.volume().has(`${SAVED}/about.json`)).toBe(false);
+    });
+
     it("keeps the data by default and with --database keep, touching nothing in Portainer", async () => {
       const w = await world();
       const questions: unknown[] = [];

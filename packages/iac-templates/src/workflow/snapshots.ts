@@ -47,13 +47,18 @@ export const SNAPSHOT_GENERATIONS = `${SNAPSHOTS_DIR}/generations`;
 /** The one-time approval of a rollback that changes the data (plan.md 12.3), in the app's folder. */
 export const ROLLBACK_APPROVAL_FILE = ".rollback-database";
 
-/** The line of {@link ROLLBACK_APPROVAL_FILE}, without its newline (plan.md 12.3). */
+/**
+ * The line of {@link ROLLBACK_APPROVAL_FILE}, without its newline (plan.md 12.3): with `kept`, the
+ * app's queues ({@link queueServices}) a snapshot's restore keeps as they are, comma-joined.
+ */
 export function rollbackApprovalLine(
   hex: string,
   choice: "snapshot" | "migrations",
   expiresAt: number,
+  kept: readonly string[] = [],
 ): string {
-  return `${hex} ${choice} ${expiresAt}`;
+  const line = `${hex} ${choice} ${expiresAt}`;
+  return kept.length === 0 ? line : `${line} ${kept.join(",")}`;
 }
 
 /**
@@ -162,6 +167,25 @@ export function migratedParts(plan: DeployPlan, server: string): SnapshotPart[] 
   return snapshotParts(plan, server).filter(
     (part) => part.kind === "sqlite" || databaseKind(part.kind),
   );
+}
+
+/** The message brokers among the service kinds. */
+const BROKER_KINDS = ["rabbitmq", "nats", "kafka", "redpanda"] as const;
+
+/**
+ * The app's queues (ADR 0028, 2026-11-12), in the plan's order: its enabled RabbitMQ, NATS, Kafka
+ * and Redpanda services, and each enabled Valkey, Redis or Dragonfly in `queue` mode, the mode
+ * design gives one the app keeps its background jobs in.
+ */
+export function queueServices(plan: Pick<DeployPlan, "services">): string[] {
+  return plan.services
+    .filter(
+      (service) =>
+        service.enabled &&
+        (BROKER_KINDS.some((kind) => kind === service.kind) ||
+          ("mode" in service.options && service.options.mode === "queue")),
+    )
+    .map((service) => service.name);
 }
 
 /**

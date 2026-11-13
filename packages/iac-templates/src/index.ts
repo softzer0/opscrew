@@ -80,6 +80,7 @@ export {
 export {
   type PartRestore,
   partRestore,
+  queueServices,
   ROLLBACK_APPROVAL_FILE,
   rollbackApprovalLine,
   SNAPSHOT_GENERATIONS,

@@ -4,6 +4,7 @@ import {
   type DatabaseQuestion,
   type DeployPause,
   pinnedText,
+  type QueueQuestion,
   type RollbackResult,
   rollback,
   rotationWindowText,
@@ -33,6 +34,8 @@ interface RollbackFlags extends AppEnvFlags {
   database?: string;
   /** `--confirm <name>`: in a script, the name typed to approve a choice that changes data. */
   confirm?: string;
+  /** `--keep-queues`: a restore of the snapshot keeps the app's queues as they are. */
+  keepQueues?: boolean;
 }
 
 function isDatabaseChoice(value: string): value is DatabaseChoice {
@@ -80,7 +83,8 @@ function checkFlags(
     approve !== undefined ||
     flags.allowOldSecrets !== undefined ||
     database !== undefined ||
-    flags.confirm !== undefined;
+    flags.confirm !== undefined ||
+    flags.keepQueues === true;
   if (flags.list === true && others) {
     throw new OpsCrewError(
       "INVALID_INPUT",
@@ -110,11 +114,12 @@ function checkFlags(
       approve !== undefined ||
       flags.allowOldSecrets !== undefined ||
       database !== undefined ||
-      flags.confirm !== undefined)
+      flags.confirm !== undefined ||
+      flags.keepQueues === true)
   ) {
     throw new OpsCrewError(
       "INVALID_INPUT",
-      "--resume takes no --to, --approve, --allow-old-secrets, --database or --confirm: it ends the pause a rollback set, and a script gives --yes.",
+      "--resume takes no --to, --approve, --allow-old-secrets, --database, --confirm or --keep-queues: it ends the pause a rollback set, and a script gives --yes.",
       {
         hint: `Run \`${command} --resume\` (add --deploy to deploy the branch's latest commit now).`,
       },
@@ -149,6 +154,35 @@ async function askDatabase(
     );
   }
   return answer;
+}
+
+/**
+ * The terminal's question whether a restore of the snapshot keeps the app's queues it holds as
+ * they are, starting on restoring them, as a script does.
+ * @throws OpsCrewError `APPROVAL_REFUSED` when the user cancels it, before any change.
+ */
+async function askKeepQueues(
+  ctx: CliContext,
+  question: QueueQuestion,
+  command: string,
+): Promise<boolean> {
+  const prompts = promptsOf(ctx);
+  const answer = await prompts.select({
+    message: "The snapshot holds the app's queues too. Restore them, or keep them as they are?",
+    options: [
+      { value: "restore", label: question.restore },
+      { value: "keep", label: question.keep },
+    ],
+    initialValue: "restore",
+  });
+  if (prompts.isCancel(answer) || (answer !== "restore" && answer !== "keep")) {
+    throw new OpsCrewError(
+      "APPROVAL_REFUSED",
+      "You cancelled the choice of what to do with the app's queues. Nothing was changed.",
+      { hint: `Run \`${command}\` again, or give --keep-queues to keep them as they are.` },
+    );
+  }
+  return answer === "keep";
 }
 
 /**
@@ -221,7 +255,8 @@ const SUMMARY =
  * `opscrew rollback` (feature 019, ADR 0023, ADR 0028): puts an environment back on an earlier
  * version of its own, with no build and no release command, through the agents' `rollback`.
  * Without `--to` it goes back to the deployment before the running one. On a server or this
- * computer it asks how to treat the database (a terminal's question, or `--database`). A rollback
+ * computer it asks how to treat the database (a terminal's question, or `--database`), and whether
+ * a restore of the snapshot keeps the app's queues as they are (`--keep-queues`). A rollback
  * is a `promote` approval bound to its hash: a terminal asks, a script gives `--approve <hash>`,
  * and `--yes` never grants it; a database choice that changes data also needs the name `destroy
  * --env` asks for, typed or given as `--confirm <name>`. Afterwards the environment's automatic
@@ -241,7 +276,9 @@ export function register(program: Command, ctx: CliContext): void {
         "when that version stopped running (the default outside prod, when the environment takes",
         "snapshots), migrate it down, or keep it as it is (the default on prod). Restoring or",
         "migrating down needs the app's name typed (on a hosting account, its hostname), as destroy",
-        "does. Settings and secrets stay; the release command never runs.",
+        "does. When the snapshot holds the app's queues, it asks whether to restore them too (jobs",
+        "queued since are lost) or keep them as they are (--keep-queues). Settings and secrets stay;",
+        "the release command never runs.",
       ].join("\n"),
     )
     .option(
@@ -266,6 +303,10 @@ export function register(program: Command, ctx: CliContext): void {
     .option(
       "--database <snapshot|migrations|keep>",
       "How to treat the database, without the question: restore that version's snapshot, migrate it down, or keep it as it is",
+    )
+    .option(
+      "--keep-queues",
+      "When the rollback restores the snapshot: keep the app's queues as they are instead of putting back the jobs they held before the release",
     )
     .option(
       "--confirm <name>",
@@ -323,6 +364,14 @@ export function register(program: Command, ctx: CliContext): void {
             ? {
                 chooseDatabase: (question: DatabaseQuestion) =>
                   askDatabase(ctx, question, `opscrew rollback${flag}`),
+              }
+            : {}),
+        ...(flags.keepQueues === true
+          ? { keepQueues: true }
+          : ctx.isInteractive
+            ? {
+                chooseKeepQueues: (question: QueueQuestion) =>
+                  askKeepQueues(ctx, question, `opscrew rollback${flag}`),
               }
             : {}),
         ...(services === undefined ? {} : { services }),
