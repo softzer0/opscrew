@@ -72,9 +72,16 @@ writes there outlives every release, and a rollback's release sees it too.
 A PHP app with an `index.php` but no rewrite rules of its own in `.htaccess` gets every path that
 isn't a file or folder sent to that `index.php`, as on a server.
 
+On Apache with PHP-FPM, some requests may still run the release before for about 2 minutes after a
+deploy or a rollback: you can't restart PHP over SFTP. OpsCrew turns on `opcache.revalidate_path`
+in each PHP release's `.user.ini` and `.htaccess`, so PHP's code cache follows the switch once PHP's
+path cache expires (120 seconds), and the checks wait that long before they count the app's answer.
+Behind LiteSpeed the first answer counts.
+
 There is no agent, so:
 
-- `npx opscrew rollback` switches over SFTP from your computer, without a database choice;
+- `npx opscrew rollback` switches over SFTP from your computer, without a database choice, then
+  checks that a PHP app answers with the release;
 - `npx opscrew status` reads the release that runs from the host;
 - `npx opscrew logs` has no agent log to show: each deploy's lines are in its GitHub Actions run;
 - `npx opscrew snapshot` and `restore` aren't available: copy the app's files over SFTP, and back

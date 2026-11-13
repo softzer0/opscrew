@@ -28,8 +28,13 @@ export type HostingRequest =
 /** How long a request stays valid after it is written: 30 minutes. */
 export const REQUEST_TTL_SECONDS = 30 * 60;
 
-/** How long OpsCrew waits for the agent's answer: 3 minutes, three runs of its cron line. */
-export const REQUEST_WAIT_MS = 3 * 60 * 1000;
+/**
+ * How long OpsCrew waits for the agent's answer: 5 minutes. They cover cron's next run of the
+ * agent (up to 60 s), more while a run is still busy (the next one finds the lock held and stops),
+ * then the request itself: a rollback's carry and PHP restart, and its check, which counts a PHP
+ * app's answer on Apache only from 130 s after the switch and gives up at 135 s (research R16).
+ */
+export const REQUEST_WAIT_MS = 5 * 60 * 1000;
 
 /** How often the answer is looked for. */
 const POLL_MS = 5000;
@@ -127,7 +132,7 @@ export async function writeRequest(
 }
 
 /**
- * The agent's answer to request `name`, waited for up to 3 minutes. The agent writes `failed`
+ * The agent's answer to request `name`, waited for up to 5 minutes. The agent writes `failed`
  * before it starts and removes the request once it is carried out, so an answer counts once the
  * request is gone.
  * @throws OpsCrewError `PROVIDER_ERROR` when no answer came, or one OpsCrew can't read.
@@ -153,7 +158,7 @@ export async function waitForResult(
   }
   throw new OpsCrewError(
     "PROVIDER_ERROR",
-    `The agent on the hosting account didn't carry out OpsCrew's request within 3 minutes. Its cron line may be missing, or cron may be off for the account. The request stays valid for 30 minutes.`,
+    `The agent on the hosting account didn't carry out OpsCrew's request within 5 minutes. Its cron line may be missing, or cron may be off for the account. The request stays valid for 30 minutes.`,
     {
       hint: `Check in the panel's cron jobs that the line running ~/${folder}/agent.sh every minute is there; \`opscrew logs\` shows the agent's last lines. Then run the command again.`,
     },

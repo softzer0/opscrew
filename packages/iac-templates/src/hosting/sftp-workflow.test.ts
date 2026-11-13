@@ -137,9 +137,9 @@ describe("renderSftpWorkflow", () => {
     expect(script).toContain(
       "RewriteCond %{HTTP_HOST} !^staging-shop\\.example\\.com(:[0-9]+)?$ [NC]",
     );
-    // Behind anything but LiteSpeed, a PHP app's switch counts once PHP's realpath cache is past.
-    expect(script).toContain('if [ "$try" -ge 25 ]; then return 0; fi');
-    expect(deployStep(doc(STATIC)).run).not.toContain('if [ "$try" -ge 25 ]');
+    // Behind anything but LiteSpeed, a PHP app's switch counts once PHP's path cache is past.
+    expect(script).toContain('if [ "$try" -ge 27 ]; then return 0; fi');
+    expect(deployStep(doc(STATIC)).run).not.toContain('if [ "$try" -ge 27 ]');
     expect(deployStep(doc(STATIC)).run).toContain(
       "RewriteRule ^(vendor|storage|composer\\.json|composer\\.lock)(/|$) - [F]",
     );
@@ -150,28 +150,46 @@ describe("renderSftpWorkflow", () => {
     if (parsed.error === undefined) expect(parsed.stderr).toBe("");
   });
 
+  /**
+   * The served folder's `.htaccess` and `.user.ini` (undefined when there is none) the deploy step
+   * composes for a release of `files` (its step 2 run alone), with the host's `shared/` files
+   * `shared` (`env.htaccess`, `env.user.ini`) fetched.
+   */
+  function composed(
+    target: Record<string, unknown>,
+    files: Record<string, string>,
+    shared: Record<string, string> = {},
+  ): { htaccess: string; userIni: string | undefined } {
+    const script = deployStep(doc(target)).run ?? "";
+    const step = script.slice(script.indexOf("# 2. "), script.indexOf("# 3. "));
+    const work = mkdtempSync(join(tmpdir(), "opscrew-sftp-")).replaceAll("\\", "/");
+    try {
+      const served = `${work}/release/${target.webRoot}`;
+      mkdirSync(served, { recursive: true });
+      for (const [name, text] of Object.entries(files)) writeFileSync(`${served}/${name}`, text);
+      for (const [name, text] of Object.entries(shared)) writeFileSync(`${work}/${name}`, text);
+      const ran = spawnSync("bash", ["-c", `curl() { return 1; }\nset -euo pipefail\n${step}`], {
+        encoding: "utf8",
+        env: { ...process.env, work, release: "7-1" },
+      });
+      expect(ran.stderr).toBe("");
+      const userIni = files[".user.ini"] !== undefined || "env.user.ini" in shared;
+      return {
+        htaccess: readFileSync(`${served}/.htaccess`, "utf8"),
+        userIni: userIni ? readFileSync(`${served}/.user.ini`, "utf8") : undefined,
+      };
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
+  }
+
   it("sends a path that is no file to index.php where the app's .htaccess has no rewrite rules", () => {
     const fallback =
       "RewriteCond %{REQUEST_FILENAME} !-f\nRewriteCond %{REQUEST_FILENAME} !-d\nRewriteRule ^ index.php [L]\n# END OpsCrew\n";
-    /** OpsCrew's block the deploy step composes for a release of `files` (its step 2 run alone). */
+    /** OpsCrew's block the deploy step composes for a release of `files`. */
     function block(target: Record<string, unknown>, files: Record<string, string>): string {
-      const script = deployStep(doc(target)).run ?? "";
-      const step = script.slice(script.indexOf("# 2. "), script.indexOf("# 3. "));
-      const work = mkdtempSync(join(tmpdir(), "opscrew-sftp-")).replaceAll("\\", "/");
-      try {
-        const served = `${work}/release/${target.webRoot}`;
-        mkdirSync(served, { recursive: true });
-        for (const [name, text] of Object.entries(files)) writeFileSync(`${served}/${name}`, text);
-        const ran = spawnSync("bash", ["-c", `curl() { return 1; }\nset -euo pipefail\n${step}`], {
-          encoding: "utf8",
-          env: { ...process.env, work, release: "7-1" },
-        });
-        expect(ran.stderr).toBe("");
-        const htaccess = readFileSync(`${served}/.htaccess`, "utf8");
-        return htaccess.slice(0, htaccess.indexOf("# END OpsCrew\n") + "# END OpsCrew\n".length);
-      } finally {
-        rmSync(work, { recursive: true, force: true });
-      }
+      const { htaccess } = composed(target, files);
+      return htaccess.slice(0, htaccess.indexOf("# END OpsCrew\n") + "# END OpsCrew\n".length);
     }
     const php = { "index.php": "<?php echo 'notes';\n" };
     expect(block(PHP, php).endsWith(`X-OpsCrew-Release "7-1"\n${fallback}`)).toBe(true);
@@ -183,6 +201,59 @@ describe("renderSftpWorkflow", () => {
       "index.php",
     );
     expect(block(STATIC, { "index.html": "<h1>Site</h1>\n" })).not.toContain("index.php");
+  });
+
+  it("puts the host's PHP lines, opcache.revalidate_path among them, into a PHP release's blocks", () => {
+    const lines = renderSftpPhpLines("/home/web/opscrew/shared/env.php");
+    const shared = { "env.htaccess": lines.htaccess, "env.user.ini": lines.userIni };
+    const php = { "index.php": "<?php echo 'notes';\n" };
+    const plain = composed(PHP, php, shared);
+    expect(plain.htaccess).toContain(
+      `X-OpsCrew-Release "7-1"\n${lines.htaccess}RewriteCond %{REQUEST_FILENAME} !-f\n`,
+    );
+    expect(plain.userIni).toBe(lines.userIni);
+    // The app's own .user.ini follows OpsCrew's block.
+    expect(composed(PHP, { ...php, ".user.ini": "memory_limit = 256M\n" }, shared).userIni).toBe(
+      `${lines.userIni}; BEGIN OpsCrew: app\nmemory_limit = 256M\n; END OpsCrew: app\n`,
+    );
+    // Provision writes no PHP lines for a static site, which gets none.
+    const site = composed(STATIC, { "index.html": "<h1>Site</h1>\n" });
+    expect(site.htaccess).not.toContain("opcache");
+    expect(site.userIni).toBeUndefined();
+  });
+
+  /**
+   * The deploy step's check (its step 4 up to the switch back) of release 7-1 against a hostname
+   * that answers `code` with release 7-1 from `server`: whether it passed, and the seconds it slept
+   * first.
+   */
+  function checked(target: Record<string, unknown>, server: string, code = 200): string {
+    const script = deployStep(doc(target)).run ?? "";
+    const start = script.indexOf("one_line() {");
+    const oneLine = script.slice(start, script.indexOf("\n}\n", start) + 3);
+    const check = script.slice(script.indexOf("# 4. "), script.indexOf("if ! check; then"));
+    const ran = spawnSync("bash", ["-s"], {
+      input: [
+        `curl() { printf 'HTTP/1.1 ${code} Answer\\r\\nServer: ${server}\\r\\nX-OpsCrew-Release: 7-1\\r\\n\\r\\n'; }`,
+        "slept=0",
+        "sleep() { slept=$((slept + $1)); }",
+        "release=7-1",
+        "https=no",
+        oneLine,
+        check,
+        'if check; then printf "passed %s" "$slept"; else printf "failed %s: %s" "$slept" "$CHECK_SAID"; fi',
+      ].join("\n"),
+      encoding: "utf8",
+    });
+    expect(ran.stderr).toBe("");
+    return ran.stdout;
+  }
+
+  it("counts a PHP app's answer behind anything but LiteSpeed only from try 27, 130 seconds after the switch", () => {
+    expect(checked(PHP, "Apache")).toBe("passed 130");
+    expect(checked(PHP, "LiteSpeed")).toBe("passed 0");
+    expect(checked(STATIC, "Apache")).toBe("passed 0");
+    expect(checked(PHP, "Apache", 500)).toBe("failed 135: it answered 500 with release 7-1");
   });
 
   it("keeps the plan's kept folders in shared/ and links them into the release before the switch", () => {
@@ -395,24 +466,21 @@ sftp() {
 });
 
 describe("renderSftpPhpLines", () => {
-  it("loads env.php in each module's way in .htaccess, and in .user.ini", () => {
+  it("turns opcache.revalidate_path on and loads env.php, in each module's way in .htaccess, and in .user.ini", () => {
     const lines = renderSftpPhpLines("/home/u1/opscrew/notes-prod/shared/env.php");
     expect(lines.htaccess).toBe(
-      [
-        "<IfModule LiteSpeed>",
-        'php_value auto_prepend_file "/home/u1/opscrew/notes-prod/shared/env.php"',
-        "</IfModule>",
-        "<IfModule lsapi_module>",
-        'php_value auto_prepend_file "/home/u1/opscrew/notes-prod/shared/env.php"',
-        "</IfModule>",
-        "<IfModule php_module>",
-        'php_value auto_prepend_file "/home/u1/opscrew/notes-prod/shared/env.php"',
-        "</IfModule>",
-        "",
-      ].join("\n"),
+      ["LiteSpeed", "lsapi_module", "php_module"]
+        .flatMap((module) => [
+          `<IfModule ${module}>`,
+          "php_flag opcache.revalidate_path on",
+          'php_value auto_prepend_file "/home/u1/opscrew/notes-prod/shared/env.php"',
+          "</IfModule>",
+        ])
+        .concat("")
+        .join("\n"),
     );
     expect(lines.userIni).toBe(
-      '; BEGIN OpsCrew\nauto_prepend_file = "/home/u1/opscrew/notes-prod/shared/env.php"\n; END OpsCrew\n',
+      '; BEGIN OpsCrew\nopcache.revalidate_path = 1\nauto_prepend_file = "/home/u1/opscrew/notes-prod/shared/env.php"\n; END OpsCrew\n',
     );
   });
 

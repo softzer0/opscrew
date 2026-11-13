@@ -231,7 +231,7 @@ jobs:
             exit 1
           }
 
-          # 1. What runs now, and the lines that load the app's settings (none for a static site).
+          # 1. What runs now, and the PHP lines provision wrote (none for a static site).
           {
             printf -- '-@get %s %s\\n' "$(q "$FOLDER/state/status")" "$(q "$work/status")"
             printf -- '-@get %s %s\\n' "$(q "$FOLDER/shared/env.htaccess")" "$(q "$work/env.htaccess")"
@@ -291,10 +291,11 @@ jobs:
             failed "the switch over SFTP failed; \${running:-nothing} still runs unless the rename went through"
           fi
 
-          # 4. The hostname asked every 5 seconds, for up to 125 seconds, until it answers 2xx or 3xx with
-          # the release: behind LiteSpeed the first such answer counts, as does a static site's; a PHP app
-          # elsewhere needs one past PHP's realpath cache (120 seconds), which until then can keep the old
-          # release. CHECK_SAID holds the last answer.
+          # 4. The hostname asked every 5 seconds, for up to 135 seconds, until it answers 2xx or 3xx with
+          # the release: behind LiteSpeed the first such answer counts, as does a static site's; a PHP app's
+          # elsewhere only from try 27, 130 seconds after the switch, as PHP may run the release before until
+          # its path cache expires (120 seconds, with the PHP lines' opcache.revalidate_path; research R16).
+          # CHECK_SAID holds the last answer.
           scheme=http; if [ "$https" = yes ]; then scheme=https; fi
           header_of() {
             printf '%s\\n' "$1" | tr -d '\\r' | sed -n "s/^$2:[[:space:]]*//Ip" | tail -n 1
@@ -302,7 +303,7 @@ jobs:
           check() {
             local try answer code served
             CHECK_SAID="no answer"
-            for ((try = 1; try <= 26; try++)); do
+            for ((try = 1; try <= 28; try++)); do
               if [ "$try" -gt 1 ]; then sleep 5; fi
               if answer=$(curl -sS -o /dev/null -D - --max-time 30 "$scheme://"'staging-shop.example.com/api/health' 2>&1); then
                 code=$(printf '%s\\n' "$answer" | head -n 1 | cut -d ' ' -f 2)
@@ -310,7 +311,7 @@ jobs:
                 CHECK_SAID="it answered $code with release \${served:-none}"
                 if [[ $code =~ ^[23][0-9][0-9]$ ]] && [ "$served" = "$release" ]; then
                   case $(header_of "$answer" Server) in LiteSpeed*) return 0 ;; esac
-                  if [ "$try" -ge 25 ]; then return 0; fi
+                  if [ "$try" -ge 27 ]; then return 0; fi
                 fi
               else
                 CHECK_SAID=$(one_line "$answer")
@@ -557,7 +558,7 @@ jobs:
             exit 1
           }
 
-          # 1. What runs now, and the lines that load the app's settings (none for a static site).
+          # 1. What runs now, and the PHP lines provision wrote (none for a static site).
           {
             printf -- '-@get %s %s\\n' "$(q "$FOLDER/state/status")" "$(q "$work/status")"
             printf -- '-@get %s %s\\n' "$(q "$FOLDER/shared/env.htaccess")" "$(q "$work/env.htaccess")"
@@ -617,10 +618,11 @@ jobs:
             failed "the switch over SFTP failed; \${running:-nothing} still runs unless the rename went through"
           fi
 
-          # 4. The hostname asked every 5 seconds, for up to 125 seconds, until it answers 2xx or 3xx with
-          # the release: behind LiteSpeed the first such answer counts, as does a static site's; a PHP app
-          # elsewhere needs one past PHP's realpath cache (120 seconds), which until then can keep the old
-          # release. CHECK_SAID holds the last answer.
+          # 4. The hostname asked every 5 seconds, for up to 135 seconds, until it answers 2xx or 3xx with
+          # the release: behind LiteSpeed the first such answer counts, as does a static site's; a PHP app's
+          # elsewhere only from try 27, 130 seconds after the switch, as PHP may run the release before until
+          # its path cache expires (120 seconds, with the PHP lines' opcache.revalidate_path; research R16).
+          # CHECK_SAID holds the last answer.
           scheme=http; if [ "$https" = yes ]; then scheme=https; fi
           header_of() {
             printf '%s\\n' "$1" | tr -d '\\r' | sed -n "s/^$2:[[:space:]]*//Ip" | tail -n 1
@@ -628,7 +630,7 @@ jobs:
           check() {
             local try answer code served
             CHECK_SAID="no answer"
-            for ((try = 1; try <= 26; try++)); do
+            for ((try = 1; try <= 28; try++)); do
               if [ "$try" -gt 1 ]; then sleep 5; fi
               if answer=$(curl -sS -o /dev/null -D - --max-time 30 "$scheme://"'staging-shop.example.com/api/health' 2>&1); then
                 code=$(printf '%s\\n' "$answer" | head -n 1 | cut -d ' ' -f 2)

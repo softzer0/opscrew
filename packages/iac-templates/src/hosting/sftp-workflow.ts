@@ -65,11 +65,13 @@ export function hostingKeptFolders(plan: Pick<DeployPlan, "storage">): string[] 
 }
 
 /**
- * The lines an app's releases get to load its settings on an SFTP-only host (027 plan 10):
+ * The PHP lines a PHP app's releases get on an SFTP-only host (027 plan 10):
  * `shared/env.htaccess`, inside OpsCrew's `.htaccess` block, and `shared/env.user.ini`, the
- * release's `.user.ini` block, both naming `envPhp` (`shared/env.php`'s path as PHP sees it).
- * `opscrew provision` writes them beside `env.php`; the deploy reads them, so no path of the
- * host's is in the repository. As the agent's on a panel account.
+ * release's `.user.ini` block. Each turns `opcache.revalidate_path` on, so a switch reaches every
+ * PHP process once PHP's path cache expires (research R16), and loads the app's settings from
+ * `envPhp` (`shared/env.php`'s path as PHP sees it). `opscrew provision` writes them beside
+ * `env.php`; the deploy reads them, so no path of the host's is in the repository. As the agent's
+ * on a panel account.
  */
 export function renderSftpPhpLines(envPhp: string): { htaccess: string; userIni: string } {
   if (!/^\/[^"\0\r\n]*$/.test(envPhp)) {
@@ -81,10 +83,11 @@ export function renderSftpPhpLines(envPhp: string): { htaccess: string; userIni:
   return {
     htaccess: ["LiteSpeed", "lsapi_module", "php_module"]
       .map(
-        (module) => `<IfModule ${module}>\nphp_value auto_prepend_file "${envPhp}"\n</IfModule>\n`,
+        (module) =>
+          `<IfModule ${module}>\nphp_flag opcache.revalidate_path on\nphp_value auto_prepend_file "${envPhp}"\n</IfModule>\n`,
       )
       .join(""),
-    userIni: `; BEGIN OpsCrew\nauto_prepend_file = "${envPhp}"\n; END OpsCrew\n`,
+    userIni: `; BEGIN OpsCrew\nopcache.revalidate_path = 1\nauto_prepend_file = "${envPhp}"\n; END OpsCrew\n`,
   };
 }
 
@@ -287,7 +290,7 @@ function deployScript(plan: DeployPlan, webRoot: string, app: "static" | "php"):
     "  exit 1",
     "}",
     "",
-    "# 1. What runs now, and the lines that load the app's settings (none for a static site).",
+    "# 1. What runs now, and the PHP lines provision wrote (none for a static site).",
     "{",
     '  printf -- \'-@get %s %s\\n\' "$(q "$FOLDER/state/status")" "$(q "$work/status")"',
     '  printf -- \'-@get %s %s\\n\' "$(q "$FOLDER/shared/env.htaccess")" "$(q "$work/env.htaccess")"',
@@ -349,10 +352,11 @@ function deployScript(plan: DeployPlan, webRoot: string, app: "static" | "php"):
     '  failed "the switch over SFTP failed; ${running:-nothing} still runs unless the rename went through"',
     "fi",
     "",
-    "# 4. The hostname asked every 5 seconds, for up to 125 seconds, until it answers 2xx or 3xx with",
-    "# the release: behind LiteSpeed the first such answer counts, as does a static site's; a PHP app",
-    "# elsewhere needs one past PHP's realpath cache (120 seconds), which until then can keep the old",
-    "# release. CHECK_SAID holds the last answer.",
+    "# 4. The hostname asked every 5 seconds, for up to 135 seconds, until it answers 2xx or 3xx with",
+    "# the release: behind LiteSpeed the first such answer counts, as does a static site's; a PHP app's",
+    "# elsewhere only from try 27, 130 seconds after the switch, as PHP may run the release before until",
+    "# its path cache expires (120 seconds, with the PHP lines' opcache.revalidate_path; research R16).",
+    "# CHECK_SAID holds the last answer.",
     'scheme=http; if [ "$https" = yes ]; then scheme=https; fi',
     "header_of() {",
     "  printf '%s\\n' \"$1\" | tr -d '\\r' | sed -n \"s/^$2:[[:space:]]*//Ip\" | tail -n 1",
@@ -360,7 +364,7 @@ function deployScript(plan: DeployPlan, webRoot: string, app: "static" | "php"):
     "check() {",
     "  local try answer code served",
     '  CHECK_SAID="no answer"',
-    "  for ((try = 1; try <= 26; try++)); do",
+    "  for ((try = 1; try <= 28; try++)); do",
     '    if [ "$try" -gt 1 ]; then sleep 5; fi',
     `    if answer=$(curl -sS -o /dev/null -D - --max-time 30 "$scheme://"${shellQuote(`${host}${path}`)} 2>&1); then`,
     "      code=$(printf '%s\\n' \"$answer\" | head -n 1 | cut -d ' ' -f 2)",
@@ -371,7 +375,7 @@ function deployScript(plan: DeployPlan, webRoot: string, app: "static" | "php"):
       ? ["        return 0"]
       : [
           '        case $(header_of "$answer" Server) in LiteSpeed*) return 0 ;; esac',
-          '        if [ "$try" -ge 25 ]; then return 0; fi',
+          '        if [ "$try" -ge 27 ]; then return 0; fi',
         ]),
     "      fi",
     "    else",

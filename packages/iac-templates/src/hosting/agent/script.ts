@@ -247,7 +247,8 @@ header_of() {
 # OpsCrew's .htaccess block for release $1 (plan 5): every other hostname refused, HTTPS forced
 # once the certificate verifies, no listings, dotfiles refused (and with the web root ".", the
 # app's packages and its storage), the security headers and the release's, the PHP handler, and
-# the app's settings loaded before each PHP request where shared/env.php is; last, where
+# for a PHP app, in each PHP module's block, opcache.revalidate_path on (user_ini_block says why)
+# and the app's settings loaded before each request where shared/env.php is; last, where
 # fallback_needed says so, every path that is no file or folder sent to index.php.
 htaccess_block() {
   local host module
@@ -267,9 +268,13 @@ htaccess_block() {
   fi
   printf 'Header always set X-OpsCrew-Release "%s"\\n' "$1"
   if [ -n "$PHP_HANDLER" ]; then printf 'AddHandler %s .php\\n' "$PHP_HANDLER"; fi
-  if [ -f shared/env.php ]; then
+  if [ "$APP_KIND" = php ]; then
     for module in LiteSpeed lsapi_module php_module; do
-      printf '<IfModule %s>\\nphp_value auto_prepend_file "%s"\\n</IfModule>\\n' "$module" "$DIR/shared/env.php"
+      printf '<IfModule %s>\\nphp_flag opcache.revalidate_path on\\n' "$module"
+      if [ -f shared/env.php ]; then
+        printf 'php_value auto_prepend_file "%s"\\n' "$DIR/shared/env.php"
+      fi
+      printf '%s\\n' '</IfModule>'
     done
   fi
   if fallback_needed "$1"; then
@@ -293,10 +298,16 @@ fallback_needed() {
   fi
 }
 
-# OpsCrew's .user.ini block: the app's settings loaded where PHP runs as FPM or CGI.
+# OpsCrew's .user.ini block, read where PHP runs as FPM or CGI, for a PHP app:
+# opcache.revalidate_path on, and the app's settings loaded where shared/env.php is. Without
+# revalidate_path, OPcache keeps running the release current pointed at when it first compiled a
+# script, until PHP-FPM restarts, which an account's user can't do on Apache; with it, a switch
+# reaches each PHP process once its path cache (realpath_cache_ttl, 120 s) expires (research R16).
 user_ini_block() {
-  [ -f shared/env.php ] || return 0
-  printf '; BEGIN OpsCrew\\nauto_prepend_file = "%s"\\n; END OpsCrew\\n' "$DIR/shared/env.php"
+  [ "$APP_KIND" = php ] || return 0
+  printf '%s\\n' '; BEGIN OpsCrew' 'opcache.revalidate_path = 1'
+  if [ -f shared/env.php ]; then printf 'auto_prepend_file = "%s"\\n' "$DIR/shared/env.php"; fi
+  printf '%s\\n' '; END OpsCrew'
 }
 
 # Writes $1 as OpsCrew's block (the function $4 for release $5), then what the running release's
@@ -590,22 +601,24 @@ serve() {
   if [ "$APP_KIND" = php ]; then purge; fi
 }
 
-# Step 9: asks the hostname for the health path every 5 seconds, for up to 125 seconds, until it
-# answers 2xx or 3xx with release $1. Behind LiteSpeed the first such answer counts, as its restart
-# makes every PHP process follow at once; elsewhere only one past PHP's realpath cache (120
-# seconds), which until then can keep the old release. CHECK_SAID holds the last answer.
+# Step 9: asks the hostname for the health path every 5 seconds, for up to 135 seconds, until it
+# answers 2xx or 3xx with release $1. The first such answer counts behind LiteSpeed, whose restart
+# makes every PHP process follow at once, and for any app but a PHP app; elsewhere a PHP app's
+# counts only from try 27, 130 seconds after the switch, as PHP may run the release before until
+# its path cache expires (120 s, user_ini_block; research R16). CHECK_SAID holds the last answer.
 health_check() {
   local try answer code release
   CHECK_SAID="no answer"
-  for ((try = 1; try <= 26; try++)); do
+  for ((try = 1; try <= 28; try++)); do
     if [ "$try" -gt 1 ]; then sleep 5; fi
     if answer=$(fetch "$(site_url)$HEALTH_PATH" 2>&1); then
       code=$(printf '%s\\n' "$answer" | head -n 1 | cut -d ' ' -f 2)
       release=$(header_of "$answer" X-OpsCrew-Release)
       CHECK_SAID="it answered $code with release \${release:-none}"
       if [[ $code =~ ^[23][0-9][0-9]$ ]] && [ "$release" = "$1" ]; then
+        if [ "$APP_KIND" != php ]; then return 0; fi
         case $(header_of "$answer" Server) in LiteSpeed*) return 0 ;; esac
-        if [ "$try" -ge 25 ]; then return 0; fi
+        if [ "$try" -ge 27 ]; then return 0; fi
       fi
     else
       CHECK_SAID=$(line_of "$answer")

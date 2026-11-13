@@ -135,7 +135,7 @@ describe("writeRequest and waitForResult", () => {
     expect(ticks).toBe(2);
   });
 
-  it("says after 3 minutes that the agent's cron line may be missing", async () => {
+  it("says after 5 minutes that the agent's cron line may be missing", async () => {
     const files = new MemoryFiles();
     let slept = 0;
     const error = await waitForResult(files, FOLDER, "b".repeat(64), {
@@ -144,7 +144,9 @@ describe("writeRequest and waitForResult", () => {
       },
     }).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(OpsCrewError);
-    expect((error as OpsCrewError).message).toContain("Its cron line may be missing");
-    expect(slept).toBe(3 * 60 * 1000);
+    expect((error as OpsCrewError).message).toContain(
+      "didn't carry out OpsCrew's request within 5 minutes. Its cron line may be missing",
+    );
+    expect(slept).toBe(5 * 60 * 1000);
   });
 });

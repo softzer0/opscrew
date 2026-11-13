@@ -1,8 +1,9 @@
 /**
  * `opscrew status` for an app on a hosting account with a panel (027 plan 6), read-only: what the
  * agent's `state/status` says (the running release, those kept, the last attempt and its reason),
- * the hostname's certificate, the account's disk left, and on Apache how long a switch takes to
- * reach every PHP process. Also how every command after provision reaches the account.
+ * the hostname's certificate, the account's disk left, and for a PHP app on Apache how long a
+ * switch takes to reach every PHP process. Also how every command after provision reaches the
+ * account.
  */
 import type { HostingFiles, HostingPanel } from "@opscrew/contracts";
 import { errorText, isUserFacingError, OpsCrewError } from "@opscrew/core";
@@ -208,8 +209,9 @@ async function certificateLine(panel: HostingPanel, hostname: string): Promise<s
  * What `status` shows of an app on a hosting account (027 plan 6), read-only: the account and the
  * app's folder, the running release and those kept, the last attempt and its reason (from the
  * agent's `state/status`), the hostname's certificate, the account's facts with its disk left
- * (`hostingAccountLines`), and on Apache that a switch reaches every PHP process within 120 s. A
- * part that can't be read says why in its place; nothing is read before provision ran. Redacted.
+ * (`hostingAccountLines`), and for a PHP app on Apache that a switch reaches every PHP process in
+ * about 2 minutes (research R16). A part that can't be read says why in its place; nothing is read
+ * before provision ran. Redacted.
  */
 export async function hostingStatusReport(
   deps: PhaseDeps,
@@ -273,9 +275,9 @@ export async function hostingStatusReport(
     }
     const account = await readHostingAccount(reach.panel, deps.fetch);
     lines.push(...hostingAccountLines(account));
-    if (account.webServer === "Apache") {
+    if (account.webServer === "Apache" && hostingTarget(plan).app === "php") {
       lines.push(
-        "On Apache a switch reaches every PHP process within 120 s (PHP's realpath cache): for up to 2 minutes after a deploy or a rollback, some requests may still run the release before.",
+        "On Apache with PHP-FPM, some requests may still run the release before for about 2 minutes after a deploy or a rollback: OpsCrew turns on opcache.revalidate_path so PHP's code cache follows the switch once PHP's path cache expires, and its checks wait that long.",
       );
     }
     await deps.audit.append({

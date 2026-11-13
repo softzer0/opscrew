@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { FakeSftpHost, SftpFiles } from "@opscrew/connector-sftp";
-import type { ApprovalRequest, CommandRunner, FetchLike } from "@opscrew/contracts";
+import type { ApprovalRequest, Clock, CommandRunner, FetchLike } from "@opscrew/contracts";
 import { NodeCommandRunner, type OpsCrewError, Redactor } from "@opscrew/core";
 import { fakeSecret, materializeFixture } from "@opscrew/core/testing";
 import { detectProject } from "@opscrew/detect";
@@ -132,12 +132,16 @@ async function deployedApp() {
     `https://github.com/${REPOSITORY.owner}/${REPOSITORY.repo}.git`,
   ]);
   const plan = sftpPlan();
-  const deps = (handler = new ScriptedApprovalHandler()) =>
+  const deps = (
+    handler = new ScriptedApprovalHandler(),
+    more: { fetch?: FetchLike; clock?: Clock } = {},
+  ) =>
     createTestPhaseDeps({
       root,
       env: sftpEnv(root),
       runner: runnerOn(host),
       approvalHandler: handler,
+      ...more,
     });
   const setup = await deps();
   await writeArtifact("plan", setup.paths.files.plan, plan);
@@ -211,13 +215,40 @@ describe("status on an SFTP-only host", () => {
   });
 });
 
+/**
+ * The hostname as `server` serves the fake host's app: each answer `status`, naming the release
+ * `current` points at; the URLs asked. The clock moves only with the waits.
+ */
+function webServer(host: FakeSftpHost, server: string, status = 200) {
+  const asked: string[] = [];
+  let now = Date.parse("2026-11-13T10:00:00Z");
+  let waited = 0;
+  const fetch: FetchLike = async (url) => {
+    asked.push(String(url));
+    const release = host.readlink("opscrew/current")?.replace(/^releases\//, "") ?? "";
+    return new Response(null, { status, headers: { server, "x-opscrew-release": release } });
+  };
+  return {
+    fetch,
+    clock: { now: () => new Date(now) } satisfies Clock,
+    sleep: async (ms: number) => {
+      now += ms;
+      waited += ms;
+    },
+    asked,
+    /** The seconds the rollback waited. */
+    waited: () => waited / 1000,
+  };
+}
+
 describe("rollback on an SFTP-only host", () => {
-  it("switches current to the previous release over SFTP in one rename, then pauses the deploys", async () => {
+  it("switches current to the previous release over SFTP in one rename, waits for PHP's path cache and checks, then pauses the deploys", async () => {
     const w = await deployedApp();
     const github = hostingGitHub(w.plan);
     const handler = new ScriptedApprovalHandler(() => true);
-    const deps = await w.deps(handler);
-    const result = await rollback(deps, { services: { github } });
+    const web = webServer(w.host, "Apache");
+    const deps = await w.deps(handler, { fetch: web.fetch, clock: web.clock });
+    const result = await rollback(deps, { services: { github, sleep: web.sleep } });
     expect(result).toMatchObject({
       kind: "rolled-back",
       how: "release",
@@ -246,6 +277,89 @@ describe("rollback on an SFTP-only host", () => {
     expect(deps.audit.entries.map((entry) => entry.action)).toContain(
       "switch to release 790-1 over SFTP",
     );
+    // The health path asked as the deploy workflow asks it: an answer with the release counts on
+    // Apache only from 130 seconds after the switch, the 27th try.
+    expect(handler.requests[0]?.details).toContain(
+      "Then it checks that the app answers with it: on Apache with PHP-FPM, PHP may run the release before for about 2 minutes, and the check waits that long.",
+    );
+    expect(deps.reporter.text()).toContain(`Checking that ${HOSTNAME}/ answers with release 790-1`);
+    expect(deps.reporter.text()).toContain(
+      "Waiting for PHP's path cache: PHP may still run the release before for about 2 minutes after the switch, so an answer counts only after that, or at once behind LiteSpeed.",
+    );
+    expect(web.waited()).toBe(130);
+    // Whether the certificate verifies, then the health path 27 times.
+    expect(web.asked).toEqual(Array.from({ length: 28 }, () => `https://${HOSTNAME}/`));
+  });
+
+  it("counts the first answer with the release behind LiteSpeed", async () => {
+    const w = await deployedApp();
+    const web = webServer(w.host, "LiteSpeed");
+    const deps = await w.deps(new ScriptedApprovalHandler(() => true), {
+      fetch: web.fetch,
+      clock: web.clock,
+    });
+    const result = await rollback(deps, {
+      services: { github: hostingGitHub(w.plan), sleep: web.sleep },
+    });
+    expect(result).toMatchObject({ kind: "rolled-back", paused: true });
+    expect(web.waited()).toBe(0);
+  });
+
+  it("says so in the deploy workflow's terms when the app doesn't answer with the release, and leaves the deploys unpaused", async () => {
+    const w = await deployedApp();
+    const github = hostingGitHub(w.plan);
+    const web = webServer(w.host, "Apache", 500);
+    const deps = await w.deps(new ScriptedApprovalHandler(() => true), {
+      fetch: web.fetch,
+      clock: web.clock,
+    });
+    const error = await rollback(deps, { services: { github, sleep: web.sleep } }).catch(
+      (thrown: unknown) => thrown as OpsCrewError,
+    );
+    expect(error).toMatchObject({
+      code: "COMMAND_FAILED",
+      message: `OpsCrew switched prod to release 790-1 over SFTP, but ${HOSTNAME}/ didn't answer 2xx or 3xx with it (it answered 500 with release 790-1). prod's deploys aren't paused.`,
+      hint: "`opscrew status --env prod` shows the release that runs now. Then roll back to another release (`opscrew rollback --env prod --list` lists them) or deploy a fix forward.",
+    });
+    expect(web.waited()).toBe(135);
+    expect(w.host.readlink("opscrew/current")).toBe("releases/790-1");
+    expect(github.variables.get(DEPLOY_PAUSED_VARIABLE)).toBeUndefined();
+  });
+
+  it("asks over HTTP while the hostname's certificate doesn't verify", async () => {
+    const w = await deployedApp();
+    const web = webServer(w.host, "LiteSpeed");
+    const fetch: FetchLike = async (url, init) => {
+      if (String(url).startsWith("https:")) throw new Error("fetch failed");
+      return web.fetch(url, init);
+    };
+    const deps = await w.deps(new ScriptedApprovalHandler(() => true), {
+      fetch,
+      clock: web.clock,
+    });
+    await rollback(deps, { services: { github: hostingGitHub(w.plan), sleep: web.sleep } });
+    expect(web.asked).toEqual([`http://${HOSTNAME}/`]);
+  });
+
+  it("doesn't wait or ask for a static site", async () => {
+    const w = await deployedApp();
+    const site = DeployPlanSchema.parse({
+      ...w.plan,
+      target: { provider: "hosting", panel: "sftp", app: "static", webRoot: ".", cron: [] },
+    });
+    const setup = await w.deps();
+    await writeArtifact("plan", setup.paths.files.plan, site);
+    const handler = new ScriptedApprovalHandler(() => true);
+    const web = webServer(w.host, "Apache");
+    const deps = await w.deps(handler, { fetch: web.fetch, clock: web.clock });
+    const result = await rollback(deps, {
+      services: { github: hostingGitHub(site), sleep: web.sleep },
+    });
+    expect(result).toMatchObject({ kind: "rolled-back", target: { version: "790-1" } });
+    expect(handler.requests[0]?.details).not.toContain("checks that the app answers");
+    expect(deps.reporter.text()).not.toContain("Waiting for PHP's path cache");
+    expect(web.asked).toEqual([]);
+    expect(web.waited()).toBe(0);
   });
 
   it("changes nothing when the approval is refused", async () => {
@@ -608,11 +722,12 @@ describe("provision on an SFTP-only host", () => {
     expect(host.modeOf("opscrew/shared/.env")).toBe(0o600);
     expect(host.text("opscrew/shared/.env")).toContain(`NOTES_API_KEY='Notes ${APP_SECRET}'`);
     expect(host.text("opscrew/shared/env.php")).toContain("'NOTES_API_KEY' => true,");
+    // The PHP lines each release gets: the app's settings, and PHP following each switch (R16).
     expect(host.text("opscrew/shared/env.htaccess")).toContain(
-      'php_value auto_prepend_file "/home/web/opscrew/shared/env.php"',
+      'php_flag opcache.revalidate_path on\nphp_value auto_prepend_file "/home/web/opscrew/shared/env.php"',
     );
     expect(host.text("opscrew/shared/env.user.ini")).toContain(
-      'auto_prepend_file = "/home/web/opscrew/shared/env.php"',
+      'opcache.revalidate_path = 1\nauto_prepend_file = "/home/web/opscrew/shared/env.php"',
     );
 
     // GitHub Actions' key: restricted in authorized_keys beside the user's, its private half and

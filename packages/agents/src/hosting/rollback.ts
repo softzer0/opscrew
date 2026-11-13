@@ -17,6 +17,7 @@ import {
   toPosixRelative,
 } from "@opscrew/core";
 import { checkEnvironmentKey } from "@opscrew/iac-templates";
+import type { PhaseDeps } from "../context";
 import { NOTHING_CHANGED } from "../promote/shared";
 import { approve } from "../promote/site";
 import { choose, type DatabaseOffer } from "../rollback/database";
@@ -32,6 +33,7 @@ import { type RollbackRun, rollbackRepository } from "../rollback/run";
 import { pausedText, requireNoDeployRunning, UNKNOWN_COMMIT } from "../rollback/server";
 import type { VersionMark, VersionView } from "../rollback/types";
 import { deployPauseOf, setDeployPause } from "../shared/deploy-pause";
+import { errorText } from "../verify/checks";
 import { hostingTarget } from "./provision-plans";
 import { sendRequest } from "./requests";
 import { reachSftpHost } from "./sftp";
@@ -76,6 +78,62 @@ async function switchOverSftp(
     "",
   ].join("\n");
   await files.writeFile(`${folder}/state/status`, new TextEncoder().encode(text), 0o600);
+}
+
+/** The deploy workflow's check: its tries, 5 seconds apart, about 2 minutes. */
+const CHECK_TRIES = 28;
+const CHECK_EVERY_MS = 5_000;
+/**
+ * How long after a switch a PHP app's answer counts, except behind LiteSpeed: PHP's path cache
+ * (120 s) and a margin, as the deploy workflow's check (research R16).
+ */
+const PHP_PATH_CACHE_MS = 130_000;
+
+/**
+ * After a PHP app's switch over SFTP, at `switchedAt` (ms), asks the health path as the deploy
+ * workflow's check does: over HTTPS when the hostname's certificate verifies, else HTTP, up to
+ * {@link CHECK_TRIES} times, until it answers 2xx or 3xx naming release `target`. The first such
+ * answer counts behind LiteSpeed; elsewhere one from {@link PHP_PATH_CACHE_MS} after the switch,
+ * as PHP may run the release before until its path cache expires. Returns the last answer, in the
+ * workflow's words, when none counted.
+ */
+async function checkSwitch(
+  deps: PhaseDeps,
+  sleep: (ms: number) => Promise<void>,
+  input: { hostname: string; path: string; target: string; switchedAt: number },
+): Promise<string | undefined> {
+  const { hostname, path, target, switchedAt } = input;
+  const ask = async (url: string) => {
+    const response = await deps.fetch(url, {
+      method: "GET",
+      redirect: "manual",
+      signal: AbortSignal.timeout(30_000),
+    });
+    await response.body?.cancel();
+    return response;
+  };
+  let scheme = "https";
+  try {
+    await ask(`https://${hostname}/`);
+  } catch {
+    scheme = "http";
+  }
+  let said = "no answer";
+  for (let attempt = 1; attempt <= CHECK_TRIES; attempt++) {
+    if (attempt > 1) await sleep(CHECK_EVERY_MS);
+    try {
+      const response = await ask(`${scheme}://${hostname}${path}`);
+      const release = response.headers.get("x-opscrew-release") ?? "";
+      said = `it answered ${response.status} with release ${release || "none"}`;
+      if (response.status >= 200 && response.status < 400 && release === target) {
+        if ((response.headers.get("server") ?? "").startsWith("LiteSpeed")) return undefined;
+        if (deps.clock.now().getTime() - switchedAt >= PHP_PATH_CACHE_MS) return undefined;
+      }
+    } catch (error) {
+      said = errorText(error);
+    }
+  }
+  return said;
 }
 
 /** How the rollback treats the database, once chosen. */
@@ -175,7 +233,8 @@ const releaseWords = (id: string, commit: string | undefined) =>
  *    typed (`--confirm` in a script); `--yes` never grants it;
  * 5. the `rollback` request, carried out by the agent (with a restore it dumps the database first,
  *    ADR 0028 D11), or on an SFTP-only host the switch over SFTP and its `state/status`
- *    ({@link switchOverSftp}); a refusal or failure stops with its reason, the deploys not paused;
+ *    ({@link switchOverSftp}), then for a PHP app the deploy workflow's check ({@link checkSwitch});
+ *    a refusal or failure stops with its reason, the deploys not paused;
  * 6. the deploy pause, pinned to the release; `rollback.json` records it. The agent's `state/last`
  *    stays, so a push of the release rolled back from can't bring it back.
  */
@@ -190,6 +249,7 @@ export async function rollbackHosting(
       ? await reachSftpHost(deps, plan)
       : await reachHostingAccount(deps, plan, services);
   const sftp = "sftp" in reach ? reach.files : undefined;
+  const php = hostingTarget(plan).app === "php";
   const files = "sftp" in reach ? reach.files : requireFiles(reach, "roll the app back");
   const { folder, hostname } = reach;
   const where = `${sftp === undefined ? "the account" : "the SFTP host"} ${reach.account}`;
@@ -271,7 +331,7 @@ export async function rollbackHosting(
         `Target: ${environment} (https://${hostname}) on ${where}, ${toPosixRelative(deps.paths.root, deps.paths.files.plan)} with plan hash ${targetPlanHash}`,
         sftp === undefined
           ? `Switch: the agent on the account points the hostname at release ${target} with one rename, makes PHP and LiteSpeed's cache serve it, and checks that the app answers; nothing is rebuilt. Afterwards ${environment}'s deploys pause until \`${command} --resume\`.`
-          : `Switch: OpsCrew points the app's folder current at release ${target} over SFTP with one rename; nothing is rebuilt, and PHP may run the release before for up to 2 minutes. Afterwards ${environment}'s deploys pause until \`${command} --resume\`.`,
+          : `Switch: OpsCrew points the app's folder current at release ${target} over SFTP with one rename; nothing is rebuilt.${php ? " Then it checks that the app answers with it: on Apache with PHP-FPM, PHP may run the release before for about 2 minutes, and the check waits that long." : ""} Afterwards ${environment}'s deploys pause until \`${command} --resume\`.`,
         `Rollback hash: ${hash}`,
       ].join("\n"),
       hash,
@@ -296,6 +356,7 @@ export async function rollbackHosting(
         },
       );
     }
+    const switchedAt = deps.clock.now().getTime();
     await deps.audit.append({
       kind: "provider-call",
       actor: "opscrew",
@@ -303,6 +364,32 @@ export async function rollbackHosting(
       target: hash,
       decision: "approved",
     });
+    if (php) {
+      const path = plan.app.healthPath.startsWith("/")
+        ? plan.app.healthPath
+        : `/${plan.app.healthPath}`;
+      deps.reporter.step(`Checking that ${hostname}${path} answers with release ${target}`);
+      deps.reporter.info(
+        "Waiting for PHP's path cache: PHP may still run the release before for about 2 minutes after the switch, so an answer counts only after that, or at once behind LiteSpeed.",
+      );
+      const said = await checkSwitch(deps, run.services.sleep ?? realSleep, {
+        hostname,
+        path,
+        target,
+        switchedAt,
+      });
+      if (said !== undefined) {
+        throw new OpsCrewError(
+          "COMMAND_FAILED",
+          deps.redactor.redact(
+            `OpsCrew switched ${environment} to release ${target} over SFTP, but ${hostname}${path} didn't answer 2xx or 3xx with it (${said}). ${environment}'s deploys aren't paused.`,
+          ),
+          {
+            hint: `\`opscrew status${flags}\` shows the release that runs now. Then roll back to another release (\`${command} --list\` lists them) or deploy a fix forward.`,
+          },
+        );
+      }
+    }
   } else {
     deps.reporter.step(`Asking the agent on the account to switch to release ${target}`);
     const answer = await sendRequest(

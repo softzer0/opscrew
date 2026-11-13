@@ -202,9 +202,11 @@ After a PHP app's switch, the agent makes PHP serve the new release:
   The restart reaches **every PHP process of the account, other sites' included**, for a moment:
   LiteSpeed has no narrower restart for an account's user. It happens on every deploy and rollback
   of a PHP app; a static site's switch restarts nothing.
-- **On Apache,** PHP keeps a path cache for up to 120 seconds (`realpath_cache_ttl`), so for up to
-  2 minutes after a switch some requests may still run the release before. The agent's check
-  waits that long before it counts, and `npx opscrew status` says so.
+- **On Apache with PHP-FPM,** an account's user can't restart PHP, so some requests may still run
+  the release before for about 2 minutes after a deploy or a rollback. OpsCrew turns on
+  `opcache.revalidate_path` in each PHP release's `.user.ini` and `.htaccess`, so PHP's code cache
+  follows the switch once PHP's path cache expires (`realpath_cache_ttl`, 120 seconds). The agent's
+  check waits that long before it counts, and `npx opscrew status` says so.
 
 ## Your app's settings
 

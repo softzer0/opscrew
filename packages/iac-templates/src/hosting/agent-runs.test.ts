@@ -101,6 +101,9 @@ function afterBlock(htaccess: string | undefined): string {
 
 const APP_HTACCESS = laravelRelease("x")["public/.htaccess"];
 
+/** OpsCrew's .user.ini block of a PHP app without shared/env.php (research R16). */
+const USER_INI_BLOCK = "; BEGIN OpsCrew\nopcache.revalidate_path = 1\n; END OpsCrew\n";
+
 describe.skipIf(reason !== undefined)("the hosting agent", { timeout: 180_000 }, () => {
   it("makes its deploy key and the report on its first run, and a placeholder release", () => {
     const a = account();
@@ -210,7 +213,7 @@ describe.skipIf(reason !== undefined)("the hosting agent", { timeout: 180_000 },
       for (const module of ["LiteSpeed", "lsapi_module", "php_module"]) {
         expect(htaccess).toMatch(
           new RegExp(
-            `<IfModule ${module}>\\nphp_value auto_prepend_file "\\S+/shared/env\\.php"\\n</IfModule>\\n`,
+            `<IfModule ${module}>\\nphp_flag opcache\\.revalidate_path on\\nphp_value auto_prepend_file "\\S+/shared/env\\.php"\\n</IfModule>\\n`,
           ),
         );
       }
@@ -220,7 +223,7 @@ describe.skipIf(reason !== undefined)("the hosting agent", { timeout: 180_000 },
         `# BEGIN OpsCrew: app\n${APP_HTACCESS}# END OpsCrew: app\n`,
       );
       expect(a.file("releases/101-1/public/.user.ini")).toMatch(
-        /^; BEGIN OpsCrew\nauto_prepend_file = "\S+\/shared\/env\.php"\n; END OpsCrew\n$/,
+        /^; BEGIN OpsCrew\nopcache\.revalidate_path = 1\nauto_prepend_file = "\S+\/shared\/env\.php"\n; END OpsCrew\n$/,
       );
 
       // A run with nothing new does nothing.
@@ -253,6 +256,7 @@ describe.skipIf(reason !== undefined)("the hosting agent", { timeout: 180_000 },
       "RewriteRule ^(vendor|storage|composer\\.json|composer\\.lock)(/|$) - [F]\n",
     );
     expect(htaccess).not.toContain("auto_prepend_file");
+    expect(htaccess).not.toContain("opcache");
     expect(afterBlock(htaccess)).toBe(
       "# BEGIN OpsCrew: app\nErrorDocument 404 /404.html\n# END OpsCrew: app\n",
     );
@@ -381,7 +385,7 @@ describe.skipIf(reason !== undefined)("the hosting agent", { timeout: 180_000 },
       reason:
         "http://notes.example.com/ didn't answer 2xx or 3xx with it (it answered 500 with release 402-1); switched back to 401-1",
     });
-    expect(a.stubFile("sleep.log").trim().split("\n")).toHaveLength(25);
+    expect(a.stubFile("sleep.log").trim().split("\n")).toHaveLength(27);
     expect(dumpOf(a, "401-1.sql.gz")).toContain("state=one");
     expect(a.stubFile("purges").trim().split("\n")).toHaveLength(3);
   });
@@ -411,7 +415,7 @@ describe.skipIf(reason !== undefined)("the hosting agent", { timeout: 180_000 },
         `${cpanel}# BEGIN OpsCrew: app\n${APP_HTACCESS}# END OpsCrew: app\n`,
       );
       expect(a.file("releases/501-1/public/.user.ini")).toBe(
-        "; cPanel-generated php ini directives, do not edit\ndisplay_errors = Off\n",
+        `${USER_INI_BLOCK}; cPanel-generated php ini directives, do not edit\ndisplay_errors = Off\n`,
       );
       expect(a.file("releases/501-1/public/php.ini")).toBe("display_errors = Off\r\n");
       expect(a.file("releases/501-1/public/.well-known/acme-challenge/token")).toBe("proof");
@@ -447,7 +451,7 @@ describe.skipIf(reason !== undefined)("the hosting agent", { timeout: 180_000 },
       expect(a.run().output).toContain("Release 502-1 serves.");
       expect(a.file("releases/502-1/public/php.ini")).toBe(own["public/php.ini"]);
       expect(a.file("releases/502-1/public/.user.ini")).toBe(
-        `; BEGIN OpsCrew: app\n${own["public/.user.ini"]}; END OpsCrew: app\n`,
+        `${USER_INI_BLOCK}; BEGIN OpsCrew: app\n${own["public/.user.ini"]}; END OpsCrew: app\n`,
       );
       expect(a.file("releases/502-1/public/.well-known/security.txt")).toBe(
         own["public/.well-known/security.txt"],

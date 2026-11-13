@@ -60,7 +60,7 @@ describe("status on a hosting account", () => {
       "Last attempt: release 830-1 failed at 2026-11-12 11:00 UTC: https://notes.example.com/ didn't answer 2xx or 3xx with it (HTTP 500); switched back to 812-1.",
     );
     expect(lines.at(-1)).toBe(
-      "On Apache a switch reaches every PHP process within 120 s (PHP's realpath cache): for up to 2 minutes after a deploy or a rollback, some requests may still run the release before.",
+      "On Apache with PHP-FPM, some requests may still run the release before for about 2 minutes after a deploy or a rollback: OpsCrew turns on opcache.revalidate_path so PHP's code cache follows the switch once PHP's path cache expires, and its checks wait that long.",
     );
   });
 

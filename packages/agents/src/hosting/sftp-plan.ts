@@ -97,9 +97,9 @@ const FILE_REASONS: Readonly<Record<string, string>> = {
   "shared/env.php":
     "PHP runs it before each request to load the app's settings from shared/.env; no value is in it.",
   "shared/env.htaccess":
-    "The lines each release's .htaccess gets to run env.php before each request (LiteSpeed and Apache's PHP module).",
+    "The lines each release's .htaccess gets to run env.php before each request (LiteSpeed and Apache's PHP module). They also turn on opcache.revalidate_path, so PHP's code cache follows a switch.",
   "shared/env.user.ini":
-    "The lines each release's .user.ini gets to run env.php before each request (PHP-FPM and CGI).",
+    "The lines each release's .user.ini gets to run env.php before each request (PHP-FPM and CGI). They also turn on opcache.revalidate_path, so PHP's code cache follows a switch.",
 };
 
 /** One step in plain English, as the plan shows it. */
