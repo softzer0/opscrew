@@ -650,6 +650,16 @@ names the change.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates && npx vitest run --root packages/iac-templates src/hosting/agent && pnpm lint`
   - Effort: medium
 
+- [ ] T2746 A Node.js or Python app runs the new release from the first answer after each switch (research R14)
+  - Owns: `packages/iac-templates/src/hosting/agent/**`, `packages/iac-templates/src/hosting/agent.ts`, `packages/iac-templates/src/hosting/agent-apps.test.ts`, `packages/iac-templates/src/hosting/__fixtures__/shims/cloudlinux-selector.sh`, `packages/agents/src/hosting/**`, `docs/guide/hosting-accounts.md`
+  - Reads: research R14 (its last paragraphs); `iac-templates/src/hosting/agent/script.ts` (`app_create`, `own_passenger`, `own_running`, `switch_to`, `end_processes`, `touch_restart`)
+  - Accept:
+    - The selector's block stays as the selector writes it: `PassengerAppRoot` is the registered `app/`; the agent no longer rewrites it (`own_passenger`/`own_running` go). The app is created with `--startup-file current/<startup>` and `app/current` is a link to `../current`, made before `create`, so Node runs the current release's startup file through the link.
+    - Right after every switch of a Node.js or Python app (deploy, rollback, switch back) the agent touches `app/tmp/restart.txt` and ends the app's processes (the account user's processes whose command line or working folder names the app's folder, never the agent), before the health check; destroy ends them too, after the selector's destroy, so no process outlives the app (R14: 15 left `lsnode` processes filled the account's 100). PHP and static sites are unchanged.
+    - The fake selector writes the startup file it is given into its block; Linux tests: the block names `app/` and `current/<startup>` through a deploy, a rollback and a switch back; `app/tmp/restart.txt` is newer than each switch; the stand-in process in the old release ends. Plan B's and destroy's text and the guide say how the app is started.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates --filter=@opscrew/agents && npx vitest run --root packages/iac-templates src/hosting/agent && npx vitest run --root packages/agents src/hosting && pnpm lint`
+  - Effort: high
+
 ## Phase 9: Live passes and release (lead)
 
 - [ ] T2722 The cPanel live pass (lead): `docs/e2e-coverage.md` row and results.
