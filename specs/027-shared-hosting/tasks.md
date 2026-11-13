@@ -669,6 +669,10 @@ names the change.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates && npx vitest run --root packages/iac-templates src/hosting/agent && pnpm lint`
   - Effort: medium
 
+- [x] T2748 SFTP provision with --plan-only names the --approve to run, as a panel account's (the SFTP pass, run 1; lead)
+  - Owns: `packages/agents/src/hosting/sftp-provision.ts`, `packages/agents/src/hosting/sftp.test.ts`
+  - Accept: `--plan-only` returns `hostingPlanHashes` (the CLI and the MCP tool print the `--approve` command from it); a refused plan says "The hosting plan was not approved" (not "The The"). Tests for both.
+
 ## Phase 9: Live passes and release (lead)
 
 - [x] T2722 The cPanel live pass (lead): `docs/e2e-coverage.md` row and results.
