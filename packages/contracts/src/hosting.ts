@@ -107,6 +107,12 @@ export interface HostingCertificate {
   notAfter?: IsoDateTime;
   /** The panel's id for it, used to remove it after the hostname. */
   id?: string;
+  /**
+   * The names the installed certificate covers, as the panel lists them (`*.example.com` for a
+   * wildcard). OpsCrew counts a certificate as its own only when every name is the hostname or
+   * `www.` of it: a wildcard or a shared certificate is the account's, never removed by OpsCrew.
+   */
+  names?: string[];
   /** Whether the panel is issuing one now (cPanel's AutoSSL check in progress). */
   inProgress: boolean;
   /** The panel's reason when it can't issue one (the hostname's DNS points elsewhere, …). */
