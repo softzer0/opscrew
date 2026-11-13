@@ -664,3 +664,115 @@ failed "without a diagnostic" and the agent logged `fork: retry: Resource tempor
 (runs 21–24), so those runs say nothing about `PassengerAppRoot`. A one-time cron job of the founder's
 OK ended the 15 `lsnode` processes; the account went back to 0/100. Each `lsnode` process names the
 app's folder on its command line.
+
+## R15. Contabo's Auto Backup and Object Storage through the API (T2749, read 2026-11-13)
+
+Read 2026-11-13 from the generated API docs in https://github.com/contabo/cntb (`openapi/docs/*.md`;
+`https://api.contabo.com/` and its OpenAPI file answered 404 to a fetch), the provider docs and
+source at https://github.com/contabo/terraform-provider-contabo (v0.1.44, 2026-07-16),
+https://help.contabo.com/en/support/solutions/articles/103000331723-how-do-i-order-the-auto-backup-add-on-,
+https://contabo.com/en/auto-backup/ and https://contabo.com/en/object-storage/. The add-on id table
+(https://contabo.com/en/product-list/?show_ids=true) came back truncated, so no add-on id and no
+add-on price could be read from it.
+
+**Auto Backup: what it is** ([help article](https://help.contabo.com/en/support/solutions/articles/103000331723-how-do-i-order-the-auto-backup-add-on-),
+[product page](https://contabo.com/en/auto-backup/))
+- A paid add-on of a Cloud VPS, ordered separately from the server. It can be cancelled without
+  cancelling the VPS, and the other way round (product page).
+- One backup a day, kept up to 10 days (at most 10, the oldest deleted first). The backup time is
+  set by Contabo and can't be changed (from a search summary of the help article, *unverified*).
+- Stored off the server, on a separate Contabo storage system, in a data centre the buyer picks (EU,
+  US Central or Singapore, per the product page).
+- Available for Cloud VPS 1–6, S–XL and 4C–20C. Storage VPS is not covered and Cloud VDS is
+  "planned for the future" (product page FAQ).
+- Restore: in the Customer Control Panel under Servers & Hosting, VPS Auto Backup, "Restore last
+  backup" or any kept backup. It overwrites the server's data and the server is down until it ends.
+  No restore call was found in the API docs read, so a restore looks panel only (*unverified*:
+  an absence in the docs).
+- Disabling it stops new backups; the newest backup stays until backups are switched on again or the
+  add-on is cancelled. Whether backups survive a cancelled server is not stated anywhere read:
+  *unverified*; assume not (026 R2 assumed the same).
+- Price: the help article says only that the order page shows the monthly price. A search summary
+  gave "from €1.15 to €12.00 a month by product type and storage" (*unverified*, not on the page
+  when it was fetched). The product page lists the Cloud VPS plans "with Auto Backup included"
+  (4: €5.50, 6: €7.50, 8: €14.00, 12: €25.00 for the first 24 months), the same figures as the
+  standard rates in 026 R2, so it does not separate the add-on's own price: *unverified*.
+
+**Auto Backup through the API**
+- At order: `POST /v1/compute/instances` takes `addOns`, an object with `backup: {}` (an empty
+  object "for the time being"), and also `privateNetworking`, `additionalIps`, `extraStorage`,
+  `customImage` and `addonsIds` (a list of `{id, quantity}`)
+  ([CreateInstanceAddons](https://raw.githubusercontent.com/contabo/cntb/main/openapi/docs/CreateInstanceAddons.md),
+  [AddOnRequest](https://raw.githubusercontent.com/contabo/cntb/main/openapi/docs/AddOnRequest.md)).
+- Later: `POST /v1/compute/instances/{instanceId}/upgrade` with `{"backup": {}}`
+  ([UpgradeInstanceRequest](https://raw.githubusercontent.com/contabo/cntb/main/openapi/docs/UpgradeInstanceRequest.md),
+  [InstancesApi](https://raw.githubusercontent.com/contabo/cntb/main/openapi/docs/InstancesApi.md)).
+  That request has only `privateNetworking` and `backup`; nothing in it turns an add-on off.
+- Off: no API call that cancels the add-on alone was found (the instance `cancel` ends the whole
+  contract). Turning it off looks panel only (*unverified*, an absence in the docs).
+- Read back: an instance's `addOns` list (`{id, quantity}`) in `InstanceResponse` shows what is on.
+  Which `id` is Auto Backup is not in the API docs read: *unverified*.
+- Terraform: `contabo_instance` has an `add_ons` block list (`id`, `quantity`), no named backup field,
+  so it needs the numeric add-on id
+  ([docs](https://raw.githubusercontent.com/contabo/terraform-provider-contabo/main/docs/resources/instance.md)).
+  Its add-on handling was weak: issue #2 "Instance add-on doesn't work" and #50 (refresh failing for
+  instances with add-ons, v0.1.40) are closed; PR #63 (open since 2026-11-05) reworks add-ons and
+  adoption again ([#63](https://github.com/contabo/terraform-provider-contabo/pull/63)).
+
+**Object Storage: ordering** ([ObjectStoragesApi](https://raw.githubusercontent.com/contabo/cntb/main/openapi/docs/ObjectStoragesApi.md),
+[CreateObjectStorageRequest](https://raw.githubusercontent.com/contabo/cntb/main/openapi/docs/CreateObjectStorageRequest.md))
+- `POST /v1/object-storages` with `region` (`EU`, `US-central` or `SIN`; default `EU`),
+  `totalPurchasedSpaceTB` (a number of TB, required), optional `autoScaling` (`state`,
+  `sizeLimitTB`) and `displayName`. One storage per region (provider docs).
+- Status: `PROVISIONING`, `READY`, `UPGRADING`, `CANCELLED`, `ERROR`, `DISABLED`. The response has
+  `s3Url`, `s3TenantId`, `tenantId` and `cancelDate`.
+- Grow: `POST /v1/object-storages/{id}/resize` with `totalPurchasedSpaceTB` ("if larger than before
+  you will also be billed for the added space; no downgrade possible") and/or `autoScaling`, a
+  monthly upgrade up to a limit.
+- Cancel: `PATCH /v1/object-storages/{id}/cancel`, "at the next possible date", with an optional
+  `cancelDate`. Billing is monthly and a removal ends at term end, as for a server.
+- Also `GET /v1/object-storages`, `GET /v1/object-storages/{id}`, `PATCH` (display name) and
+  `GET …/{id}/stats` (usage).
+- The S3 endpoint is the storage's `s3Url`, for example `eu1-s3.contabo.com` (026 R2). The other
+  regions' hosts are not in the docs read: *unverified*; read `s3Url`, don't build it.
+- Price: the product page says only "prices from €2.49/month", with no tier table; data transfer is
+  "free and unlimited", default bandwidth 10 MB/s ([page](https://contabo.com/en/object-storage/)).
+  The page also says it is "available exclusively to existing Contabo customers", bought in the
+  Customer Control Panel; whether the API order has that limit is *unverified*. The minimum size, the
+  price per TB and the upgrade price are *unverified* (the provider's examples buy 0.5 TB and 2 TB;
+  250 GB is the default in 026 R2).
+
+**Object Storage: S3 keys and buckets**
+- Keys come from the API: `GET /v1/users/{userId}/object-storages/credentials` (list for a user),
+  `GET /v1/users/{userId}/object-storages/{id}/credentials/{credentialId}`, and `PATCH` on that path
+  to regenerate the secret key. A credential has `accessKey`, `secretKey`, `objectStorageId`,
+  `region`, `tenantId` and `credentialId`
+  ([UsersObjectStorageCredentialsApi](https://raw.githubusercontent.com/contabo/cntb/main/openapi/docs/UsersObjectStorageCredentialsApi.md),
+  [CredentialData](https://raw.githubusercontent.com/contabo/cntb/main/openapi/docs/CredentialData.md)).
+  So the API user can read the key pair, secret included. The storage API says of itself: "This API
+  is not the S3 API."
+- Buckets are not an API object. The provider's bucket resource reads the credentials, then creates
+  the bucket over S3 with the minio client (and for `public_sharing` sets a bucket policy over S3)
+  ([source](https://github.com/contabo/terraform-provider-contabo/blob/main/contabo/resource_object_storage_bucket.go)).
+  A public bucket's link is `<s3Url>/<s3TenantId>:<bucket>`.
+- Terraform limits: `contabo_object_storage` can't be imported (issue #34, open since 2024-04-29;
+  PR #63 would add it); `contabo_object_storage_bucket` import is PR #58 (open since 2026-10-09).
+  "Error 500 while creating object storage" is issue #27 (closed). Destroying a storage is a cancel
+  at the next possible date (`cancel_date` is read-only in the provider), as for instances.
+
+**What OpsCrew's connector would call** (OAuth2 as in 026 R2; every call carries `x-request-id`)
+- Auto Backup on, at order: add `addOns: { backup: {} }` to the existing create call; on an existing
+  server `POST …/upgrade` with `{ backup: {} }`. The plan step needs the add-on's price, which is
+  not in the API (*unverified*), so it is a static table entry or "see your order page".
+- Auto Backup off, restore and the list of backups: no API call found; panel only. OpsCrew can only
+  point the user to the panel for them.
+- Object Storage: `POST /v1/object-storages`, poll `GET …/{id}` until `READY`, read `s3Url`, then
+  `GET /v1/users/{userId}/object-storages/credentials` for the keys. OpsCrew's rule is that the
+  user creates S3 keys in the provider's console and OpsCrew never does. Contabo's keys exist with
+  the storage and are read, not created; reading them through the connector, never printing the
+  secret and keeping it only in the user's secret store, is a design decision for the lead, not
+  research. Buckets are made over S3 with those keys, not by the Contabo API.
+- Removal: `PATCH …/cancel`, effective at term end, so the storage stays billed until then.
+- Permissions: no role or scope for the API user was found. The API user is the account login (026
+  R2: no scoped keys), so it reaches the whole account, credentials included. The `userId` for the
+  credentials path comes from the users API (`GET /v1/users`, not read here: *unverified*).
