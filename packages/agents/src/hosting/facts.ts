@@ -1,7 +1,7 @@
 /**
  * What design reads about a hosting account (feature 027, FR-2704, FR-2708): the panel's facts,
- * read-only, and the web server from the main domain's `Server` header. Nothing on the account
- * changes here.
+ * read-only, and the web server from the `Server` header of the first of its domains that names one.
+ * Nothing on the account changes here.
  */
 import type { FetchLike, HostingFacts, HostingPanel } from "@opscrew/contracts";
 import { listText } from "@opscrew/core";
@@ -10,10 +10,12 @@ import { PANEL_NAMES } from "./panels";
 /** The account as design sees it. */
 export interface HostingAccount {
   facts: HostingFacts;
-  /** The account's main domain, whose answers name the web server. */
+  /** The account's main domain. */
   mainDomain?: string;
-  /** The web server the main domain's `Server` header names (`LiteSpeed`, `Apache`, `nginx`). */
+  /** The web server a domain's `Server` header names (`LiteSpeed`, `Apache`, `nginx`). */
   webServer?: string;
+  /** The domain whose `Server` header named `webServer`. */
+  webServerDomain?: string;
 }
 
 /** The web servers a hosting account runs, as their `Server` header names them. */
@@ -23,7 +25,7 @@ const WEB_SERVERS: readonly { pattern: RegExp; name: string }[] = [
   { pattern: /nginx/i, name: "nginx" },
 ];
 
-/** How long the main domain may take to answer. */
+/** How long a domain may take to answer. */
 const ANSWER_TIMEOUT_MS = 10_000;
 
 /**
@@ -51,19 +53,35 @@ export async function webServerOf(domain: string, fetch: FetchLike): Promise<str
   return undefined;
 }
 
-/** The account's facts (`inspect()`) and the web server its main domain answers with. */
+/** The order domains are asked in (R13: a main domain may not resolve), and how many at most. */
+const ASK_ORDER = ["main", "addon", "parked", "subdomain"] as const;
+const MAX_ASKED = 5;
+
+/**
+ * The account's facts (`inspect()`) and the web server the first of its domains answers with: the
+ * main domain, then its addon, parked and subdomains, at most five in all.
+ */
 export async function readHostingAccount(
   panel: HostingPanel,
   fetch: FetchLike,
 ): Promise<HostingAccount> {
   const facts = await panel.inspect();
   const mainDomain = facts.domains.find((domain) => domain.kind === "main")?.name;
-  const webServer = mainDomain === undefined ? undefined : await webServerOf(mainDomain, fetch);
-  return {
-    facts,
-    ...(mainDomain === undefined ? {} : { mainDomain }),
-    ...(webServer === undefined ? {} : { webServer }),
-  };
+  const asked = ASK_ORDER.flatMap((kind) =>
+    facts.domains.filter((domain) => domain.kind === kind).map((domain) => domain.name),
+  ).slice(0, MAX_ASKED);
+  for (const domain of asked) {
+    const webServer = await webServerOf(domain, fetch);
+    if (webServer !== undefined) {
+      return {
+        facts,
+        ...(mainDomain === undefined ? {} : { mainDomain }),
+        webServer,
+        webServerDomain: domain,
+      };
+    }
+  }
+  return { facts, ...(mainDomain === undefined ? {} : { mainDomain }) };
 }
 
 /** The disk the account has left in MB, or `undefined` when the panel gives no limit. */
@@ -83,14 +101,12 @@ const mb = (value: number) => `${value.toLocaleString("en-US")} MB`;
  * engines and their name prefix, the disk left and the app slots left.
  */
 export function hostingAccountLines(account: HostingAccount): string[] {
-  const { facts, mainDomain, webServer } = account;
+  const { facts, webServer, webServerDomain } = account;
   const panel = `${PANEL_NAMES[facts.panel]}${facts.panelVersion === undefined ? "" : ` ${facts.panelVersion}`}`;
   const server =
-    mainDomain === undefined
-      ? "the account has no main domain to read it from"
-      : webServer === undefined
-        ? `${mainDomain}'s answers don't name it`
-        : `${webServer}, from ${mainDomain}'s Server header`;
+    webServer === undefined
+      ? "the account's domains don't name it"
+      : `${webServer}, from ${webServerDomain}'s Server header`;
   const { engines, prefix } = facts.databases;
   const databases =
     engines.length === 0
