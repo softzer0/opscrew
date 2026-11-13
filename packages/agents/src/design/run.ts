@@ -878,6 +878,7 @@ async function priceOptions(
   }
   // The app's deployed server keeps its disk.
   const deployed = deployedAppServer(previous, provider);
+  const planned = plannedBackups(previous, provider, requirements);
   const { previews } = basis;
   // A preview server is sized for its cap, or holds as many previews as the chosen type does.
   const optionSet = async (from: ComputeCatalog) => {
@@ -898,6 +899,8 @@ async function priceOptions(
       components,
       edge,
       deployed,
+      environment: deps.paths.environment,
+      ...(planned === undefined ? {} : { backups: planned }),
       ...(monitoring === undefined ? {} : { monitoring }),
       ...(sized === undefined ? {} : { previewCap: sized.cap }),
       ...(basis.sharedPreviews === undefined ? {} : { sharedPreviews: basis.sharedPreviews }),
@@ -2007,6 +2010,21 @@ function keptTarget(fresh: DeployTarget, previous: DeployTarget, name: string): 
     return { ...fresh, image: previous.image, edge: previous.edge };
   }
   return "edge" in fresh && "edge" in previous ? { ...fresh, edge: previous.edge } : fresh;
+}
+
+/**
+ * The previous plan's `target.backups` on the same provider, which design keeps over its default
+ * (on only in prod) until a newer interview, as the other answers plan.yaml can change.
+ */
+function plannedBackups(
+  previous: DeployPlan | undefined,
+  provider: VpsProviderId,
+  requirements: Requirements,
+): boolean | undefined {
+  if (previous === undefined || previous.target.provider !== provider) return undefined;
+  if (!isCloudServer(previous.target)) return undefined;
+  if (Date.parse(requirements.answeredAt) > Date.parse(previous.updatedAt)) return undefined;
+  return previous.target.backups;
 }
 
 /** True for a server OpsCrew creates (Hetzner Cloud, DigitalOcean). */

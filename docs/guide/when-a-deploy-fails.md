@@ -319,9 +319,11 @@ server is doing), then run `npx opscrew provision` again: it continues where it 
 ### Backups and snapshots
 
 - **Server backups:** when you tell `npx opscrew interview` that losing the data would be anything
-  but "Not a problem", design turns on Hetzner's automated backups. Hetzner backs up the whole
-  server every day and keeps the last seven (Hetzner Console → your server → **Backups**). They are
-  copies of a running server: the database recovers from one as after a power cut.
+  but "Not a problem", design turns on Hetzner's automated backups in prod (dev and staging rely on
+  OpsCrew's own snapshot before each release; set `target.backups: true` in their plan to turn
+  them on there too). Hetzner backs up the whole server every day and keeps the last seven
+  (Hetzner Console → your server → **Backups**). They are copies of a running server: the database
+  recovers from one as after a power cut.
 - **Database dumps:** for a copy you can restore anywhere, dump the database on the server. See
   [Backups](databases.md#backups).
 - **Snapshots:** `npx opscrew destroy` takes a Hetzner snapshot before it deletes the server when

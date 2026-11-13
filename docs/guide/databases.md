@@ -99,7 +99,7 @@ If you keep it, OpsCrew runs nothing for it: set its address in your app's produ
 
 ## Backups
 
-On [Hetzner Cloud](https://www.hetzner.com/cloud) and [DigitalOcean](https://www.digitalocean.com/), the provider's server backups cover the database folders. They
+On [Hetzner Cloud](https://www.hetzner.com/cloud) and [DigitalOcean](https://www.digitalocean.com/), the provider's server backups (on by default in prod) cover the database folders. They
 copy a running server, so they are crash-consistent only: the database recovers from them as after
 a power cut, and the last seconds of writes can be missing. For a copy you can restore anywhere,
 dump the database from the app's folder on the server, for example:

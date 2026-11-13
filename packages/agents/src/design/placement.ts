@@ -31,6 +31,7 @@ import { planFile } from "../runners/words";
 import { reasonOf } from "../shared/errors";
 import { monitoringLimits } from "../shared/memory";
 import { serverRemote, serverWords } from "../shared/server-address";
+import { backupsByDefault } from "./backups";
 import { memoryText, serverMemoryText } from "./components";
 import { convertMoney, EXCHANGE_RATE_NOTE } from "./cost";
 import { type HopDelay, hopDelay, type ServerPlace } from "./delay";
@@ -197,7 +198,8 @@ export async function designPlacement(
         addons,
         app: base.target,
         region: input.requirements.region,
-        backups: input.requirements.dataCriticality !== "none",
+        // On by default only in prod, as the app server's (`backupsByDefault`).
+        backups: backupsByDefault(input.requirements, deps.paths.environment),
         catalogFor: input.catalogFor,
         // Only a server that exists keeps its disk.
         deployed: applied(input.previous) ? current.get(edited.name) : undefined,

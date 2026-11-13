@@ -535,6 +535,46 @@ describe("runDesign", () => {
     expect(result.plan.target).toMatchObject({ backups: true });
   });
 
+  it("turns the provider's backups on only in prod, and keeps an environment's own target.backups (T2750)", async () => {
+    const deps = await setup(
+      nextPostgresFacts(),
+      makeRequirements({
+        dataCriticality: "important",
+        budgetMonthly: { amount: 50, currency: "EUR" },
+      }),
+    );
+    const prod = await runDesign(deps, { catalog: euCatalog() });
+    expect(prod.plan.target).toMatchObject({ backups: true });
+    const inEnv = (environment: string) =>
+      createTestPhaseDeps({ root: deps.paths.root, env: deps.env, environment });
+
+    const staging = await inEnv("staging");
+    const designed = await runDesign(staging, { catalog: euCatalog() });
+    expect(designed.plan.target).toMatchObject({ backups: false });
+    expect(designed.plan.cost.breakdown.some((l) => l.item.startsWith("Automated backups"))).toBe(
+      false,
+    );
+    expect(designed.chosen.summary).toContain(
+      "Automated backups are off in staging: they are on by default only in prod",
+    );
+
+    // The environment's own setting turns them on, and a later design keeps it.
+    await writeArtifact("plan", staging.paths.files.plan, {
+      ...designed.plan,
+      target: { ...designed.plan.target, backups: true } as DeployPlan["target"],
+    });
+    const again = await inEnv("staging");
+    const kept = await runDesign(again, { catalog: euCatalog() });
+    expect(kept.plan.target).toMatchObject({ backups: true });
+    expect(kept.plan.cost.breakdown.some((l) => l.item.startsWith("Automated backups"))).toBe(true);
+    expect(kept.chosen.summary).toContain(
+      "Automated backups are on, as target.backups in the plan says.",
+    );
+
+    const dev = await runDesign(await inEnv("dev"), { catalog: euCatalog() });
+    expect(dev.plan.target).toMatchObject({ backups: false });
+  });
+
   it("keeps createdAt of an earlier plan, and the whole plan when nothing changed (SC-1307)", async () => {
     const deps = await setup();
     await runDesign(deps, { catalog: euCatalog() });

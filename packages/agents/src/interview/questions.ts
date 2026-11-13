@@ -271,7 +271,7 @@ export function buildQuestions(
     questions.push({
       id: "dataCriticality",
       prompt: "How bad would it be to lose the app's data?",
-      help: "Anything other than 'not a problem' turns on automated backups.",
+      help: "Anything other than 'not a problem' turns on automated backups in prod; dev and staging rely on OpsCrew's own snapshots.",
       kind: "single-select",
       options: [
         { value: "none", label: "Not a problem", hint: "the data can be recreated" },

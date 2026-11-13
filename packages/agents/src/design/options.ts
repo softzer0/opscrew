@@ -21,6 +21,7 @@ import {
 } from "@opscrew/plan-schema";
 import { providerProfile, requestedProvider, requestedRegion } from "../providers";
 import { type MemoryLimit, memoryHeadroom, SYSTEM_RESERVE_MB } from "../shared/memory";
+import { backupsText, type DesignedBackups, designedBackups } from "./backups";
 import { type Components, memoryText } from "./components";
 import {
   convertMoney,
@@ -68,6 +69,10 @@ export interface BuildDesignOptionsInput {
   previewCap?: number;
   /** The previews another environment runs on this server: sized for too (`withSharedPreviews`). */
   sharedPreviews?: MemoryLimit;
+  /** The environment designed for: the provider's backups are on by default only in prod (the default). */
+  environment?: string;
+  /** The plan's own `target.backups`, which decides over the default. */
+  backups?: boolean;
 }
 
 /** Option tiers, in display order. */
@@ -143,7 +148,9 @@ export async function buildDesignOptionSet(
         : app;
   const locations = regionLocations(region, provider);
   // Never the provider's backups where it offers none through OpsCrew (its snapshots cover the data).
-  const backups = requirements.dataCriticality !== "none" && profile.providerBackups;
+  const environment = input.environment ?? "prod";
+  const designed = designedBackups(requirements, environment, input.backups);
+  const backups = designed.on && profile.providerBackups;
 
   const offers = (await Promise.all(locations.map((location) => catalog.listOffers(location))))
     .flat()
@@ -276,7 +283,8 @@ export async function buildDesignOptionSet(
       wording,
       regionNote: profile.regionNotes[region],
       sizing,
-      backups,
+      backups: { ...designed, on: backups },
+      environment,
       budget,
       fitsBudget: fits(candidate.cost),
       recommended: tier === recommendedTier,
@@ -373,14 +381,17 @@ function toOption(
     /** Why the region maps to a location outside it, when it does. */
     regionNote: string | undefined;
     sizing: Sizing;
-    backups: boolean;
+    backups: DesignedBackups;
+    /** The environment designed for, which the backups sentence names. */
+    environment: string;
     budget: Money;
     fitsBudget: boolean;
     recommended: boolean;
     now: Date | undefined;
   },
 ): DesignOption {
-  const { provider, wording, sizing, backups, budget } = context;
+  const { provider, wording, sizing, budget } = context;
+  const backups = context.backups.on;
   const place = wording.profile.locationNames[offer.location] ?? offer.location;
   // EUR prices are quoted with or without VAT; USD prices (DigitalOcean) exclude sales tax.
   const tax = cost.monthly.currency === "EUR" ? "VAT" : "tax";
@@ -401,9 +412,7 @@ function toOption(
     ...terms,
     isCloudProvider(provider) && !wording.profile.providerBackups
       ? noProviderBackupsText(provider)
-      : backups
-        ? "Automated backups are on."
-        : "Automated backups are off.",
+      : backupsText(context.backups, context.environment, sizing.previewCap !== undefined),
     sizing.previewCap === undefined
       ? memoryText(
           { ...sizing.components, observability: { monitoring: sizing.monitoring } },
@@ -427,11 +436,18 @@ function toOption(
   tradeoffs.push("A single server: if it fails, the app is down until the server is restored.");
   if (serviceOf(sizing, "postgres")) {
     tradeoffs.push(
-      `Postgres runs in a container on the same server; restoring it relies on the ${wording.profile.providerBackups ? "server backups" : "snapshots of the app's data"}.`,
+      `Postgres runs in a container on the same server; restoring it relies on the ${backups ? "server backups" : "snapshots of the app's data"}.`,
     );
   }
   if (!backups && wording.profile.providerBackups) {
-    tradeoffs.push("No automated backups, because you said losing the data would not matter.");
+    const why = context.backups.why;
+    if (why === "data") {
+      tradeoffs.push("No automated backups, because you said losing the data would not matter.");
+    } else if (why === "environment") {
+      tradeoffs.push(
+        "No automated backups outside prod; to turn them on, set target.backups to true in the plan and run `opscrew design` again.",
+      );
+    }
   }
   const budgetPrice = convertMoney(cost.monthly, budget.currency);
   const crossCurrency = budget.currency !== cost.monthly.currency;

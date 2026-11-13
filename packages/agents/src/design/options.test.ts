@@ -726,3 +726,73 @@ describe("EXCHANGE_RATE_NOTE", () => {
     );
   });
 });
+
+describe("the provider's backups by environment (T2750)", () => {
+  const input = (more: Partial<Parameters<typeof buildDesignOptions>[0]> = {}) => ({
+    facts: nextPostgresFacts(),
+    requirements: makeRequirements({
+      dataCriticality: "important",
+      budgetMonthly: { amount: 50, currency: "EUR" },
+    }),
+    catalog: euCatalog(),
+    ...more,
+  });
+  const backupLine = (option: { cost: { breakdown: { item: string }[] } }) =>
+    option.cost.breakdown.find((line) => line.item.startsWith("Automated backups"));
+
+  it("turns them on in prod when the data matters, and says why", async () => {
+    const options = await buildDesignOptions(input({ environment: "prod" }));
+    for (const option of options) {
+      expect(option.backups).toBe(true);
+      expect(backupLine(option)).toBeDefined();
+      expect(option.summary).toContain("Automated backups are on in prod, as the data matters.");
+    }
+  });
+
+  it("leaves them off in staging and dev, priced without them, and says why", async () => {
+    for (const environment of ["staging", "dev"]) {
+      const options = await buildDesignOptions(input({ environment }));
+      for (const option of options) {
+        expect(option.backups).toBe(false);
+        expect(backupLine(option)).toBeUndefined();
+        expect(option.summary).toContain(
+          `Automated backups are off in ${environment}: they are on by default only in prod, and ${environment} relies on OpsCrew's own snapshot before each release.`,
+        );
+        expect(option.tradeoffs).toContain(
+          "No automated backups outside prod; to turn them on, set target.backups to true in the plan and run `opscrew design` again.",
+        );
+        expect(option.tradeoffs.join(" ")).toContain(
+          "restoring it relies on the snapshots of the app's data",
+        );
+      }
+    }
+  });
+
+  it("leaves them off on a preview server, whose releases take no snapshot", async () => {
+    const options = await buildDesignOptions(input({ environment: "preview", previewCap: 2 }));
+    for (const option of options) {
+      expect(option.backups).toBe(false);
+      expect(option.summary).toContain(
+        "Automated backups are off in preview: they are on by default only in prod.",
+      );
+    }
+  });
+
+  it("keeps the plan's own target.backups over the default, either way", async () => {
+    const on = await buildDesignOptions(input({ environment: "staging", backups: true }));
+    for (const option of on) {
+      expect(option.backups).toBe(true);
+      expect(backupLine(option)).toBeDefined();
+      expect(option.summary).toContain(
+        "Automated backups are on, as target.backups in the plan says.",
+      );
+    }
+    const off = await buildDesignOptions(input({ environment: "prod", backups: false }));
+    for (const option of off) {
+      expect(option.backups).toBe(false);
+      expect(option.summary).toContain(
+        "Automated backups are off, as target.backups in the plan says.",
+      );
+    }
+  });
+});
