@@ -650,10 +650,13 @@ new_release() {
       if [ -z "$latest" ] || [ "$latest" = "$(cat state/commit 2> /dev/null || true)" ]; then return 0; fi
       if [ ! -d cache ]; then git init -q --bare cache; fi
       git --git-dir=cache fetch -q --depth=1 --no-tags "$url" "+$ref:refs/heads/release"
+      # git writes its objects and packs 0444, which a panel's file removal skips (R13).
+      chmod -R u+w cache
       commit=$(git --git-dir=cache rev-parse --verify -q 'refs/heads/release^{commit}')
       printf '%s\\n' "$commit" | put state/commit
       signed_release "$commit"
       git --git-dir=cache gc -q --prune=now
+      chmod -R u+w cache
       return 0
     fi
   done
