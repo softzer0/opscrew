@@ -113,7 +113,7 @@ cluster password.
 
 Kafka runs as one combined broker and controller (KRaft mode, no [ZooKeeper](https://zookeeper.apache.org/)), with every
 replication factor at 1 and a heap of half its memory limit. A Kafka node is a [Java](https://dev.java/) program that
-needs about 1 GB of memory on its own, so OpsCrew sizes [Hetzner](https://www.hetzner.com/) and [DigitalOcean](https://www.digitalocean.com/) servers to at
+needs about 1 GB of memory on its own, so OpsCrew sizes [Hetzner](hetzner.md) and [DigitalOcean](digitalocean.md) servers to at
 least 2 GB for it. Logs are kept for 168 hours by default; set `options.retentionHours` and, to cap
 the disk each partition takes, `options.retentionGb` on the service in `opscrew/plan.yaml`.
 

@@ -154,8 +154,8 @@ Data is restored under the version it was taken with:
 
 ## Whole-server snapshots
 
-On a server OpsCrew created at [Hetzner Cloud](https://www.hetzner.com/cloud),
-[DigitalOcean](https://www.digitalocean.com/) or [Contabo](contabo.md), the provider can also
+On a server OpsCrew created at [Hetzner Cloud](hetzner.md),
+[DigitalOcean](digitalocean.md) or [Contabo](contabo.md), the provider can also
 snapshot the whole disk:
 
 ```bash

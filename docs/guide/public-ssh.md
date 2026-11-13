@@ -103,9 +103,9 @@ OpsCrew) before you close public SSH, so this way stays open to you.
 
 Every provider lets you log in on a server's own screen from its website, without SSH:
 
-- **[Hetzner Cloud](https://www.hetzner.com/cloud):** open the server in the [Hetzner Console](https://console.hetzner.cloud), reset the root password under
+- **[Hetzner Cloud](hetzner.md):** open the server in the [Hetzner Console](https://console.hetzner.cloud), reset the root password under
   **Rescue**, then open the **Console** and log in as `root`.
-- **[DigitalOcean](https://www.digitalocean.com/):** open the Droplet, reset the root password under **Access**, then launch the
+- **[DigitalOcean](digitalocean.md):** open the Droplet, reset the root password under **Access**, then launch the
   **Recovery Console** and log in as `root`.
 - **A server you already have:** your provider's console, or a keyboard and screen.
 

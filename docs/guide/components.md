@@ -78,7 +78,7 @@ When it reaches its limit, only that container is restarted. Design adds up:
   uses one);
 - 384 MB for the system.
 
-On [Hetzner Cloud](https://www.hetzner.com/cloud) and [DigitalOcean](https://www.digitalocean.com/) it picks a server that fits. Design refuses when the limits do not
+On [Hetzner Cloud](hetzner.md) and [DigitalOcean](digitalocean.md) it picks a server that fits. Design refuses when the limits do not
 fit the server, and warns when less than 15% of its memory stays free. On a server you already
 have, it uses the memory it reads there, minus the limits of the other OpsCrew apps on it (see
 [Deploy to a server you already have](own-server.md)).

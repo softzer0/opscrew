@@ -7,7 +7,7 @@ on, you reach each server's SSH, and the dashboards of [Beszel](beszel.md) and
 internet. Once this computer is on it, you can also [close public SSH](public-ssh.md).
 
 This works for an app on one server too: the first device creates the network. It works on servers
-OpsCrew created on [Hetzner Cloud](https://www.hetzner.com/cloud) or [DigitalOcean](https://www.digitalocean.com/) and on [servers you already have](own-server.md),
+OpsCrew created on [Hetzner Cloud](hetzner.md) or [DigitalOcean](digitalocean.md) and on [servers you already have](own-server.md),
 not on a Portainer, your computer or the server-less targets.
 
 It costs nothing: WireGuard is free and open source, and OpsCrew needs no account and no third

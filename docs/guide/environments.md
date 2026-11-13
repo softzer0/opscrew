@@ -30,7 +30,7 @@ npx opscrew env add staging
 OpsCrew asks only what differs from prod, then designs the environment and shows its monthly cost
 before anything is created:
 
-- **Where it runs.** By default the same kind of target as prod: on [Hetzner Cloud](https://www.hetzner.com/cloud) or [DigitalOcean](https://www.digitalocean.com/),
+- **Where it runs.** By default the same kind of target as prod: on [Hetzner Cloud](hetzner.md) or [DigitalOcean](digitalocean.md),
   its own server, the smallest size by default; on [a server you already have](own-server.md), the
   same server, beside prod (no extra cost); in [your Portainer](portainer-target.md), another stack.
   `dev` defaults to [this computer](localhost.md), which costs nothing.

@@ -9,7 +9,7 @@ OpsCrew can then give that one service a server of its own. The servers are join
 [private network](private-network.md), the service listens only there, and only the app's servers
 reach it. Your app's code and settings files don't change: only the address the app is given does.
 
-This works on servers: ones OpsCrew creates on [Hetzner Cloud](https://www.hetzner.com/cloud) or [DigitalOcean](https://www.digitalocean.com/) (mixed freely), and
+This works on servers: ones OpsCrew creates on [Hetzner Cloud](hetzner.md) or [DigitalOcean](digitalocean.md) (mixed freely), and
 [servers you already have](own-server.md) that the internet reaches at a public address. It doesn't
 apply to a [Portainer](portainer-target.md), [your computer](localhost.md),
 [Cloudflare's hosting](cloudflare-hosting.md) or [GitHub Pages](github-pages.md): design refuses it

@@ -19,7 +19,7 @@ The rules behind every case:
 
 `shop` is a [Next.js](https://nextjs.org/) app with [PostgreSQL](https://www.postgresql.org/), like
 [`examples/nextjs-postgres`](https://github.com/opscrew-hub/opscrew/tree/main/examples/nextjs-postgres),
-with [Prisma](https://www.prisma.io/) migrations. It runs on a [Hetzner Cloud](https://www.hetzner.com/cloud) server, and visitors reach it at
+with [Prisma](https://www.prisma.io/) migrations. It runs on a [Hetzner Cloud](hetzner.md) server, and visitors reach it at
 `shop.example.com` through [Cloudflare](https://www.cloudflare.com/)'s proxy. Its plan in `opscrew/plan.yaml` has:
 
 - `app.healthPath: /api/health` and `app.port: 3000`;

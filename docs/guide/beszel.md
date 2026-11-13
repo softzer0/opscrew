@@ -2,7 +2,7 @@
 
 [Beszel](https://beszel.dev/) is a light monitoring dashboard. It shows your server's CPU, memory,
 disk and network, and each container's CPU and memory, over time, and it can send its own alerts.
-OpsCrew can add it to a server it deploys to: one it created on [Hetzner Cloud](https://www.hetzner.com/cloud) or [DigitalOcean](https://www.digitalocean.com/), or a
+OpsCrew can add it to a server it deploys to: one it created on [Hetzner Cloud](hetzner.md) or [DigitalOcean](digitalocean.md), or a
 [server you already have](own-server.md). It is off until you turn it on.
 
 `npx opscrew status` already shows the figures of the moment. Turn Beszel on when you want charts

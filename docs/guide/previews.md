@@ -34,7 +34,7 @@ npx opscrew env add preview --previews --domain example.net
 
 OpsCrew asks only what previews need:
 
-- **Where they run.** A new small server at [Hetzner Cloud](https://www.hetzner.com/cloud) or [DigitalOcean](https://www.digitalocean.com/) (prod's provider by
+- **Where they run.** A new small server at [Hetzner Cloud](hetzner.md) or [DigitalOcean](digitalocean.md) (prod's provider by
   default), or [a server you already have](own-server.md) with a public address and nothing else
   on it. OpsCrew refuses a server another environment or app runs on: a pull request's code would
   run beside it. Another environment's server is offered too, after a warning: see

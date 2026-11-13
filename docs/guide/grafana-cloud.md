@@ -6,7 +6,7 @@ and lets you search and chart them in Grafana. OpsCrew can connect your server t
 log lines and the server's metrics to your own Grafana Cloud account. You run no monitoring stack.
 It is off until you turn it on.
 
-It works on a server OpsCrew deploys to: one it created on [Hetzner Cloud](https://www.hetzner.com/cloud) or [DigitalOcean](https://www.digitalocean.com/), or a
+It works on a server OpsCrew deploys to: one it created on [Hetzner Cloud](hetzner.md) or [DigitalOcean](digitalocean.md), or a
 [server you already have](own-server.md).
 
 ## The account and the token

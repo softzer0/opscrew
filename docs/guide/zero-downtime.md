@@ -2,7 +2,7 @@
 
 When you merge a change, the deploy workflow builds a new image and switches your server to it.
 Visitors keep being served during the switch, and a release that does not work never replaces one
-that does. This works on [Hetzner Cloud](https://www.hetzner.com/cloud), [DigitalOcean](https://www.digitalocean.com/) and a server you already have.
+that does. This works on [Hetzner Cloud](hetzner.md), [DigitalOcean](digitalocean.md) and a server you already have.
 
 ## How a deploy switches
 

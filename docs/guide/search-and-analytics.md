@@ -4,7 +4,7 @@ When your app uses a search engine, an analytics database or a graph database, O
 as one node next to the app: [OpenSearch](https://opensearch.org/), [Elasticsearch](https://www.elastic.co/elasticsearch), [Meilisearch](https://www.meilisearch.com/), [Typesense](https://typesense.org/), [ClickHouse](https://clickhouse.com/) or
 [Neo4j](https://neo4j.com/) Community. Each gets a memory limit, its engine's own memory settings below that limit, a
 generated key or password where the engine has a login, and no open port. These engines are heavy
-for a small server: each has a server size it is comfortable on. On [Hetzner Cloud](https://www.hetzner.com/cloud) and [DigitalOcean](https://www.digitalocean.com/),
+for a small server: each has a server size it is comfortable on. On [Hetzner Cloud](hetzner.md) and [DigitalOcean](digitalocean.md),
 design picks a server at least that big; on a smaller server you already have, it warns you.
 Like every component, an engine costs nothing beyond the server memory it takes, which design shows
 with its share of the server's price (see [Components](components.md)).

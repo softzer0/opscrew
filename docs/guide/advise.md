@@ -23,7 +23,7 @@ through `opscrew provision` and your approval (see [Applying a proposal](#applyi
   read-only queries on the monitoring server.
 - **Your plan and the interview's answers:** what runs where, the budget you gave, the region, and
   how much the app's data matters.
-- **The providers' prices,** live from [Hetzner](https://www.hetzner.com/)'s and [DigitalOcean](https://www.digitalocean.com/)'s price lists when their tokens
+- **The providers' prices,** live from [Hetzner](hetzner.md)'s and [DigitalOcean](digitalocean.md)'s price lists when their tokens
   can read them, otherwise OpsCrew's dated list, and it says so with the date. [Contabo](https://contabo.com/)
   has no price API, so its prices always come from OpsCrew's dated list.
 - **[GitHub](https://github.com/):** the repository's [Dependabot](https://docs.github.com/en/code-security/dependabot) alerts and Dependabot's open pull requests, the

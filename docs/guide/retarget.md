@@ -1,6 +1,6 @@
 # Moving your app somewhere else: `opscrew retarget`
 
-`opscrew retarget` moves a live app, with its data, to another place: [Hetzner Cloud](https://www.hetzner.com/cloud), [DigitalOcean](https://www.digitalocean.com/), [Contabo](contabo.md),
+`opscrew retarget` moves a live app, with its data, to another place: [Hetzner Cloud](hetzner.md), [DigitalOcean](digitalocean.md), [Contabo](contabo.md),
 [a server you already have](own-server.md) or [a Portainer you already run](portainer-target.md),
 in any direction. That includes moving from one server of yours to another. A site moves between
 [Cloudflare's hosting](cloudflare-hosting.md) and [GitHub Pages](github-pages.md).

@@ -2,7 +2,7 @@
 
 [Portainer CE](https://www.portainer.io/) shows the containers, logs, images and volumes on your
 server in a web browser. OpsCrew can install it on any server it deploys to: one it created on
-[Hetzner Cloud](https://www.hetzner.com/cloud) or [DigitalOcean](https://www.digitalocean.com/), or a server you already have. It is off until you turn it on.
+[Hetzner Cloud](hetzner.md) or [DigitalOcean](digitalocean.md), or a server you already have. It is off until you turn it on.
 
 ## Why it stays private
 

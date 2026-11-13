@@ -7,7 +7,7 @@ Each environment's deploy job can run in one of four places. By default the imag
 | `environment.runner` | Where the deploy job runs | For |
 |---|---|---|
 | `github` (the default) | on GitHub's machines, which reach your server over SSH | every target |
-| `server` | on a runner OpsCrew installs on the server itself | a server OpsCrew creates ([Hetzner Cloud](https://www.hetzner.com/cloud), [DigitalOcean](https://www.digitalocean.com/)) or [one you already have](own-server.md) |
+| `server` | on a runner OpsCrew installs on the server itself | a server OpsCrew creates ([Hetzner Cloud](hetzner.md), [DigitalOcean](digitalocean.md)) or [one you already have](own-server.md) |
 | `local` | on a runner on your computer, while you run it | an environment [on your computer](localhost.md) |
 | `host` | on a [runner machine](#runner-machines) of yours: a home server, a spare PC or a VM, which reaches your server over SSH | a server OpsCrew creates or one you already have |
 

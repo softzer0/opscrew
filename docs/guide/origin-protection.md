@@ -27,7 +27,7 @@ as a deploy secret, and the client certificate's key only to Cloudflare. Both ar
 generated values on your computer, which the [recovery copy](secrets-recovery.md) encrypts. No key
 is ever in a plan, a log, a report or your repository.
 
-It works on servers OpsCrew creates ([Hetzner Cloud](https://www.hetzner.com/cloud), [DigitalOcean](https://www.digitalocean.com/)), on
+It works on servers OpsCrew creates ([Hetzner Cloud](hetzner.md), [DigitalOcean](digitalocean.md)), on
 [a server you already have](own-server.md) with either [proxy](reverse-proxy.md), and in
 [your Portainer](portainer-target.md) when OpsCrew's [Caddy](https://caddyserver.com/) serves the app's stack (web mode
 `caddy`).

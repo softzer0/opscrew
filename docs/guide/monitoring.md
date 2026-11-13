@@ -6,7 +6,7 @@ the figures, [Loki](https://grafana.com/oss/loki/) keeps the log lines, and
 your own servers: no third party gets your data, and nothing limits how much you keep but your disk.
 Nobody on the internet can reach it. It is off until you turn it on.
 
-It works on servers OpsCrew deploys to: ones it created on [Hetzner Cloud](https://www.hetzner.com/cloud) or [DigitalOcean](https://www.digitalocean.com/), and
+It works on servers OpsCrew deploys to: ones it created on [Hetzner Cloud](hetzner.md) or [DigitalOcean](digitalocean.md), and
 [servers you already have](own-server.md).
 
 Not sure you need it? `npx opscrew status` and `npx opscrew logs` show
