@@ -484,18 +484,23 @@ for cloud server providers is where it starts.
 - Each package released adds one npm approval for the founder (staged publishing approves one
   package at a time).
 
-**Testing (founder, 2026-10-18):** the **floci** AWS emulator (https://github.com/floci-io/floci;
-MIT; one Docker image, `floci/floci`, on port 4566; Terraform and OpenTofu through the standard
-AWS provider; EC2, ECS, ECR, RDS, ElastiCache, S3, SQS/SNS, Secrets Manager/SSM, IAM/STS,
-Route 53, ACM, CloudWatch, EventBridge Scheduler, Lightsail, ELB and more; RDS, ECS and Lambda
-need the Docker socket) for nearly all tests, OpenTofu plan and apply included, instead of a real
-account. What it can't show:
-- IAM permissions (not enforced: any credentials work), so least privilege goes untested;
-- GitHub OIDC trust against real AWS;
-- real networking, load balancers and certificates; its prices are a static snapshot.
+**Testing (founder, 2026-10-18; LocalStack added 2026-11-13):** an AWS emulator for nearly all
+tests, OpenTofu plan and apply included, instead of a real account. Two candidates; the feature's
+research compares them and the lead decides: one of them, or both, each for what the other lacks.
+- **floci** (https://github.com/floci-io/floci; MIT; one Docker image, `floci/floci`, on port
+  4566; Terraform and OpenTofu through the standard AWS provider; EC2, ECS, ECR, RDS, ElastiCache,
+  S3, SQS/SNS, Secrets Manager/SSM, IAM/STS, Route 53, ACM, CloudWatch, EventBridge Scheduler,
+  Lightsail, ELB and more; RDS, ECS and Lambda need the Docker socket). What it can't show:
+  - IAM permissions (not enforced: any credentials work), so least privilege goes untested;
+  - GitHub OIDC trust against real AWS;
+  - real networking, load balancers and certificates; its prices are a static snapshot.
+- **LocalStack** (https://www.localstack.cloud). floci's README says LocalStack Community ended in
+  March 2026; the research checks that, its licence and price, which services and features its free
+  tier covers, and whether it enforces IAM, all against these gaps and the services the AWS design
+  uses.
 
-A small optional live pass on a throwaway account covers only those three, rarely run. If it
-never runs, they stay "not tested live" on the coverage page.
+A small optional live pass on a throwaway account covers only what the chosen emulator can't show,
+rarely run. If it never runs, those stay "not tested live" on the coverage page.
 
 ## Later, not yet placed
 
