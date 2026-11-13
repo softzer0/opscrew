@@ -227,7 +227,7 @@ describe("renderHostingWorkflow", () => {
     const wait = step(jobs.wait, "Wait for the account to switch to the release");
     // The publish job's, so a re-run of the failed wait job waits for the same release.
     expect(wait.env).toEqual({
-      URL: "https://staging-shop.example.com/",
+      URL: "https://staging-shop.example.com/api/health", // the agent's health check path
       RELEASE: "${{ needs.publish.outputs.release }}",
     });
     expect(wait["timeout-minutes"]).toBe(12);

@@ -404,7 +404,8 @@ export function renderHostingWorkflow(
       // The job has one step, so the step's limit is the job's.
       "  timeout-minutes: 12",
       "  env:",
-      `    URL: https://${domain}/`,
+      // The path the agent's health check asks (R13: the site's root may answer otherwise).
+      `    URL: https://${domain}${plan.app.healthPath.startsWith("/") ? "" : "/"}${plan.app.healthPath}`,
       // The release the publish job made, also after "Re-run failed jobs" of this job.
       "    RELEASE: ${{ needs.publish.outputs.release }}",
       ...run(waitScript(plan)),

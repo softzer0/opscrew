@@ -179,7 +179,7 @@ jobs:
       - name: Wait for the account to switch to the release
         timeout-minutes: 12
         env:
-          URL: https://staging-shop.example.com/
+          URL: https://staging-shop.example.com/api/health
           RELEASE: \${{ needs.publish.outputs.release }}
         run: |
           set -uo pipefail
@@ -395,7 +395,7 @@ jobs:
       - name: Wait for the account to switch to the release
         timeout-minutes: 12
         env:
-          URL: https://staging-shop.example.com/
+          URL: https://staging-shop.example.com/api/health
           RELEASE: \${{ needs.publish.outputs.release }}
         run: |
           set -uo pipefail
@@ -584,7 +584,7 @@ jobs:
       - name: Wait for the account to switch to the release
         timeout-minutes: 12
         env:
-          URL: https://staging-shop.example.com/
+          URL: https://staging-shop.example.com/api/health
           RELEASE: \${{ needs.publish.outputs.release }}
         run: |
           set -uo pipefail
