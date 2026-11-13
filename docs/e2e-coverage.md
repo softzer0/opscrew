@@ -86,6 +86,7 @@ of the pass passed; otherwise the status says how many of its steps did.
 | Credential rotation at DigitalOcean | — | **Not tested live**: no DigitalOcean account (the founder's is suspended); covered by fakes | — | A DigitalOcean account |
 | Contabo (`contabo.test.ts`, feature 026): one Cloud VPS 4 through interview, design, provision with its firewall and SSH key, deploy, a whole-server snapshot and its restore, secure, drift and destroy (cancel), and the leak search ([its steps](e2e.md#contabo)) | `OPSCREW_E2E_CONTABO=1` on the command line, the four `OPSCREW_E2E_CONTABO_*` credentials, GitHub and a Cloudflare domain; each run buys a month | **Passed** (9 of 9 steps, run 4; steps 3 and 7 after a fix each on the same server) | 2026-11-12 | — |
 | A cPanel account (`cpanel.test.ts`, feature 027): the founder's shared hosting (LiteSpeed, CloudLinux). A plain PHP app with MySQL, a static site and a Node.js app through CloudLinux's selector each through interview, both hosting plans by hash, the first deploy, a second release and a rollback watched answer by answer, secure, drift and destroy (the PHP app also its cron job, kept storage, a snapshot and its restore); Laravel refused for the account's PHP; the account compared field by field before and after, and the leak search ([its steps](e2e.md#a-cpanel-account)) | `OPSCREW_E2E_CPANEL=1` on the command line, the four `OPSCREW_E2E_CPANEL_*` variables, GitHub | **Passed** (28 of 28 steps, run 29) | 2026-11-13 | — |
+| An SFTP-only host (`sftp-host.test.ts`, feature 027): a throwaway Hetzner server set up as one (an account chrooted with `internal-sftp`, Apache with PHP-FPM as that account, MariaDB). A static site and a plain PHP app with MySQL, each through interview, the hosting plan by hash, the first deploy over SFTP from GitHub Actions, a second release and a rollback watched answer by answer, and destroy; the leak search ([its steps](e2e.md#an-sftp-only-host)) | `OPSCREW_E2E_SFTP=1` on the command line, the Hetzner token, GitHub and a Cloudflare domain, as for [your own server](e2e.md#your-own-server) | **Passed** (14 of 14 steps, run 4) | 2026-11-13 | — |
 
 Run in development, not tracked by date:
 
@@ -384,6 +385,17 @@ found on the founder's account (details in 027's research, R13 and R14).
 | The selector links `node_modules` into the app's root | step 3.3 | [x] 2026-11-13: **no**, packages are only in its environment; each release links `<env>/lib/node_modules` (T2745) |
 | A switch of a PHP or static release is seen at once, and every answer after it is the new release's (SC-2703) | steps 1.4, 1.5, 2.4, 2.5 | [x] 2026-11-13 |
 
+### An SFTP-only host (feature 027)
+
+What the SFTP-only target assumed about Apache with PHP-FPM, and what the SFTP pass found (details
+in 027's research, R16).
+
+| Assumption | Checked in | Confirmed |
+|---|---|---|
+| OpenSSH's `posix-rename` switches `current` in one step: every answer after it is the new release's | steps 2.4, 2.5 | [x] 2026-11-13 |
+| On Apache with PHP-FPM, a PHP release switch reaches every PHP process once PHP's path cache expires (120 s) | step 3.4 | [x] 2026-11-13: **no**, OPcache kept the old release's code over 10 minutes (run 3); with `opcache.revalidate_path` on, the new release's from the deploy job's end (run 4, T2754) |
+| A PHP app's rollback over SFTP serves the release it names when the command ends | step 3.5 | [x] 2026-11-13, once the rollback waited for PHP's path cache as the deploy job does (T2754) |
+
 ## Live results
 
 | Date | Pass | Outcome | Findings and fixes |
@@ -629,3 +641,6 @@ found on the founder's account (details in 027's research, R13 and R14).
 | 2026-11-13 | cPanel, run 27 | **Node.js and Laravel passed**; step 10 counted AutoSSL's certificate | The design that holds: the selector's block as it writes it (root `app/`), the app started as `current/<startup>`, and each switch touches `app/tmp/restart.txt` and ends the app's processes (T2746): 33 of 33 answers after the switch and 22 of 22 after the rollback were the right release's. Step 10 now counts the run's AutoSSL certificates, which destroy rightly leaves and the cleanup removes, as observations |
 | 2026-11-13 | cPanel, run 28 | PHP passed; failed at step 2.3 | `verify` ran 50 s before the agent's next run forced HTTPS on the new hostname (fixed: the agent checks again right after a deploy, T2747) |
 | 2026-11-13 | cPanel, run 29 | **Passed** (28 of 28 steps) | 35 minutes for all four legs. HTTP redirected as each first deploy's job ended; every answer after each switch and rollback was the right release's (PHP 35 and 23, site 41 and 27, Node.js 32 and 27); the PHP app's cron job, kept storage and snapshot restore; Laravel refused for the account's PHP 7.0; the account field by field as before (AutoSSL's three certificates and keys of the run removed by the cleanup), its processes 0 of 100 before and after; no secret anywhere. Left on the account: AutoSSL's `_acme-challenge` TXT records of the runs' hostnames, for the founder to remove |
+| 2026-11-13 | SFTP, run 1 | 3 of 14 steps passed; failed at step 2.2 | `provision --plan-only` over SFTP gave no hash to approve, and its refusal read "The The" (fixed: T2748). The cleanup left nothing |
+| 2026-11-13 | SFTP, runs 2 and 3 | **The static site passed** (all six steps); the PHP app failed at step 3.4 | After the PHP app's second release some answers still showed the old page: PHP's OPcache kept the old release's code, still there 10 minutes after the deploy job ended (run 3). A local copy of the host measured why (research R16; fixed: T2754) |
+| 2026-11-13 | SFTP, run 4 | **Passed** (14 of 14 steps) | 33 minutes. Every answer after each switch and rollback was the right release's (site 41 and 23, PHP 19 and 15); the PHP app read its database's values; no secret anywhere. The cleanup left only the founder's own server at Hetzner, and no secret or deploy key in the test repositories |
