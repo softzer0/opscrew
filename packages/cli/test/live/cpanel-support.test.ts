@@ -245,6 +245,18 @@ describe("the account's inventory (SC-2702)", () => {
     });
   });
 
+  it("observes an earlier run's entry that cPanel lists again or no longer (R10)", () => {
+    const earlier = { ...before, databases: ["acct_e2e_8ec540_php|"] };
+    const after = { ...before, databases: ["acct_e2e_0b18fd_php|"] };
+    expect(inventoryProblems(earlier, after, "ffee12")).toEqual({
+      problems: [],
+      observed: [
+        "databases: an earlier run's acct_e2e_0b18fd_php| is listed again (R10)",
+        "databases: an earlier run's acct_e2e_8ec540_php| is no longer listed (R10)",
+      ],
+    });
+  });
+
   const certificate = (id: string, domains: string[], publicKey: string) => ({
     id,
     domains,

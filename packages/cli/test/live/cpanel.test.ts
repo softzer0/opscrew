@@ -68,7 +68,7 @@ import {
 } from "./harness";
 import { shownRollback } from "./rollback-support";
 import { approvedRestore } from "./snapshots-checks";
-import { approveHashes, leakedLabels, missingVariables } from "./support";
+import { approveHashes, duration, leakedLabels, missingVariables } from "./support";
 
 const ENV = process.env;
 const MISSING = missingVariables(ENV, CPANEL_GATE, CPANEL_VARIABLES);
@@ -488,12 +488,32 @@ describe.skipIf(MISSING.length > 0)(
             first = releaseOf(health) ?? "";
             if (first === "")
               throw new Error("The app answered without its X-OpsCrew-Release header.");
-            await run.opscrewOk("verify");
             const status = await run.opscrewOk("status");
             expect(status.output, "status names the running release").toContain(
               `Release: ${first} runs`,
             );
-            await run.opscrewOk("logs");
+            const logs = await run.opscrewOk("logs");
+            log(`the agent's log after the first deploy:\n${run.scrub(logs.output)}`);
+            const verified = await run.opscrew("verify");
+            if (verified.exitCode !== 0) {
+              // Evidence for a failed check: how long HTTPS takes to be forced, and the agent's log.
+              const http = url("/").replace(/^https:/, "http:");
+              const since = Date.now();
+              const redirected = await waitFor(`${http} redirecting`, minutes(5), async () => {
+                const answer = await request(http);
+                return answer.status >= 300 && answer.status < 400 ? answer.status : undefined;
+              }).catch(() => undefined);
+              log(
+                redirected === undefined
+                  ? `observed: ${http} didn't redirect within 5 minutes after verify`
+                  : `observed: ${http} redirected (${redirected}) ${duration(Date.now() - since)} after verify`,
+              );
+              const later = await run.opscrewOk("logs");
+              log(`the agent's log after that wait:\n${run.scrub(later.output)}`);
+              throw new Error(
+                `opscrew verify exited with ${verified.exitCode}:\n${run.scrub(verified.output)}`,
+              );
+            }
             if (leg.data === true) {
               const home = await answering(url("/"));
               expect(home.body, "the app reached its database").toContain("MySQL");

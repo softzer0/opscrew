@@ -482,11 +482,19 @@ export function inventoryProblems(
         observed.push(`the home folder has ${entry.split("|")[0]} now, which it had not before`);
       } else if (namesRun(entry, tag)) {
         problems.push(`${field}: the run's ${entry} is left`);
+      } else if (namesOtherRun(entry, tag)) {
+        observed.push(`${field}: an earlier run's ${entry} is listed again (R10)`);
       } else {
         problems.push(`${field}: ${entry} appeared`);
       }
     }
-    for (const entry of removed) problems.push(`${field}: ${entry} is gone`);
+    for (const entry of removed) {
+      if (namesOtherRun(entry, tag)) {
+        observed.push(`${field}: an earlier run's ${entry} is no longer listed (R10)`);
+      } else {
+        problems.push(`${field}: ${entry} is gone`);
+      }
+    }
   }
   return { problems, observed };
 }
@@ -623,10 +631,16 @@ export function selectorEnvNames(text: string, tag: string): string[] {
  */
 export function otherRunsObjects(inventory: Inventory, tag: string): string[] {
   return Object.entries(inventory).flatMap(([field, entries]) =>
-    entries
-      .filter((entry) => /e2e[-_][a-z0-9]{6}(?![a-z0-9])/i.test(entry) && !namesRun(entry, tag))
-      .map((entry) => `${field}: ${entry}`),
+    entries.filter((entry) => namesOtherRun(entry, tag)).map((entry) => `${field}: ${entry}`),
   );
+}
+
+/**
+ * Whether `entry` is named after another run than `tag`'s. cPanel lists a deleted database again
+ * for a while, then stops (R10, seen again on the live pass), so such an entry may come and go.
+ */
+function namesOtherRun(entry: string, tag: string): boolean {
+  return /e2e[-_][a-z0-9]{6}(?![a-z0-9])/i.test(entry) && !namesRun(entry, tag);
 }
 
 // ---------------------------------------------------------------------------------------------
