@@ -628,7 +628,7 @@ names the change.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-cpanel --filter=@opscrew/connector-directadmin --filter=@opscrew/contracts && npx vitest run --root packages/agents src/hosting && pnpm lint`
   - Effort: medium
 
-- [ ] T2744 Node.js and Python apps: the selector keeps one fixed folder, Passenger follows the release (research R14)
+- [x] T2744 Node.js and Python apps: the selector keeps one fixed folder, Passenger follows the release (research R14)
   - Owns: `packages/iac-templates/src/hosting/agent/**`, `packages/iac-templates/src/hosting/agent.ts`, `packages/agents/src/hosting/**`, `docs/guide/hosting-accounts.md`
   - Reads: research R10, R11, R14; T2717 and T2741 (the selector's install, the switch back and reinstall); `iac-templates/src/hosting/agent/script.ts` (`app_root`, `selector_*`, `compose`, `link_shared`, the selector's create/set/destroy); `agents/src/hosting/{destroy,provision-plans,apply}.ts` (their text about the selector and `~/nodevenv`)
   - Accept:
