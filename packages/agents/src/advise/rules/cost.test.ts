@@ -441,6 +441,22 @@ describe("costRules: the other provider on the same basis (Contabo)", () => {
       expect(texts(move)).not.toContain("automated backups");
     });
 
+    it("prices the new server without backups outside prod, whatever the data (T2750)", async () => {
+      const staging = {
+        ...contabo,
+        app: { ...contabo.app, name: "shop-staging" },
+        environment: { name: "staging" },
+        target: { ...contabo.target, serverType: "V-33" },
+      } as DeployPlan;
+      const move = await moveOf(
+        staging,
+        [contaboList(plan33(20)), await hetznerTable("nbg1"), await hetznerTable("fsn1")],
+        makeRequirements({ dataCriticality: "critical" }),
+      );
+      expect(move?.price).toMatchObject({ before: 20, after: 8.99 });
+      expect(texts(move)).not.toContain("automated backups");
+    });
+
     it("counts toward the budget only the saving that holds whatever VAT you pay", async () => {
       const budgetOf = async (amount: number) => {
         const readings = readingsOf(

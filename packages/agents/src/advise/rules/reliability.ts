@@ -6,6 +6,7 @@
  */
 import { listText, plural } from "@opscrew/core";
 import { isServerlessProvider, snapshotOffsiteOf, snapshotScheduleOf } from "@opscrew/plan-schema";
+import { backupsByDefault } from "../../design/backups";
 import { noProviderBackups } from "../../design/snapshots";
 import { storagePrice } from "../../design/storage";
 import { logParts } from "../../logs/parts";
@@ -48,12 +49,15 @@ export function reliabilityRules(readings: Readings): Proposal[] {
 }
 
 /**
- * Each server without automated backups, at a provider that offers them through OpsCrew, while the
- * interview says the data is important, priced without and with them when the prices list its type.
+ * Each server without automated backups, at a provider that offers them through OpsCrew, in prod while
+ * the interview says the data is important (`backupsByDefault`: dev and staging rely on OpsCrew's
+ * own snapshots), priced without and with them when the prices list its type.
  */
 function backupProposals(readings: Readings): Proposal[] {
-  const criticality = readings.requirements?.dataCriticality;
-  if (criticality !== "important" && criticality !== "critical") return [];
+  const { requirements, plan } = readings;
+  if (requirements === undefined) return [];
+  if (!backupsByDefault(requirements, plan.environment?.name ?? "prod")) return [];
+  const criticality = requirements.dataCriticality;
   return (
     cloudServers(readings)
       // A provider without automated backups through OpsCrew gets the snapshot proposals instead.

@@ -93,6 +93,20 @@ describe("reliabilityRules: backups", () => {
     const own = { ...checked(ownPlan()), snapshots: SNAPSHOTS_ON };
     expect(rules(readingsOf(own, { requirements: important }))).toEqual([]);
   });
+
+  it("proposes them only in prod: dev and staging rely on OpsCrew's own snapshots (T2750)", () => {
+    const base = checked(withoutBackups(testPlan()));
+    for (const name of ["staging", "dev"]) {
+      const plan = DeployPlanSchema.parse({
+        ...base,
+        app: { ...base.app, name: `shop-${name}` },
+        environment: { name },
+      });
+      const critical = makeRequirements({ dataCriticality: "critical" });
+      const ids = rules(readingsOf(plan, { requirements: critical })).map((p) => p.id);
+      expect(ids).not.toContain("reliability.app.backups");
+    }
+  });
 });
 
 /** Scheduled snapshots with their off-server copy. */

@@ -6,6 +6,7 @@
 import type { ComputeOffer } from "@opscrew/contracts";
 import { STORAGE_NAMES } from "@opscrew/iac-templates";
 import { APP_SERVER, serviceOf } from "@opscrew/plan-schema";
+import { backupsByDefault } from "../../design/backups";
 import { convertMoney, roundCents } from "../../design/cost";
 import { cheapestServerOffer, extraServerNeed } from "../../design/servers";
 import { storageOffers } from "../../design/storage";
@@ -37,7 +38,7 @@ const DATABASE_SERVER = "db";
  * Postgres on the app's Hetzner or DigitalOcean server, its container's p95 memory above
  * `databaseShare` of the server's while the server's p95 memory is above `memoryHigh`: a server of
  * its own, sized and priced as design does an extra server (the add-ons' containers on it, backups
- * unless the interview says the data doesn't matter).
+ * in prod unless the interview says the data doesn't matter: `backupsByDefault`).
  */
 function databaseServerProposals(readings: Readings): Proposal[] {
   const { plan, flags } = readings;
@@ -61,7 +62,10 @@ function databaseServerProposals(readings: Readings): Proposal[] {
     own = cheapestServerOffer(list.offers, app.location, need);
     if (own !== undefined) {
       const before = serverCost(app.provider, offer, list, app.backups);
-      const backups = readings.requirements?.dataCriticality !== "none";
+      const { requirements } = readings;
+      const backups =
+        requirements === undefined ||
+        backupsByDefault(requirements, plan.environment?.name ?? "prod");
       const added = serverCost(app.provider, own, list, backups);
       price = {
         before: before.monthly.amount,

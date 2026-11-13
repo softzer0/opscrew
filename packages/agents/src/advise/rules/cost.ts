@@ -14,6 +14,7 @@ import {
   type Region,
   type Requirements,
 } from "@opscrew/plan-schema";
+import { backupsByDefault } from "../../design/backups";
 import {
   convertMoney,
   EXCHANGE_RATE_NOTE,
@@ -120,16 +121,18 @@ function cheapestAt(
  * The automated backups each side of a move to `other` is priced with, so both have the same data
  * protection: the app's where both providers offer them; none where `other` offers none (OpsCrew's
  * data snapshots replace them there); from a provider without them, the new server's as design
- * sets them (on when the interview says the data matters), as the move turns them on.
+ * sets them (on in prod when the interview says the data matters: `backupsByDefault`), as the
+ * move turns them on.
  */
 function backupsOf(
   app: PricedServer,
   other: CloudProvider,
   requirements: Pick<Requirements, "dataCriticality">,
+  environment: string,
 ): { before: boolean; after: boolean } {
   if (!providerProfile(other).providerBackups) return { before: false, after: false };
   if (!providerProfile(app.provider).providerBackups) {
-    return { before: false, after: requirements.dataCriticality !== "none" };
+    return { before: false, after: backupsByDefault(requirements, environment) };
   }
   return { before: app.backups, after: app.backups };
 }
@@ -214,7 +217,7 @@ function otherProvider(readings: Readings, app: PricedServer | undefined): Propo
   const { offer: current, list: here } = app.prices;
   const best = VPS_PROVIDERS.filter((id) => id !== app.provider)
     .flatMap((other) => {
-      const backups = backupsOf(app, other, requirements);
+      const backups = backupsOf(app, other, requirements, plan.environment?.name ?? "prod");
       const found = cheapestAt(readings, app, other, region, backups.after);
       if (found === undefined) return [];
       const before = serverCost(app.provider, current, here, backups.before);

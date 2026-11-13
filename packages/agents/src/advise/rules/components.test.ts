@@ -134,6 +134,19 @@ describe("componentRules: Postgres on its own server", () => {
     expect(proposal?.price).toMatchObject({ before: 7.09, after: 13.08 });
   });
 
+  it("prices the new server without backups outside prod, whatever the data (T2750)", () => {
+    const base = testPlan();
+    const staging = DeployPlanSchema.parse({
+      ...base,
+      app: { ...base.app, name: "shop-staging" },
+      environment: { name: "staging" },
+    });
+    const requirements = makeRequirements({ dataCriticality: "critical" });
+    const [proposal] = rules(readingsOf(staging, { servers: shortServer(0.9, 2.1), requirements }));
+    // The app's cx23 keeps the backups its plan has (€7.09); the new cx23 is €5.99.
+    expect(proposal?.price).toMatchObject({ before: 7.09, after: 13.08 });
+  });
+
   it("proposes it without a price when the catalogue has none", () => {
     const [proposal] = rules(
       readingsOf(testPlan(), { servers: shortServer(0.9, 2.1), prices: [] }),

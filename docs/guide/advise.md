@@ -95,13 +95,14 @@ no change of size in place, and no automated backups from the provider.
 
 Moving off a provider with terms, the old server is billed to the end of its term, so the saving
 starts after it, and `opscrew retarget --finish` cancels the old server rather than deleting it.
-The new server's automated backups are priced in when the interview says your data matters.
+The new server's automated backups are priced in for prod when the interview says your data
+matters; dev and staging rely on OpsCrew's own snapshots.
 
 ### Reliability
 
 | Proposal | When |
 |---|---|
-| **Backups** | A server without automated backups while the interview says the app's data is important or critical |
+| **Backups** | A prod server without automated backups while the interview says the app's data is important or critical. Dev and staging rely on OpsCrew's own snapshots, so it is not proposed there |
 | **The scheduled check** | The [scheduled check](alerts.md) is off for prod. It adds no server cost |
 | **A flapping check** | The scheduled check opened its issue 3 times or more in 14 days: the app keeps failing and recovering. It suggests reading the logs around those dates |
 | **A restart loop** | A container restarted 3 times or more in 14 days (deploys don't count, as each starts a new container); on one reading, since it was last deployed |
