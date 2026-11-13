@@ -568,7 +568,7 @@ names the change.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates && npx vitest run --root packages/iac-templates src/hosting && pnpm lint`
   - Effort: medium
 
-- [ ] T2737 The app's kept folders outlive each release on a hosting account (research R13)
+- [x] T2737 The app's kept folders outlive each release on a hosting account (research R13)
   - Owns: `packages/agents/src/hosting/**`, `packages/iac-templates/src/hosting/sftp-workflow.ts`, `packages/iac-templates/src/hosting/sftp-workflow.test.ts`, `packages/iac-templates/src/hosting/__snapshots__/sftp-workflow.test.ts.snap`, `docs/guide/hosting-accounts.md`, `docs/guide/sftp.md`
   - Reads: research R13; plan 5 (the release's shared paths); `agents/src/hosting/provision-plans.ts` (`sharedPaths`), `iac-templates/src/hosting/agent/script.ts` (`link_shared`), `iac-templates/src/hosting/sftp-workflow.ts`, `plan-schema` (`storage.files`, `storage.sqlite`)
   - Accept:
@@ -578,7 +578,7 @@ names the change.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents --filter=@opscrew/iac-templates && npx vitest run --root packages/agents src/hosting && npx vitest run --root packages/iac-templates src/hosting && pnpm lint`
   - Effort: high
 
-- [ ] T2738 The cPanel pass names AutoSSL's challenge records of its hostnames, and leaves them (research R13)
+- [x] T2738 The cPanel pass names AutoSSL's challenge records of its hostnames, and leaves them (research R13)
   - Owns: `packages/cli/test/live/cpanel-support.ts`, `packages/cli/test/live/cpanel-support.test.ts`, `docs/e2e.md`
   - Reads: research R10, R11, R13; `cli/test/live/cpanel-support.ts` (the inventory's `zone`, `inventoryProblems`)
   - Accept:
@@ -587,7 +587,7 @@ names the change.
   - Verify: `pnpm turbo run typecheck --filter=opscrew && npx vitest run --root packages/cli test/live/cpanel-support.test.ts && pnpm lint`
   - Effort: medium
 
-- [ ] T2739 A kept folder the release doesn't ship starts empty in shared/ (from T2737)
+- [x] T2739 A kept folder the release doesn't ship starts empty in shared/ (from T2737)
   - Owns: `packages/iac-templates/src/hosting/agent/**`, `packages/iac-templates/src/hosting/agent.ts`
   - Reads: T2737; `iac-templates/src/hosting/agent/script.ts` (`link_shared`), `iac-templates/src/hosting/sftp-workflow.ts` (its kept folders)
   - Accept:
