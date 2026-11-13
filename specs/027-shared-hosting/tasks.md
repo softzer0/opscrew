@@ -677,7 +677,7 @@ names the change.
 
 The founder added these to 0.2.8.
 
-- [ ] T2749 Research R15: Contabo's Auto Backup and Object Storage through the API (Sonnet; official sources)
+- [x] T2749 Research R15: Contabo's Auto Backup and Object Storage through the API (Sonnet; official sources)
   - Owns: `specs/027-shared-hosting/research.md` (R15 only)
   - Accept: R15 says, from Contabo's API and Terraform provider docs: how Auto Backup is turned on and off for an instance (at order, as an upgrade), its price, what it keeps and how a restore works; how an Object Storage is ordered, its regions, price, S3 endpoint, how S3 credentials are made (API or panel), cancellation, and the Terraform resources and their limits (import); what OpsCrew's Contabo connector would call. Unverified items marked.
 
