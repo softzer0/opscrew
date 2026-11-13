@@ -645,9 +645,18 @@ const Api2Schema = z.object({
 const list = <S extends z.ZodType>(item: S) => z.array(item).catch([]);
 const text = z.union([z.string(), z.number()]).transform(String);
 
-const DomainsSchema = list(
-  z.looseObject({ domain: z.string(), type: z.string(), documentroot: z.string().nullish() }),
-);
+const DomainSchema = z.looseObject({
+  domain: z.string(),
+  type: z.string(),
+  documentroot: z.string().nullish(),
+});
+/** `domains_data` without `format`, the one form that names parked domains (R13). */
+const DomainsSchema = z.object({
+  main_domain: DomainSchema,
+  addon_domains: list(DomainSchema),
+  sub_domains: list(DomainSchema),
+  parked_domains: list(z.string()),
+});
 const DatabasesSchema = list(
   z.looseObject({ database: z.string(), users: z.array(z.string()).nullish() }),
 );
@@ -811,6 +820,17 @@ export class CpanelAccount {
     }
   }
 
+  /** The account's domains, the parked ones (names only) too. */
+  async domains(): Promise<{ domain: string; type: string; documentroot?: string | null }[]> {
+    const data = DomainsSchema.parse(await this.uapi("DomainInfo", "domains_data"));
+    return [
+      data.main_domain,
+      ...data.addon_domains,
+      ...data.sub_domains,
+      ...data.parked_domains.map((domain) => ({ domain, type: "parked_domain" })),
+    ];
+  }
+
   /**
    * The account's inventory: its domains (with their document roots), databases and their users,
    * cron lines, SSH keys (also the public ones), API token names, the home folder's top level, the
@@ -818,9 +838,7 @@ export class CpanelAccount {
    * zone's records by name and type, and its SSL certificates, keys and installed hosts.
    */
   async inventory(): Promise<AccountInventory> {
-    const domains = DomainsSchema.parse(
-      await this.uapi("DomainInfo", "domains_data", { format: "list" }),
-    );
+    const domains = await this.domains();
     const databases = DatabasesSchema.parse(await this.uapi("Mysql", "list_databases"));
     const users = UsersSchema.parse(await this.uapi("Mysql", "list_users"));
     const cron = CronSchema.parse(await this.api2("Cron", "listcron"));
@@ -919,9 +937,7 @@ export class CpanelAccount {
         this.panel.removeCron(job.key),
       );
     }
-    const domains = DomainsSchema.parse(
-      await this.uapi("DomainInfo", "domains_data", { format: "list" }),
-    );
+    const domains = await this.domains();
     for (const domain of domains.filter(
       (d) => namesRun(d.domain, tag) && d.type !== "main_domain",
     )) {

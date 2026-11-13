@@ -414,6 +414,11 @@ describe("the cleanup on the account", () => {
     fake.writeText(".cl.selector/htaccess_cache", "a\nb\n", 0o600);
     fake.writeText(".cl.selector/selector.json", "{}\n");
     const before = await account.inventory();
+    expect(before.fields.domains).toEqual([
+      "main_domain|example.com|/home/acct/public_html",
+      "parked_domain|parked.example.org|",
+      "sub_domain|blog.example.com|/home/acct/blog",
+    ]);
     expect(before.fields.zone).toEqual(["example.com.|A"]);
     expect(before.fields.opscrewFolder).toEqual(["other-prod|dir"]);
 

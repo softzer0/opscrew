@@ -273,20 +273,12 @@ export function fakeCpanel(options: FakeCpanelOptions): FakeCpanel {
       shell: "/bin/bash",
       maximum_passenger_apps: state.maximumPassengerApps,
     }),
+    // R13: `format=list` leaves parked domains out; without it they are names only.
     "DomainInfo::domains_data": (params) => {
-      if (params.format !== "list")
-        throw new Error("fakeCpanel answers domains_data as a list only");
-      const types = {
-        main: "main_domain",
-        addon: "addon_domain",
-        subdomain: "sub_domain",
-        parked: "parked_domain",
-      };
-      const mainRoot = rootOf(state.domains[0] as HostingDomain);
-      return state.domains.map((domain) => ({
+      const entry = (domain: HostingDomain) => ({
         domain: domain.name,
-        type: types[domain.kind],
-        documentroot: domain.kind === "parked" ? mainRoot : rootOf(domain),
+        type: `${domain.kind === "subdomain" ? "sub" : domain.kind}_domain`,
+        documentroot: rootOf(domain),
         homedir: home,
         ip: address,
         ipv6: null,
@@ -294,7 +286,18 @@ export function fakeCpanel(options: FakeCpanelOptions): FakeCpanel {
         serveralias: `www.${domain.name}`,
         user: options.user,
         owner: "root",
-      }));
+      });
+      const of = (kind: HostingDomain["kind"]) =>
+        state.domains.filter((domain) => domain.kind === kind);
+      if (params.format === "list") {
+        return state.domains.filter((domain) => domain.kind !== "parked").map(entry);
+      }
+      return {
+        main_domain: entry(state.domains[0] as HostingDomain),
+        addon_domains: of("addon").map(entry),
+        sub_domains: of("subdomain").map(entry),
+        parked_domains: of("parked").map((domain) => domain.name),
+      };
     },
     "Quota::get_quota_info": () => ({
       megabytes_used: state.quota.usedMb,

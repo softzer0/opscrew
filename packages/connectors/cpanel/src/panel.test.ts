@@ -132,6 +132,21 @@ describe("inspect", () => {
     ]);
   });
 
+  it("reads the parked domains with the main domain's root, in one domains_data call without format", async () => {
+    const { fake, panel } = setup();
+    fake.state.domains.push({ name: "parked.example.org", kind: "parked" });
+    await panel.addHostname("shop.example.org", ROOT);
+    expect((await panel.inspect()).domains).toEqual([
+      { name: "example.com", kind: "main", documentRoot: "public_html" },
+      { name: "shop.example.org", kind: "addon", documentRoot: ROOT },
+      { name: "parked.example.org", kind: "parked", documentRoot: "public_html" },
+    ]);
+    const reads = fake.calls.filter(
+      (call) => `${call.module}::${call.func}` === "DomainInfo::domains_data",
+    );
+    expect(reads.map((call) => call.params)).toEqual([{}, {}]);
+  });
+
   it("leaves the app slots out without the passengerapps feature", async () => {
     const { fake, panel } = setup({ features: { passengerapps: 0 } });
     expect((await panel.inspect()).apps).toEqual({ selectors: ["nodejs", "python"] });
@@ -182,6 +197,25 @@ describe("hostnames", () => {
     await panel.removeHostname("shop.example.com");
     expect(called(fake, before)).toEqual(["DomainInfo::domains_data"]);
     expect((await failure(panel.removeHostname("example.com"))).code).toBe("INVALID_INPUT");
+  });
+
+  it("adds a hostname under a parked domain as its subdomain, and never removes the parked domain", async () => {
+    const { fake, panel } = setup();
+    fake.state.domains.push({ name: "parked.example.org", kind: "parked" });
+    await panel.addHostname("shop.parked.example.org", ROOT);
+    expect(lastCall(fake, "SubDomain::addsubdomain")?.params).toEqual({
+      domain: "shop",
+      rootdomain: "parked.example.org",
+      dir: ROOT,
+      disallowdot: "0",
+    });
+    await expect(panel.documentRoot("shop.parked.example.org")).resolves.toBe(ROOT);
+    const error = await failure(panel.removeHostname("parked.example.org"));
+    expect(error.code).toBe("INVALID_INPUT");
+    expect(error.message).toBe(
+      "parked.example.org is the account's parked domain; OpsCrew removes only the hostnames it added.",
+    );
+    expect(fake.state.domains.map((domain) => domain.name)).toContain("parked.example.org");
   });
 
   it("never takes over a hostname the account serves", async () => {

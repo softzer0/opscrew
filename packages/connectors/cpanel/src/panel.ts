@@ -60,24 +60,20 @@ const ServerSchema = z.object({
   mysql_version: z.string().nullish(),
 });
 
-const DOMAIN_KINDS = {
-  main_domain: "main",
-  addon_domain: "addon",
-  sub_domain: "subdomain",
-  parked_domain: "parked",
-  parked_domains: "parked",
-} as const satisfies Record<string, HostingDomain["kind"]>;
-
-const DomainsSchema = z.array(
-  z.object({
-    domain: z.string(),
-    type: z.enum(Object.keys(DOMAIN_KINDS) as [keyof typeof DOMAIN_KINDS]),
-    documentroot: z.string().nullish(),
-    homedir: z.string().nullish(),
-    ip: z.string().nullish(),
-    ipv6: z.string().nullish(),
-  }),
-);
+const DomainSchema = z.object({
+  domain: z.string(),
+  documentroot: z.string().nullish(),
+  homedir: z.string().nullish(),
+  ip: z.string().nullish(),
+  ipv6: z.string().nullish(),
+});
+/** `domains_data` without `format`: parked domains are names only (R13). */
+const DomainsSchema = z.object({
+  main_domain: DomainSchema,
+  addon_domains: z.array(DomainSchema).default([]),
+  sub_domains: z.array(DomainSchema).default([]),
+  parked_domains: z.array(z.string()).default([]),
+});
 
 const QuotaSchema = z.object({ megabytes_used: num, megabyte_limit: num });
 const RestrictionsSchema = z.object({
@@ -700,19 +696,21 @@ export class CpanelPanel implements HostingPanel {
     });
   }
 
-  /** `DomainInfo::domains_data`; remembers the home folder for the file calls. */
+  /**
+   * `DomainInfo::domains_data` without `format`, the one form that names parked domains (R13);
+   * a parked domain serves the main domain's root. Remembers the home folder for the file calls.
+   */
   async #account(): Promise<Account> {
     const what = "list the account's domains";
-    const list = await this.#client.uapi({
+    const data = await this.#client.uapi({
       module: "DomainInfo",
       func: "domains_data",
-      params: { format: "list" },
       what,
       schema: DomainsSchema,
     });
-    const main = list.find((entry) => entry.type === "main_domain");
-    const home = main?.homedir?.replace(/\/+$/, "");
-    if (main === undefined || !home) {
+    const main = data.main_domain;
+    const home = main.homedir?.replace(/\/+$/, "");
+    if (!home) {
       throw new OpsCrewError(
         "PROVIDER_ERROR",
         `cPanel named no main domain with its home folder when trying to ${what}.`,
@@ -720,24 +718,32 @@ export class CpanelPanel implements HostingPanel {
       );
     }
     this.#home = home;
-    const ordered = [main, ...list.filter((entry) => entry !== main)];
+    const entries = [
+      { kind: "main" as const, ...main },
+      ...data.addon_domains.map((entry) => ({ kind: "addon" as const, ...entry })),
+      ...data.sub_domains.map((entry) => ({ kind: "subdomain" as const, ...entry })),
+    ];
     const addresses = new Set<string>();
-    for (const entry of ordered) {
+    for (const entry of entries) {
       if (entry.ip) addresses.add(entry.ip);
       if (entry.ipv6) addresses.add(entry.ipv6);
     }
+    const domain = (name: string, kind: HostingDomain["kind"], documentRoot?: string | null) => {
+      const root = documentRoot ? relativeTo(home, documentRoot) : undefined;
+      return {
+        name: normalizeHostName(name),
+        kind,
+        ...(root !== undefined && { documentRoot: root }),
+      };
+    };
     return {
       home,
       main: normalizeHostName(main.domain),
       addresses: [...addresses],
-      domains: ordered.map((entry) => {
-        const root = entry.documentroot ? relativeTo(home, entry.documentroot) : undefined;
-        return {
-          name: normalizeHostName(entry.domain),
-          kind: DOMAIN_KINDS[entry.type],
-          ...(root !== undefined && { documentRoot: root }),
-        };
-      }),
+      domains: [
+        ...entries.map((entry) => domain(entry.domain, entry.kind, entry.documentroot)),
+        ...data.parked_domains.map((name) => domain(name, "parked", main.documentroot)),
+      ],
     };
   }
 
