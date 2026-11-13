@@ -513,3 +513,80 @@ summarised here.
   in `extraHeaders` leaves the real address. Client certificates per hostname (Cloudflare's
   authenticated origin pulls): `clientVerify 2` fails the handshake without one, where nginx answers
   400.
+
+## R13. What the live passes found (2026-11-13)
+
+- **Parked domains (cPanel pass, run 1):** the test domain is a parked domain (an alias of the main
+  domain) on the founder's account, with two subdomains of its own. `DomainInfo::domains_data`
+  with `format=list` leaves parked domains out (main, addon and subdomains only), so the connector
+  and the pass's inventory never saw it. Without `format`, `domains_data` gives `main_domain` as an
+  object, `addon_domains` and `sub_domains` as arrays of objects, and `parked_domains` as an array
+  of names (plain strings, no document root: a parked domain serves the main domain's).
+  `list_domains` gives the four lists as names. A subdomain whose root is a parked domain is
+  allowed (the account has two).
+- **The main domain may not resolve (cPanel pass, run 2):** the founder's account's main domain
+  has no DNS (`ENOTFOUND` over HTTPS and HTTP), while its parked domain and subdomains answer
+  `Server: LiteSpeed`. Design read the web server from the main domain only, so it named none, and
+  provision refused the PHP app though alt-php 8.3 to 8.5 load `pdo_mysql` through a handler line
+  (R11). On shared hosting a main domain that is a placeholder or has lapsed is common.
+- **The deploy job's wait ended early (cPanel pass, run 3):** the step "Wait for the account to switch
+  to the release" runs under GitHub's `bash -e` with `set -uo pipefail`; its
+  `curl … | tr -d '\r' | awk '… { print; exit }'` let awk exit at the `X-OpsCrew-Release` line, so
+  `tr` failed writing the rest of the headers ("tr: write error: Broken pipe"), the pipeline failed
+  and `-e` ended the step after 21 s, at the moment the release could be seen. The agent had
+  deployed (its cache's pack written 20 s later).
+- **cPanel can't remove a read-only file (run 3):** `Fileman::fileop unlink` removed the app's
+  folder except git's pack files in the agent's cache (mode 0444, as git writes every object and
+  pack), answering "Directory not empty" for the folder, then and later. After `fileop chmod 0644`
+  on those files, the same unlink removed the folder. So a file the agent leaves read-only keeps
+  destroy from removing its folder.
+- **The deploy job and the agent's health check (run 5):** the job's wait took any answer with the
+  release's `X-OpsCrew-Release` header, which OpsCrew's `.htaccess` sets on every answer, a 500
+  included, while the agent keeps a release only when it answers 2xx or 3xx with it (and switches
+  back otherwise). So the job could pass for a release the agent then switched back. `state/status`
+  is written after the agent's check, so `opscrew status` right after the job may still show the
+  state before.
+- **AutoSSL's wildcard certificate (run 5):** for one run's hostname AutoSSL issued a certificate
+  named `_wildcard__<domain>_…` for `*.<domain>` and `www.<hostname>`; destroy rightly leaves a
+  certificate that covers other names, and it stayed in the store, installed nowhere.
+- **A plain PHP app's paths (run 6):** `examples/php-plain-mysql` routes every path through
+  `public/index.php` and has no `.htaccess`; on a server Caddy's `php_fastcgi` sends a path that is
+  no file to `index.php`, but on the account `PUT /data` answered 404, since nothing in `.htaccess`
+  did. LiteSpeed has no `FallbackResource` (R4), so the fallback is a rewrite rule.
+- **The app's kept folder (run 7):** the note `examples/php-plain-mysql` keeps in `storage/` was gone
+  after a second release ("No note yet."), while MySQL still had it: the agent linked only `.env`
+  and Laravel's `storage` into each release, not the plan's kept folder (`storage.files.dir`), and
+  the SFTP workflow links none. On a server that folder is a volume that outlives every deploy.
+- **AutoSSL's challenge record (run 7):** after the run's hostname was removed, the zone kept a TXT
+  record `_acme-challenge.www.<hostname>` that AutoSSL had added; OpsCrew leaves what it didn't make,
+  and so does the pass, which never edits the zone (the founder removes such records by hand).
+- **An empty file (run 8):** `Fileman::get_file_content` answers `content: null` for a file of 0
+  bytes (seen on two empty files of the account), so the connector's read of the Node.js app's empty
+  `shared/.env` failed ("expected string, received null"). Run 8 otherwise passed the PHP and the
+  static site legs whole: provision, deploys, the switch watch, rollback, secure, drift, the
+  snapshot's restore and destroy.
+- **The selector's own check (run 10):** the Node.js app's first deploy stopped when
+  `cloudlinux-selector install-modules` answered "An error occured during installation of modules.
+  The operation was performed, but check availability of application has failed": the selector
+  compares the app's answers (status code and MIME type) before and after it installs, and before a
+  first release the app root holds the empty placeholder. `--skip-web-check` exists only for
+  `migrate`, not `install-modules`
+  ([command-line tools](https://docs.cloudlinux.com/cloudlinuxos/command-line_tools/), read
+  2026-11-13). The packages were installed; the agent's health check after the switch is the check
+  that decides.
+- **The deploy job's path (run 12):** the agent deployed the Node.js app's first release (the
+  selector's own check failed with a 503 before and `text/html` after, so T2741's note applied) and
+  its health check on the app's health path passed, but the deploy job asked the site's root `/`,
+  which never answered 2xx with the release in 9 minutes. The job now asks the health path the
+  agent's check asks.
+- **A certificate that isn't OpsCrew's (run 12):** provision recorded the certificate installed on
+  the new hostname as made by OpsCrew, and on this account that was the domain's existing AutoSSL
+  wildcard (`_wildcard__<domain>_…`, issued before the run): destroy would remove it when no other
+  site has it installed. OpsCrew may count a certificate as its own only when it names nothing but
+  the hostname and `www.` of it.
+- **The selector resolves the app root (runs 11 and 12):** `cloudlinux-selector create --app-root
+  opscrew/<app>-<env>/current` registered the app in `~/.cl.selector/node-selector.json` under the
+  resolved folder (`…/releases/0-0`), so once `current` points at another release, `destroy` (and
+  any other selector command given `current`) answers "No such application or it's broken. Unable
+  to find app-root folder by this path …/releases/<id>". Passenger still ran each new release, so
+  what the selector wrote for Passenger follows `current`.
