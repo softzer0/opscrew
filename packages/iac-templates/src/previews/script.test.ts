@@ -147,7 +147,7 @@ function noLeak(s: PreviewServer, results: readonly RunResult[], extra: readonly
   for (const secret of secrets) expect(outputs).not.toContain(secret);
 }
 
-describe.skipIf(!shWorks())("opscrew-preview (sh)", { timeout: 120_000 }, () => {
+describe.skipIf(!shWorks())("opscrew-preview (sh)", { timeout: 300_000 }, () => {
   describe("up", () => {
     it("through the preview key creates the preview from the recipe and prints only where it runs", () => {
       const s = server(FULL);

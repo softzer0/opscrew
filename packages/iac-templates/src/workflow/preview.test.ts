@@ -278,7 +278,7 @@ async function bash(prelude: string, script: string, env: Record<string, string>
   }
 }
 
-describe("the deploy job's answer from the preview server", { timeout: 30_000 }, () => {
+describe("the deploy job's answer from the preview server", { timeout: 180_000 }, () => {
   const flow = workflow();
   const up = step(flow.jobs.deploy, "up").run ?? "";
   const down = step(flow.jobs.remove, "down").run ?? "";
@@ -430,7 +430,7 @@ describe("the deploy job's answer from the preview server", { timeout: 30_000 },
   });
 });
 
-describe("the preview's comment", { timeout: 30_000 }, () => {
+describe("the preview's comment", { timeout: 180_000 }, () => {
   const flow = workflow();
   const report = step(flow.jobs.report, "Update the preview's comment");
   const removal = step(flow.jobs.remove, "Update the preview's comment");

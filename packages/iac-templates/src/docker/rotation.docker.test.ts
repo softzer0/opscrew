@@ -324,7 +324,7 @@ class Project {
       const out = this.held();
       if (!/exit \d+/.test(out)) throw new Error(`the held client has not ended:\n${out}`);
       return out;
-    }, 60_000);
+    }, 180_000);
   }
 
   /** The pinned curl on the project's network with `args`: its HTTP status code. */

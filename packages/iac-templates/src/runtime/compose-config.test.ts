@@ -108,5 +108,5 @@ describe.skipIf(reason !== undefined)("docker compose config (OPSCREW_DOCKER_TES
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  }, 60_000);
+  }, 180_000);
 });

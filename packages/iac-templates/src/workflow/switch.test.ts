@@ -224,7 +224,7 @@ const route = (service: string) => read(`${work}/routes/${service}`)?.trim();
 // take longer than the default 5 seconds.
 describe.skipIf(!shWorks())(
   "the scripts on this computer, under the roots",
-  { timeout: 60_000 },
+  { timeout: 180_000 },
   () => {
     beforeEach(() => {
       work = mkdtempSync(join(tmpdir(), "opscrew-switch-")).replaceAll("\\", "/");

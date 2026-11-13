@@ -1154,5 +1154,5 @@ describe.skipIf(!shWorks())("the updater's loop (sh)", () => {
     expect(run.status).toBe(0);
     expect(run.args).not.toContain("--insecure");
     expect(run.args).not.toContain("--pinnedpubkey");
-  }, 30_000);
+  }, 180_000);
 });

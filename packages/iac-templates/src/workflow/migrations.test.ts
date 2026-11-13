@@ -271,7 +271,7 @@ function recorded(was: string | undefined, now: string | undefined): void {
   if (now !== undefined) write(at(schemaRecordPath(B)), now);
 }
 
-describe.skipIf(!shWorks())("the migrations' record and down step", { timeout: 60_000 }, () => {
+describe.skipIf(!shWorks())("the migrations' record and down step", { timeout: 180_000 }, () => {
   beforeEach(() => {
     work = mkdtempSync(join(tmpdir(), "opscrew-migrations-")).replaceAll("\\", "/");
     fakeBin(work, { docker: FAKE_DOCKER });

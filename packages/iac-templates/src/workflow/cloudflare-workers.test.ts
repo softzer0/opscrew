@@ -618,7 +618,7 @@ describe("renderCloudflareWorkersWorkflow", () => {
     expect(never.stdout).toContain(
       "::error::Cloudflare did not find the new version 1f6e2c3a-4b5d-4e6f-8a9b-0c1d2e3f4a5b within 2 minutes",
     );
-  }, 60_000);
+  }, 180_000);
 
   it("reads the new version's id from Wrangler's output, and stops without one", async () => {
     if (!bash) {

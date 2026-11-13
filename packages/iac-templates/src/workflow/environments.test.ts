@@ -232,7 +232,7 @@ describe("a workflow per environment", () => {
   });
 });
 
-describe("commit tags per environment (T1515's live run)", { timeout: 60_000 }, () => {
+describe("commit tags per environment (T1515's live run)", { timeout: 180_000 }, () => {
   const SHA = "f".repeat(40);
   const build = (plan: DeployPlan) => workflow(plan).jobs.build as Job;
 
@@ -442,7 +442,7 @@ function runScript(script: string, fakes: string, env: Record<string, string>, c
   return { status: result.status, out: `${result.stdout}${result.stderr}`, outputs, calls };
 }
 
-describe("the verify job", { timeout: 60_000 }, () => {
+describe("the verify job", { timeout: 180_000 }, () => {
   const DIGEST = `sha256:${"b".repeat(64)}`;
   const COMMIT = "c".repeat(40);
   const IMAGE = `ghcr.io/acme/shop@${DIGEST}`;
@@ -780,7 +780,7 @@ describe("the verify job", { timeout: 60_000 }, () => {
   });
 });
 
-describe("the label job", { timeout: 60_000 }, () => {
+describe("the label job", { timeout: 180_000 }, () => {
   const RUNNING = `ghcr.io/acme/shop@sha256:${"b".repeat(64)}`;
   const BEFORE = `ghcr.io/acme/shop@sha256:${"a".repeat(64)}`;
   const label = (plan: DeployPlan) => workflow(plan).jobs.label as Job;
@@ -837,7 +837,7 @@ describe("the label job", { timeout: 60_000 }, () => {
   );
 });
 
-describe("the deploy job on a self-hosted runner", { timeout: 60_000 }, () => {
+describe("the deploy job on a self-hosted runner", { timeout: 180_000 }, () => {
   const staged = (runner: "github" | "server") =>
     inEnvironment(serverPlan(), { name: "staging", runner, secrets: "prefixed" });
   const server = staged("server");

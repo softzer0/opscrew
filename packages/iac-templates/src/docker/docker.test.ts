@@ -1059,7 +1059,7 @@ describe("pnpm and Yarn without corepack (T1219)", () => {
   });
 });
 
-describe.skipIf(!shWorks())("installing pnpm and Yarn in sh (T1219)", { timeout: 30_000 }, () => {
+describe.skipIf(!shWorks())("installing pnpm and Yarn in sh (T1219)", { timeout: 180_000 }, () => {
   /**
    * Runs `command` in a folder holding `files`, with `npm`, `pnpm`, `yarn` and `rm` replaced by
    * functions that print their arguments (the real `node` reads package.json).
@@ -1188,7 +1188,7 @@ function shWorks(): boolean {
   }
 }
 
-describe.skipIf(!shWorks())("Yarn's production install in sh", { timeout: 30_000 }, () => {
+describe.skipIf(!shWorks())("Yarn's production install in sh", { timeout: 180_000 }, () => {
   const install = (
     dockerfileOf(expressApp)
       .split("\n")

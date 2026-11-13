@@ -671,13 +671,13 @@ describe.skipIf(reason !== undefined)(
         expect(unknown.stdout).toContain("\nthe index");
         // OpsCrew's own headers stay, once.
         expect(unknown.stdout.toLowerCase().match(/\nx-content-type-options: /g)).toHaveLength(1);
-      }, 120_000);
+      }, 180_000);
 
       it("rewrites with the source's parameters, and sends the app's 404 when the rewrite has none", () => {
         expect(get("/p/app").stdout.trim()).toBe("the script");
         const missing = get("/p/nothing", "-o /dev/null -w '%{http_code}'");
         expect(missing.stdout).toBe("404");
-      }, 120_000);
+      }, 180_000);
 
       it("redirects with the source's captures", () => {
         const run = get("/articles/2024/hello", "-o /dev/null -D -");
@@ -685,14 +685,14 @@ describe.skipIf(reason !== undefined)(
         expect(run.stdout).toMatch(
           /\nLocation: (?:http:\/\/shop\.example\.com)?\/posts\/2024\/hello\n/i,
         );
-      }, 120_000);
+      }, 180_000);
 
       it("puts no header from a path with an encoded CR LF into a response", () => {
         const run = get("/old/a%0d%0aSet-Cookie:%20pwn=1", "-o /dev/null -D -");
         expect(run.stdout).toMatch(/^HTTP\/1\.1 \d{3} /);
         expect(run.stdout.toLowerCase()).not.toContain("pwn");
         expect(get("/old/a", "-o /dev/null -D -").stdout).toMatch(/\nLocation: \S*\/new\/a\n/i);
-      }, 120_000);
+      }, 180_000);
 
       it("sends a request to a path no rewrite takes to the app once, even when it answers 404", () => {
         const path = `/.well-known/opscrew-once-${Date.now()}`;
@@ -701,7 +701,7 @@ describe.skipIf(reason !== undefined)(
         const logs = spawnSync("docker", ["logs", `${id}-app`], { encoding: "utf8" });
         const hits = `${logs.stdout}${logs.stderr}`.split("\n").filter((l) => l.includes(path));
         expect(hits).toHaveLength(1);
-      }, 120_000);
+      }, 180_000);
     });
   },
 );

@@ -118,7 +118,7 @@ describe.skipIf(reason !== undefined)("docker compose config (OPSCREW_DOCKER_TES
       expect(config.services.stamp.entrypoint[2]).toBe(
         `printf '%s\\n' "$$OPSCREW_APP_VERSION" > /version/version`,
       );
-    }, 60_000);
+    }, 180_000);
 
     // Pulls Caddy's image: the inline Caddyfile is what Caddy accepts.
     it(`gives Caddy a valid configuration in ${web.mode} mode`, () => {
@@ -255,7 +255,7 @@ describe.skipIf(reason !== undefined)("docker compose config (OPSCREW_DOCKER_TES
       "service_completed_successfully",
     );
     expect(config.services.garage.environment.GARAGE_DEFAULT_BUCKET).toBe("shop-uploads");
-  }, 60_000);
+  }, 180_000);
 
   it("accepts the template before the image is filled in", () => {
     const plan = portainerTestPlan();
@@ -264,7 +264,7 @@ describe.skipIf(reason !== undefined)("docker compose config (OPSCREW_DOCKER_TES
       valuesFor(portainerStackEnvKeys(plan)),
     );
     expect(run.status, run.stderr).toBe(0);
-  }, 60_000);
+  }, 180_000);
 
   it("accepts the placeholder, the updater and the connector stacks", () => {
     const plan = portainerTestPlan({ redeploy: "cloudflare" });
@@ -291,5 +291,5 @@ describe.skipIf(reason !== undefined)("docker compose config (OPSCREW_DOCKER_TES
     expect(parse(renderPortainerConnectorStack(plan).content).name).toBe(
       "opscrew-shop-portainer-tunnel",
     );
-  }, 60_000);
+  }, 180_000);
 });

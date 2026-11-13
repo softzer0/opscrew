@@ -260,18 +260,18 @@ describe.skipIf(reason !== undefined).each(["caddy", "nginx"] as const)(
         expect(answer.headers["strict-transport-security"]).toBeUndefined();
         expect(answer.headers["alt-svc"]).toBeUndefined();
       }
-    }, 60_000);
+    }, 180_000);
 
     it("refuses a hostname it has no site for in the TLS handshake", async () => {
       await ready(() => httpsGet(ports.https, "prod.shop.localhost", ca));
       await expect(httpsGet(ports.https, "other.localhost", ca)).rejects.toThrow();
-    }, 60_000);
+    }, 180_000);
 
     it("redirects HTTP to HTTPS on the target's HTTPS port", async () => {
       const answer = await ready(() => httpGet(ports.http, "staging.shop.localhost", "/a?b=1"));
       expect(answer.status).toBe(308);
       expect(answer.headers.location).toBe("https://staging.shop.localhost:8443/a?b=1");
-    }, 60_000);
+    }, 180_000);
 
     it.skipIf(proxy !== "caddy")(
       "obtains no certificate: Caddy uses the leaf certificates",

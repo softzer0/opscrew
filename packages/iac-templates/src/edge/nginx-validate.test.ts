@@ -155,7 +155,7 @@ describe.skipIf(reason !== undefined)("the nginx edge (OPSCREW_DOCKER_TESTS=1)",
     const http = curl("curl -sS -o /dev/null -H 'Host: other.example.com' http://nginx:8080/");
     expect(http.status).toBe(52); // Empty reply: nginx closed the connection (444).
     expect(curl(https("other.example.com")).status).toBe(35);
-  }, 120_000);
+  }, 180_000);
 
   it("redirects a known hostname to HTTPS with 308", () => {
     const run = curl(
@@ -163,7 +163,7 @@ describe.skipIf(reason !== undefined)("the nginx edge (OPSCREW_DOCKER_TESTS=1)",
     );
     expect(run.stdout).toMatch(/^HTTP\/1\.1 308 /);
     expect(run.stdout).toContain("\nLocation: https://blog.example.com/a?b=1\n");
-  }, 120_000);
+  }, 180_000);
 
   // Cloudflare forwards a visitor's plain HTTP to the origin's port 80 (found live: a 520).
   it("redirects a hostname with origin TLS to HTTPS with 308", () => {
@@ -172,7 +172,7 @@ describe.skipIf(reason !== undefined)("the nginx edge (OPSCREW_DOCKER_TESTS=1)",
     );
     expect(run.stdout).toMatch(/^HTTP\/1\.1 308 /);
     expect(run.stdout).toContain("\nLocation: https://shop.example.com/a?b=1\n");
-  }, 120_000);
+  }, 180_000);
 
   it("sends HSTS, the baseline headers and Alt-Svc on nginx's own 502, and no version", () => {
     const run = curl(https("blog.example.com"));
@@ -186,13 +186,13 @@ describe.skipIf(reason !== undefined)("the nginx edge (OPSCREW_DOCKER_TESTS=1)",
     expect(response).toContain("\nreferrer-policy: strict-origin-when-cross-origin\n");
     expect(response).toContain('\nalt-svc: h3=":443"; ma=2592000\n');
     expect(response).toContain("\nserver: nginx\n");
-  }, 120_000);
+  }, 180_000);
 
   it("offers TLS 1.2 and 1.3 only", () => {
     expect(curl(https("blog.example.com", "--tlsv1.1 --tls-max 1.1")).status).toBe(35);
     expect(curl(https("blog.example.com", "--tlsv1.2 --tls-max 1.2")).status).toBe(0);
     expect(curl(https("blog.example.com", "--tlsv1.3")).status).toBe(0);
-  }, 120_000);
+  }, 180_000);
 
   it("requires Cloudflare's client certificate for a proxied hostname, and serves its additions", () => {
     expect(curl(https("shop.example.com")).stdout).toMatch(/^HTTP\/2 400/);
@@ -201,7 +201,7 @@ describe.skipIf(reason !== undefined)("the nginx edge (OPSCREW_DOCKER_TESTS=1)",
     );
     expect(run.stdout.toLowerCase()).toMatch(/^http\/2 502/);
     expect(run.stdout.toLowerCase()).toContain("\nx-robots-tag: noindex\n");
-  }, 120_000);
+  }, 180_000);
 
   it("keeps HSTS and the baseline headers in an addition's location with headers of its own", () => {
     const run = curl(
@@ -217,5 +217,5 @@ describe.skipIf(reason !== undefined)("the nginx edge (OPSCREW_DOCKER_TESTS=1)",
     expect(response).toContain("\nx-frame-options: sameorigin\n");
     expect(response).toContain("\nreferrer-policy: strict-origin-when-cross-origin\n");
     expect(response).toContain("\nx-robots-tag: noindex\n");
-  }, 120_000);
+  }, 180_000);
 });

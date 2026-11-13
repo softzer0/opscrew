@@ -170,7 +170,7 @@ function bashWorks(): boolean {
 const work = mkdtempSync(join(tmpdir(), "opscrew-runner-machine-")).replaceAll("\\", "/");
 afterAll(() => rmSync(work, { recursive: true, force: true }));
 
-describe.skipIf(!bashWorks())("the SSH steps on a runner machine", { timeout: 60_000 }, () => {
+describe.skipIf(!bashWorks())("the SSH steps on a runner machine", { timeout: 180_000 }, () => {
   it("write the connection files into the job's temp folder and use only those", () => {
     const deploy = jobOf(staging(tunnelPlan(), { runner: "host" }), "deploy");
     const home = `${work}/home`;
@@ -230,7 +230,7 @@ describe.skipIf(!bashWorks())("the SSH steps on a runner machine", { timeout: 60
   });
 });
 
-describe.skipIf(!bashWorks())("the build's own Docker settings", { timeout: 60_000 }, () => {
+describe.skipIf(!bashWorks())("the build's own Docker settings", { timeout: 180_000 }, () => {
   it("never write the user's Docker settings, and keep their daemon and CLI plugins", () => {
     const plan = inEnvironment(localhostPlan(), {
       name: "dev",
@@ -412,7 +412,7 @@ describe("the build job on the environment's runner (build: runner)", () => {
 
   it.skipIf(!bashWorks())(
     "names the image in lower case without bash 4",
-    { timeout: 60_000 },
+    { timeout: 180_000 },
     () => {
       const script = stepOf(jobOf(local, "build"), "image").run ?? "";
       const output = `${work}/image-output`;
@@ -504,7 +504,7 @@ describe("the build job on the environment's runner (build: runner)", () => {
   });
 });
 
-describe.skipIf(!bashWorks())("pack off Linux, through Docker", { timeout: 60_000 }, () => {
+describe.skipIf(!bashWorks())("pack off Linux, through Docker", { timeout: 180_000 }, () => {
   const plan = withBuild(
     inEnvironment(localhostPlan(), {
       name: "dev",

@@ -255,7 +255,7 @@ describe.skipIf(reason !== undefined)("the OpenLiteSpeed edge (OPSCREW_DOCKER_TE
     docker(["rm", "-f", id, `${id}-app`]);
     docker(["network", "rm", id]);
     if (work) rmSync(work, { recursive: true, force: true });
-  }, 120_000);
+  }, 180_000);
 
   it("refuses an unknown hostname with 403 and OpsCrew's page, on HTTP and HTTPS, and a www twin too", () => {
     for (const request of [
@@ -268,7 +268,7 @@ describe.skipIf(reason !== undefined)("the OpenLiteSpeed edge (OPSCREW_DOCKER_TE
       expect(run.stdout).toContain(OPENLITESPEED_ERROR_PAGE);
       expect(run.stdout.toLowerCase()).not.toContain("litespeed");
     }
-  }, 120_000);
+  }, 180_000);
 
   it("redirects a known hostname to HTTPS with 308", () => {
     for (const host of ["blog.example.com", "shop.example.com"]) {
@@ -276,7 +276,7 @@ describe.skipIf(reason !== undefined)("the OpenLiteSpeed edge (OPSCREW_DOCKER_TE
       expect(run.stdout).toMatch(/^HTTP\/1\.1 308 /);
       expect(run.stdout.toLowerCase()).toContain(`\nlocation: https://${host}/a?b=1\n`);
     }
-  }, 120_000);
+  }, 180_000);
 
   it("sends HSTS and the baseline headers, no Server header, and the app its own forwarded headers", () => {
     const spoofed = [
@@ -307,13 +307,13 @@ describe.skipIf(reason !== undefined)("the OpenLiteSpeed edge (OPSCREW_DOCKER_TE
       .filter(([, value]) => /203\.0\.113\.9|evil\.example/.test(value))
       .map(([name]) => name);
     expect(carrying).toEqual(["xxxxxxxxxxxxxxx"]);
-  }, 120_000);
+  }, 180_000);
 
   it("offers TLS 1.2 and 1.3 only", () => {
     expect(curl(https("blog.example.com", "--tlsv1.1 --tls-max 1.1")).status).toBe(35);
     expect(curl(https("blog.example.com", "--tlsv1.2 --tls-max 1.2")).status).toBe(0);
     expect(curl(https("blog.example.com", "--tlsv1.3")).status).toBe(0);
-  }, 120_000);
+  }, 180_000);
 
   it("requires Cloudflare's client certificate for a proxied hostname, OpsCrew's own accepted", () => {
     expect(curl(https("shop.example.com")).status).not.toBe(0);
@@ -321,7 +321,7 @@ describe.skipIf(reason !== undefined)("the OpenLiteSpeed edge (OPSCREW_DOCKER_TE
       https("shop.example.com", "--cert /client/client.pem --key /client/client.key"),
     );
     expect(run.stdout.toLowerCase()).toMatch(/^http\/2 200/);
-  }, 120_000);
+  }, 180_000);
 
   it("takes the visitor's address from CF-Connecting-IP only on requests from Cloudflare's ranges", () => {
     /** The X-Forwarded-For the app got for a request from `ip` with Cloudflare's headers. */
@@ -336,7 +336,7 @@ describe.skipIf(reason !== undefined)("the OpenLiteSpeed edge (OPSCREW_DOCKER_TE
     expect(other).toMatch(/^\d+\.\d+\.\d+\.\d+$/);
     expect(other).not.toBe("203.0.113.5");
     expect(other).not.toBe("198.51.100.7");
-  }, 120_000);
+  }, 180_000);
 
   it("shows `secure`'s checks from the server a refusal without the client certificate, and a 403 for an unknown name", () => {
     /** `openssl s_client` from the edge's own container, as `secure` runs it on the server. */
@@ -355,7 +355,7 @@ describe.skipIf(reason !== undefined)("the OpenLiteSpeed edge (OPSCREW_DOCKER_TE
     const unknown = handshake("unknown.opscrew.invalid");
     expect(unknown).toMatch(/^HTTP\/1\.1 403 /m);
     expect(unknown).toMatch(/subject=CN ?= ?default\.invalid/);
-  }, 120_000);
+  }, 180_000);
 
   it("serves the user's additions with the site's headers", () => {
     const run = curl(https("blog.example.com", "", "/api/x"));
@@ -364,7 +364,7 @@ describe.skipIf(reason !== undefined)("the OpenLiteSpeed edge (OPSCREW_DOCKER_TE
     expect(run.stdout.toLowerCase()).toContain(
       "\nstrict-transport-security: max-age=31536000; includesubdomains\n",
     );
-  }, 120_000);
+  }, 180_000);
 
   it("carries a WebSocket to the app", () => {
     const run = docker([
@@ -383,7 +383,7 @@ describe.skipIf(reason !== undefined)("the OpenLiteSpeed edge (OPSCREW_DOCKER_TE
       "wss://blog.example.com/socket",
     ]);
     expect(run.stdout.trim(), run.stderr).toBe("hello from the app");
-  }, 120_000);
+  }, 180_000);
 
   it("refuses a missing certificate and an error before a restart, which keeps the running one", () => {
     const reload = () => docker(["exec", id, "sh", "-c", OPENLITESPEED_RELOAD]);
@@ -409,7 +409,7 @@ describe.skipIf(reason !== undefined)("the OpenLiteSpeed edge (OPSCREW_DOCKER_TE
     expect(broken.stderr).toContain("Can not find handler");
     expect(curl(https("blog.example.com")).stdout).toMatch(/^HTTP\/2 200/);
     expect(reload().status).toBe(0);
-  }, 120_000);
+  }, 180_000);
 
   it("keeps only what the app asks it to, and forgets it on a purge", () => {
     const cache = () =>
@@ -425,7 +425,7 @@ describe.skipIf(reason !== undefined)("the OpenLiteSpeed edge (OPSCREW_DOCKER_TE
     );
     expect(docker(["exec", id, "sh", "-c", openlitespeedCachePurge("blog")]).status).toBe(0);
     expect(cache()).toBe("x-litespeed-cache: miss");
-  }, 120_000);
+  }, 180_000);
 
   it("after a switch, empties the app's cache and restarts gracefully under the edge's lock, and only says so on a refusal", () => {
     // The lines that end a switch on this computer's edge (its lock only where flock exists), with

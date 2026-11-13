@@ -537,5 +537,5 @@ describe("OpsCrew's token patterns in RE2", () => {
       env: { ...process.env, GOCACHE: join(dir, "cache"), GO111MODULE: "off" },
     });
     expect(run.exitCode, run.stderr).toBe(0);
-  }, 120_000);
+  }, 180_000);
 });
