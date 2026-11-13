@@ -3556,7 +3556,9 @@ Then, for the whole pass:
     switch), `~/.cache` (which cPanel's API makes, R10) and `~/.npm` (npm's cache) new in the home
     folder are logged as observations and removed by the cleanup. A leftover subdomain record shows
     in the zone's records; the value AutoSSL rewrites in the zone's `_cpanel-dcv-test-record`
-    (R11) doesn't, since values aren't compared.
+    (R11) doesn't, since values aren't compared. A TXT record AutoSSL added for one of the run's
+    hostnames (`_acme-challenge.e2e-<tag>-<leg>` or `_acme-challenge.www.e2e-<tag>-<leg>`, R13) is
+    an observation too, logged by name for removal by hand.
 11. **Nothing leaked (SC-2704),** always run: the legs' leak searches, and every CLI output of the
     run, for the token, the agent's key, the app's settings and the age identities.
 
@@ -3576,7 +3578,9 @@ After every step and always:
   is a problem to fix by hand), `~/.lsphp_restart.txt`, `~/.cache` and `~/.npm` when new, and the certificates AutoSSL issued for the run's hostnames: new since the inventory
   before, their id named after one of the hostnames (`e2e_<tag>_…`, `www_e2e_<tag>_…`), installed
   nowhere, each with its key when no other certificate uses it. Nothing else on the account is
-  ever touched;
+  ever touched. The zone is never edited: the TXT records AutoSSL added for the run's hostnames
+  (`_acme-challenge.e2e-<tag>-<leg>`, `_acme-challenge.www.e2e-<tag>-<leg>`) stay, and the log names
+  each for removal by hand in cPanel's Zone Editor;
 - the inventory again: any difference from the one before is a problem that fails the run.
 
 **If a run was interrupted:** in cPanel, remove the cron lines naming `opscrew/e2e-<tag>`, the
@@ -3585,7 +3589,8 @@ subdomains `e2e-<tag>-…`, the databases and users `<prefix>e2e_<tag>_…`, the
 those subdomains. For the Node.js app, first the app in Setup Node.js App, then the folder
 `~/nodevenv/opscrew/e2e-<tag>-…` and the run's section in `~/.cl.selector/htaccess_cache` (the
 lines naming `opscrew/e2e-<tag>-…`). Remove `~/.lsphp_restart.txt`, `~/.cache` and `~/.npm` if
-they weren't there before the run. In the throwaway repository, delete the deploy keys
+they weren't there before the run. In the Zone Editor, remove the TXT records
+`_acme-challenge.e2e-<tag>-…` and `_acme-challenge.www.e2e-<tag>-…` AutoSSL added. In the throwaway repository, delete the deploy keys
 `opscrew-e2e-<tag>-…` and the `prod` environment if the run made it.
 
 | Variable | What it is |
@@ -3610,8 +3615,10 @@ OPSCREW_E2E_CPANEL=1 OPSCREW_E2E_CPANEL_URL=… OPSCREW_E2E_CPANEL_USER=… \
 up to 3 minutes for the agent's report and up to 5 for AutoSSL's certificate; two deploy runs
 per leg but the refused Laravel leg), so 2 to 3 hours in all. It costs no money beyond the account
 the founder already pays, and GitHub Actions minutes. It leaves nothing on the account but what
-AutoSSL rewrites on its own (the zone's `_cpanel-dcv-test-record` value, R11), and at GitHub the
-closed pull requests.
+AutoSSL rewrites on its own (the zone's `_cpanel-dcv-test-record` value, R11) and the TXT records
+AutoSSL adds for its hostnames (`_acme-challenge.e2e-<tag>-…`, `_acme-challenge.www.e2e-<tag>-…`,
+R13), which the log names for removal by hand in the Zone Editor, and at GitHub the closed pull
+requests.
 
 What this pass doesn't cover (fakes do, SC-2705): Plesk and DirectAdmin, an account whose document
 roots must stay in `public_html` (`docroot: link`), MultiPHP, an Apache-served account, Python apps,

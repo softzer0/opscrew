@@ -465,9 +465,26 @@ export function inventoryDifferences(before: Inventory, after: Inventory): Inven
 }
 
 /**
+ * Whether the zone entry `<name>|<type>` is a TXT record AutoSSL adds to prove one of the run's
+ * hostnames, `_acme-challenge.e2e-<tag>-<leg>` or `_acme-challenge.www.e2e-<tag>-<leg>` (R13), in
+ * the relative form `DNS::parse_zone` gives, or with the zone's domain after it.
+ */
+function runChallengeRecord(entry: string, tag: string): boolean {
+  const [name = "", type = ""] = entry.split("|");
+  return (
+    type.toUpperCase() === "TXT" &&
+    new RegExp(`^_acme-challenge\\.(?:www\\.)?e2e-${tag}-[a-z0-9]+(?:\\.[a-z0-9.-]+)?$`).test(
+      name.toLowerCase(),
+    )
+  );
+}
+
+/**
  * The inventory after the run against the one before (SC-2702): each entry of the run left
  * (`namesRun`) and each other difference is a problem; a trace of {@link ACCOUNT_TRACES} new after
- * the run is an observation. Lines name fields and entries (the caller masks them).
+ * the run is an observation, and so is a challenge record AutoSSL added to the zone for one of the
+ * run's hostnames, which the pass leaves (it never edits the zone) and names for removal by hand
+ * (R13). Lines name fields and entries (the caller masks them).
  */
 export function inventoryProblems(
   before: Inventory,
@@ -480,6 +497,10 @@ export function inventoryProblems(
     for (const entry of added) {
       if (field === "home" && (ACCOUNT_TRACES as readonly string[]).includes(entry)) {
         observed.push(`the home folder has ${entry.split("|")[0]} now, which it had not before`);
+      } else if (field === "zone" && runChallengeRecord(entry, tag)) {
+        observed.push(
+          `zone: AutoSSL's challenge record ${entry.split("|")[0]} (TXT) of the run's hostname is left; remove it by hand in cPanel's Zone Editor`,
+        );
       } else if (namesRun(entry, tag)) {
         problems.push(`${field}: the run's ${entry} is left`);
       } else if (namesOtherRun(entry, tag)) {

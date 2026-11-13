@@ -257,6 +257,34 @@ describe("the account's inventory (SC-2702)", () => {
     });
   });
 
+  it("observes AutoSSL's challenge records of the run's hostnames for removal by hand (R13)", () => {
+    const zone = ["www|CNAME", "_cpanel-dcv-test-record|TXT"];
+    const after = {
+      ...before,
+      zone: [
+        ...zone,
+        "_acme-challenge.www.e2e-ffee12-php|TXT",
+        "_acme-challenge.e2e-ffee12-site.example.org.|TXT",
+        "_acme-challenge.shop|TXT",
+        "other.e2e-ffee12-php|TXT",
+        "_acme-challenge.e2e-ffee12-php|CNAME",
+        "_acme-challenge.www.e2e-0b18fd-php|TXT",
+      ],
+    };
+    expect(inventoryProblems({ ...before, zone }, after, "ffee12")).toEqual({
+      problems: [
+        "zone: _acme-challenge.shop|TXT appeared",
+        "zone: the run's other.e2e-ffee12-php|TXT is left",
+        "zone: the run's _acme-challenge.e2e-ffee12-php|CNAME is left",
+      ],
+      observed: [
+        "zone: AutoSSL's challenge record _acme-challenge.www.e2e-ffee12-php (TXT) of the run's hostname is left; remove it by hand in cPanel's Zone Editor",
+        "zone: AutoSSL's challenge record _acme-challenge.e2e-ffee12-site.example.org. (TXT) of the run's hostname is left; remove it by hand in cPanel's Zone Editor",
+        "zone: an earlier run's _acme-challenge.www.e2e-0b18fd-php|TXT is listed again (R10)",
+      ],
+    });
+  });
+
   const certificate = (id: string, domains: string[], publicKey: string) => ({
     id,
     domains,
