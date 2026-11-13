@@ -673,6 +673,31 @@ names the change.
   - Owns: `packages/agents/src/hosting/sftp-provision.ts`, `packages/agents/src/hosting/sftp.test.ts`
   - Accept: `--plan-only` returns `hostingPlanHashes` (the CLI and the MCP tool print the `--approve` command from it); a refused plan says "The hosting plan was not approved" (not "The The"). Tests for both.
 
+## Phase 8d: In the same release (founder, 2026-11-13)
+
+The founder added these to 0.2.8.
+
+- [ ] T2749 Research R15: Contabo's Auto Backup and Object Storage through the API (Sonnet; official sources)
+  - Owns: `specs/027-shared-hosting/research.md` (R15 only)
+  - Accept: R15 says, from Contabo's API and Terraform provider docs: how Auto Backup is turned on and off for an instance (at order, as an upgrade), its price, what it keeps and how a restore works; how an Object Storage is ordered, its regions, price, S3 endpoint, how S3 credentials are made (API or panel), cancellation, and the Terraform resources and their limits (import); what OpsCrew's Contabo connector would call. Unverified items marked.
+
+- [ ] T2750 The provider's automated backups on by default only in prod
+  - Owns: `packages/agents/src/design/**`, `packages/agents/src/interview/**`, `docs/guide/**` (the backup lines only)
+  - Accept: design turns on `target.backups` by default only for the prod environment (when the data matters, as now); dev, staging and previews default to off, and `target.backups` in an environment's plan still turns them on. Design's text says which, and why. Tests for prod, staging and an override.
+  - Effort: medium
+
+- [ ] T2751 Contabo's Auto Backup as the provider's backups (after T2749)
+  - Owns: `packages/providers/contabo/**`, `packages/agents/src/design/**` (Contabo's backup lines), `docs/guide/contabo.md`
+  - Accept: per R15, `target.backups` on Contabo turns Auto Backup on through the API and off again, priced in design; the same prod-only default as T2750. Tests with the fake; the Contabo guide says what it keeps and costs.
+
+- [ ] T2752 Contabo's Object Storage as a bucket provider (after T2749)
+  - Owns: `packages/iac-templates/src/infra/storage.ts`, `packages/agents/src/design/storage.ts`, `packages/agents/src/infra/**`, `packages/providers/contabo/**`, `docs/guide/object-storage.md`
+  - Accept: per R15, an app on Contabo is offered Contabo's Object Storage beside Garage and R2, priced; its bucket is planned and approved like the others'; the S3 key as R15 says it is made (by the user in the panel where the API can't). Tests; the object storage guide lists it.
+
+- [ ] T2753 Guide pages: Deploy to Hetzner Cloud, Deploy to DigitalOcean; the README links them (lead)
+  - Owns: `docs/guide/hetzner.md`, `docs/guide/digitalocean.md`, `docs/guide/index.md`, `README.md`
+  - Accept: each page as Contabo's: when to choose it, the token, regions and server types, hourly billing, the provider's backups (prod by default), what OpsCrew makes, removing the app; the README's provider lines shrink to links, as for Contabo.
+
 ## Phase 9: Live passes and release (lead)
 
 - [x] T2722 The cPanel live pass (lead): `docs/e2e-coverage.md` row and results.
