@@ -689,6 +689,16 @@ names the change.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates --filter=@opscrew/agents && npx vitest run --root packages/iac-templates src/hosting && npx vitest run --root packages/agents src/hosting && pnpm lint`
   - Effort: high
 
+- [ ] T2755 The check of the proxy additions downloads the proxy's image on its own first (the OpenLiteSpeed pass, run 2)
+  - Owns: `packages/agents/src/provision/additions.ts`, `packages/agents/src/provision/additions.test.ts`
+  - Accept:
+    - Before the checks, the image (`IMAGES.<proxy>.ref`, pinned) is downloaded with `docker pull` in a step of its own: "Downloading <label>'s image for the check (once; OpenLiteSpeed's is about 1.1 GB)". The pull has its own limit of 30 minutes. It is skipped when `docker image inspect <ref>` finds the image already there.
+    - A failed or timed-out download says so in plain English: Docker couldn't download the image, with the last lines of its answer and what to try (the network, then the command again). It never says the proxy refused the additions.
+    - `CHECK_TIMEOUT_MS` (5 minutes) then times only the check (`docker run`); its comment no longer says the pull is included.
+    - Tests with the fake runner: an image already there (no pull); a pull, then the check; a failed pull (the error names the download, not the additions).
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/provision && pnpm lint`
+  - Effort: medium
+
 ## Phase 8d: In the same release (founder, 2026-11-13)
 
 The founder added these to 0.2.8.
