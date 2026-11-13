@@ -531,7 +531,7 @@ names the change.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/hosting && pnpm lint`
   - Effort: medium
 
-- [ ] T2733 The deploy workflow's wait for the release, whatever headers follow (research R13)
+- [x] T2733 The deploy workflow's wait for the release, whatever headers follow (research R13)
   - Owns: `packages/iac-templates/src/hosting/workflow.ts`, `packages/iac-templates/src/hosting/workflow.test.ts`, `packages/iac-templates/src/hosting/__snapshots__/workflow.test.ts.snap`
   - Reads: research R13; `iac-templates/src/hosting/workflow.ts` (the step "Wait for the account to switch to the release")
   - Accept:
@@ -540,7 +540,7 @@ names the change.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates && npx vitest run --root packages/iac-templates src/hosting/workflow && pnpm lint`
   - Effort: medium
 
-- [ ] T2734 The agent leaves no read-only file, so destroy can remove its folder (research R13)
+- [x] T2734 The agent leaves no read-only file, so destroy can remove its folder (research R13)
   - Owns: `packages/iac-templates/src/hosting/agent/**`
   - Reads: research R10, R13; `iac-templates/src/hosting/agent/script.ts`; `agents/src/hosting/destroy.ts` (the folder step)
   - Accept:
