@@ -510,7 +510,7 @@ names the change.
 
 ## Phase 8c: Fixes from the live passes (lead, 2026-11-13)
 
-- [ ] T2731 cPanel: the account's parked domains (research R13)
+- [x] T2731 cPanel: the account's parked domains (research R13)
   - Owns: `packages/connectors/cpanel/src/**`, `packages/cli/test/live/cpanel-support.ts`, `packages/cli/test/live/cpanel-support.test.ts`
   - Reads: research R1, R10, R13; `connectors/cpanel/src/{panel,fake}.ts`
   - Accept:
