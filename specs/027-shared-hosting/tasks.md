@@ -449,7 +449,7 @@ names the change.
 
 ## Phase 8: Wave 7
 
-- [ ] T2721 The live test files and `docs/e2e.md`
+- [x] T2721 The live test files and `docs/e2e.md`
   - Owns: `packages/cli/test/live/{cpanel,cpanel-support,sftp-host,own-openlitespeed}*.ts`, `docs/e2e.md`
   - Reads: plan 13; `packages/cli/test/live/{harness,contabo,contabo-support,own-nginx}.ts`; ADR 0030
   - Depends: T2713, T2714, T2716, T2717, T2718
