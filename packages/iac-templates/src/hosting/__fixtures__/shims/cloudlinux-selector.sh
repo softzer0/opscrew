@@ -7,13 +7,16 @@
 # $STUB/selector-apps (the real one's is ~/.cl.selector/node-selector.json), keys each app by the
 # resolved folder ("<interpreter> <folder> <version> <startup file>" lines), and every command but
 # create answers "No such application" for a folder it doesn't hold.
-# create makes ~/nodevenv/<resolved root>/<version>/lib/node_modules (virtualenv for Python), links
-# the app root's node_modules to it (Node.js), puts its placeholder app (the startup file, which
-# answers "It works!") into the app root, writes its Passenger block, naming the resolved root, into
-# the .htaccess the hostname serves ($APP_DIR/current/$SERVED, its document root), and adds the
-# app's section to ~/.cl.selector/htaccess_cache; set keeps --env-vars' JSON in $STUB/env-vars and
-# writes the block again, as an update of the app may; destroy empties the environment's folder and
-# forgets the app, leaving the rest, as the real one does (R10).
+# create makes ~/nodevenv/<resolved root>/<version>/lib/node_modules (virtualenv for Python), the
+# environment its Passenger block names, but no node_modules link in the app root (R14), puts its
+# placeholder app (the startup file, which answers "It works!") into the app root, writes its
+# Passenger block, naming the resolved root, into the .htaccess the hostname serves
+# ($APP_DIR/current/$SERVED, its document root), and adds the app's section to
+# ~/.cl.selector/htaccess_cache; install-modules copies each package of $STUB/packages (the tests'
+# stand-in for npm's registry, one folder per package) the app root's package.json names into the
+# environment's lib/node_modules; set keeps --env-vars' JSON in $STUB/env-vars and writes the block
+# again, as an update of the app may; destroy empties the environment's folder and forgets the app,
+# leaving the rest, as the real one does (R10).
 echo "cloudlinux-selector $*" >> "$STUB/selector.log"
 command=$1
 shift
@@ -88,7 +91,6 @@ case $command in
   create)
     echo "$interpreter $resolved $version $startup" >> "$STUB/selector-apps"
     mkdir -p "$HOME/$venv/$resolved/$version/lib/node_modules" "$(dirname "$app/$startup")"
-    if [ "$interpreter" = nodejs ]; then ln -s "$HOME/$venv/$resolved/$version/lib/node_modules" "$app/node_modules"; fi
     [ -e "$app/$startup" ] || printf '%s\n' "// CloudLinux's placeholder: It works!" > "$app/$startup"
     passenger
     mkdir -p "$HOME/.cl.selector"
@@ -100,6 +102,11 @@ case $command in
     ;;
   install-modules)
     echo "package.json: $(cat "$app/package.json" 2> /dev/null)" >> "$STUB/selector.log"
+    for package in "$STUB"/packages/*; do
+      if [ -d "$package" ] && grep -qF "\"${package##*/}\"" "$app/package.json" 2> /dev/null; then
+        cp -R "$package" "$HOME/$venv/$resolved/$version/lib/node_modules/"
+      fi
+    done
     ;;
   destroy)
     rm -rf "${HOME:?}/$venv/$resolved/"*

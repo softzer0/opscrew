@@ -45,9 +45,11 @@ const HEADER_LINES = BASELINE_HEADERS.map(
  * file, then hands the selector the values of `shared/.env` (`set --env-vars`), as an `env` request
  * does again; the file is linked into each release too. The header of the section the selector
  * added to `~/.cl.selector/htaccess_cache` is kept in `state/selector-section` (empty when none, or
- * more than one, was added). Each release carries the selector's `node_modules` link from `app/`,
- * and its `.htaccess` the selector's Passenger block with `PassengerAppRoot` naming the release's
- * own folder, so Passenger runs the release `current` points at; after each selector command the
+ * more than one, was added). Each release's `.htaccess` carries the selector's Passenger block with
+ * `PassengerAppRoot` naming the release's own folder, so Passenger runs the release `current`
+ * points at; a Node.js release that ships no `node_modules` gets one linked to the packages of the
+ * environment the block's `PassengerNodejs` names (`<env>/bin/node`, packages in
+ * `<env>/lib/node_modules`, research R14); after each selector command the
  * running release's block names it again. When a release's package files differ from the running
  * release's, they go into `app/` and the selector installs them into the app's one environment
  * before the switch (an answer that the install was performed but the selector's own check of the
@@ -324,14 +326,10 @@ compose() {
 # Carries into release $1's served folder what the panel and the selector wrote into the running
 # release's: the certificate checks' folders in .well-known/; php.ini and .user.ini where the app
 # has none of its own; .htaccess composed with the app's own (the selector's Passenger block among
-# what it keeps, sent to release $1). The release itself, where it has no node_modules, gets a link
-# to the folder the selector's node_modules link in app/ leads to, by its full path.
+# what it keeps, sent to release $1); then the release's node_modules link (environment_modules).
 carry() {
   local to="releases/$1/$WEB_ROOT" from="current/$WEB_ROOT" check
   mkdir -p "$to"
-  if [ -L app/node_modules ] && [ ! -e "releases/$1/node_modules" ] && [ ! -L "releases/$1/node_modules" ]; then
-    ln -s "$(readlink -f app/node_modules)" "releases/$1/node_modules"
-  fi
   for check in acme-challenge pki-validation; do
     if [ -d "$from/.well-known/$check" ]; then
       mkdir -p "$to/.well-known"
@@ -341,7 +339,23 @@ carry() {
   if [ -f "$from/php.ini" ] && [ ! -e "$to/php.ini" ]; then cp -p "$from/php.ini" "$to/php.ini"; fi
   compose "$to/.htaccess" '#' "$from/.htaccess" htaccess_block "$1"
   own_passenger "$1"
+  environment_modules "$1"
   compose "$to/.user.ini" ';' "$from/.user.ini" user_ini_block "$1" own
+}
+
+# Links release $1's node_modules, for a Node.js app whose release ships none, by its full path to
+# the packages of the environment the selector's Passenger block (carried into the release's
+# .htaccess) names: PassengerNodejs is <env>/bin/node (quoted or not), the packages are in
+# <env>/lib/node_modules. An ES module finds packages only in a node_modules folder above it
+# (research R14). A block without PassengerNodejs gets no link.
+environment_modules() {
+  local file="releases/$1/$WEB_ROOT/.htaccess" node
+  [ "$APP_KIND" = node ] || return 0
+  if [ -e "releases/$1/node_modules" ] || [ -L "releases/$1/node_modules" ] || [ ! -f "$file" ]; then return 0; fi
+  node=$(sed -e '/^# BEGIN OpsCrew: app$/,/^# END OpsCrew: app$/d' "$file" |
+    sed -n 's/^PassengerNodejs[[:space:]]*"\\{0,1\\}\\([^"[:space:]]*\\)"\\{0,1\\}[[:space:]]*$/\\1/p' | tail -n 1)
+  [ -n "$node" ] || return 0
+  ln -s "\${node%/*/*}/lib/node_modules" "releases/$1/node_modules"
 }
 
 # Points the Passenger block CloudLinux's selector wrote into release $1's .htaccess at that

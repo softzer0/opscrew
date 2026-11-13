@@ -338,8 +338,9 @@ describe.skipIf(reason !== undefined)(
       expect(existsSync(`${a.home}/nodevenv/opscrew`)).toBe(false);
       expect(readFileSync(cacheFile(a), "utf8")).toBe(OTHER);
       expect(a.file("state/selector-section")).toBeUndefined();
-      // The whole destroy again (another request).
-      const expires = String(Math.floor(Date.now() / 1000) + 1799);
+      // The whole destroy again: another request, its name the hash of its text, so its expires
+      // (fixed, far later than the first's) keeps it apart whatever the clock does.
+      const expires = "99999999999";
       expect(app(a, "destroy", { action: "destroy", expires })).toEqual({ result: "done", note });
       expect(
         calls(a).filter((line) => line.startsWith("cloudlinux-selector destroy")),
@@ -396,7 +397,7 @@ describe.skipIf(reason !== undefined)(
     });
 
     switching(
-      "carries the selector's link and block into each release, installing changed packages before the switch",
+      "carries the selector's block into each release, linking the environment's packages, installing changed packages before the switch",
       () => {
         const a = account();
         a.run();
@@ -425,10 +426,7 @@ describe.skipIf(reason !== undefined)(
         expect(existsSync(`${a.dir}/releases/101-1/tmp/restart.txt`)).toBe(true);
         expect(existsSync(`${a.home}/.lsphp_restart.txt`)).toBe(false);
 
-        // The same packages: nothing to install. A relative node_modules link in app/, as a
-        // selector may make, still leads each release, a level deeper, to the environment.
-        rmSync(`${a.dir}/app/node_modules`);
-        symlinkSync(`../../../nodevenv/${ROOT}/22/lib/node_modules`, `${a.dir}/app/node_modules`);
+        // The same packages: nothing to install; the release is linked to the same environment.
         a.publish(nodeRelease("two"), { run: 102 });
         expect(a.run().output).toContain("Release 102-1 serves.");
         expect(calls(a).filter((line) => line.includes("install-modules"))).toHaveLength(2);
@@ -447,6 +445,66 @@ describe.skipIf(reason !== undefined)(
           '{"lockfileVersion":3,"lock":"1"}\n',
         );
         expect(a.file("app/package-lock.json")).toBe('{"lockfileVersion":3,"lock":"2"}\n');
+      },
+    );
+
+    switching(
+      "links each release to the packages of the environment PassengerNodejs names, where an ES module finds them",
+      () => {
+        const a = account({ ...NODE, startupFile: "dist/index.js" });
+        // A package the fake selector installs (its stand-in for npm's registry).
+        mkdirSync(`${a.stub}/packages/greet`, { recursive: true });
+        writeFileSync(
+          `${a.stub}/packages/greet/package.json`,
+          '{"name":"greet","type":"module","exports":"./index.js"}\n',
+        );
+        writeFileSync(
+          `${a.stub}/packages/greet/index.js`,
+          'export const greet = (who) => "hello " + who;\n',
+        );
+        const release = (marker: string) => ({
+          "package.json": '{"name":"api","type":"module","dependencies":{"greet":"1.0.0"}}\n',
+          "dist/index.js": `import { greet } from "greet";\nconsole.log(greet("${marker}"));\n`,
+        });
+        const runs = (id: string) =>
+          spawnSync(process.execPath, [`${a.dir}/releases/${id}/dist/index.js`], {
+            encoding: "utf8",
+          });
+        const environment = `${a.home}/nodevenv/${ROOT}/22/lib/node_modules`;
+        a.run();
+        app(a, "create");
+        // As the real selector, no node_modules link in the app root.
+        expect(existsSync(`${a.dir}/app/node_modules`)).toBe(false);
+
+        a.publish(release("one"), { run: 601 });
+        expect(a.run().output).toContain("Release 601-1 serves.");
+        expect(readlinkSync(`${a.dir}/releases/601-1/node_modules`)).toBe(environment);
+        expect(runs("601-1")).toMatchObject({ status: 0, stdout: "hello one\n" });
+
+        // The same packages, nothing installed; the selector's line unquoted links the same.
+        const served = `${a.dir}/current/public/.htaccess`;
+        writeFileSync(
+          served,
+          readFileSync(served, "utf8").replace(/^(PassengerNodejs )"(.*)"$/m, "$1$2"),
+        );
+        a.publish(release("two"), { run: 602 });
+        expect(a.run().output).toContain("Release 602-1 serves.");
+        expect(readlinkSync(`${a.dir}/releases/602-1/node_modules`)).toBe(environment);
+        expect(runs("602-1")).toMatchObject({ status: 0, stdout: "hello two\n" });
+
+        // A release that ships its own node_modules keeps it; a block without PassengerNodejs
+        // links none.
+        a.publish(
+          { ...release("three"), "node_modules/own/package.json": '{"name":"own"}\n' },
+          { run: 603 },
+        );
+        a.run();
+        expect(lstatSync(`${a.dir}/releases/603-1/node_modules`).isSymbolicLink()).toBe(false);
+        writeFileSync(served, readFileSync(served, "utf8").replace(/^PassengerNodejs .*\n/m, ""));
+        a.publish(release("four"), { run: 604 });
+        a.run();
+        expect(existsSync(`${a.dir}/releases/604-1`)).toBe(true);
+        expect(existsSync(`${a.dir}/releases/604-1/node_modules`)).toBe(false);
       },
     );
 
