@@ -429,7 +429,7 @@ names the change.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/iac-templates && pnpm lint`
   - Effort: high
 
-- [ ] T2719 [P] [US9] The guide
+- [x] T2719 [P] [US9] The guide
   - Owns: `docs/guide/{hosting-accounts,cpanel,plesk,directadmin,sftp}.md`, the hosting and OpenLiteSpeed parts of `docs/guide/{index,reverse-proxy,retarget,logs-and-status,snapshots}.md`, `README.md`'s target list
   - Reads: plan; spec; ADR 0030, ADR 0031; research R10, R11
   - Depends: T2713, T2714, T2716, T2718
