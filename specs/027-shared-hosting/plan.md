@@ -172,9 +172,9 @@ under `flock -n`. Each run:
 9. **Check** `https://<hostname><health path>` from the account (R11; `http://` until it has seen a
    valid certificate there) until it answers 2xx or 3xx with `X-OpsCrew-Release: <run
    id>-<attempt>`, within about 125 s: on LiteSpeed the first good answer counts; elsewhere only one
-   past `realpath_cache_ttl` (120 s), since a switch reaches every PHP process only then. Otherwise switch back, make it serve again, and
-   record the failure. The header shows the web server's view; on LiteSpeed the restart is what
-   makes PHP follow.
+   past `realpath_cache_ttl` (120 s), since a switch reaches every PHP process only then.
+   Otherwise switch back, make it serve again, and record the failure. The header shows the web
+   server's view; on LiteSpeed the restart is what makes PHP follow.
 10. **Keep** the last 3 releases besides the running one; write `state/status` (running, previous,
     last attempt and its reason); keep `state/agent.log` to its last 1,000 lines.
 
@@ -305,7 +305,10 @@ before the switch when the lockfile changed, and `tmp/restart.txt`. The selector
 link and Passenger block are carried into each release. The app's packages live in the selector's
 one environment, so a release whose lockfile changed installs them a moment before its switch; the
 guide says so. Destroy runs the selector's `destroy`, removes its empty `~/nodevenv/<app root>` and
-its section in `~/.cl.selector/htaccess_cache` (R10). `examples/express-api` joins the cPanel pass.
+its section in `~/.cl.selector/htaccess_cache` (R10). `examples/hono-api` (no database) joins the
+cPanel pass. The app's document root is its `public/` folder, never the app root, and its settings
+reach its process through the selector's environment variables (with `.env` linked for apps that
+read the file).
 cPanel's Application Manager and Plesk's Node.js are left for later.
 
 ### 9. Verify, secure, drift, snapshots (P2)
@@ -364,7 +367,7 @@ OpenLiteSpeed. The guide gains `hosting-accounts.md`, `cpanel.md`, `plesk.md`, `
   panel's fakes.
 - **cPanel live pass** (`OPSCREW_E2E_CPANEL=1`, `OPSCREW_E2E_CPANEL_*`): SC-2701 for
   `examples/php-plain-mysql` (PHP 8.5 through the handler; database, cron, settings, storage),
-  `examples/static-vite` and `examples/express-api` on `e2e-…` subdomains, with an inventory
+  `examples/static-vite` and `examples/hono-api` on `e2e-…` subdomains, with an inventory
   before and after (SC-2702), the first request after each switch checked (SC-2703), and a scan of
   every output (SC-2704). `examples/laravel-app` runs there only if the founder sets the account's
   PHP to 8.4 or newer (R11); otherwise its refusal message is checked.

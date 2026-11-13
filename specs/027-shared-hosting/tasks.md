@@ -455,7 +455,7 @@ names the change.
   - Depends: T2713, T2714, T2716, T2717, T2718
   - Accept:
     - **The cPanel pass** (`OPSCREW_E2E_CPANEL=1` and `OPSCREW_E2E_CPANEL_{URL,USER,TOKEN,DOMAIN}`, mapped to `OPSCREW_HOSTING_*`):
-      - SC-2701 for `examples/php-plain-mysql`, `examples/static-vite` and `examples/express-api` on `e2e-…` subdomains of the test domain;
+      - SC-2701 for `examples/php-plain-mysql`, `examples/static-vite` and `examples/hono-api` on `e2e-…` subdomains of the test domain;
       - the first request after each switch and rollback checked (SC-2703);
       - an inventory before and after, compared field by field (SC-2702): domains, databases, users, cron, keys, tokens, the home folder's top level, `~/.cl.selector`, certificates and keys;
       - a scan of every output for the token (SC-2704).

@@ -131,7 +131,7 @@ release's pages and PHP code answer right after the switch, and after a rollback
 **Why this priority**: small Node.js and Python apps are common on hosting accounts, but fewer than
 PHP and static sites.
 
-**Independent Test**: the live pass deploys `examples/express-api` through cPanel's Node.js
+**Independent Test**: the live pass deploys `examples/hono-api` through cPanel's Node.js
 support, restarts it on a new release and rolls it back.
 
 **Acceptance Scenarios**:
