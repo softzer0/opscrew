@@ -78,6 +78,8 @@ export interface PlanInputOptions {
   /** The user supplies `STRIPE_SECRET_KEY` (default true); false leaves it out of the app's env. */
   userSecret?: boolean;
   httpAllowedFrom?: "any" | "cloudflare";
+  /** The provider's automated backups (default: on where the provider offers them). */
+  backups?: boolean;
 }
 
 /** Plan targets per provider: location, size and image as design would choose them. */
@@ -111,8 +113,7 @@ export function testPlan(options: PlanInputOptions = {}) {
       provider,
       mode: "vps-compose",
       ...TARGETS[provider],
-      // Contabo has no provider backups OpsCrew turns on.
-      backups: cloudProvider(provider).offering.providerBackups,
+      backups: options.backups ?? cloudProvider(provider).offering.providerBackups,
     },
     services: selfHostedServices({ postgres: options.postgres ?? true, redis: false }),
     externalServices: [],

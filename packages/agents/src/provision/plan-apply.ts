@@ -43,10 +43,13 @@ import { cloudProvider } from "@opscrew/providers";
 import { blockingPolicyFailures, evaluatePlanPolicies } from "@opscrew/secops";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
+import { backupsOnOrderPage, orderPageBackupsText } from "../design/backups";
 import { planProvider, providerProfile, vpsConnector } from "../providers";
 import { describeChanges, PlanRefusedError } from "../shared";
 import { applyWithConnectorRemoval } from "../shared/connector-removal";
 import { type FirewallApis, removeFirewalls, syncFirewalls } from "../shared/firewalls";
+import { type ProviderBackupsApis, syncProviderBackups } from "../shared/provider-backups";
+import { extraCloudServers } from "../shared/servers";
 import { engineErrorBlocks } from "../shared/tunnel-connections";
 import { neededScopes } from "./credentials";
 import { maskSensitivePlanJson, plannedImports } from "./plan-json";
@@ -141,6 +144,11 @@ export interface PlanAndApplyOptions {
   redesignHint?: string;
   /** The firewalls of the providers whose connector applies them (default: their connectors'). */
   firewalls?: FirewallApis | undefined;
+  /**
+   * The automated backups of the providers whose connector turns them on (default: their
+   * connectors').
+   */
+  providerBackups?: ProviderBackupsApis | undefined;
   /**
    * The server API of a provider whose connector removes its servers (default: its connector's):
    * a server the plan removes there is cancelled through it before the apply (ADR 0029, D10).
@@ -299,9 +307,29 @@ export interface PlanPrice {
   checkedOn: string;
 }
 
-function estimatedCost(deployPlan: DeployPlan): string {
+function estimatedCost(deployPlan: DeployPlan): string[] {
   const cost = deployPlan.cost.monthly;
-  return `Estimated cost: ${formatMoney(cost)} per month (${deployPlan.cost.source === "live" ? "live prices" : `price list of ${deployPlan.cost.asOf.slice(0, 10)}`}, ${taxLabel(cost.currency, deployPlan.cost.pricesIncludeVat)}).`;
+  return [
+    `Estimated cost: ${formatMoney(cost)} per month (${deployPlan.cost.source === "live" ? "live prices" : `price list of ${deployPlan.cost.asOf.slice(0, 10)}`}, ${taxLabel(cost.currency, deployPlan.cost.pricesIncludeVat)}).`,
+    ...orderPageBackups(deployPlan).map((provider) =>
+      orderPageBackupsText(provider, "this estimate"),
+    ),
+  ];
+}
+
+/**
+ * The providers of the plan's servers with automated backups on that only the provider's order
+ * page prices (Contabo's Auto Backup), each once: the estimate leaves them out.
+ */
+function orderPageBackups(deployPlan: DeployPlan): CloudProvider[] {
+  const servers = [
+    ...(isCloudTarget(deployPlan.target) ? [deployPlan.target] : []),
+    ...extraCloudServers(deployPlan),
+  ];
+  const providers = servers.flatMap(({ provider, backups }) =>
+    backups && backupsOnOrderPage(provider) ? [provider] : [],
+  );
+  return [...new Set(providers)];
 }
 
 /** True when the plan only renames resources in the state (`moved` blocks) and changes nothing. */
@@ -359,7 +387,7 @@ export function describePlan(
         `Estimated cost: ${formatMoney(monthly)} per month for what this plan creates (from ${source}, checked on ${checkedOn}).`,
       );
     } else {
-      lines.push(estimatedCost(deployPlan));
+      lines.push(...estimatedCost(deployPlan));
     }
   }
   const failed = saved.policy.filter((p) => !p.passed);
@@ -718,17 +746,22 @@ export async function planAndApply(
   // blocks) still has to be applied.
   const movesOnly = isMovesOnly(saved);
   const imports = plannedImports(saved.planJson).length;
-  const firewallRun = {
+  const connectorRun = {
     deps,
     phase: options.phase ?? "provision",
     command,
     firewalls: options.firewalls,
+    backups: options.providerBackups,
   };
   if (saved.changes.length === 0 && !movesOnly && imports === 0) {
     deps.reporter.success("The infrastructure is already up to date.");
     const outputs = await engine.output(dir, { env }).catch(() => ({}));
-    // A run after a failed firewall sync plans nothing new and sets the firewalls again.
-    if (options.planOnly !== true) await syncFirewalls(firewallRun, outputs);
+    // A run after a failed firewall sync plans nothing new and sets the firewalls again; the
+    // backups whose order failed or got no clear answer, likewise.
+    if (options.planOnly !== true) {
+      await syncFirewalls(connectorRun, outputs);
+      await syncProviderBackups(connectorRun, outputs);
+    }
     return { planHash: saved.planHash, applied: false, outputs, plan: saved };
   }
 
@@ -846,8 +879,10 @@ export async function planAndApply(
   await options.afterApply?.(saved);
   // The firewalls the providers' Terraform cannot manage (ADR 0029, D8): those of the servers the
   // apply removed go, the others become exactly what the state wants.
-  await removeFirewalls(firewallRun, saved.planJson, result.outputs);
-  await syncFirewalls(firewallRun, result.outputs);
+  await removeFirewalls(connectorRun, saved.planJson, result.outputs);
+  await syncFirewalls(connectorRun, result.outputs);
+  // The automated backups the providers' Terraform cannot turn on (Contabo's Auto Backup).
+  await syncProviderBackups(connectorRun, result.outputs);
   return {
     planHash: saved.planHash,
     applied: true,

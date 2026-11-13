@@ -327,6 +327,59 @@ describe("the wanted firewalls of the servers whose provider's connector applies
   });
 });
 
+describe("the wanted backups of the servers whose provider's connector turns them on", () => {
+  /** The `wanted_backups` output's entries, as rendered. */
+  const entry = (module: string, provider: string) =>
+    [
+      `    ${module} = {`,
+      `      provider = "${provider}"`,
+      `      backup   = module.${module}.wanted_backup`,
+      "    }",
+    ].join("\n");
+  const output = (...entries: string[]) =>
+    ['output "wanted_backups" {', "  value = {", ...entries, "  }", "}"].join("\n");
+  const outputsOf = (plan: Parameters<typeof renderInfra>[0], context = ctx()) =>
+    root(renderInfra(plan, context), "outputs.tf");
+
+  it("lists the servers on Contabo by their modules, with their provider, beside the firewalls", () => {
+    expect(outputsOf(testPlan({ provider: "contabo" }))).toContain(
+      output(entry("server", "contabo")),
+    );
+    const contaboApp = outputsOf(
+      splitPlan({
+        app: { provider: "contabo" },
+        servers: [
+          { name: "db", provider: "hetzner" },
+          { name: "cache", provider: "contabo" },
+        ],
+      }),
+    );
+    expect(contaboApp).toContain(
+      output(entry("server", "contabo"), entry("server_cache", "contabo")),
+    );
+  });
+
+  it("passes each Contabo server its own backups variable", () => {
+    const main = root(renderInfra(testPlan({ provider: "contabo" }), ctx()), "main.tf");
+    expect(main).toMatch(/module "server" \{[^}]*\n {2}backups += var\.backups\n/);
+  });
+
+  it("lists the old server of a move by its module", () => {
+    const plan = testPlan({ provider: "hetzner" });
+    const outputs = outputsOf(
+      plan,
+      ctx({ layout: moveLayout("both", testTarget("contabo"), cloudTarget(plan.target)) }),
+    );
+    expect(outputs).toContain(output(entry("server_previous", "contabo")));
+  });
+
+  it("is not written for other providers' servers", () => {
+    for (const plan of [testPlan(), testPlan({ provider: "digitalocean" })]) {
+      expect(outputsOf(plan)).not.toContain("wanted_backups");
+    }
+  });
+});
+
 describe("the server modules", () => {
   for (const module of CLOUD_PROVIDERS.map(({ terraform }) => terraform.module.name)) {
     const main = MODULE_FILES[`${module}/main.tf`] ?? "";

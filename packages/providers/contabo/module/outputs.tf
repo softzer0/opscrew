@@ -32,6 +32,11 @@ output "app_tag_name" {
   value       = local.app_tag_id
 }
 
+output "wanted_backup" {
+  description = "Contabo's Auto Backup, which OpsCrew's Contabo connector turns on after the apply when on is true: the server id and on."
+  value       = terraform_data.backup.input
+}
+
 output "wanted_firewall" {
   description = "The firewall OpsCrew's Contabo connector makes after every apply: its name, description, server ids and rules."
   value       = terraform_data.firewall.input

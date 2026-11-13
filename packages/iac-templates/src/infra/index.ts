@@ -446,6 +446,35 @@ function wantedFirewallsOutput(shape: RootShape): string[] {
   ];
 }
 
+/**
+ * `output "wanted_backups"`: the automated backups of each server module whose provider's
+ * connector turns them on (`connectorBackups`, Contabo's Auto Backup), by module, with that
+ * provider; none without such a server. OpsCrew passes each to its provider's connector after
+ * every apply.
+ */
+function wantedBackupsOutput(shape: RootShape): string[] {
+  const modules = [
+    ...shape.servers.map(({ slot, provider }) => ({ module: slot, provider })),
+    ...shape.extras.map(({ module, provider }) => ({ module, provider })),
+  ].filter(({ provider }) => provider.terraform.connectorBackups === true);
+  if (modules.length === 0) return [];
+  return [
+    "# The automated backups of each server whose provider's Terraform cannot turn them on, by",
+    "# module: OpsCrew turns them on through the provider's API after the apply.",
+    'output "wanted_backups" {',
+    "  value = {",
+    ...modules.flatMap(({ module, provider }) => [
+      `    ${module} = {`,
+      `      provider = "${provider.id}"`,
+      `      backup   = module.${module}.wanted_backup`,
+      "    }",
+    ]),
+    "  }",
+    "}",
+    "",
+  ];
+}
+
 function outputsTf(plan: DeployPlan, shape: RootShape, pieces: TunnelPieces | undefined): string {
   const { live } = shape;
   const { ipv4, ipv6 } = addressesOf(live);
@@ -467,6 +496,7 @@ function outputsTf(plan: DeployPlan, shape: RootShape, pieces: TunnelPieces | un
     ...serversOutput(shape),
     ...extraServersOutput(shape.extras),
     ...wantedFirewallsOutput(shape),
+    ...wantedBackupsOutput(shape),
     ...(previewsCertificatePack(plan)?.outputs ?? []),
     ...(pieces?.outputs ?? []),
   ].join("\n");

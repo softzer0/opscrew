@@ -105,6 +105,7 @@ import { reasonOf } from "../shared/errors";
 import { buildStatusLines, runPhase, supplyChainLines } from "../shared/phase-status";
 import { vercelAdditions } from "./additions";
 import { backgroundJobsWarning } from "./background-jobs";
+import { backupsOnOrderPage, orderPageBackupsText } from "./backups";
 import { type BuilderChoice, chooseBuilder } from "./builder";
 import {
   type CodeChangeSignals,
@@ -2075,8 +2076,9 @@ function serverChangeWarnings(
 
 /**
  * What the chooser shows of a cloud option besides its price, as its summary words it: the
- * offer's terms (`offerTerms`) and, at a provider without automated backups through OpsCrew, that
- * its snapshots cover the data. Empty for Hetzner and DigitalOcean.
+ * offer's terms (`offerTerms`), at a provider without automated backups through OpsCrew that its
+ * snapshots cover the data, and backups priced only on the provider's order page left out of the
+ * price (Contabo). Empty for Hetzner and DigitalOcean.
  */
 async function chosenTerms(
   chosen: DesignOption,
@@ -2089,15 +2091,20 @@ async function chosenTerms(
   if (
     offering.removal.kind === "delete" &&
     offering.snapshots.kind === "per-gb" &&
-    offering.providerBackups
+    offering.providerBackups &&
+    !backupsOnOrderPage(provider)
   ) {
     return [];
   }
   const offer = (await catalog.listOffers(location)).find((o) => o.id === serverType);
   const terms = offer === undefined ? [] : offerTerms(offer, await catalog.extras(location));
-  return providerProfile(provider).providerBackups
-    ? terms
-    : [...terms, noProviderBackupsText(provider)];
+  return [
+    ...terms,
+    ...(providerProfile(provider).providerBackups ? [] : [noProviderBackupsText(provider)]),
+    ...(chosen.backups && backupsOnOrderPage(provider)
+      ? [orderPageBackupsText(provider, "this price")]
+      : []),
+  ];
 }
 
 async function pick(

@@ -6,6 +6,7 @@ import type {
   VpsConnector,
 } from "@opscrew/contracts";
 import { errorText, listText, Redactor } from "@opscrew/core";
+import { contaboBackupsApi } from "./backups";
 import { StaticContaboCatalog } from "./catalog";
 import {
   CONTABO_CREDENTIALS_HINT,
@@ -34,7 +35,8 @@ export interface ContaboConnector extends VpsConnector {
 
 /**
  * Creates the Contabo connector: credential check, the dated static catalogue (Contabo has no
- * price API), the server API, the firewalls (ADR 0029, D8) and the object storage (027 R15). The four credentials are read
+ * price API), the server API, the firewalls (ADR 0029, D8), Auto Backup and the object storage
+ * (027 R15). The four credentials are read
  * from `CNTB_OAUTH2_*` and registered with the redactor as they are read; without all four,
  * nothing calls Contabo.
  */
@@ -62,6 +64,7 @@ export function contaboConnector(deps: ProviderConnectorDeps): ContaboConnector 
     configured: client !== undefined,
     servers: client === undefined ? undefined : contaboServerApi(client),
     firewalls: client === undefined ? undefined : contaboFirewallApi(client),
+    backups: client === undefined ? undefined : contaboBackupsApi(client),
     objectStorage: client === undefined ? undefined : contaboObjectStorageApi(client),
     catalog: () => {
       catalog ??= new StaticContaboCatalog();

@@ -10,6 +10,7 @@ import { sitePlan } from "../../testing/serverless";
 import { THRESHOLDS } from "../types";
 import {
   AT,
+  contaboTable,
   container,
   history,
   reading,
@@ -74,6 +75,27 @@ describe("reliabilityRules: backups", () => {
       price: { before: 5.99, after: 7.09 },
       apply: { kind: "plan", change: { kind: "backups", server: "data", enabled: true } },
     });
+  });
+
+  it("proposes Contabo's in prod as priced on Contabo's order page, never with a € figure", async () => {
+    const plan = checked(withoutBackups(testPlan({ provider: "contabo" })));
+    const [proposal, ...rest] = rules(
+      readingsOf(plan, { requirements: important, prices: [await contaboTable()] }),
+    );
+    expect(rest).toEqual([]);
+    expect(proposal).toMatchObject({
+      id: "reliability.app.backups",
+      title: "Turn on automated backups for server app",
+      reasons: [
+        { text: expect.stringContaining("the app's data is important, and server app") },
+        {
+          text: "Contabo's automated backups are priced on Contabo's order page: Contabo publishes no price per plan for them",
+          basis: { kind: "plan" },
+        },
+      ],
+      apply: { kind: "plan", change: { kind: "backups", server: "app", enabled: true } },
+    });
+    expect(proposal?.price).toBeUndefined();
   });
 
   it("proposes them without a price when the server's type has none", () => {

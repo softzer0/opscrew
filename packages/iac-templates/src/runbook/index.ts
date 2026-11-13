@@ -162,7 +162,7 @@ export function renderRunbook(plan: DeployPlan, ctx: RunbookContext): RenderedFi
         ? [text.backupsOn]
         : providerBackups
           ? [
-              `Automated server backups are **off**. Turn them on with \`${opscrew(plan, "design", environments)}\` (they cost extra; it shows the price) or make your own backups:`,
+              `Automated server backups are **off**. Turn them on with \`${opscrew(plan, "design", environments)}\` (they cost extra; ${provider.offering.backupsPrice === "order-page" ? `check the price on ${provider.name}'s order page` : "it shows the price"}) or make your own backups:`,
             ]
           : [
               `${provider.name} has no automated server backups OpsCrew turns on; OpsCrew's own snapshots of the data take their place:`,

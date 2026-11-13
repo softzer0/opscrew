@@ -18,6 +18,12 @@ variable "image" {
   type        = string
 }
 
+variable "backups" {
+  description = "Whether Contabo's Auto Backup is on (a paid add-on, priced on Contabo's order page). OpsCrew's Contabo connector turns it on after the apply; only the Customer Control Panel turns it off."
+  type        = bool
+  default     = false
+}
+
 variable "ssh_public_key" {
   description = "Public half of the OpsCrew deploy key (ssh-ed25519 ...)."
   type        = string

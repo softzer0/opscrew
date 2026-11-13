@@ -134,7 +134,6 @@ export function testPlan(o: TestPlanOptions = {}): DeployPlan {
             location: t.location,
             serverType: t.serverType,
             image: t.image,
-            // Contabo has no provider backups OpsCrew turns on.
             backups: o.backups ?? cloudProvider(provider).offering.providerBackups,
           },
     services: testServices({ postgres: o.postgres ?? true }),

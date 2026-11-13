@@ -538,3 +538,70 @@ describe("evaluatePlanPolicies on a firewall the connector applies (`<type>.<nam
     expect(open.some((r) => r.resource === "module.server.terraform_data.other")).toBe(false);
   });
 });
+
+describe("evaluatePlanPolicies on backups the connector turns on (Contabo's Auto Backup)", () => {
+  /** A Contabo deploy plan with `backups`. */
+  function contaboPlan(backups: boolean) {
+    const plan = deployPlan({ proxied: false });
+    return {
+      ...plan,
+      target: { ...plan.target, provider: "contabo", location: "EU", serverType: "V153", backups },
+    } as typeof plan;
+  }
+
+  /** A Contabo plan JSON whose module's `terraform_data.backup` says `on` (none when undefined). */
+  function contaboPlanJson(on: boolean | undefined) {
+    const resource = (type: string, name: string, values: Record<string, unknown>) => ({
+      address: `module.server.${type}.${name}`,
+      mode: "managed",
+      type,
+      name,
+      values,
+    });
+    return {
+      format_version: "1.2",
+      planned_values: {
+        root_module: {
+          child_modules: [
+            {
+              address: "module.server",
+              resources: [
+                resource("contabo_instance", "this", { ssh_keys: [1] }),
+                // A new server's id is unknown before the apply: only `on` is planned.
+                ...(on === undefined
+                  ? []
+                  : [resource("terraform_data", "backup", { input: { on } })]),
+              ],
+            },
+          ],
+        },
+      },
+      resource_changes: [],
+    };
+  }
+
+  const backupsResult = (json: unknown, backups: boolean) =>
+    evaluatePlanPolicies(json, contaboPlan(backups)).find(
+      (r) => r.policyId === "backups-for-critical-data",
+    );
+
+  it("passes when the module's terraform_data.backup has them on", () => {
+    expect(backupsResult(contaboPlanJson(true), true)).toMatchObject({
+      passed: true,
+      resource: "module.server.contabo_instance.this",
+      message: expect.stringContaining("Auto Backup"),
+    });
+  });
+
+  it("fails, blocking, when it has them off or the module describes none", () => {
+    for (const json of [contaboPlanJson(false), contaboPlanJson(undefined)]) {
+      const result = backupsResult(json, true);
+      expect(result).toMatchObject({ passed: false, severity: "high" });
+      expect(blockingPolicyFailures([result as PolicyResult])).toHaveLength(1);
+    }
+  });
+
+  it("checks nothing when the plan doesn't ask for them", () => {
+    expect(backupsResult(contaboPlanJson(false), false)).toBeUndefined();
+  });
+});

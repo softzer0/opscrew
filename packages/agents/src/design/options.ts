@@ -21,7 +21,13 @@ import {
 } from "@opscrew/plan-schema";
 import { providerProfile, requestedProvider, requestedRegion } from "../providers";
 import { type MemoryLimit, memoryHeadroom, SYSTEM_RESERVE_MB } from "../shared/memory";
-import { backupsText, type DesignedBackups, designedBackups } from "./backups";
+import {
+  backupsOnOrderPage,
+  backupsText,
+  type DesignedBackups,
+  designedBackups,
+  orderPageBackupsText,
+} from "./backups";
 import { type Components, memoryText } from "./components";
 import {
   convertMoney,
@@ -413,6 +419,10 @@ function toOption(
     isCloudProvider(provider) && !wording.profile.providerBackups
       ? noProviderBackupsText(provider)
       : backupsText(context.backups, context.environment, sizing.previewCap !== undefined),
+    // Backups priced only on the provider's order page are never in the price above (Contabo).
+    ...(backups && backupsOnOrderPage(provider)
+      ? [orderPageBackupsText(provider, "this price")]
+      : []),
     sizing.previewCap === undefined
       ? memoryText(
           { ...sizing.components, observability: { monitoring: sizing.monitoring } },

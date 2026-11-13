@@ -239,6 +239,9 @@ describe("costRules: the other provider", () => {
 
 describe("costRules: the other provider on the same basis (Contabo)", () => {
   const important = makeRequirements({ dataCriticality: "important" });
+  /** Contabo's Auto Backup has no price per plan (R15): both sides go without backups. */
+  const BOTH_LEFT_OUT =
+    "Both prices leave out the automated backups: Contabo publishes no price per plan for its own, only on its order page";
   const CONTABO_AS_OF = "2026-11-11T00:00:00.000Z";
 
   /** Contabo's prices in its EU region: `offers` (VAT included, as its price list has them). */
@@ -276,12 +279,12 @@ describe("costRules: the other provider on the same basis (Contabo)", () => {
     return proposals.find((p) => p.id === "cost.app.other-provider");
   }
 
-  it("compares a Hetzner server without its backups, which Contabo doesn't offer, naming each side", async () => {
+  it("compares a Hetzner server without its backups, as Contabo prices its own only on its order page, naming each side", async () => {
     const move = await moveOf(cpx22, [await hetznerTable(), await contaboTable()]);
     expect(move).toMatchObject({
       title: "Move the app to Contabo: V153 (4 vCPU, 8 GB memory, 100 GB disk) in Germany",
-      // cpx22 with its IPv4 address and without its 20% for backups, against Contabo's price, both
-      // without VAT.
+      // cpx22 with its IPv4 address and without its 20% for backups, against Contabo's price
+      // without its Auto Backup, both without VAT.
       price: {
         before: 19.99,
         after: 5.5,
@@ -298,12 +301,9 @@ describe("costRules: the other provider on the same basis (Contabo)", () => {
     expect(move?.price).not.toHaveProperty("includesVat");
     expect(why).not.toContain("same server");
     expect(why).not.toContain("includes VAT");
-    expect(why).toContain(
-      "Contabo offers no automatic backups through OpsCrew: OpsCrew's own snapshots of the app's data (`opscrew snapshot`) cover it instead",
-    );
-    expect(why).toContain(
-      "Hetzner's price is compared without its automated backups, which Contabo doesn't offer; the bucket for the snapshots' encrypted copy off the server isn't counted",
-    );
+    expect(why).toContain(BOTH_LEFT_OUT);
+    expect(why).not.toContain("offers no automatic backups");
+    expect(move?.price?.after).not.toBe(0);
     expect(why).toContain(
       "The contract runs at least 1 month; a removal ends it at the end of the term",
     );
@@ -393,25 +393,43 @@ describe("costRules: the other provider on the same basis (Contabo)", () => {
     expect(await moveOf(plan, [await hetznerTable(), contaboList(fee(3.01))])).toBeUndefined();
   });
 
+  it("says Contabo's backups are not in the total over the budget, never counting them at €0", async () => {
+    const readings = readingsOf(testPlan({ deployed: true, provider: "contabo", backups: true }), {
+      servers: { app: server(reading()) },
+      prices: [await contaboTable()],
+      requirements: makeRequirements({
+        dataCriticality: "important",
+        budgetMonthly: { amount: 4, currency: "EUR" },
+      }),
+    });
+    const budget = costed(readings).find((p) => p.id === "cost.env.budget");
+    const why = texts(budget);
+    expect(why).toContain("[€5.50 (excl. VAT) against €4.00 a month]");
+    expect(why).toContain(
+      "Contabo's automated backups are not in this total: they are priced on Contabo's order page",
+    );
+  });
+
   describe("from Contabo", () => {
-    const contabo = testPlan({ deployed: true, provider: "contabo" });
+    // Auto Backup off, as the tests about VAT and terms aren't about it.
+    const contabo = testPlan({ deployed: true, provider: "contabo", backups: false });
     /** A Contabo plan of a cx33's size, at `price` with VAT. */
     const plan33 = (price: number) => vps({ id: "V-33", vcpus: 4, memoryGb: 8, diskGb: 80, price });
-    const fromContabo = async (price: number, requirements = important) =>
+    const fromContabo = async (price: number, requirements = important, backups = false) =>
       moveOf(
-        { ...contabo, target: { ...contabo.target, serverType: "V-33" } } as DeployPlan,
+        { ...contabo, target: { ...contabo.target, serverType: "V-33", backups } } as DeployPlan,
         [contaboList(plan33(price)), await hetznerTable("nbg1"), await hetznerTable("fsn1")],
         requirements,
       );
 
-    it("prices the new server's backups as the move turns them on, and the term before the saving", async () => {
-      const move = await fromContabo(20);
+    it("leaves the backups out of both sides when Contabo's are on, and names the term before the saving", async () => {
+      const move = await fromContabo(20, important, true);
       expect(move).toMatchObject({
         title: "Move the app to Hetzner: cx33 (4 vCPU, 8 GB memory, 80 GB disk) in Nuremberg",
-        // cx33 with its IPv4 address and 20% for backups, as the interview's important data has them.
+        // cx33 with its IPv4 address, without its backups, as Contabo's have no price to compare.
         price: {
           before: 20,
-          after: 10.69,
+          after: 8.99,
           currency: "EUR",
           includesVat: { before: true, after: false },
         },
@@ -421,9 +439,8 @@ describe("costRules: the other provider on the same basis (Contabo)", () => {
       expect(why).toContain(
         "Contabo's price includes VAT and Hetzner's doesn't: the saving holds even with 27% VAT on Hetzner's, the highest rate in the EU",
       );
-      expect(why).toContain(
-        "Hetzner's automated backups are on after the move, as the interview says the app's data is important, and priced in",
-      );
+      expect(why).toContain(BOTH_LEFT_OUT);
+      expect(why).not.toContain("priced in");
       expect(why).toContain(
         "Contabo bills the old server to the end of its term, so the saving starts after it",
       );
@@ -435,8 +452,8 @@ describe("costRules: the other provider on the same basis (Contabo)", () => {
       );
     });
 
-    it("prices the new server without backups when the data doesn't matter", async () => {
-      const move = await fromContabo(20, makeRequirements());
+    it("prices the new server without backups, and says nothing of them, when Contabo's are off", async () => {
+      const move = await fromContabo(20);
       expect(move?.price).toMatchObject({ before: 20, after: 8.99 });
       expect(texts(move)).not.toContain("automated backups");
     });

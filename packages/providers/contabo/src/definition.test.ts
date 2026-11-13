@@ -80,11 +80,12 @@ describe("Contabo's cloud provider definition", () => {
     for (const region of Object.keys(notes)) expect(REGIONS).toContain(region);
   });
 
-  it("sells monthly terms that a removal cancels, with included snapshots and no backups", () => {
+  it("sells monthly terms that a removal cancels, with included snapshots and Auto Backup priced on its order page", () => {
     expect(definition.offering).toMatchObject({
       currency: "EUR",
       backupPercent: 0,
-      providerBackups: false,
+      providerBackups: true,
+      backupsPrice: "order-page",
       backupsOutliveServer: false,
       snapshots: { kind: "included" },
       serverSnapshotsOutliveServer: false,
@@ -112,7 +113,11 @@ describe("Contabo's cloud provider definition", () => {
     expect(texts.runbook.deletes("shop")).toContain("end of the current term");
     expect(texts.destroy.lookup("shop")).toContain("opscrew-app:shop");
     expect(texts.destroy.tokenHint("opscrew destroy")).toContain("`opscrew destroy`");
-    expect(texts.destroy.deletedBackups).toBeUndefined();
+    // Contabo doesn't say whether Auto Backup's backups outlive a cancelled server (R15).
+    expect(texts.destroy.deletedBackups).toBe(
+      "Contabo's Auto Backup of the server (the add-on ends with the server's contract, and Contabo doesn't promise its backups outlive it)",
+    );
+    expect(texts.destroy.keptBackups).toBeUndefined();
     expect(texts.destroy.storageConsole).toBe(
       "the Contabo Customer Control Panel (Object Storage)",
     );
@@ -127,6 +132,7 @@ describe("Contabo's cloud provider definition", () => {
       ["location", "var.location"],
       ["server_type", "var.server_type"],
       ["image", "var.image"],
+      ["backups", "var.backups"],
       ["ssh_public_key", "var.deploy_ssh_public_key"],
       ["ssh_allowed_cidrs", "var.ssh_allowed_cidrs"],
       ["http_allowed_cidrs", "var.http_allowed_cidrs"],
@@ -138,6 +144,7 @@ describe("Contabo's cloud provider definition", () => {
       ["location", "var.db_location"],
       ["server_type", "var.db_server_type"],
       ["image", "var.db_image"],
+      ["backups", "var.db_backups"],
       ["ssh_public_key", "var.deploy_ssh_public_key"],
       ["ssh_allowed_cidrs", "var.ssh_allowed_cidrs"],
       appTag,
@@ -189,6 +196,45 @@ describe("Contabo's cloud provider definition", () => {
     expect(terraform.module.files["outputs.tf"]).toMatch(
       /output "wanted_firewall" \{[^}]*value\s+= terraform_data\.firewall\.input\n\}/,
     );
+  });
+
+  it("describes Auto Backup in the module, for the connector to turn on, as an update in place", () => {
+    const { terraform } = definition;
+    expect(terraform.connectorBackups).toBe(true);
+    const main = terraform.module.files["main.tf"] ?? "";
+    const block = main.slice(main.indexOf('resource "terraform_data" "backup" {'));
+    expect(block.slice(0, block.indexOf("\n}\n"))).toBe(
+      [
+        'resource "terraform_data" "backup" {',
+        "  input = {",
+        "    server_id = tostring(contabo_instance.this.id)",
+        "    on        = var.backups",
+        "  }",
+      ].join("\n"),
+    );
+    // Never a count: turning it off must not plan a deletion.
+    expect(block.slice(0, block.indexOf("\n}\n"))).not.toContain("count");
+    expect(terraform.module.files["variables.tf"]).toMatch(
+      /variable "backups" \{[^}]*type\s+= bool\n\s+default\s+= false\n\}/,
+    );
+    expect(terraform.module.files["outputs.tf"]).toMatch(
+      /output "wanted_backup" \{[^}]*value\s+= terraform_data\.backup\.input\n\}/,
+    );
+  });
+
+  it("reads a server's backups from its own module's terraform_data.backup", () => {
+    const backups = definition.texts.secops.backups;
+    if (backups === undefined) throw new Error("Contabo reads its backups from the module.");
+    const server = resource("module.server.contabo_instance.this", "contabo_instance", {});
+    const backup = (module: string, on: unknown) =>
+      resource(`${module}terraform_data.backup`, "terraform_data", { input: { on } });
+    expect(backups(server, [server, backup("module.server.", true)])).toBe(true);
+    expect(backups(server, [server, backup("module.server.", false)])).toBe(false);
+    // Another server's module, and a module that describes none.
+    expect(backups(server, [server, backup("module.server_db.", true)])).toBe(false);
+    expect(backups(server, [server])).toBe(false);
+    const root = resource("contabo_instance.this", "contabo_instance", {});
+    expect(backups(root, [root, backup("", true)])).toBe(true);
   });
 
   it("reads the wanted firewall's rules, one per port, and an empty source list as any source", () => {
@@ -355,6 +401,7 @@ function rootModule(): string {
     ...["ssh_allowed_cidrs", "http_allowed_cidrs"].flatMap((name) =>
       variable(name, "list(string)"),
     ),
+    ...["backups", "db_backups"].flatMap((name) => variable(name, "bool")),
     "",
     ...moduleBlock("server", [
       ...terraform.moduleArguments({ prefix: "" }),

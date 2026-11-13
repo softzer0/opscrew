@@ -14,7 +14,8 @@ import {
   type Region,
   type Requirements,
 } from "@opscrew/plan-schema";
-import { backupsByDefault } from "../../design/backups";
+import { cloudProvider } from "@opscrew/providers";
+import { backupsByDefault, backupsOnOrderPage } from "../../design/backups";
 import {
   convertMoney,
   EXCHANGE_RATE_NOTE,
@@ -35,6 +36,7 @@ import {
   cloudServers,
   isPriced,
   offerText,
+  orderPageReasons,
   otherTypes,
   PLAN,
   type PricedServer,
@@ -119,7 +121,9 @@ function cheapestAt(
 
 /**
  * The automated backups each side of a move to `other` is priced with, so both have the same data
- * protection: the app's where both providers offer them; none where `other` offers none (OpsCrew's
+ * protection: none where either provider prices them only on its order page (Contabo's Auto
+ * Backup has no price per plan, R15), so neither side counts them; the app's where both providers
+ * offer them; none where `other` offers none (OpsCrew's
  * data snapshots replace them there); from a provider without them, the new server's as design
  * sets them (on in prod when the interview says the data matters: `backupsByDefault`), as the
  * move turns them on.
@@ -130,6 +134,9 @@ function backupsOf(
   requirements: Pick<Requirements, "dataCriticality">,
   environment: string,
 ): { before: boolean; after: boolean } {
+  if (backupsOnOrderPage(other) || backupsOnOrderPage(app.provider)) {
+    return { before: false, after: false };
+  }
   if (!providerProfile(other).providerBackups) return { before: false, after: false };
   if (!providerProfile(app.provider).providerBackups) {
     return { before: false, after: backupsByDefault(requirements, environment) };
@@ -273,7 +280,9 @@ function otherProvider(readings: Readings, app: PricedServer | undefined): Propo
 }
 
 /**
- * What a move says of the providers' backups when they differ: at a new provider without them,
+ * What a move says of the providers' backups when they differ: with the app's on and a provider
+ * that prices them only on its order page on either side, that both prices leave them out; at a
+ * new provider without them,
  * that OpsCrew's data snapshots replace them, that the app's were left out of its price and that
  * the off-server copy's bucket isn't counted; from a provider without them, the new server's
  * backups priced in when the interview's data has them on.
@@ -286,6 +295,18 @@ function backupReasons(
 ): Reason[] {
   const { here, there } = names;
   const bucket = "the bucket for the snapshots' encrypted copy off the server isn't counted";
+  const orderPage = [move.other, app.provider].find(backupsOnOrderPage);
+  if (orderPage !== undefined) {
+    const { name, sizeNoun } = cloudProvider(orderPage);
+    return app.backups
+      ? [
+          {
+            text: `Both prices leave out the automated backups: ${name} publishes no price per ${sizeNoun} for its own, only on its order page`,
+            basis: PLAN,
+          },
+        ]
+      : [];
+  }
   if (!providerProfile(move.other).providerBackups) {
     return [
       { text: withoutStop(noProviderBackupsText(move.other)), basis: PLAN },
@@ -421,6 +442,14 @@ function overBudget(
           basis: PLAN,
         },
         ...(converted ? [EXCHANGE_RATE] : []),
+        // Backups priced only on a provider's order page are not in the total (Contabo's).
+        ...[
+          ...new Set(
+            priced.flatMap((s) =>
+              s.backups && backupsOnOrderPage(s.provider) ? [s.provider] : [],
+            ),
+          ),
+        ].flatMap((provider) => orderPageReasons(provider, "this total")),
         under.length > 0
           ? {
               text: `Each of these proposals brings them under it: ${under.map(({ proposal, saved }) => `${proposal.id} (saves ${formatMoney(saved)})`).join(", ")}`,

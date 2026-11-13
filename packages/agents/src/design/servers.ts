@@ -13,6 +13,7 @@ import {
 } from "@opscrew/plan-schema";
 import { providerProfile, VPS_PROVIDERS } from "../providers";
 import { type MemoryLimit, memoryHeadroom, SYSTEM_RESERVE_MB } from "../shared/memory";
+import { backupsOnOrderPage, orderPageBackupsText } from "./backups";
 import {
   convertMoney,
   EXCHANGE_RATE_NOTE,
@@ -300,7 +301,13 @@ export async function designCloudServer(input: CloudServerInput): Promise<Design
     backups,
     backupPercent: providerProfile(provider).backupPercent,
   });
-  const terms = offerTerms(offer, extras);
+  // Backups priced only on the provider's order page are never in the price (Contabo).
+  const terms = [
+    ...offerTerms(offer, extras),
+    ...(backups && backupsOnOrderPage(provider)
+      ? [orderPageBackupsText(provider, "this price")]
+      : []),
+  ];
   return {
     ...(terms.length === 0 ? {} : { terms }),
     server: {

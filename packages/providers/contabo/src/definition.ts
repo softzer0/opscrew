@@ -44,6 +44,12 @@ function httpArguments({ extra }: ModuleCall): (readonly [string, string])[] {
  */
 const FIREWALL = "terraform_data.firewall";
 
+/**
+ * Auto Backup the module describes for the connector to turn on: its `input` (`{ server_id, on }`)
+ * is the module's `wanted_backup` output.
+ */
+const BACKUP = "terraform_data.backup";
+
 /** Resource address without `count`/`for_each` keys: `module.a[0].x.y["k"]` becomes `module.a.x.y`. */
 function configAddress(address: string): string {
   return address.replace(/\[[^\]]*\]/g, "");
@@ -135,8 +141,12 @@ const SECOPS: ProviderSecOps = {
     "No Contabo firewall lists this server, so every port is reachable from the internet. Attach the OpsCrew firewall.",
   keylessText:
     "The server has no SSH key; Contabo would set up a login with a password instead. Add the deploy key.",
-  backupsText:
-    "Contabo has no automated backups OpsCrew turns on; OpsCrew's own snapshots cover the data.",
+  backupsText: "Contabo's Auto Backup is on, as the plan requires.",
+  backups: (server, resources) => {
+    const backup = `${server.address.replace(/contabo_instance\.[^.]+$/, "")}${BACKUP}`;
+    const input = resources.find((resource) => resource.address === backup)?.values.input;
+    return isRecord(input) && input.on === true;
+  },
 };
 
 /** Contabo, as OpsCrew creates Cloud VPS servers there (ADR 0029). */
@@ -189,7 +199,9 @@ export const definition: CloudProviderDefinition = {
     currency: "EUR",
     defaultImage: UBUNTU_24_04_IMAGE_ID,
     backupPercent: 0,
-    providerBackups: false,
+    // Auto Backup (027 R15): Contabo publishes no price per plan for it, only its order page.
+    providerBackups: true,
+    backupsPrice: "order-page",
     backupsOutliveServer: false,
     snapshots: { kind: "included" },
     serverSnapshotsOutliveServer: false,
@@ -207,6 +219,7 @@ export const definition: CloudProviderDefinition = {
     serverResourceType: "contabo_instance",
     firewallResourceType: FIREWALL,
     connectorFirewall: true,
+    connectorBackups: true,
     connectorRemoval: true,
     homeCacheFiles: [".cache/contabo/terraform/token"],
     mirroredAttributes: {},
@@ -217,13 +230,15 @@ export const definition: CloudProviderDefinition = {
     descriptions: {
       location: "Contabo region.",
       serverType: "Contabo product id of the plan.",
-      backups: "Contabo has no automated backups OpsCrew turns on; always false.",
+      backups:
+        "Contabo's Auto Backup (priced on Contabo's order page), which OpsCrew turns on after the apply; only the Customer Control Panel turns it off.",
     },
     moduleArguments: (call) => [
       nameArgument(call),
       ["location", `var.${call.prefix}location`],
       ["server_type", `var.${call.prefix}server_type`],
       ["image", `var.${call.prefix}image`],
+      ["backups", `var.${call.prefix}backups`],
       COMMON_ARGUMENTS.sshKey,
       COMMON_ARGUMENTS.sshCidrs,
       ...httpArguments(call),
@@ -268,9 +283,8 @@ export const definition: CloudProviderDefinition = {
     runbook: {
       serverLabel: (type, location) => `Contabo ${type} in ${location}`,
       console: "the Contabo Customer Control Panel",
-      backupsOnDatabaseCell: "Contabo has no automated backups OpsCrew turns on",
-      backupsOn:
-        "Contabo has no automated backups OpsCrew turns on. OpsCrew's own snapshots of the data keep an encrypted copy off the server.",
+      backupsOnDatabaseCell: "Contabo's Auto Backup is on",
+      backupsOn: `Contabo's Auto Backup takes a backup of the whole server every day, keeps up to 10 and stores them off the server. Restore one in ${PANEL} (Servers & Hosting → VPS Auto Backup): a restore overwrites the server, which is down until it ends.`,
       cloudFirewall: "the Contabo firewall",
       deletes: (app) =>
         `the firewall, SSH key and app tag (\`opscrew-app:${app}\`), and cancels the server: Contabo ends its contract at the end of the current term and bills it until then, and OpsCrew shuts it down now`,
@@ -308,6 +322,9 @@ export const definition: CloudProviderDefinition = {
       lookup: (app) =>
         `tagged opscrew-app:${app}, or with no OpsCrew tag and named ${app} or ${app}-…`,
       tokenHint: (command) => `${CONTABO_CREDENTIALS_HINT} Then run \`${command}\` again.`,
+      // Contabo doesn't say whether Auto Backup's backups outlive a cancelled server (R15).
+      deletedBackups:
+        "Contabo's Auto Backup of the server (the add-on ends with the server's contract, and Contabo doesn't promise its backups outlive it)",
       storageConsole: "the Contabo Customer Control Panel (Object Storage)",
     },
     secops: SECOPS,

@@ -1,10 +1,6 @@
 import { OpsCrewError } from "@opscrew/core";
-import { type DeployPlan, isCloudTarget } from "@opscrew/plan-schema";
-import { noProviderBackupsText } from "../design/snapshots";
-import { providerProfile } from "../providers";
+import type { DeployPlan } from "@opscrew/plan-schema";
 import { placeWords } from "../retarget/sides";
-import { planFile } from "../runners";
-import { extraCloudServers } from "../shared/servers";
 
 /** What to say while `opscrew retarget` is moving the deployment. */
 export interface MoveInProgress {
@@ -43,35 +39,4 @@ export function requireNoMoveInProgress(plan: Pick<DeployPlan, "target" | "retar
   if (move !== undefined) {
     throw new OpsCrewError("PHASE_PRECONDITION", move.message, { hint: move.hint });
   }
-}
-
-/**
- * Stops with `INVALID_INPUT` before any plan when a server OpsCrew creates, the app's or an extra
- * one, has `backups: true` at a provider that offers no automated backups through OpsCrew
- * (`offering.providerBackups` false). `rerun` is the command to run again.
- */
-export function requireProviderBackups(
-  plan: Pick<DeployPlan, "app" | "environment" | "target" | "servers">,
-  rerun: string,
-): void {
-  const servers = [
-    ...(isCloudTarget(plan.target)
-      ? [{ name: undefined, provider: plan.target.provider, backups: plan.target.backups }]
-      : []),
-    ...extraCloudServers(plan),
-  ];
-  const refused = servers.find(
-    ({ provider, backups }) => backups && !providerProfile(provider).providerBackups,
-  );
-  if (refused === undefined) return;
-  const { name, provider } = refused;
-  const field = name === undefined ? "target.backups" : "servers[].target.backups";
-  const server = name === undefined ? "The app's server" : `Server ${name}`;
-  throw new OpsCrewError(
-    "INVALID_INPUT",
-    `${server} has automated backups on (${field}), but ${noProviderBackupsText(provider)} Nothing was changed.`,
-    {
-      hint: `Set ${field} to false${name === undefined ? "" : ` for server ${name}`} in ${planFile(plan)}, then run \`${rerun}\` again.`,
-    },
-  );
 }

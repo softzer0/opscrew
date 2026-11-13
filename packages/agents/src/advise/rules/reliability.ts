@@ -5,14 +5,20 @@
  * loop.
  */
 import { listText, plural } from "@opscrew/core";
-import { isServerlessProvider, snapshotOffsiteOf, snapshotScheduleOf } from "@opscrew/plan-schema";
-import { backupsByDefault } from "../../design/backups";
+import {
+  type CloudProvider,
+  isServerlessProvider,
+  snapshotOffsiteOf,
+  snapshotScheduleOf,
+} from "@opscrew/plan-schema";
+import { cloudProvider } from "@opscrew/providers";
+import { backupsByDefault, backupsOnOrderPage } from "../../design/backups";
 import { noProviderBackups } from "../../design/snapshots";
 import { storagePrice } from "../../design/storage";
 import { logParts } from "../../logs/parts";
 import { providerProfile } from "../../providers";
 import { dataServers } from "../../snapshot/hosts";
-import { type Proposal, type Readings, THRESHOLDS } from "../types";
+import { type Proposal, type Readings, type Reason, THRESHOLDS } from "../types";
 import {
   cloudServers,
   historyBasis,
@@ -49,9 +55,25 @@ export function reliabilityRules(readings: Readings): Proposal[] {
 }
 
 /**
+ * Where backups priced only on `provider`'s order page are priced (Contabo's Auto Backup has no
+ * price per plan, R15); none at every other provider.
+ */
+function orderPageOnly(provider: CloudProvider): Reason[] {
+  if (!backupsOnOrderPage(provider)) return [];
+  const { name, sizeNoun } = cloudProvider(provider);
+  return [
+    {
+      text: `${name}'s automated backups are priced on ${name}'s order page: ${name} publishes no price per ${sizeNoun} for them`,
+      basis: PLAN,
+    },
+  ];
+}
+
+/**
  * Each server without automated backups, at a provider that offers them through OpsCrew, in prod while
  * the interview says the data is important (`backupsByDefault`: dev and staging rely on OpsCrew's
- * own snapshots), priced without and with them when the prices list its type.
+ * own snapshots), priced without and with them when the prices list its type, except where only
+ * the provider's order page prices them (`orderPageOnly`).
  */
 function backupProposals(readings: Readings): Proposal[] {
   const { requirements, plan } = readings;
@@ -64,12 +86,15 @@ function backupProposals(readings: Readings): Proposal[] {
       .filter((server) => !server.backups && providerProfile(server.provider).providerBackups)
       .map((server): Proposal => {
         const { name, provider } = server;
-        const price = isPriced(server)
-          ? priceChange(
-              serverCost(provider, server.prices.offer, server.prices.list, false),
-              serverCost(provider, server.prices.offer, server.prices.list, true),
-            )
-          : undefined;
+        // Backups priced only on the provider's order page get no € figure (Contabo's).
+        const unpriced = orderPageOnly(provider);
+        const price =
+          isPriced(server) && unpriced.length === 0
+            ? priceChange(
+                serverCost(provider, server.prices.offer, server.prices.list, false),
+                serverCost(provider, server.prices.offer, server.prices.list, true),
+              )
+            : undefined;
         return {
           id: `reliability.${name}.backups`,
           category: "reliability",
@@ -81,6 +106,7 @@ function backupProposals(readings: Readings): Proposal[] {
               text: `The interview says the app's data is ${criticality}, and server ${name} has no automated backups: a broken disk or a wrong command would lose it`,
               basis: PLAN,
             },
+            ...unpriced,
           ],
           ...(price === undefined ? {} : { price }),
           apply: { kind: "plan", change: { kind: "backups", server: name, enabled: true } },

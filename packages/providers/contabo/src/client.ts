@@ -403,6 +403,17 @@ export class ContaboClient {
   }
 
   /**
+   * Turns Auto Backup on for an instance (`POST …/upgrade` with `{"backup": {}}`, research R15), a
+   * paid monthly add-on. R15 names no answer body, so only a success is checked. Never sent twice
+   * without an answer, as every write.
+   */
+  async upgradeWithBackup(instanceId: number): Promise<void> {
+    await this.#request("POST", `/v1/compute/instances/${instanceId}/upgrade`, acknowledged, {
+      body: { backup: {} },
+    });
+  }
+
+  /**
    * Reads the instance every 5 seconds until its status is `status`. An instance in `error`, and
    * one in another status after `timeoutMs`, throw `PROVIDER_ERROR` naming its status.
    */

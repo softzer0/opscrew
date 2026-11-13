@@ -20,6 +20,7 @@ export * from "./own";
 export * from "./pages";
 export * from "./portainer";
 export * from "./previews";
+export * from "./provider-backups";
 export * from "./registrars";
 export * from "./runner-github";
 export * from "./runner-machine";

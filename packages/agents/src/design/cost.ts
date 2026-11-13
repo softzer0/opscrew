@@ -2,6 +2,7 @@ import type { ComputeOffer, Currency, Money, ProviderExtras } from "@opscrew/con
 import { formatMoney, plural, taxLabel } from "@opscrew/core";
 import { type CostEstimate, CostEstimateSchema, isCloudProvider } from "@opscrew/plan-schema";
 import { cloudProvider } from "@opscrew/providers";
+import { backupsOnOrderPage } from "./backups";
 import { designWording } from "./wording";
 
 /** Fixed approximate exchange rate used for budget comparisons: 1 EUR = 1.10 USD. */
@@ -122,7 +123,9 @@ export function offerTerms(offer: ComputeOffer, extras: ProviderExtras): string[
 /**
  * Monthly cost of running `offer`: server + primary IPv4 (only when the provider prices it
  * separately) + automated backups (percentage of the server price) when `backups` is on, never at
- * a provider that offers none through OpsCrew (`offering.providerBackups` false). The
+ * a provider that offers none through OpsCrew (`offering.providerBackups` false), nor at one that
+ * prices them only on its order page (`offering.backupsPrice` `order-page`, Contabo): design says
+ * so beside the price instead of counting them at any figure. The
  * backup percentage comes from `extras`, else `options.backupPercent` (the provider profile's),
  * else 20. Each line is rounded to cents and the total is their sum, in the offer's currency.
  *
@@ -146,7 +149,8 @@ export function pricedOffer(
   priced: { backups: boolean; backupPercent?: number },
 ): { cost: CostEstimate; rates: NonLiveRates } {
   const offered =
-    !isCloudProvider(offer.provider) || cloudProvider(offer.provider).offering.providerBackups;
+    !isCloudProvider(offer.provider) ||
+    (cloudProvider(offer.provider).offering.providerBackups && !backupsOnOrderPage(offer.provider));
   const options = { ...priced, backups: priced.backups && offered };
   const currency = offer.monthly.currency;
   const server = roundCents(offer.monthly.amount);

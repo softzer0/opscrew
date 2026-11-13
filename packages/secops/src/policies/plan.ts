@@ -262,7 +262,8 @@ function providerPolicies(
       );
     }
     if (serverWantsBackups(deployPlan, server.address)) {
-      const backups = server.values.backups === true;
+      // A provider whose connector turns them on reads them from the module (Contabo).
+      const backups = provider.backups?.(server, resources) ?? server.values.backups === true;
       results.push(
         result(
           "backups-for-critical-data",

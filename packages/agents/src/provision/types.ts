@@ -30,6 +30,7 @@ import type { RunnerHostServices } from "../runners/machine";
 import type { RefreshRecoveryOptions } from "../secrets";
 import type { EnvAnswer, EnvQuestion, HostAdapterApi, OwnServerConnection } from "../shared";
 import type { FirewallApis } from "../shared/firewalls";
+import type { ProviderBackupsApis } from "../shared/provider-backups";
 import type { StorageKey, StorageKeyQuestion } from "./storage";
 
 /**
@@ -125,6 +126,11 @@ export interface ProvisionServices {
    * (default: each provider connector's `firewalls`).
    */
   firewalls?: FirewallApis;
+  /**
+   * The automated backups of the providers whose connector turns them on (Contabo's Auto Backup),
+   * by provider (default: each provider connector's `backups`).
+   */
+  providerBackups?: ProviderBackupsApis;
   /** Cloudflare API (default: client from `CLOUDFLARE_API_TOKEN`); `null` means no token. */
   cloudflare?: CloudflareApi | null;
   /** GitHub REST API (default: client from `resolveGitHubToken`); `null` means no token. */

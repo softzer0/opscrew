@@ -22,12 +22,14 @@ import { deploymentRenderContext } from "../provision/render";
 import { orderedStorageFile, STORAGE_KEY_VARS, storageStateFile } from "../provision/storage";
 import type { ProvisionServices } from "../provision/types";
 import { ensureDeployKey, ensureStatePassphrase, writeRenderedFiles } from "../shared";
+import { syncProviderBackups } from "../shared/provider-backups";
 import {
   CF_V4,
   CF_V6,
   createProject,
   createTestPhaseDeps,
   FakeFirewalls,
+  FakeProviderBackups,
   fakeCloudflare,
   fakeWantedFirewall,
   movingPlan,
@@ -472,6 +474,61 @@ describe.skipIf(!findExecutable("git"))("runDrift", () => {
     // As the plan wants it: only the engine's drift is left.
     contabo.seed(wanted);
     expect((await runDrift(deps, { services })).drift).toEqual([record]);
+  });
+
+  it("compares Contabo's automated backups the plan has on with OpsCrew's record only, and says so", async () => {
+    const engine = new DriftEngine({});
+    const backup = (on: boolean) => ({
+      provider: "contabo",
+      backup: { server_id: "202611001", on },
+    });
+    let on = true;
+    engine.output = async () => {
+      engine.calls.push("output");
+      return { wanted_backups: { server: backup(on) } };
+    };
+    const { deps, services } = await setup({
+      plan: testPlan({ provider: "contabo", deployed: true }),
+      engine,
+      services: { firewalls: { contabo: new FakeFirewalls() } },
+    });
+    const note =
+      "Contabo's automated backups are compared with OpsCrew's record of turning them on, not with Contabo: its API doesn't say which add-on they are.";
+    const address = "module.server.terraform_data.backup";
+    const report = await runDrift(deps, { services });
+    expect(report.drift).toEqual([
+      {
+        address,
+        type: "terraform_data",
+        name: "backup",
+        provider: "terraform.io/builtin/terraform",
+        action: "update",
+        attributes: [],
+        differences: [
+          "The plan has Contabo's automated backups of server 202611001 on, and OpsCrew has no record of turning them on.",
+        ],
+      },
+    ]);
+    expect(report.notes).toContain(note);
+    expect(renderDriftReport(report)).toContain(`Note: ${note}`);
+
+    // Recorded as turned on: as the plan wants it.
+    await syncProviderBackups(
+      {
+        deps,
+        phase: "provision",
+        command: "opscrew provision",
+        backups: { contabo: new FakeProviderBackups() },
+      },
+      { wanted_backups: { server: backup(true) } },
+    );
+    expect((await runDrift(deps, { services })).drift).toEqual([]);
+
+    // The plan has them off, and OpsCrew turned them on: they stay on until the panel turns them off.
+    on = false;
+    expect((await runDrift(deps, { services })).drift[0]?.differences).toEqual([
+      "The plan has Contabo's automated backups of server 202611001 off, but OpsCrew turned them on: they stay on until you cancel them in the Contabo Customer Control Panel.",
+    ]);
   });
 
   it("names a firewall changed outside OpsCrew and its attribute, and explains both choices", async () => {

@@ -12,9 +12,11 @@ with TLS, health checks and rollback, and the `verify`, `secure` and `drift` che
 - **Monthly contracts:** a server is bought for at least a month, and removing it ends the contract
   only at the end of its term (see [Removing the app](#removing-the-app)).
 - **Prices in EUR, before VAT.**
+- **Contabo's Auto Backup:** a daily backup of the whole server, kept off the server (see
+  [Auto Backup](#auto-backup)).
 
 Choose Hetzner Cloud or DigitalOcean instead when you want a server billed by the hour, removed at
-once, resized in place or backed up by the provider.
+once, resized in place, or backed up by the provider at a price OpsCrew can show.
 
 ## The credentials
 
@@ -49,7 +51,8 @@ export CNTB_OAUTH2_CLIENT_ID=… CNTB_OAUTH2_CLIENT_SECRET=… CNTB_OAUTH2_USER=
 1. `npx opscrew interview`: choose **Contabo**. When only Contabo's credentials are set, OpsCrew
    chooses it without asking. In scripts, put `provider: contabo` in your answers file.
 2. `npx opscrew design` shows Contabo's plans with their monthly price, the date of the price list,
-   the one-month minimum term and that Contabo backs up nothing for you.
+   the one-month minimum term and whether Contabo's Auto Backup is on (see
+   [Auto Backup](#auto-backup)).
 3. `npx opscrew adapt` prepares the app for a container, as for any other deployment.
 4. `npx opscrew provision` shows the plan and creates, only after you approve that exact plan:
    - the server, on a monthly contract, with Ubuntu 24.04 and the same first-boot hardening as on
@@ -60,11 +63,13 @@ export CNTB_OAUTH2_CLIENT_ID=… CNTB_OAUTH2_CLIENT_SECRET=… CNTB_OAUTH2_USER=
      can't manage a firewall, so OpsCrew sets it through Contabo's API right after the apply, to
      exactly the rules of the plan you approved. When that fails, provision says the server may not
      be protected yet: run `npx opscrew provision` again, which plans nothing new and sets the
-     firewall again.
+     firewall again;
+   - Contabo's Auto Backup, when it is on (see [Auto Backup](#auto-backup)).
 5. `npx opscrew verify`, `npx opscrew secure` and `npx opscrew drift` work as on the other
    providers. `drift` also compares Contabo's firewall with the plan's and lists each difference,
    such as a rule added or a server removed in the Customer Control Panel; `npx opscrew provision`
-   sets it back.
+   sets it back. For Auto Backup, `drift` compares the plan with OpsCrew's record of turning it
+   on, not with Contabo: Contabo's API doesn't say which of a server's add-ons is Auto Backup.
 
 ## Plans and prices
 
@@ -86,6 +91,38 @@ export CNTB_OAUTH2_CLIENT_ID=… CNTB_OAUTH2_CLIENT_SECRET=… CNTB_OAUTH2_USER=
   proposes a move to Contabo.
 - **Monthly contracts only.** Contabo's 12- and 24-month contracts cost less a month, but a removal
   would then keep billing for up to two years. OpsCrew offers only the monthly one.
+
+## Auto Backup
+
+Contabo's Auto Backup takes one backup of the whole server a day and keeps up to 10 days of them,
+the oldest deleted first. It stores them off the server, on a separate Contabo storage system.
+
+- **On by default only in prod,** when you tell `npx opscrew interview` that losing the app's data
+  would be anything but "Not a problem". It is off by default in dev, staging and previews, which
+  rely on OpsCrew's own snapshot before each release. `target.backups` in an environment's plan
+  decides over the default: `true` turns it on, `false` off. Design says which, and why.
+- **Priced on Contabo's order page.** Auto Backup is a paid monthly add-on, and Contabo publishes
+  no price per plan for it, so OpsCrew shows none. Design, provision and advise leave it out of
+  every monthly price and say so: check its price on Contabo's order page.
+- **Turned on after the apply.** Contabo's Terraform provider can't turn it on by name, so OpsCrew
+  turns it on through Contabo's API right after the apply, as it sets the firewall. The plan you
+  approve lists it as `terraform_data.backup`, and nothing is ordered before you approve that exact
+  plan.
+- **Ordered once.** OpsCrew records each server's order on this computer, so a run that plans
+  nothing new never orders it again. A run from another computer has no record and orders it
+  again; whether Contabo takes a second order of a server that already has Auto Backup without
+  harm isn't known yet. When Contabo gives no clear answer, OpsCrew doesn't ask again: provision
+  says how to check the server in the Customer Control Panel, then tell OpsCrew what you found.
+- **Turned off in the Customer Control Panel only.** Contabo's API can't turn it off. When the
+  plan turns it off, provision says so, changes nothing at Contabo, and leaves it to you: cancel the
+  Auto Backup add-on of the server in the Customer Control Panel. It stays on, and billed, until
+  you do.
+- **Restore in the Customer Control Panel.** Under **Servers & Hosting → VPS Auto Backup**, choose
+  **Restore last backup** or one of the kept backups. A restore overwrites the server's data, and
+  the server is down until it ends.
+- **They go with the server.** The add-on ends with the server's contract, and Contabo doesn't
+  promise that its backups outlive the server. OpsCrew's own data snapshot, with its encrypted copy
+  off the server, is the copy that stays (see [Removing the app](#removing-the-app)).
 
 ## Regions
 
@@ -148,9 +185,6 @@ npx opscrew restore --server <id>    # put the server back to it
   plans. At the limit, OpsCrew refuses and says which snapshot to delete first.
 - **Snapshots you take by hand** in the Customer Control Panel count towards the limit too.
 - **Restoring an older snapshot deletes the newer ones.** OpsCrew says so before you approve it.
-- **No automatic backups.** OpsCrew doesn't turn on Contabo's backups. Its own data snapshots, on a
-  schedule and with their encrypted copy off the server, cover your data: see
-  [Snapshots and restores](snapshots.md).
 
 ## Changing the size
 
@@ -174,7 +208,6 @@ change. So design and advise refuse a new size on Contabo and name two ways:
 
 - **Contabo's Object Storage for more than 250 GB.** Up to that, your app's bucket can be in it:
   see [Object storage](object-storage.md).
-- **Contabo's automatic backups.** See [Snapshots](#snapshots).
 - **Contabo's private networks.** OpsCrew's own private network (WireGuard) connects the app's
   servers and your devices as on the other providers: see
   [Your devices on the private network](private-network.md).

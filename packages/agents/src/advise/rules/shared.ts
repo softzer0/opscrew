@@ -15,6 +15,7 @@ import {
   isCloudTarget,
 } from "@opscrew/plan-schema";
 import { cloudProvider } from "@opscrew/providers";
+import { backupsOnOrderPage, orderPageBackupsText } from "../../design/backups";
 import { convertMoney, costFor } from "../../design/cost";
 import { noResizeText, resizesInPlace, resizeWaysText } from "../../design/server-changes";
 import { providerProfile } from "../../providers";
@@ -199,12 +200,13 @@ export function typeChange(
     serverCost(provider, prices.offer, prices.list, backups),
     serverCost(provider, offer, prices.list, backups),
   );
+  const unpriced = backups ? orderPageReasons(provider, "either price") : [];
   if (!resizesInPlace(provider)) {
     return {
       ...fields,
       server: name,
       title: `Move server ${name} to a new ${offerText(offer)}`,
-      reasons: [...fields.reasons, { text: noResizeText(provider), basis: PLAN }],
+      reasons: [...fields.reasons, { text: noResizeText(provider), basis: PLAN }, ...unpriced],
       price,
       apply: { kind: "manual", text: resizeWaysText(provider) },
     };
@@ -213,10 +215,19 @@ export function typeChange(
     ...fields,
     server: name,
     title: `Move server ${name} to ${offerText(offer)}`,
-    reasons: [...fields.reasons, ...typeChangeReasons(server, offer)],
+    reasons: [...fields.reasons, ...typeChangeReasons(server, offer), ...unpriced],
     price,
     apply: { kind: "plan", change: { kind: "server-type", server: name, serverType: offer.id } },
   };
+}
+
+/**
+ * That backups priced only on `provider`'s order page (Contabo's Auto Backup) are not in `what`
+ * (`this total`, `either price`): none at every other provider.
+ */
+export function orderPageReasons(provider: string, what: string): Reason[] {
+  if (!backupsOnOrderPage(provider)) return [];
+  return [{ text: withoutStop(orderPageBackupsText(provider, what)), basis: PLAN }];
 }
 
 /**

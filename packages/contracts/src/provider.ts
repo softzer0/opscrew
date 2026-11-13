@@ -121,6 +121,12 @@ export interface ProviderOffering {
   backupPercent: number;
   /** True when OpsCrew can turn on the provider's automated backups. */
   providerBackups: boolean;
+  /**
+   * How the automated backups are priced: `percent`, at {@link backupPercent} (the default when
+   * absent); `order-page`, by the provider's order page only, as it publishes no price per server
+   * (Contabo): OpsCrew then never counts them in a monthly sum.
+   */
+  backupsPrice?: "percent" | "order-page";
   /** True when automated backups survive the server's deletion for a while. */
   backupsOutliveServer: boolean;
   /**
@@ -159,6 +165,12 @@ export interface ProviderTerraform {
    * ({@link WantedFirewallOutput}). The connector then has `firewalls`.
    */
   connectorFirewall: boolean;
+  /**
+   * Whether the module only describes the automated backups it wants and the connector turns them
+   * on (`backups`): a `terraform_data.backup` whose `input` is the module's `wanted_backup` output
+   * ({@link WantedBackupOutput}). Absent means false.
+   */
+  connectorBackups?: boolean;
   /**
    * Files the provider caches its login in, relative to the user's home folder. The engine
    * removes them before and after every command (ADR 0029, D9). Empty for most providers.
@@ -259,6 +271,21 @@ export interface ProviderSecOps {
   unattachedText: string;
   keylessText: string;
   backupsText: string;
+  /**
+   * True when `server` has the provider's automated backups on, read from `resources` (the plan's
+   * resources). Absent: the server's own `backups` attribute is true.
+   */
+  backups?(server: PlannedResourceJson, resources: PlannedResourceJson[]): boolean;
+}
+
+/**
+ * A server module's `wanted_backup` output with {@link ProviderTerraform.connectorBackups}, as HCL
+ * writes it: whether the server's automated backups are on.
+ */
+export interface WantedBackupOutput {
+  /** The server, by the provider's server id. */
+  server_id: string;
+  on: boolean;
 }
 
 /** Runbook texts (`opscrew/RUNBOOK.md`). */

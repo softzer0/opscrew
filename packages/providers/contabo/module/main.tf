@@ -68,6 +68,18 @@ resource "contabo_tag_assignment" "app" {
   resource_id   = contabo_instance.this.id
 }
 
+# Contabo's Auto Backup, a paid add-on its Terraform provider takes only by a numeric add-on id
+# that Contabo's API docs don't name (027 research R15). The module only describes it here, so the
+# plan and its approval cover it, and outputs it as wanted_backup: OpsCrew's Contabo connector
+# turns it on after the apply. Turning it off is an update of `on` here, never a deletion, and
+# changes nothing at Contabo: only the Customer Control Panel turns the add-on off.
+resource "terraform_data" "backup" {
+  input = {
+    server_id = tostring(contabo_instance.this.id)
+    on        = var.backups
+  }
+}
+
 # The firewall, which OpsCrew's Contabo connector makes after every apply (ADR 0029, D8): the
 # provider cannot manage a Contabo firewall (it reports Contabo's own "Block all traffic" rule as
 # a change on every plan, and cannot read a firewall that protects a server). The module only

@@ -35,6 +35,7 @@ import {
 import { monitoringDrift } from "./monitoring";
 import { portainerDrift } from "./portainer";
 import { appZoneDrift, previewRecipeDrift } from "./previews";
+import { providerBackupsDrift } from "./provider-backups";
 import { namedDifferences, type ServersDriftOptions, serversDrift } from "./servers";
 import { siteDrift } from "./site";
 import type { DriftedResource, DriftOptions, DriftReport } from "./types";
@@ -165,11 +166,15 @@ export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Pro
           }
         : {}),
     });
-    // The firewalls the providers' connectors apply (ADR 0029, D8), against the state's outputs.
+    // The firewalls the providers' connectors apply (ADR 0029, D8), against the state's outputs,
+    // and the automated backups they turn on, against OpsCrew's record of them.
+    const backups = await providerBackupsDrift(deps, plan, compared.outputs);
     drift = [
       ...compared.drift,
       ...(await firewallDrift(deps, plan, compared.outputs, services.firewalls)),
+      ...backups.drift,
     ];
+    notes.push(...backups.notes);
     pending = compared.pending;
     notes.push(...compared.notes);
     // The connector on the server must run for the tunnel the state holds.

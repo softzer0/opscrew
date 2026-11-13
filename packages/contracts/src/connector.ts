@@ -211,6 +211,21 @@ export interface FirewallApi {
   remove(name: string): Promise<boolean>;
 }
 
+/**
+ * A provider's automated backups of a server, turned on through its API because its Terraform
+ * cannot (Contabo's Auto Backup, 027 research R15). No call turns them off: the provider's panel
+ * does that.
+ */
+export interface ProviderBackupsApi {
+  /**
+   * Turns on the automated backups of the server `serverId`, a paid add-on. Mutating: only after
+   * an approved plan names it. Resolves with nothing once the provider took it, and with `refused`
+   * when the provider answered with an error status, so nothing was turned on; rejects when the
+   * outcome is unknown (no answer, a lost connection).
+   */
+  turnOn(serverId: string): Promise<{ refused: string } | undefined>;
+}
+
 /** An object storage at a provider that sells one per region and account (Contabo). */
 export interface ProviderObjectStorage {
   /** The provider's id of the storage. */
@@ -269,6 +284,11 @@ export interface VpsConnector extends Connector {
    * when no token is set and for every other provider.
    */
   readonly firewalls?: FirewallApi | undefined;
+  /**
+   * The automated backups, for a provider with `terraform.connectorBackups`; undefined when no
+   * token is set and for every other provider.
+   */
+  readonly backups?: ProviderBackupsApi | undefined;
   /**
    * Object storage through the provider's API, for a provider that sells it that way (Contabo);
    * undefined when no token is set and for every other provider.
