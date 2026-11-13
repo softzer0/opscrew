@@ -17,8 +17,9 @@ it is the source of truth and overrides this file.
   contract; consumers import only from the package root.
 - `packages/plan-schema` — zod schemas for `opscrew/architecture.json`, `opscrew/requirements.yaml`,
   `opscrew/plan.yaml`.
-- `packages/core` — config/paths, redaction, audit log, approvals, safety policy, agent runtime
-  (Claude Agent SDK adapter + fake), orchestrator, cost ledger.
+- `packages/core` — config/paths, redaction, audit log, approvals, safety policy, the agent runtime
+  contract and its fake, orchestrator, cost ledger. `packages/runtime-claude` — the Claude Agent SDK
+  adapter.
 - `packages/detect` — deterministic repository analysis (frameworks, platform exports, env vars).
 - `packages/secops` — `opscrew scan` engine, built-in rules, optional external scanners, policies.
 - `packages/agents` — Analyst, Interviewer, Architect, Code-change, Infra, Domain, SecOps, Verifier.
@@ -33,6 +34,9 @@ it is the source of truth and overrides this file.
 - `packages/connectors/*` — `github`, `cloudflare`, the registrars and `docker` typed adapters (`@opscrew/connector-*`).
   `ssh-host` changes servers the user already owns, through host plans approved by hash (ADR 0011);
   `portainer` changes a Portainer the user already runs, through stack plans approved by hash (ADR 0012).
+  `cpanel`, `plesk`, `directadmin` and `sftp` reach a shared hosting account the user already has,
+  through hosting plans approved by hash (ADR 0030): on a panel OpsCrew's agent on the account pulls
+  each release; on an SFTP-only host GitHub Actions pushes it over SFTP.
 - `packages/cli` — the `opscrew` CLI (bundled for publishing).
 - `packages/mcp-server` — deterministic MCP server (`opscrew mcp`).
 - `plugin/` — Claude Code plugin (skills + MCP config).
