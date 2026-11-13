@@ -660,7 +660,7 @@ names the change.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates --filter=@opscrew/agents && npx vitest run --root packages/iac-templates src/hosting/agent && npx vitest run --root packages/agents src/hosting && pnpm lint`
   - Effort: high
 
-- [ ] T2747 The agent forces HTTPS right after a deploy when the certificate already verifies (research R13)
+- [x] T2747 The agent forces HTTPS right after a deploy when the certificate already verifies (research R13)
   - Owns: `packages/iac-templates/src/hosting/agent/**`, `packages/iac-templates/src/hosting/agent-runs.test.ts`
   - Reads: `iac-templates/src/hosting/agent/script.ts` (`main`, `https_check`)
   - Accept:
@@ -671,7 +671,7 @@ names the change.
 
 ## Phase 9: Live passes and release (lead)
 
-- [ ] T2722 The cPanel live pass (lead): `docs/e2e-coverage.md` row and results.
+- [x] T2722 The cPanel live pass (lead): `docs/e2e-coverage.md` row and results.
 - [ ] T2723 The SFTP live pass (lead).
 - [ ] T2724 The OpenLiteSpeed live pass (lead).
 - [ ] T2725 Simplify across the feature's code (lead).
