@@ -1,11 +1,18 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
   readlinkSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { fakeSecret } from "@opscrew/core/testing";
@@ -14,15 +21,16 @@ import { Account, agentSkipReason, CAN_LINK } from "./__fixtures__/account";
 import type { AgentSettings } from "./agent";
 
 /*
- * A Node.js or Python app through CloudLinux's selector (027 T2717): the agent run by bash, as in
- * agent-runs.test.ts, with a fake `cloudlinux-selector` first on the PATH. Cases that switch a
- * release need real symbolic links: they skip on Windows and run on Linux.
+ * A Node.js or Python app through CloudLinux's selector (027 T2717, T2744): the agent run by bash,
+ * as in agent-runs.test.ts, with a fake `cloudlinux-selector` first on the PATH, which resolves its
+ * app root once as the real one does (research R14). Cases that switch a release need real
+ * symbolic links: they skip on Windows and run on Linux.
  */
 
 const reason = agentSkipReason();
 const switching = it.skipIf(!CAN_LINK);
 const HASH = "cd".repeat(32);
-const ROOT = "opscrew/notes-prod/current";
+const ROOT = "opscrew/notes-prod/app";
 
 const NODE: Partial<AgentSettings> = {
   appKind: "node",
@@ -92,6 +100,41 @@ function nodeRelease(marker: string, lock = "1"): Record<string, string> {
   };
 }
 
+/** The selector's Passenger block for the Node.js app (research R14), its app root `root`. */
+function passengerBlock(a: Account, root: string): string {
+  return [
+    "# DO NOT REMOVE. CLOUDLINUX PASSENGER CONFIGURATION BEGIN",
+    `PassengerAppRoot "${root}"`,
+    `PassengerNodejs "${a.home}/nodevenv/${ROOT}/22/bin/node"`,
+    "PassengerAppType node",
+    "PassengerStartupFile index.js",
+    'PassengerBaseURI "/"',
+    "# DO NOT REMOVE. CLOUDLINUX PASSENGER CONFIGURATION END\n",
+  ].join("\n");
+}
+
+/** The fake selector, wrapped to make the served folder read-only after a set while $STUB/lock-served is there. */
+const LOCKING = `#!/bin/bash
+"$(dirname "$0")/cloudlinux-selector.fake" "$@"
+code=$?
+if [ "$1" = set ] && [ -f "$STUB/lock-served" ]; then chmod 0555 "$APP_DIR/current/$SERVED"; fi
+exit $code
+`;
+
+/** Runs the fake selector itself with the account's environment, as a run of the agent would. */
+function runSelector(a: Account, ...args: string[]) {
+  return spawnSync("bash", [`${a.root}/bin/cloudlinux-selector`, ...args], {
+    encoding: "utf8",
+    env: { ...process.env, HOME: a.home, STUB: a.stub, APP_DIR: a.dir, SERVED: "public" },
+  });
+}
+
+/** The PassengerAppRoot values in the served .htaccess of `release` (in the app's folder). */
+function appRoots(a: Account, release: string): string[] {
+  const htaccess = a.file(`${release}/public/.htaccess`) ?? "";
+  return [...htaccess.matchAll(/^PassengerAppRoot "(.*)"$/gm)].map((match) => match[1] ?? "");
+}
+
 describe.skipIf(reason !== undefined)(
   "the hosting agent's selector apps",
   { timeout: 180_000 },
@@ -107,8 +150,14 @@ describe.skipIf(reason !== undefined)(
       ]);
       // The home folder as bash names it (/d/… under Git for Windows).
       const header = a.file("state/selector-section") ?? "";
-      expect(header).toMatch(/^\[\S+\/home\/opscrew\/notes-prod\/current\]\n$/);
+      expect(header).toMatch(/^\[\S+\/home\/opscrew\/notes-prod\/app\]\n$/);
       expect(readFileSync(cacheFile(a), "utf8")).toBe(`${OTHER}${header}app_root = ${ROOT}\n\n`);
+      // The app's root is the folder app/ the agent made, never a link or a release: the selector
+      // keeps it, with its placeholder app.
+      expect(lstatSync(`${a.dir}/app`).isDirectory()).toBe(true);
+      expect(a.stubFile("selector-apps")).toBe(`nodejs ${ROOT} 22 index.js\n`);
+      expect(a.file("app/index.js")).toContain("It works!");
+      expect(existsSync(`${a.dir}/releases/0-0/index.js`)).toBe(false);
     });
 
     it("makes a Python app without a mode, which its selector doesn't take", () => {
@@ -185,21 +234,32 @@ describe.skipIf(reason !== undefined)(
       for (const text of said) expect(text).not.toContain(secret);
     });
 
-    it("puts back the running release's package files a stopped install left aside", () => {
-      const a = account();
-      a.run();
-      // As a run killed part-way through an install leaves them: one file put aside, one marked as
-      // missing from the running release, the other release's copies in its place.
-      mkdirSync(`${a.dir}/state/packages`);
-      writeFileSync(`${a.dir}/state/packages/package.json`, "running's own\n");
-      writeFileSync(`${a.dir}/state/packages/package-lock.json.none`, "");
-      writeFileSync(`${a.dir}/current/package.json`, "the other release's\n");
-      writeFileSync(`${a.dir}/current/package-lock.json`, "the other release's\n");
-      expect(a.run().status).toBe(0);
-      expect(a.file("current/package.json")).toBe("running's own\n");
-      expect(existsSync(`${a.dir}/current/package-lock.json`)).toBe(false);
-      expect(existsSync(`${a.dir}/state/packages`)).toBe(false);
-    });
+    switching(
+      "installs the running release's packages again from app/ when a stopped install left another release's there",
+      () => {
+        const a = account();
+        a.run();
+        app(a, "create");
+        a.publish(nodeRelease("one"), { run: 601 });
+        expect(a.run().output).toContain("Release 601-1 serves.");
+        // As a run killed part-way through another release's install leaves app/.
+        writeFileSync(`${a.dir}/app/package.json`, "the other release's\n");
+        rmSync(`${a.dir}/app/package-lock.json`);
+        expect(a.run().output).toContain(
+          "app/ holds another release's package files, left by a run that stopped while installing them: CloudLinux's selector installs release 601-1's again.",
+        );
+        expect(a.stubFile("selector.log").trimEnd().split("\n").slice(-2)).toEqual([
+          `cloudlinux-selector install-modules --json --interpreter nodejs --app-root ${ROOT}`,
+          'package.json: {"name":"notes","version":"one"}',
+        ]);
+        expect(a.file("app/package.json")).toBe('{"name":"notes","version":"one"}\n');
+        expect(a.file("app/package-lock.json")).toBe('{"lockfileVersion":3,"lock":"1"}\n');
+        expect(a.file("releases/601-1/package.json")).toBe('{"name":"notes","version":"one"}\n');
+        // Then app/ matches the running release, so later runs install nothing.
+        a.run();
+        expect(calls(a).filter((line) => line.includes("install-modules"))).toHaveLength(2);
+      },
+    );
 
     it("answers failed with the selector's answer when it can't make the app", () => {
       const a = account();
@@ -248,6 +308,42 @@ describe.skipIf(reason !== undefined)(
       expect(existsSync(`${a.home}/nodevenv/opscrew`)).toBe(false);
       expect(existsSync(`${a.home}/nodevenv/blog/20`)).toBe(true);
       expect(a.file("state/selector-section")).toBeUndefined();
+      expect(existsSync(`${a.dir}/app`)).toBe(false);
+      expect(a.stubFile("selector-apps")).toBe("");
+    });
+
+    it("removes the empty folders above the environment folder when the selector removed it", () => {
+      const a = account();
+      a.run();
+      app(a, "create");
+      // A selector whose destroy takes the environment folder itself with it.
+      rmSync(`${a.home}/nodevenv/${ROOT}`, { recursive: true });
+      expect(app(a, "destroy")).toEqual({ result: "done" });
+      expect(existsSync(`${a.home}/nodevenv`)).toBe(false);
+      expect(existsSync(`${a.dir}/app`)).toBe(false);
+      expect(existsSync(a.dir)).toBe(true);
+    });
+
+    it("finishes a destroy the selector already carried out, and answers one run again done", () => {
+      const a = account();
+      a.run();
+      writeCache(a, OTHER);
+      app(a, "create");
+      // A run that stopped right after the selector's destroy: only the selector forgot the app.
+      const args = ["--json", "--interpreter", "nodejs", "--app-root", ROOT];
+      expect(runSelector(a, "destroy", ...args).status).toBe(0);
+      const note = "CloudLinux's selector no longer had the app";
+      expect(app(a, "destroy")).toEqual({ result: "done", note });
+      expect(existsSync(`${a.dir}/app`)).toBe(false);
+      expect(existsSync(`${a.home}/nodevenv/opscrew`)).toBe(false);
+      expect(readFileSync(cacheFile(a), "utf8")).toBe(OTHER);
+      expect(a.file("state/selector-section")).toBeUndefined();
+      // The whole destroy again (another request).
+      const expires = String(Math.floor(Date.now() / 1000) + 1799);
+      expect(app(a, "destroy", { action: "destroy", expires })).toEqual({ result: "done", note });
+      expect(
+        calls(a).filter((line) => line.startsWith("cloudlinux-selector destroy")),
+      ).toHaveLength(3);
     });
 
     it("leaves htaccess_cache as it is when the selector added no section to it", () => {
@@ -296,6 +392,7 @@ describe.skipIf(reason !== undefined)(
       expect(app(a, "destroy")).toMatchObject({ result: "failed" });
       expect(readFileSync(cacheFile(a), "utf8")).toBe(cache);
       expect(existsSync(`${a.home}/nodevenv/${ROOT}/22`)).toBe(true);
+      expect(a.file("app/index.js")).toContain("It works!");
     });
 
     switching(
@@ -307,14 +404,14 @@ describe.skipIf(reason !== undefined)(
         a.publish(nodeRelease("one"), { run: 101 });
         expect(a.run().output).toContain("Release 101-1 serves.");
         expect(readlinkSync(`${a.dir}/current`)).toBe("releases/101-1");
-        // The packages of the release, installed while the running placeholder was the app root.
+        // The packages of the release, installed from app/, where its package files went.
         expect(a.stubFile("selector.log")).toContain(
           `cloudlinux-selector install-modules --json --interpreter nodejs --app-root ${ROOT}\npackage.json: {"name":"notes","version":"one"}\n`,
         );
+        expect(a.file("app/package.json")).toBe('{"name":"notes","version":"one"}\n');
         expect(existsSync(`${a.dir}/releases/0-0/package.json`)).toBe(false);
-        expect(readlinkSync(`${a.dir}/releases/101-1/node_modules`)).toBe(
-          `${a.home}/nodevenv/${ROOT}/22/lib/node_modules`,
-        );
+        const environment = realpathSync(`${a.home}/nodevenv/${ROOT}/22/lib/node_modules`);
+        expect(readlinkSync(`${a.dir}/releases/101-1/node_modules`)).toBe(environment);
         // The document root is the release's public/, made where the release has none; the app
         // root, the source in it and its settings file stay outside it.
         expect(a.file("releases/101-1/.htaccess")).toBeUndefined();
@@ -323,21 +420,23 @@ describe.skipIf(reason !== undefined)(
         const htaccess = a.file("releases/101-1/public/.htaccess") ?? "";
         expect(htaccess).toContain('Header always set X-OpsCrew-Release "101-1"\n');
         expect(htaccess).toContain(
-          `# END OpsCrew\n# DO NOT REMOVE. CLOUDLINUX PASSENGER CONFIGURATION BEGIN\nPassengerAppRoot "${a.home}/${ROOT}"\n# DO NOT REMOVE. CLOUDLINUX PASSENGER CONFIGURATION END\n`,
+          `# END OpsCrew\n${passengerBlock(a, `${a.dir}/releases/101-1`)}`,
         );
         expect(existsSync(`${a.dir}/releases/101-1/tmp/restart.txt`)).toBe(true);
         expect(existsSync(`${a.home}/.lsphp_restart.txt`)).toBe(false);
 
-        // The same packages: nothing to install.
+        // The same packages: nothing to install. A relative node_modules link in app/, as a
+        // selector may make, still leads each release, a level deeper, to the environment.
+        rmSync(`${a.dir}/app/node_modules`);
+        symlinkSync(`../../../nodevenv/${ROOT}/22/lib/node_modules`, `${a.dir}/app/node_modules`);
         a.publish(nodeRelease("two"), { run: 102 });
         expect(a.run().output).toContain("Release 102-1 serves.");
         expect(calls(a).filter((line) => line.includes("install-modules"))).toHaveLength(2);
-        expect(readlinkSync(`${a.dir}/releases/102-1/node_modules`)).toBe(
-          `${a.home}/nodevenv/${ROOT}/22/lib/node_modules`,
-        );
-        expect(a.file("releases/102-1/public/.htaccess")).toContain("PassengerAppRoot");
+        expect(readlinkSync(`${a.dir}/releases/102-1/node_modules`)).toBe(environment);
+        expect(appRoots(a, "releases/102-1")).toEqual([`${a.dir}/releases/102-1`]);
 
-        // A changed lockfile: installed before the switch, the running release's own files put back.
+        // A changed lockfile: installed from app/ before the switch, the running release's own
+        // files untouched.
         a.publish(nodeRelease("three", "2"), { run: 103 });
         expect(a.run().output).toContain("Release 103-1 serves.");
         expect(a.stubFile("selector.log")).toContain(
@@ -347,6 +446,7 @@ describe.skipIf(reason !== undefined)(
         expect(a.file("releases/102-1/package-lock.json")).toBe(
           '{"lockfileVersion":3,"lock":"1"}\n',
         );
+        expect(a.file("app/package-lock.json")).toBe('{"lockfileVersion":3,"lock":"2"}\n');
       },
     );
 
@@ -399,6 +499,7 @@ describe.skipIf(reason !== undefined)(
         expect(readlinkSync(`${a.dir}/current`)).toBe("releases/501-1");
         expect(installed().at(-1)).toBe(one);
         expect(a.keyValues("state/status").reason).toMatch(/; switched back to 501-1$/);
+        expect(appRoots(a, "current")).toEqual([`${a.dir}/releases/501-1`]);
 
         // Installing the running release's packages again fails: the status says so.
         writeFileSync(`${a.stub}/install-fails-for`, '"version":"one"');
@@ -410,7 +511,7 @@ describe.skipIf(reason !== undefined)(
       },
     );
 
-    switching("installs a Python release's requirements from the release itself", () => {
+    switching("installs a Python release's requirements from app/, where its file goes", () => {
       const a = account(PYTHON);
       a.run();
       app(a, "create");
@@ -420,10 +521,17 @@ describe.skipIf(reason !== undefined)(
       );
       expect(a.run().output).toContain("Release 301-1 serves.");
       expect(calls(a)[2]).toBe(
-        `cloudlinux-selector install-modules --json --interpreter python --app-root ${ROOT} --requirements-file ${a.dir}/releases/301-1/requirements.txt`,
+        `cloudlinux-selector install-modules --json --interpreter python --app-root ${ROOT} --requirements-file ${a.dir}/app/requirements.txt`,
       );
+      expect(a.file("app/requirements.txt")).toBe("flask==3.1.0\n");
       expect(existsSync(`${a.dir}/releases/301-1/node_modules`)).toBe(false);
-      expect(a.file("releases/301-1/public/.htaccess")).toContain("PassengerAppRoot");
+      expect(a.file("releases/301-1/public/.htaccess")).toContain(
+        [
+          `PassengerAppRoot "${a.dir}/releases/301-1"`,
+          `PassengerPython "${a.home}/virtualenv/${ROOT}/3.12/bin/python"`,
+          'PassengerBaseURI "/"',
+        ].join("\n"),
+      );
     });
 
     switching("installs a rollback target's packages before switching back to it", () => {
@@ -450,6 +558,198 @@ describe.skipIf(reason !== undefined)(
       expect(readlinkSync(`${a.dir}/current`)).toBe("releases/401-1");
       const installs = a.stubFile("selector.log").match(/^package\.json: .*$/gm);
       expect(installs?.at(-1)).toBe('package.json: {"name":"notes","version":"one"}');
+      expect(appRoots(a, "current")).toEqual([`${a.dir}/releases/401-1`]);
+    });
+
+    switching(
+      "installs the running release's packages again when a rollback's dump or restore fails after installing the target's",
+      () => {
+        const a = account({ ...NODE, database: "acct_notes", snapshots: true });
+        a.run();
+        app(a, "create");
+        a.publish(nodeRelease("one"), { run: 701 });
+        a.run();
+        // Its database dump is filed under 701-1 before the next release.
+        a.publish(nodeRelease("two", "2"), { run: 702 });
+        a.run();
+        const installed = () => a.stubFile("selector.log").match(/^package\.json: .*$/gm) ?? [];
+        const [one, two] = ["one", "two"].map(
+          (marker) => `package.json: {"name":"notes","version":"${marker}"}`,
+        );
+        const rollback = (expires: number) =>
+          a.request(
+            `kind=rollback\nhash=${HASH}\nexpires=${expires}\nrelease=701-1\nrestore=yes\n`,
+          );
+        const expires = Math.floor(Date.now() / 1000) + 1800;
+
+        // The current database can't be dumped first.
+        rmSync(`${a.stub}/db`);
+        const first = rollback(expires);
+        a.run();
+        expect(a.keyValues(`state/${first}.result`)).toEqual({
+          result: "failed",
+          reason:
+            "the current database couldn't be dumped first: the database is untouched and release 702-1 still runs",
+        });
+        expect(installed().slice(-2)).toEqual([one, two]);
+
+        // The target's dump can't be restored: the database goes back, and the packages too.
+        writeFileSync(`${a.stub}/db`, "state=two\n");
+        writeFileSync(`${a.stub}/refuse`, "state=initial");
+        const second = rollback(expires - 1);
+        a.run();
+        expect(a.keyValues(`state/${second}.result`)).toEqual({
+          result: "failed",
+          reason:
+            "restoring release 701-1's dump failed: the database is back as it was, and release 702-1 still runs",
+        });
+        expect(installed().slice(-2)).toEqual([one, two]);
+        expect(a.stubFile("db")).toBe("state=two\n");
+        expect(readlinkSync(`${a.dir}/current`)).toBe("releases/702-1");
+        expect(a.file("app/package.json")).toBe('{"name":"notes","version":"two"}\n');
+      },
+    );
+
+    switching(
+      "keeps the last 100 lines of a failed release's own errors in state/, the newest 3, never in its log",
+      () => {
+        const a = account();
+        a.run();
+        app(a, "create");
+        a.publish(nodeRelease("one"), { run: 901 });
+        a.run();
+        // What Passenger wrote into the release's stderr.log: 151 lines, a secret in the last.
+        const secret = fakeSecret("generic-password", "stderr");
+        const lines = Array.from({ length: 150 }, (_, i) => `line ${i + 1}\n`).join("");
+        const errors = `${lines}Error: ${secret}\n`;
+        for (const run of [902, 903, 904, 905]) {
+          const failing = { "public/health-status": "503", "stderr.log": errors };
+          a.publish({ ...nodeRelease("one"), ...failing }, { run });
+          a.run();
+        }
+        expect(readlinkSync(`${a.dir}/current`)).toBe("releases/901-1");
+        const kept = readdirSync(`${a.dir}/state`).filter((file) => file.endsWith(".stderr.log"));
+        expect(kept.sort()).toEqual(["903-1.stderr.log", "904-1.stderr.log", "905-1.stderr.log"]);
+        const tail = a.file("state/905-1.stderr.log") ?? "";
+        expect(tail.startsWith("line 52\n")).toBe(true);
+        expect(tail.endsWith(`line 150\nError: ${secret}\n`)).toBe(true);
+        expect(tail.split("\n")).toHaveLength(101);
+        expect(statSync(`${a.dir}/state/905-1.stderr.log`).mode & 0o777).toBe(0o600);
+        expect(a.keyValues("state/status").reason).toMatch(
+          /; switched back to 901-1; the app's own errors are in ~\/opscrew\/notes-prod\/state\/905-1\.stderr\.log$/,
+        );
+        expect(a.file("state/agent.log")).not.toContain(secret);
+        expect(a.file("state/status")).not.toContain(secret);
+      },
+    );
+
+    switching(
+      "leaves the served .htaccess whole when it can't rewrite it, says so, and rewrites it on the next run",
+      () => {
+        const a = account();
+        // A selector that leaves the served folder read-only after it wrote its block again on set.
+        const bin = `${a.root}/bin/cloudlinux-selector`;
+        renameSync(bin, `${bin}.fake`);
+        writeFileSync(bin, LOCKING);
+        chmodSync(bin, 0o755);
+        a.run();
+        app(a, "create");
+        a.publish(nodeRelease("one"), { run: 801 });
+        expect(a.run().output).toContain("Release 801-1 serves.");
+
+        const served = `${a.dir}/releases/801-1/public`;
+        writeFileSync(`${a.stub}/lock-served`, "");
+        writeFileSync(`${a.dir}/shared/.env.next`, "APP_NAME=renamed\n");
+        const expires = Math.floor(Date.now() / 1000) + 1800;
+        const env = a.request(`kind=env\nhash=${HASH}\nexpires=${expires}\n`);
+        let output = "";
+        try {
+          output = a.run().output;
+        } finally {
+          chmodSync(served, 0o755);
+        }
+        expect(a.keyValues(`state/${env}.result`)).toEqual({ result: "done" });
+        expect(output).toContain(
+          "Release 801-1's .htaccess couldn't be rewritten to send Passenger to the release, so the site may run CloudLinux's placeholder in app/ until a later run rewrites it: check the account's disk quota.",
+        );
+        const htaccess = a.file("releases/801-1/public/.htaccess") ?? "";
+        expect(htaccess).toContain('Header always set X-OpsCrew-Release "801-1"\n');
+        expect(htaccess).toContain(passengerBlock(a, `${a.home}/${ROOT}`));
+        expect(existsSync(`${served}/.htaccess.partial`)).toBe(false);
+
+        // The next run starts by sending Passenger to the running release again.
+        rmSync(`${a.stub}/lock-served`);
+        a.run();
+        expect(appRoots(a, "current")).toEqual([`${a.dir}/releases/801-1`]);
+      },
+    );
+
+    switching(
+      "sends Passenger to each release's own folder through two releases, a settings change and a rollback, and destroy still finds the app",
+      () => {
+        const a = account();
+        a.run();
+        expect(app(a, "create")).toEqual({ result: "done" });
+        // The selector wrote its block, naming app/, into the placeholder's .htaccess.
+        expect(appRoots(a, "releases/0-0")).toEqual([`${a.dir}/releases/0-0`]);
+
+        a.publish(nodeRelease("one"), { run: 101 });
+        expect(a.run().output).toContain("Release 101-1 serves.");
+        a.publish(nodeRelease("two", "2"), { run: 102 });
+        expect(a.run().output).toContain("Release 102-1 serves.");
+        expect(appRoots(a, "releases/101-1")).toEqual([`${a.dir}/releases/101-1`]);
+        expect(a.file("current/public/.htaccess")).toContain(
+          passengerBlock(a, `${a.dir}/releases/102-1`),
+        );
+
+        // A settings change: the selector writes its block again, naming app/; the running
+        // release's names that release again.
+        const expires = String(Math.floor(Date.now() / 1000) + 1800);
+        writeFileSync(`${a.dir}/shared/.env.next`, "APP_NAME=renamed\n");
+        const env = a.request(`kind=env\nhash=${HASH}\nexpires=${expires}\n`);
+        a.run();
+        expect(a.keyValues(`state/${env}.result`)).toEqual({ result: "done" });
+        expect(appRoots(a, "current")).toEqual([`${a.dir}/releases/102-1`]);
+
+        // A rollback runs the first release again, with its packages.
+        const rollback = a.request(
+          `kind=rollback\nhash=${HASH}\nexpires=${expires}\nrelease=101-1\nrestore=no\n`,
+        );
+        a.run();
+        expect(a.keyValues(`state/${rollback}.result`)).toEqual({ result: "done" });
+        expect(readlinkSync(`${a.dir}/current`)).toBe("releases/101-1");
+        expect(appRoots(a, "current")).toEqual([`${a.dir}/releases/101-1`]);
+        expect(a.file("app/package.json")).toBe('{"name":"notes","version":"one"}\n');
+
+        // Every selector command named app/, so the selector still finds the app.
+        expect(app(a, "destroy")).toEqual({ result: "done" });
+        expect(calls(a).filter((line) => !line.includes(`--app-root ${ROOT}`))).toEqual([]);
+        expect(existsSync(`${a.dir}/app`)).toBe(false);
+        expect(existsSync(`${a.home}/nodevenv/opscrew`)).toBe(false);
+      },
+    );
+
+    switching("has a fake selector that resolves the app root once, as the real one (R14)", () => {
+      const a = account();
+      a.run();
+      const selector = (...args: string[]) => runSelector(a, ...args);
+      const current = ["--interpreter", "nodejs", "--app-root", "opscrew/notes-prod/current"];
+      const made = selector("create", ...current, "--version", "22", "--startup-file", "index.js");
+      expect(made.status).toBe(0);
+      expect(a.stubFile("selector-apps")).toBe(
+        "nodejs opscrew/notes-prod/releases/0-0 22 index.js\n",
+      );
+      expect(a.file("releases/0-0/index.js")).toContain("It works!");
+      expect(appRoots(a, "current")).toEqual([`${a.home}/opscrew/notes-prod/releases/0-0`]);
+
+      mkdirSync(`${a.dir}/releases/7-1`);
+      rmSync(`${a.dir}/current`);
+      symlinkSync("releases/7-1", `${a.dir}/current`);
+      const lost = selector("destroy", ...current);
+      expect(lost.status).toBe(1);
+      expect(lost.stdout).toContain(
+        `No such application or it's broken. Unable to find app-root folder by this path ${a.home}/opscrew/notes-prod/releases/7-1`,
+      );
     });
   },
 );

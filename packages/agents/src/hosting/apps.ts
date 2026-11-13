@@ -1,8 +1,9 @@
 /**
  * A Node.js or Python app on a hosting account (027 plan 8): CloudLinux's selector runs it, its
- * app root the link `current`, served at the hostname's root. The agent drives the selector on an
- * `app` request (`AGENT_SH`): plan B's `app` step makes the app, destroy's removes it with what the
- * selector leaves. Each release's packages are the agent's to install, before its switch.
+ * app root the folder `app/` of the app's folder, served at the hostname's root from the release
+ * `current` points at (research R14). The agent drives the selector on an `app` request
+ * (`AGENT_SH`): plan B's `app` step makes the app, destroy's removes it with what the selector
+ * leaves. Each release's packages are the agent's to install, before its switch.
  */
 import type { HostingFiles } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";

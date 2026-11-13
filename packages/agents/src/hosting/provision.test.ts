@@ -830,7 +830,7 @@ describe("provision on a cPanel account", () => {
       startup: "dist/index.js",
     });
     expect(said(deps)).toContain(
-      `Make the Node.js ${step?.kind === "app" ? step.version : ""} app in CloudLinux's selector, started from dist/index.js in ~/${FOLDER}/current and served at https://${HOSTNAME}/`,
+      `Make the Node.js ${step?.kind === "app" ? step.version : ""} app ~/${FOLDER}/app in CloudLinux's selector, started from dist/index.js in each release and served at https://${HOSTNAME}/`,
     );
 
     // The agent's request, bound to plan B's hash; its settings name the runtime.
@@ -844,7 +844,7 @@ describe("provision on a cPanel account", () => {
     expect(settings).toContain("\nAPP_KIND='node'\n");
     expect(settings).toContain(`\nRUNTIME_VERSION='${step?.kind === "app" ? step.version : ""}'\n`);
     expect(settings).toContain("\nSTARTUP_FILE='dist/index.js'\n");
-    // The hostname serves the release's public/; the selector's app root, the release with the
+    // The hostname serves the release's public/; Passenger's app root, the release with the
     // source and the linked settings file, stays outside it.
     expect(plan.steps).toContainEqual({
       kind: "hostname",

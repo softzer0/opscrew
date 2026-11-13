@@ -233,7 +233,7 @@ describe("destroy on a cPanel account", () => {
 
   it("removes the Node.js app from CloudLinux's selector through the agent, first (T2717)", async () => {
     const note =
-      "~/.cl.selector/htaccess_cache stays as it is: the app's section [/home/acct/opscrew/notes-prod/current] is in it more than once, so OpsCrew can't tell which is the app's";
+      "~/.cl.selector/htaccess_cache stays as it is: the app's section [/home/acct/opscrew/notes-prod/app] is in it more than once, so OpsCrew can't tell which is the app's";
     const w = await world({
       answer: (request) => (request.kind === "app" ? `result=done\nnote=${note}\n` : undefined),
     });
@@ -251,7 +251,7 @@ describe("destroy on a cPanel account", () => {
       expect.objectContaining({ kind: "cron", agent: true }),
     ]);
     expect(handler.requests[0]?.details).toContain(
-      "Remove the Node.js app from CloudLinux's selector, with its empty folder in ~/nodevenv/ and its section of ~/.cl.selector/htaccess_cache",
+      "Remove the Node.js app ~/opscrew/notes-prod/app from CloudLinux's selector, then that folder, its empty folder in ~/nodevenv/ and its section of ~/.cl.selector/htaccess_cache",
     );
     expect(w.agent.requests).toEqual([
       {

@@ -36,21 +36,29 @@ const HEADER_LINES = BASELINE_HEADERS.map(
  * `rollback`, `snapshot` (a snapshot's id) for `restore`, `action` (`create` or `destroy`) for
  * `app`, nothing more for `env` and `snapshot`.
  *
- * A Node.js or Python app (027 plan 8) runs through CloudLinux's selector, its app root the link
- * `current` (`opscrew/<app>-<env>/current` from the home folder), served at the hostname's root
- * from the release's `public/` (made when the release has none), so its source is never under the
- * document root. An `app` request with `action=create` makes it with the settings' version and
- * startup file, then hands the selector the values of `shared/.env` (`set --env-vars`), as an
- * `env` request does again; the file is linked into each release too. The header of the section
- * the selector added to `~/.cl.selector/htaccess_cache` is kept in
- * `state/selector-section` (empty when none, or more than one, was added). Each release carries the
- * selector's `node_modules` link, and its `.htaccess` the selector's Passenger block; when its
- * package files differ from the running release's, the selector installs them into the app's one
- * environment before the switch (an answer that the install was performed but the selector's own
- * check of the app failed is a note: the agent's health check decides); then `tmp/restart.txt`. `action=destroy` runs the selector's
- * `destroy`, removes the empty `~/nodevenv/<app root>` (`~/virtualenv/` for Python) and the section
- * of `htaccess_cache` whose header it kept, every other byte as it was; a `note=` in its answer
- * says what it left and why.
+ * A Node.js or Python app (027 plan 8) runs through CloudLinux's selector, served at the hostname's
+ * root from the release's `public/` (made when the release has none), so its source is never under
+ * the document root. The selector resolves the app root it is given once, for its registry, its
+ * environment and Passenger (research R14), so the app root is the folder `app/`
+ * (`opscrew/<app>-<env>/app` from the home folder), which the agent makes and never switches or
+ * prunes. An `app` request with `action=create` makes it with the settings' version and startup
+ * file, then hands the selector the values of `shared/.env` (`set --env-vars`), as an `env` request
+ * does again; the file is linked into each release too. The header of the section the selector
+ * added to `~/.cl.selector/htaccess_cache` is kept in `state/selector-section` (empty when none, or
+ * more than one, was added). Each release carries the selector's `node_modules` link from `app/`,
+ * and its `.htaccess` the selector's Passenger block with `PassengerAppRoot` naming the release's
+ * own folder, so Passenger runs the release `current` points at; after each selector command the
+ * running release's block names it again. When a release's package files differ from the running
+ * release's, they go into `app/` and the selector installs them into the app's one environment
+ * before the switch (an answer that the install was performed but the selector's own check of the
+ * app failed is a note: the agent's health check decides); then `tmp/restart.txt`. A release that
+ * fails its check leaves the last 100 lines of the app's own errors (`stderr.log` in its folder) in
+ * `state/<id>.stderr.log` (0600, the newest 3 kept), which its reason names. A run that finds
+ * another release's package files in `app/` (one before it stopped part-way) installs the running
+ * release's again. `action=destroy` runs the selector's `destroy` (a selector that no longer has the
+ * app is noted, not a failure), removes `app/`, the empty `~/nodevenv/<app root>` (`~/virtualenv/`
+ * for Python) and the section of `htaccess_cache` whose header it kept, every other byte as it was;
+ * a `note=` in its answer says what it left and why.
  *
  * A release is the newest commit of the release branch with one line `OpsCrew-Release: <run
  * id> <attempt> <env> <signature>`, the signature `openssl dgst -sha256 -sign`'s (ECDSA P-256, DER,
@@ -87,10 +95,15 @@ line_of() {
   printf '%s' "$1" | tr '\\r\\n' '  '
 }
 
-# Writes standard input to the file $1 through a temporary file beside it, renamed over it.
+# Writes standard input to the file $1 through a temporary file beside it, renamed over it only
+# when the whole input was written; fails otherwise, leaving $1 as it was.
 put() {
-  cat > "$1.partial"
-  mv -f "$1.partial" "$1"
+  if cat > "$1.partial"; then
+    mv -f "$1.partial" "$1"
+  else
+    rm -f "$1.partial"
+    return 1
+  fi
 }
 
 # File $1, ending with a newline; nothing when it is empty or missing.
@@ -311,12 +324,13 @@ compose() {
 # Carries into release $1's served folder what the panel and the selector wrote into the running
 # release's: the certificate checks' folders in .well-known/; php.ini and .user.ini where the app
 # has none of its own; .htaccess composed with the app's own (the selector's Passenger block among
-# what it keeps). The selector's node_modules link goes into the release itself, where it has none.
+# what it keeps, sent to release $1). The release itself, where it has no node_modules, gets a link
+# to the folder the selector's node_modules link in app/ leads to, by its full path.
 carry() {
   local to="releases/$1/$WEB_ROOT" from="current/$WEB_ROOT" check
   mkdir -p "$to"
-  if [ -L current/node_modules ] && [ ! -e "releases/$1/node_modules" ] && [ ! -L "releases/$1/node_modules" ]; then
-    cp -P current/node_modules "releases/$1/node_modules"
+  if [ -L app/node_modules ] && [ ! -e "releases/$1/node_modules" ] && [ ! -L "releases/$1/node_modules" ]; then
+    ln -s "$(readlink -f app/node_modules)" "releases/$1/node_modules"
   fi
   for check in acme-challenge pki-validation; do
     if [ -d "$from/.well-known/$check" ]; then
@@ -326,7 +340,22 @@ carry() {
   done
   if [ -f "$from/php.ini" ] && [ ! -e "$to/php.ini" ]; then cp -p "$from/php.ini" "$to/php.ini"; fi
   compose "$to/.htaccess" '#' "$from/.htaccess" htaccess_block "$1"
+  own_passenger "$1"
   compose "$to/.user.ini" ';' "$from/.user.ini" user_ini_block "$1" own
+}
+
+# Points the Passenger block CloudLinux's selector wrote into release $1's .htaccess at that
+# release's own folder, for a Node.js or Python app: its PassengerAppRoot line names releases/$1,
+# quoted as the selector quotes it, and every other line stays byte for byte (the app's own part is
+# left alone). The selector names the folder it registered, app/, which Passenger would run instead
+# of the release (research R14).
+own_passenger() {
+  local file="releases/$1/$WEB_ROOT/.htaccess" root
+  case $APP_KIND in node | python) ;; *) return 0 ;; esac
+  if [ ! -f "$file" ] || ! grep -q '^PassengerAppRoot ' "$file"; then return 0; fi
+  root=$(printf '%s' "$DIR/releases/$1" | sed 's/[\\\\&|]/\\\\&/g')
+  sed -e '/^# BEGIN OpsCrew: app$/,/^# END OpsCrew: app$/b' \\
+    -e "s|^PassengerAppRoot .*|PassengerAppRoot \\"$root\\"|" "$file" | put "$file"
 }
 
 # Links each shared path of release folder $1 to shared/<path>. A path shared/ doesn't hold yet
@@ -367,24 +396,33 @@ restart() {
   esac
 }
 
-# The app's root in CloudLinux's selector, from the home folder: the link current.
+# The app's root in CloudLinux's selector, from the home folder: the folder app/, never a link
+# and never a release, as the selector keeps the folder it resolved when it made the app.
 app_root() {
-  printf 'opscrew/%s-%s/current' "$APP" "$ENVIRONMENT"
+  printf 'opscrew/%s-%s/app' "$APP" "$ENVIRONMENT"
 }
 
 # Runs CloudLinux's selector's command $1 with --json and the app's interpreter, then the options
-# after it; SELECTOR_SAID holds its answer on one line. Fails unless it answers success.
+# after it; SELECTOR_SAID holds its answer on one line. Fails unless it answers success. The
+# selector may write its Passenger block, naming app/, into the .htaccess the hostname serves: the
+# running release's names that release again after it (own_running).
 selector() {
-  local command=$1 interpreter=nodejs success='"result": *"success"'
+  local command=$1 interpreter=nodejs success='"result": *"success"' code=0
   shift
   if [ "$APP_KIND" = python ]; then interpreter=python; fi
-  if SELECTOR_SAID=$(cloudlinux-selector "$command" --json --interpreter "$interpreter" "$@" 2>&1); then
-    SELECTOR_SAID=$(line_of "$SELECTOR_SAID")
-    [[ $SELECTOR_SAID =~ $success ]]
-  else
-    SELECTOR_SAID=$(line_of "$SELECTOR_SAID")
-    return 1
-  fi
+  SELECTOR_SAID=$(cloudlinux-selector "$command" --json --interpreter "$interpreter" "$@" 2>&1) || code=$?
+  SELECTOR_SAID=$(line_of "$SELECTOR_SAID")
+  own_running
+  [ "$code" -eq 0 ] && [[ $SELECTOR_SAID =~ $success ]]
+}
+
+# Points the Passenger block of the running release's .htaccess at that release (own_passenger),
+# saying so when it can't.
+own_running() {
+  local running
+  running=$(running_id)
+  [ -n "$running" ] || return 0
+  own_passenger "$running" || say "Release $running's .htaccess couldn't be rewritten to send Passenger to the release, so the site may run CloudLinux's placeholder in app/ until a later run rewrites it: check the account's disk quota."
 }
 
 # The package files of the app's kind: Node.js's package.json and package-lock.json, Python's
@@ -396,23 +434,31 @@ package_files() {
   esac
 }
 
-# Puts back the running release's package files that an install put aside in state/packages (a
-# file <name>.none for one it didn't have), also after a run that stopped part-way through one.
-restore_packages() {
-  local saved file
-  [ -d state/packages ] || return 0
-  for saved in state/packages/*; do
-    [ -e "$saved" ] || continue
-    file=\${saved#state/packages/}
-    case $file in
-      *.none) rm -f "current/\${file%.none}" "$saved" ;;
-      *)
-        rm -f "current/$file"
-        mv "$saved" "current/$file"
-        ;;
-    esac
+# Puts release $1's package files into app/, the app's root in CloudLinux's selector, where its
+# install-modules reads them; one the release lacks goes from app/.
+app_packages() {
+  local file
+  mkdir -p app
+  for file in $(package_files); do
+    if [ -e "releases/$1/$file" ]; then cp -p "releases/$1/$file" "app/$file"; else rm -f "app/$file"; fi
   done
-  rmdir state/packages
+}
+
+# When app/ holds package files other than the running release's, a run stopped while the selector
+# installed another release's packages, which the environment may hold: the selector installs the
+# running release's again (with its files back in app/).
+running_packages() {
+  local running files file
+  running=$(running_id)
+  files=$(package_files)
+  if [ ! -d app ] || [ -z "$running" ] || [ ! -e "releases/$running/\${files%% *}" ]; then return 0; fi
+  for file in $files; do
+    if { [ -e "releases/$running/$file" ] || [ -e "app/$file" ]; } && ! cmp -s "releases/$running/$file" "app/$file"; then
+      say "app/ holds another release's package files, left by a run that stopped while installing them: CloudLinux's selector installs release $running's again."
+      selector_install "$running" || say "Installing release $running's packages again failed ($SELECTOR_SAID), so the app's environment may still hold another release's."
+      return 0
+    fi
+  done
 }
 
 # CloudLinux's selector's install-modules for the app's root, the options after it. An error that
@@ -427,28 +473,16 @@ selector_modules() {
   say "Note: CloudLinux's selector installed the packages, but its own check of the app failed ($SELECTOR_SAID)."
 }
 
-# CloudLinux's selector installs the package files of release folder $1 into the app's one
-# environment. The selector runs npm in the app's root, the running release, so another release's
-# package files stand there while it installs, each of the running release's own put aside first
-# and put back after.
+# CloudLinux's selector installs release $1's package files into the app's one environment: they
+# go into app/ first, the app's root in the selector, where npm runs; Python's requirements file is
+# named by its full path.
 selector_install() {
-  local release=$1 file ok=yes
+  app_packages "$1"
   if [ "$APP_KIND" = python ]; then
-    selector_modules --requirements-file "$DIR/$release/requirements.txt"
-    return
-  fi
-  if [ "$release" = "releases/$(running_id)" ]; then
+    selector_modules --requirements-file "$DIR/app/requirements.txt"
+  else
     selector_modules
-    return
   fi
-  mkdir state/packages
-  for file in $(package_files); do
-    if [ -e "current/$file" ]; then mv "current/$file" "state/packages/$file"; else : > "state/packages/$file.none"; fi
-    if [ -e "$release/$file" ]; then cp -p "$release/$file" "current/$file"; fi
-  done
-  selector_modules || ok=""
-  restore_packages
-  [ -n "$ok" ]
 }
 
 # Before release $1's switch: when its package files differ from the running release's, the
@@ -465,7 +499,7 @@ install_modules() {
   done
   if [ -z "$changed" ] || [ ! -e "$release/\${files%% *}" ]; then return 0; fi
   say "Release $1's packages changed: CloudLinux's selector installs them before the switch."
-  if selector_install "$release"; then
+  if selector_install "$1"; then
     INSTALLED=$1
     return 0
   fi
@@ -484,7 +518,7 @@ reinstall_running() {
   files=$(package_files)
   if [ -z "$running" ] || [ ! -e "releases/$running/\${files%% *}" ]; then return 0; fi
   say "CloudLinux's selector installs release $running's packages again."
-  if ! selector_install "releases/$running"; then
+  if ! selector_install "$running"; then
     REINSTALL_SAID="; installing release $running's packages again failed too (\${SELECTOR_SAID:-no answer}), so the app's environment may hold the failed release's"
   fi
 }
@@ -632,10 +666,27 @@ deploy() {
     return 0
   fi
   switch_back
+  keep_stderr "$id"
   rm -rf "$release"
   ATTEMPT=""
-  say "Release $id failed its check ($CHECK_SAID): switched back to \${BEFORE:-nothing}$REINSTALL_SAID."
-  write_status "$id" failed "$(site_url)$HEALTH_PATH didn't answer 2xx or 3xx with it ($CHECK_SAID); switched back to \${BEFORE:-nothing}$REINSTALL_SAID"
+  say "Release $id failed its check ($CHECK_SAID): switched back to \${BEFORE:-nothing}$REINSTALL_SAID$STDERR_SAID."
+  write_status "$id" failed "$(site_url)$HEALTH_PATH didn't answer 2xx or 3xx with it ($CHECK_SAID); switched back to \${BEFORE:-nothing}$REINSTALL_SAID$STDERR_SAID"
+}
+
+# Before the folder of release $1, a Node.js or Python app that failed its check, goes: the last
+# 100 lines of the app's own errors there (stderr.log, which CloudLinux's Passenger writes in the
+# app's root) are kept as state/$1.stderr.log (0600), with the newest 3 such files only, and
+# STDERR_SAID names it. Its content is never logged: it may hold the app's secrets.
+keep_stderr() {
+  local file
+  STDERR_SAID=""
+  case $APP_KIND in node | python) ;; *) return 0 ;; esac
+  [ -f "releases/$1/stderr.log" ] || return 0
+  (umask 077 && tail -n 100 "releases/$1/stderr.log" > "state/$1.stderr.log")
+  STDERR_SAID="; the app's own errors are in ~/opscrew/$APP-$ENVIRONMENT/state/$1.stderr.log"
+  for file in $(ls state | grep -E '^[1-9][0-9]*-[1-9][0-9]*\\.stderr\\.log$' | sort -t - -k 1,1nr -k 2,2nr | tail -n +4 || true); do
+    rm -f "state/$file"
+  done
 }
 
 # Step 4 for the fetched commit $1: its OpsCrew-Release line must be signed by this environment's
@@ -816,9 +867,10 @@ read_request() {
 
 # A rollback to the kept release R[release]. With restore=yes the current database is dumped first,
 # filed under the running release, then the target's dump is restored; a failed restore puts the
-# database back.
+# database back. The target's packages are installed first when they differ, and the running
+# release's again when the rollback stops before its switch.
 do_rollback() {
-  local name=$1 target=\${R[release]} running
+  local name=$1 target=\${R[release]} running reason
   running=$(running_id)
   if [ ! -d "releases/$target" ]; then
     answer "$name" refused "release $target isn't kept on the account"
@@ -840,17 +892,20 @@ do_rollback() {
     answer "$name" failed "$INSTALL_SAID; release $running still runs"
     return 0
   fi
+  # A failure from here on puts the running release's packages back when the target's went in.
   if [ "\${R[restore]}" = yes ]; then
     if ! dump "dumps/$running.sql.gz"; then
-      answer "$name" failed "the current database couldn't be dumped first: nothing changed"
+      reinstall_running
+      answer "$name" failed "the current database couldn't be dumped first: the database is untouched and release $running still runs$REINSTALL_SAID"
       return 0
     fi
     if ! load "dumps/$target.sql.gz"; then
+      reason="restoring release $target's dump failed, and putting the database back failed too: dumps/$running.sql.gz holds it"
       if load "dumps/$running.sql.gz"; then
-        answer "$name" failed "restoring release $target's dump failed: the database is back as it was, and release $running still runs"
-      else
-        answer "$name" failed "restoring release $target's dump failed, and putting the database back failed too: dumps/$running.sql.gz holds it"
+        reason="restoring release $target's dump failed: the database is back as it was, and release $running still runs"
       fi
+      reinstall_running
+      answer "$name" failed "$reason$REINSTALL_SAID"
       return 0
     fi
   fi
@@ -1007,13 +1062,14 @@ cache_headers() {
   if [ -f "$cache" ]; then grep '^\\[' "$cache" || true; fi
 }
 
-# Makes the app in CloudLinux's selector, its root the link current, served at the hostname's root;
-# keeps the header of the section the selector added to htaccess_cache (empty when it added none,
-# or more than one). When the selector made the app but refused its settings, the answer is done,
-# its note saying so.
+# Makes the app in CloudLinux's selector, its root the folder app/ (made first), served at the
+# hostname's root; keeps the header of the section the selector added to htaccess_cache (empty
+# when it added none, or more than one). When the selector made the app but refused its settings,
+# the answer is done, its note saying so.
 app_create() {
   local name=$1 mode=() added
   if [ "$APP_KIND" = node ]; then mode=(--app-mode production); fi
+  mkdir -p app
   cache_headers > state/selector.before
   if ! selector create --version "$RUNTIME_VERSION" --app-root "$(app_root)" --app-uri / \${mode[@]+"\${mode[@]}"} --domain "$HOST_NAME" --startup-file "$STARTUP_FILE"; then
     rm -f state/selector.before
@@ -1142,20 +1198,30 @@ forget_cache_section() {
   rm -f state/selector-section
 }
 
-# Removes the app from CloudLinux's selector, then what the selector leaves of it: its empty
-# environment folder (~/nodevenv/<app root>, ~/virtualenv/ for Python) and its section of
-# htaccess_cache. The answer's note says what stays, and why.
+# Removes the app from CloudLinux's selector, then what the selector leaves of it: its root app/,
+# its empty environment folder (~/nodevenv/<app root>, ~/virtualenv/ for Python) with the empty
+# folders above it, and its section of htaccess_cache. A selector that no longer has the app (a
+# destroy run again after one that stopped part-way) is no failure: the rest is removed. The
+# answer's note says what stays, and why.
 app_destroy() {
-  local name=$1 venv=nodevenv note=""
+  local name=$1 venv=nodevenv note="" path
   if [ "$APP_KIND" = python ]; then venv=virtualenv; fi
   if ! selector destroy --app-root "$(app_root)"; then
-    answer "$name" failed "CloudLinux's selector didn't remove the app: \${SELECTOR_SAID:-no answer}"
-    return 0
+    if [[ $SELECTOR_SAID != *"No such application"* ]]; then
+      answer "$name" failed "CloudLinux's selector didn't remove the app: \${SELECTOR_SAID:-no answer}"
+      return 0
+    fi
+    note="CloudLinux's selector no longer had the app"
   fi
-  if [ -d "$HOME/$venv/$(app_root)" ]; then
-    (cd "$HOME/$venv" && rmdir -p "$(app_root)" 2> /dev/null) || true
-    if [ -d "$HOME/$venv/$(app_root)" ]; then note="~/$venv/$(app_root) isn't empty, so it stays"; fi
-  fi
+  rm -rf app
+  # The environment folder and each folder above it up to the home folder, while empty; one the
+  # selector removed itself is skipped.
+  path=$venv/$(app_root)
+  while [ "$path" != . ]; do
+    [ ! -d "$HOME/$path" ] || rmdir "$HOME/$path" 2> /dev/null || break
+    path=$(dirname "$path")
+  done
+  if [ -d "$HOME/$venv/$(app_root)" ]; then note="\${note:+$note; }~/$venv/$(app_root) isn't empty, so it stays"; fi
   forget_cache_section
   if [ -n "$CACHE_SAID" ]; then note="\${note:+$note; }$CACHE_SAID"; fi
   if [ -n "$note" ]; then answer "$name" done "" "note=$note"; else answer "$name" done ""; fi
@@ -1200,13 +1266,12 @@ requests() {
 }
 
 # On a stop during an attempt: current goes back to the release before it if it was switched
-# already (the running release's package files, and its packages when the attempt's were
-# installed, back too), the attempt's folder goes once it doesn't serve, and the status says so.
+# already (the running release's packages back too when the attempt's were installed), the
+# attempt's folder goes once it doesn't serve, and the status says so.
 stopped() {
   local code=$? now
   if [ "$code" -eq 0 ] || [ -z "\${ATTEMPT:-}" ]; then return 0; fi
   rm -f current.next
-  restore_packages || true
   if [ "$(running_id)" = "$ATTEMPT" ]; then switch_back || true; else reinstall_running || true; fi
   now=$(running_id)
   if [ "$now" != "$ATTEMPT" ]; then rm -rf "releases/$ATTEMPT"; fi
@@ -1236,8 +1301,10 @@ main() {
     mkdir -p "releases/0-0/$WEB_ROOT"
     ln -s releases/0-0 current
   fi
-  # A run that stopped while the selector installed another release's packages left them there.
-  restore_packages
+  # What a run that stopped part-way through the selector's work left: the selector's block naming
+  # app/ in the running release's .htaccess, another release's packages.
+  own_running
+  running_packages
   GIT_SSH_COMMAND=$(printf '%q ' "\${SSH[@]}")
   export DIR PHP_CLI GIT_SSH_COMMAND GIT_TERMINAL_PROMPT=0
   export -f php
