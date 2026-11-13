@@ -462,7 +462,14 @@ describe.skipIf(MISSING.length > 0)(
           minutes(45),
           async () => {
             (current as NonNullable<typeof current>).provisioned = true;
-            const output = await run.provisionUntilDone(`${leg.key}: provision`);
+            const output = await run
+              .provisionUntilDone(`${leg.key}: provision`)
+              .catch(async (error) => {
+                // Evidence for a provision the agent didn't finish: its own lines.
+                const logs = await run.opscrew("logs");
+                log(`opscrew logs after the failed provision:\n${run.scrub(logs.output)}`);
+                throw error;
+              });
             const plans = new Set(
               [...output.matchAll(/Hosting plan hash: ([0-9a-f]{64})/g)].map((m) => m[1]),
             );
