@@ -495,7 +495,7 @@ names the change.
   - Verify: the full gate (lint, typecheck, ssh-host alone, the rest, iac-engine last)
   - Effort: high
 
-- [ ] T2730 A rollback that names the app's queues
+- [x] T2730 A rollback that names the app's queues
   - Owns: `packages/agents/src/rollback/**`, `packages/cli/src/commands/rollback.ts`, `packages/mcp-server/src/**` (the rollback tool's input), `docs/guide/rollback.md`
   - Reads: ADR 0023, ADR 0028 and its 2026-11-12 amendments; `agents/src/rollback/{run,database}.ts`, `agents/src/design/background-jobs.ts`
   - Depends: T2728, T2729
