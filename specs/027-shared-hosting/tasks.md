@@ -713,8 +713,13 @@ The founder added these to 0.2.8.
   - Effort: medium
 
 - [ ] T2751 Contabo's Auto Backup as the provider's backups (after T2749)
-  - Owns: `packages/providers/contabo/**`, `packages/agents/src/design/**` (Contabo's backup lines), `docs/guide/contabo.md`
-  - Accept: per R15, `target.backups` on Contabo turns Auto Backup on through the API and off again, priced in design; the same prod-only default as T2750. Tests with the fake; the Contabo guide says what it keeps and costs.
+  - Owns: `packages/providers/contabo/**`, `packages/agents/src/design/**` (Contabo's backup lines), `packages/agents/src/provision/**` and `packages/agents/src/drift/**` (Contabo's Auto Backup step and check, beside its firewall's), `packages/agents/src/destroy/**` (its text only), `docs/guide/contabo.md`
+  - Accept:
+    - Per R15, `target.backups` on Contabo turns Auto Backup on through Contabo's API (`POST …/instances/{id}/upgrade` with `{backup: {}}`) right after the apply, under the same hash-bound approval as the firewall Contabo's API sets, as a line of the plan. It is recorded, so a re-run never orders it again.
+    - Contabo has no API call to turn it off or restore: with `target.backups` false after it was on, provision says how to turn it off in the Customer Control Panel and changes nothing; the guide says how to restore there.
+    - The same prod-only default as T2750 (Contabo's profile now offers the provider's backups).
+    - Contabo publishes no price per plan for the add-on (R15): design shows it as priced on Contabo's order page, outside the monthly sum, and never invents a figure.
+    - Tests with the fake; the Contabo guide says what Auto Backup keeps (one a day, up to 10 days, off the server) and how it is priced; its "No automatic backups" lines go.
 
 - [x] T2752 Contabo's Object Storage as a bucket provider (after T2749)
   - Owns: `packages/iac-templates/src/infra/storage.ts`, `packages/iac-templates/src/prices.ts`, `packages/iac-templates/src/runbook/components.ts`, `packages/agents/src/design/**` (the storage lines), `packages/agents/src/interview/components.ts`, `packages/agents/src/infra/**`, `packages/agents/src/provision/**`, `packages/agents/src/destroy/**`, `packages/agents/src/drift/**`, `packages/agents/src/retarget/bucket.ts`, `packages/agents/src/shared/{s3,app-env}.ts`, `packages/agents/src/testing/storage.ts`, `packages/providers/contabo/**`, `packages/contracts/src/connector.ts` (`ObjectStorageApi`, lead-sanctioned), `packages/plan-schema/src/components.ts` (the `contabo` bucket provider), `packages/mcp-server/src/tools/{deploy.ts,interview.test.ts}`, `docs/guide/object-storage.md`, `docs/guide/contabo.md` (its Object Storage line)
