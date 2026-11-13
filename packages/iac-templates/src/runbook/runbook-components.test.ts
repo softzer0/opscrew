@@ -191,7 +191,7 @@ describe("the runbook's components, edge and storage key", () => {
     );
   });
 
-  it("says a bucket in Contabo's storage has Contabo's key, and when the storage is cancelled", () => {
+  it("says a bucket in Contabo's storage has Contabo's key, and that OpsCrew never cancels the storage", () => {
     const contabo = { ...R2, provider: "contabo" as const, region: "EU" };
     const text = renderRunbook(
       withComponents(testPlan({ domain: "shop.example.com" }), contabo),
@@ -202,7 +202,7 @@ describe("the runbook's components, edge and storage key", () => {
     expect(storage).toContain("**The storage key is Contabo's.**");
     expect(storage).toContain("never keeps it in a file, this repository or infrastructure state");
     expect(storage).toContain(
-      "cancels it only if OpsCrew ordered it and no other bucket is in it, at the next possible date",
+      "OpsCrew never cancels it, `--delete-data` included: when nothing uses it, cancel it in Contabo's Customer Control Panel.",
     );
     expect(storage).not.toContain("storage_key.json");
   });

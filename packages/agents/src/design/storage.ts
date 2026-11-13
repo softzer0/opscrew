@@ -113,6 +113,13 @@ const CONTABO_STORAGE_REGION: Readonly<Record<string, string>> = {
   SIN: "SIN",
 };
 
+/**
+ * The size of the Contabo Object Storage OpsCrew orders, in GB: 0.25 TB, the size Contabo's
+ * smallest price is for (026 research R2; unverified live, R15). It is offered only for an app
+ * expected to store no more.
+ */
+export const CONTABO_STORAGE_GB = 250;
+
 /** A cloud provider that sells the buckets OpsCrew uses (plan 3: bucket providers stay apart). */
 type BucketCloud = Extract<StorageProvider, CloudProvider>;
 
@@ -156,7 +163,8 @@ export function storagePrice(
 /**
  * The object storage options for where the app runs, priced for `expected` and cheapest first
  * (FR-1316): Garage on the app's server on every target (opt-in on a cloud server), the cloud
- * provider's own storage where it sells one and its location has it, and Cloudflare R2 when the
+ * provider's own storage where it sells one and its location has it (Contabo's only up to the
+ * size OpsCrew orders, {@link CONTABO_STORAGE_GB}), and Cloudflare R2 when the
  * domain is on Cloudflare (it needs OpsCrew's Cloudflare token and account). Ties keep that order.
  */
 export function storageOffers(
@@ -176,7 +184,8 @@ export function storageOffers(
     const location = locations
       .map((l) => storageRegionAt(provider, l))
       .find((region) => region !== undefined);
-    if (location !== undefined) offers.push({ provider, region: location });
+    const fits = provider !== "contabo" || expected.storageGb <= CONTABO_STORAGE_GB;
+    if (location !== undefined && fits) offers.push({ provider, region: location });
   }
   if (requirements.dnsProvider === "cloudflare" && requirements.domain !== undefined) {
     offers.push({ provider: "r2", region: "auto" });
@@ -188,6 +197,20 @@ export function storageOffers(
   // Compared at the fixed rate design compares budgets at.
   const inEur = (price: StoragePrice) => convertMoney(price, "EUR").amount;
   return priced.sort((a, b) => inEur(a.price) - inEur(b.price));
+}
+
+/**
+ * Why Contabo Object Storage is not offered on Contabo, when the app is expected to store more
+ * than the storage OpsCrew orders; undefined otherwise.
+ */
+export function storageNotOffered(
+  requirements: Pick<Requirements, "provider">,
+  expected: ObjectStorage["expected"],
+): string | undefined {
+  if (requirements.provider !== "contabo" || expected.storageGb <= CONTABO_STORAGE_GB) {
+    return undefined;
+  }
+  return `${STORAGE_NAMES.contabo} is not offered: OpsCrew orders it with ${CONTABO_STORAGE_GB} GB, less than the ${expected.storageGb} GB the app is expected to store (storage.objectStorage.expected).`;
 }
 
 /** The offer design picks unless the user chooses one: the cheapest that is not opt-in. */

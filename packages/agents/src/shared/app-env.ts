@@ -482,7 +482,8 @@ function storageValue(
     case "bucket":
       return storage.bucket;
     case "region":
-      return storage.region;
+      // Contabo's storage signs as us-east-1, as OpsCrew's own calls and the storage root do.
+      return storage.provider === "contabo" ? "us-east-1" : storage.region;
     case "path-style":
       return "true";
     case "endpoint":

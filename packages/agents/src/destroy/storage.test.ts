@@ -338,38 +338,37 @@ describe.skipIf(!findExecutable("git"))("destroy and the app's bucket (FR-1319)"
 });
 
 describe.skipIf(!findExecutable("git"))("destroy and a bucket in Contabo's storage (R15)", () => {
-  /** Contabo's S3 endpoint: the bucket is gone at once, and ListBuckets names `others`. */
-  function contaboS3(others: string[] = []) {
+  /** Contabo's S3 endpoint: the bucket is gone at once. Records every request. */
+  function contaboS3() {
     const requests: string[] = [];
     const fetch: FetchLike = async (input, init) => {
       const method = init?.method ?? "GET";
       requests.push(`${method} ${String(input)}`);
-      if (method === "GET") {
-        const buckets = others.map((name) => `<Bucket><Name>${name}</Name></Bucket>`).join("");
-        return new Response(
-          `<ListAllMyBucketsResult><Buckets>${buckets}</Buckets></ListAllMyBucketsResult>`,
-        );
-      }
       return new Response(null, { status: method === "DELETE" ? 204 : 404 });
     };
     return { fetch, requests };
   }
 
-  /** A deployed app whose bucket is in Contabo's storage `os-1`, which OpsCrew `ordered` or not. */
-  async function contaboSetup(ordered: boolean, others: string[] = []) {
+  /** A deployed app whose bucket is in Contabo's storage `os-1`, cancelled or not. */
+  async function contaboSetup(cancelledUntil?: string) {
     const s = await setup({
       plan: deployed(withBucket(testPlan(), "contabo")),
       storage: bucketEngine("contabo", { changes: bucketChanges("contabo", "delete") }),
     });
     const objectStorage = new FakeObjectStorage([
-      { id: "os-1", region: "EU", s3Url: CONTABO_S3_URL },
+      {
+        id: "os-1",
+        region: "EU",
+        s3Url: CONTABO_S3_URL,
+        ...(cancelledUntil !== undefined ? { cancelledUntil } : {}),
+      },
     ]);
     s.services.objectStorage = objectStorage;
-    const record = { provider: "contabo", region: "EU", storageId: "os-1", s3Url: CONTABO_S3_URL };
     const file = orderedStorageFile(s.deps.paths);
     await mkdir(dirname(file), { recursive: true });
-    await writeFile(file, JSON.stringify({ ...record, ordered, at: "2026-11-13T10:00:00.000Z" }));
-    const s3 = contaboS3(others);
+    const record = { provider: "contabo", region: "EU", storageId: "os-1" };
+    await writeFile(file, JSON.stringify({ ...record, at: "2026-11-13T10:00:00.000Z" }));
+    const s3 = contaboS3();
     s.deps.fetch = s3.fetch;
     const run = () =>
       runDestroy(s.deps, {
@@ -378,50 +377,31 @@ describe.skipIf(!findExecutable("git"))("destroy and a bucket in Contabo's stora
         deleteData: true,
         confirm: async () => true,
       });
-    return { ...s, objectStorage, s3, run, file };
+    return { ...s, objectStorage, s3, run };
   }
 
-  it("deletes the bucket, then cancels the storage OpsCrew ordered, effective at the next possible date", async () => {
-    const s = await contaboSetup(true);
+  it("deletes the bucket as at the other providers, and says the storage stays", async () => {
+    const s = await contaboSetup();
     await s.run();
-    const request = s.handler.requests.find(deletesBucket);
-    expect(request?.details).toContain(
-      "Then OpsCrew cancels the Contabo Object Storage in EU it ordered (os-1) if no other bucket is in it, effective at the next possible date: Contabo bills it until then.",
-    );
-    expect(s.objectStorage.cancelled).toEqual(["os-1"]);
-    expect(s.s3.requests).toEqual([
-      `HEAD ${CONTABO_S3_URL}/shop-uploads`,
-      `GET ${CONTABO_S3_URL}/`,
-    ]);
+    expect(s.handler.requests.some(deletesBucket)).toBe(true);
+    expect(s.engine.storage.applied).toHaveLength(1);
+    // Only the bucket's check: nothing lists, cancels or deletes the storage.
+    expect(s.s3.requests).toEqual([`HEAD ${CONTABO_S3_URL}/shop-uploads`]);
     expect(s.deps.reporter.text()).toContain(
-      "Cancelled the Contabo Object Storage in EU (os-1) OpsCrew ordered: it ends on 2026-12-13, and Contabo bills it until then.",
+      "Contabo Object Storage os-1 in EU stays and is billed monthly, as other buckets may use it; when nothing uses it, cancel it in Contabo's Customer Control Panel.",
     );
     for (const env of s.engine.storageEnvs) {
       expect(env.TF_VAR_endpoint).toBe(CONTABO_S3_URL);
       expect(env.AWS_SECRET_ACCESS_KEY).toBe(s.objectStorage.madeKey.secretAccessKey);
     }
-    await expect(readTextIfExists(s.file)).resolves.toBeUndefined();
     expect(s.deps.reporter.text()).not.toContain(s.objectStorage.madeKey.secretAccessKey);
   });
 
-  it("never cancels a storage OpsCrew did not order", async () => {
-    const s = await contaboSetup(false);
+  it("deletes the bucket in a storage whose cancellation the user asked for", async () => {
+    const s = await contaboSetup("2026-12-01");
     await s.run();
-    expect(s.handler.requests.find(deletesBucket)?.details).toContain(
-      "OpsCrew did not order your Contabo Object Storage in EU, so it stays and Contabo keeps billing it.",
-    );
-    expect(s.objectStorage.cancelled).toEqual([]);
-    expect(s.s3.requests).toEqual([`HEAD ${CONTABO_S3_URL}/shop-uploads`]);
-  });
-
-  it("keeps the storage it ordered while another bucket is in it", async () => {
-    const s = await contaboSetup(true, ["blog-uploads"]);
-    await s.run();
-    expect(s.objectStorage.cancelled).toEqual([]);
-    expect(s.deps.reporter.text()).toContain(
-      "OpsCrew keeps the Contabo Object Storage in EU (os-1) it ordered: other buckets are in it (blog-uploads), and Contabo keeps billing it.",
-    );
-    await expect(readTextIfExists(s.file)).resolves.toBeDefined();
+    expect(s.engine.storage.applied).toHaveLength(1);
+    expect(s.objectStorage.keysRead).toEqual(["os-1"]);
   });
 });
 

@@ -8,6 +8,7 @@ import type {
   ProviderObjectStorage,
   ResourceChange,
 } from "@opscrew/contracts";
+import { OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { FakeEngine } from "./deploy";
@@ -153,13 +154,14 @@ export function bucketEngine(
 export const CONTABO_S3_URL = "https://eu2.contabostorage.com";
 
 /**
- * Contabo's object storage API, faked: the account's storages, what was ordered and cancelled, and
- * the key Contabo made with each storage (synthetic).
+ * Contabo's object storage API, faked: the account's storages, what was ordered, and the key
+ * Contabo made with each storage (synthetic). `orderAnswer` makes the next order refused, or lose
+ * its answer (the order may have been made).
  */
 export class FakeObjectStorage implements ObjectStorageApi {
   readonly orders: { region: string; sizeTb: number; displayName: string }[] = [];
-  readonly cancelled: string[] = [];
   readonly keysRead: string[] = [];
+  orderAnswer: "ordered" | "refused" | "lost" = "ordered";
   /** The key Contabo made with every storage here. */
   readonly madeKey: ObjectStorageKey = {
     accessKeyId: fakeSecret("aws-access-key-id", "contabo-storage"),
@@ -172,28 +174,33 @@ export class FakeObjectStorage implements ObjectStorageApi {
     return this.storages.find((storage) => storage.region === region);
   }
 
-  async order(request: {
-    region: string;
-    sizeTb: number;
-    displayName: string;
-  }): Promise<ProviderObjectStorage> {
+  async order(request: { region: string; sizeTb: number; displayName: string }) {
     this.orders.push(request);
+    if (this.orderAnswer === "refused") {
+      return {
+        refused: "Contabo answered HTTP 400 to POST /v1/object-storages: Region not available",
+      };
+    }
+    if (this.orderAnswer === "lost") {
+      throw new OpsCrewError(
+        "PROVIDER_ERROR",
+        "Lost the connection to Contabo's API (POST /v1/object-storages).",
+        {
+          hint: "The change may still have been made: check the Customer Control Panel before trying again.",
+        },
+      );
+    }
     const storage = {
       id: `os-${this.orders.length}`,
       region: request.region,
       s3Url: CONTABO_S3_URL,
     };
     this.storages.push(storage);
-    return storage;
+    return { ordered: storage };
   }
 
   async key(storageId: string): Promise<ObjectStorageKey> {
     this.keysRead.push(storageId);
     return this.madeKey;
-  }
-
-  async cancel(storageId: string): Promise<string> {
-    this.cancelled.push(storageId);
-    return "2026-12-13";
   }
 }

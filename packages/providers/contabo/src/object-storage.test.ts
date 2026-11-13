@@ -56,23 +56,34 @@ describe("objectStorage", () => {
     expect(contaboConnector({ env: CREDENTIALS_ENV }).objectStorage).toBeDefined();
   });
 
-  it("finds the account's storage in a region, never a cancelled one", async () => {
+  it("finds the account's storage in a region, never one whose contract ended", async () => {
     const { api } = setup({
       "/v1/object-storages?": page([
-        storage("old", "EU", "CANCELLED"),
+        storage("old", "Somewhere", "CANCELLED"),
         storage("sin-1", "SIN", "READY", { s3Url: "sin1.contabostorage.com/" }),
-        storage("eu-1", "European Union", "READY", { cancelDate: "2026-12-11" }),
+        storage("eu-1", "EU", "READY", { cancelDate: "2026-12-11" }),
       ]),
     });
     expect(await api.find("EU")).toEqual({
       id: "eu-1",
-      region: "European Union",
+      region: "EU",
       s3Url: "https://eu2.contabostorage.com",
       cancelledUntil: "2026-12-11",
     });
     // Without its scheme and with a slash, as Contabo's examples give it.
     expect((await api.find("SIN"))?.s3Url).toBe("https://sin1.contabostorage.com");
     expect(await api.find("US-central")).toBeUndefined();
+  });
+
+  it("fails rather than answer none when a storage is in a region it does not know", async () => {
+    const { api } = setup({
+      "/v1/object-storages?": page([storage("eu-1", "European Union", "READY")]),
+    });
+    const error = await failure(api.find("EU"));
+    expect(error.code).toBe("PROVIDER_ERROR");
+    expect(error.message).toBe(
+      'Contabo lists the object storage eu-1 in the region "European Union", which OpsCrew does not know, so it cannot tell whether the account has object storage in EU. Nothing was changed.',
+    );
   });
 
   it("orders a storage and waits until it is ready", async () => {
@@ -84,7 +95,9 @@ describe("objectStorage", () => {
       ],
     });
     const ordered = await api.order({ region: "EU", sizeTb: 0.25, displayName: "opscrew-shop" });
-    expect(ordered).toEqual({ id: "new-1", region: "EU", s3Url: "https://eu2.contabostorage.com" });
+    expect(ordered).toEqual({
+      ordered: { id: "new-1", region: "EU", s3Url: "https://eu2.contabostorage.com" },
+    });
     expect(
       fake.calls.find((c) => c.method === "POST" && c.path === "/v1/object-storages")?.body,
     ).toEqual({
@@ -98,6 +111,23 @@ describe("objectStorage", () => {
       "GET /v1/object-storages/new-1",
     ]);
     expect(time.waits).toEqual([5_000]);
+  });
+
+  it("answers refused when Contabo answered the order with an error status", async () => {
+    const { api, calls } = setup({
+      "POST /v1/object-storages": { status: 400, body: { message: "Region not available" } },
+    });
+    const answer = await api.order({ region: "EU", sizeTb: 0.25, displayName: "x" });
+    expect(answer).toEqual({
+      refused: "Contabo answered HTTP 400 to POST /v1/object-storages: Region not available",
+    });
+    expect(calls()).toEqual(["POST /v1/object-storages"]);
+  });
+
+  it("rejects when the order got no answer: it may have been made", async () => {
+    const { api } = setup({ "POST /v1/object-storages": { error: new Error("socket hang up") } });
+    const error = await failure(api.order({ region: "EU", sizeTb: 0.25, displayName: "x" }));
+    expect(error.hint).toContain("The change may still have been made");
   });
 
   it("stops plainly when the new storage fails", async () => {
@@ -140,32 +170,5 @@ describe("objectStorage", () => {
     expect(error.message).toBe(
       "Contabo lists no S3 key of the object storage eu-1 for the API user.",
     );
-  });
-
-  it("cancels at the next possible date and answers the end date", async () => {
-    const { api, fake, calls } = setup({
-      "GET /v1/object-storages/eu-1": [
-        one(storage("eu-1", "EU", "READY")),
-        one(storage("eu-1", "EU", "READY", { cancelDate: "2026-12-11" })),
-      ],
-      "PATCH /v1/object-storages/eu-1/cancel": { body: { data: [{}] } },
-    });
-    expect(await api.cancel("eu-1")).toBe("2026-12-11");
-    expect(calls()).toEqual([
-      "GET /v1/object-storages/eu-1",
-      "PATCH /v1/object-storages/eu-1/cancel",
-      "GET /v1/object-storages/eu-1",
-    ]);
-    expect(fake.calls.find((c) => c.method === "PATCH")?.body).toEqual({});
-  });
-
-  it("never cancels a storage twice", async () => {
-    const { api, calls } = setup({
-      "GET /v1/object-storages/eu-1": one(
-        storage("eu-1", "EU", "READY", { cancelDate: "2026-12-11" }),
-      ),
-    });
-    expect(await api.cancel("eu-1")).toBe("2026-12-11");
-    expect(calls()).toEqual(["GET /v1/object-storages/eu-1"]);
   });
 });

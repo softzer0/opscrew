@@ -230,30 +230,31 @@ export interface ObjectStorageKey {
 }
 
 /**
- * Object storage ordered and cancelled through a provider's API, for a provider whose Terraform
- * cannot manage it (Contabo: its object storage cannot be imported). Buckets are made over S3 with
- * the storage's key, never through this API.
+ * Object storage ordered through a provider's API, for a provider whose Terraform cannot manage it
+ * (Contabo: its object storage cannot be imported). OpsCrew never cancels one: a storage serves
+ * every bucket of the account in its region. Buckets are made over S3 with the storage's key,
+ * never through this API.
  */
 export interface ObjectStorageApi {
-  /** The account's storage in `region` that is not cancelled yet, if any (one per region). */
+  /**
+   * The account's storage in `region` (one per region) whose contract has not ended, if any. It
+   * fails rather than answer none when the account has a storage in a region it cannot name.
+   */
   find(region: string): Promise<ProviderObjectStorage | undefined>;
   /**
    * Orders a storage of `sizeTb` TB in `region` and resolves once the provider reports it ready,
-   * with its S3 endpoint. It is billed from then on. Mutating: only after an approved plan.
+   * with its S3 endpoint; it is billed from then on. Resolves with `refused` when the provider
+   * answered the order with an error status, so nothing was ordered; rejects when the outcome is
+   * unknown (no answer, a lost connection) or the storage did not become ready. Mutating: only
+   * after an approved plan.
    */
   order(request: {
     region: string;
     sizeTb: number;
     displayName: string;
-  }): Promise<ProviderObjectStorage>;
+  }): Promise<{ ordered: ProviderObjectStorage } | { refused: string }>;
   /** The S3 key the provider made with the storage `storageId`. Registered with the redactor. */
   key(storageId: string): Promise<ObjectStorageKey>;
-  /**
-   * Cancels the storage at the next possible date (the end of its term; it stays billed until
-   * then) and resolves with that day (`2026-12-11`). A storage already cancelled resolves with its
-   * end date and is not cancelled again. Destroy-grade.
-   */
-  cancel(storageId: string): Promise<string>;
 }
 
 /** A VPS provider connector: credentials, price catalogue and server API. */

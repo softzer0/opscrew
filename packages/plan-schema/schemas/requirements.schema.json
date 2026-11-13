@@ -104,7 +104,7 @@
     },
     "objectStorage": {
       "type": "string",
-      "enum": ["r2", "digitalocean", "hetzner", "garage"]
+      "enum": ["r2", "digitalocean", "hetzner", "contabo", "garage"]
     },
     "workerCommands": {
       "type": "object",

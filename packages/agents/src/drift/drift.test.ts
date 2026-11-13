@@ -357,8 +357,8 @@ describe.skipIf(!findExecutable("git"))("runDrift", () => {
     });
     const file = orderedStorageFile(deps.paths);
     await mkdir(dirname(file), { recursive: true });
-    const record = { provider: "contabo", region: "EU", storageId: "os-1", s3Url: CONTABO_S3_URL };
-    await writeFile(file, JSON.stringify({ ...record, ordered: true, at: "x" }));
+    const record = { provider: "contabo", region: "EU", storageId: "os-1" };
+    await writeFile(file, JSON.stringify({ ...record, at: "2026-11-13T10:00:00.000Z" }));
     await writeFile(storageStateFile(deps.paths), stateContent("plain") ?? "");
     const report = await runDrift(deps, { services });
     expect(report.drift).toEqual([

@@ -1369,6 +1369,15 @@ describe.skipIf(!findExecutable("git"))(
         services: { objectStorage },
         ...o,
       });
+    /** The record an earlier run left: `storageId`, or none for an order with no clear answer. */
+    const writeRecord = async (f: Flow, storageId?: string) => {
+      const file = orderedStorageFile(f.deps.paths);
+      await mkdir(dirname(file), { recursive: true });
+      const at = "2026-11-13T10:00:00.000Z";
+      await writeFile(file, JSON.stringify({ provider: "contabo", region: "EU", storageId, at }));
+    };
+    const orderRequests = (f: Flow) =>
+      f.handler.requests.filter((r) => r.title.startsWith("Order "));
 
     it("orders the storage through its own approved plan, then the bucket with the key Contabo made", async () => {
       const objectStorage = new FakeObjectStorage();
@@ -1385,16 +1394,17 @@ describe.skipIf(!findExecutable("git"))(
       expect(order?.costDelta).toEqual({ amount: 2.49, currency: "EUR" });
       expect(order?.details).toContain("order Contabo Object Storage in EU through Contabo's API");
       expect(order?.details).toContain(
-        "effective at the next possible date: Contabo bills it until then",
+        "Contabo bills it monthly, and OpsCrew never cancels it, as other buckets may use it: when nothing uses it, cancel it in Contabo's Customer Control Panel.",
       );
       expect(order?.details).toContain(`Order plan hash: ${order?.planHash}`);
       expect(objectStorage.orders).toEqual([
         { region: "EU", sizeTb: 0.25, displayName: "opscrew-shop" },
       ]);
-      expect(await record(f)).toMatchObject({
+      expect(await record(f)).toEqual({
+        provider: "contabo",
+        region: "EU",
         storageId: "os-1",
-        s3Url: CONTABO_S3_URL,
-        ordered: true,
+        at: expect.any(String),
       });
       expect(result.storagePlanHash).toBe(applies[1]?.planHash);
 
@@ -1407,10 +1417,11 @@ describe.skipIf(!findExecutable("git"))(
         expect(env.TF_VAR_endpoint).toBe(CONTABO_S3_URL);
         expect(env.AWS_PROFILE).toBeUndefined();
       }
-      // The app receives it with the storage's endpoint.
+      // The app receives it with the storage's endpoint, signing as us-east-1 as OpsCrew does.
       const appEnv = f.github.secrets.get("OPSCREW_APP_ENV") ?? "";
       expect(appEnv).toContain(`AWS_SECRET_ACCESS_KEY=${key.secretAccessKey}`);
       expect(appEnv).toContain(`AWS_ENDPOINT_URL_S3=${CONTABO_S3_URL}`);
+      expect(appEnv).toContain("AWS_REGION=us-east-1");
       // Never kept in OpsCrew's key file, printed, audited or written into the repository.
       await expect(readTextIfExists(storageKeyFile(f.deps.paths))).resolves.toBeUndefined();
       const printed = await leaks(f);
@@ -1421,33 +1432,90 @@ describe.skipIf(!findExecutable("git"))(
       );
     });
 
-    it("reuses the account's storage in the region, records it as not OpsCrew's, and orders nothing", async () => {
+    it("reuses the account's storage in the region and orders nothing", async () => {
       const objectStorage = new FakeObjectStorage([
         { id: "mine", region: "EU", s3Url: CONTABO_S3_URL },
       ]);
       const f = await contaboFlow(objectStorage);
       await runProvision(f.deps, { services: f.services });
       expect(objectStorage.orders).toEqual([]);
-      expect(f.handler.requests.some((r) => r.title.startsWith("Order "))).toBe(false);
-      expect(await record(f)).toMatchObject({ storageId: "mine", ordered: false });
+      expect(orderRequests(f)).toEqual([]);
+      expect(await record(f)).toMatchObject({ storageId: "mine" });
       expect(objectStorage.keysRead).toContain("mine");
       expect(f.deps.reporter.text()).toContain(
-        "The app's bucket goes into your Contabo Object Storage in EU (mine), which OpsCrew did not order: it never cancels it.",
+        "The app's bucket goes into the Contabo Object Storage in EU (mine).",
       );
     });
 
-    it("takes a storage an interrupted order left as OpsCrew's", async () => {
+    it("reuses the storage an order with no clear answer left", async () => {
       const objectStorage = new FakeObjectStorage([
         { id: "late", region: "EU", s3Url: CONTABO_S3_URL },
       ]);
       const f = await contaboFlow(objectStorage);
-      const file = orderedStorageFile(f.deps.paths);
-      await mkdir(dirname(file), { recursive: true });
-      const pending = { provider: "contabo", region: "EU", ordered: true, at: "x" };
-      await writeFile(file, JSON.stringify(pending));
+      await writeRecord(f);
       await runProvision(f.deps, { services: f.services });
       expect(objectStorage.orders).toEqual([]);
-      expect(await record(f)).toMatchObject({ storageId: "late", ordered: true });
+      expect(await record(f)).toMatchObject({ storageId: "late" });
+    });
+
+    it("never orders again while an order with no clear answer may still be in progress", async () => {
+      const objectStorage = new FakeObjectStorage();
+      const f = await contaboFlow(objectStorage);
+      await writeRecord(f);
+      await expect(runProvision(f.deps, { services: f.services })).rejects.toMatchObject({
+        code: "PHASE_PRECONDITION",
+        message:
+          "An order of Contabo Object Storage in EU that OpsCrew sent got no clear answer, and Contabo lists no storage there yet: the order may still be in progress. Nothing was changed.",
+        hint: expect.stringContaining(
+          "Check Object Storage in Contabo's Customer Control Panel, then run `opscrew provision` again.",
+        ),
+      });
+      expect(objectStorage.orders).toEqual([]);
+      expect(orderRequests(f)).toEqual([]);
+    });
+
+    it("keeps the record when the order got no answer, so the next run never orders twice", async () => {
+      const objectStorage = new FakeObjectStorage();
+      objectStorage.orderAnswer = "lost";
+      const f = await contaboFlow(objectStorage);
+      await expect(runProvision(f.deps, { services: f.services })).rejects.toMatchObject({
+        code: "PROVIDER_ERROR",
+      });
+      expect(await record(f)).toEqual({
+        provider: "contabo",
+        region: "EU",
+        at: expect.any(String),
+      });
+      objectStorage.orderAnswer = "ordered";
+      await expect(runProvision(f.deps, { services: f.services })).rejects.toMatchObject({
+        message: expect.stringContaining("the order may still be in progress"),
+      });
+      expect(objectStorage.orders).toHaveLength(1);
+    });
+
+    it("removes the record when Contabo refused the order: nothing was ordered", async () => {
+      const objectStorage = new FakeObjectStorage();
+      objectStorage.orderAnswer = "refused";
+      const f = await contaboFlow(objectStorage);
+      await expect(runProvision(f.deps, { services: f.services })).rejects.toMatchObject({
+        code: "PROVIDER_ERROR",
+        message:
+          "Contabo refused the order of Contabo Object Storage in EU, so nothing was ordered: Contabo answered HTTP 400 to POST /v1/object-storages: Region not available",
+      });
+      await expect(readTextIfExists(orderedStorageFile(f.deps.paths))).resolves.toBeUndefined();
+      expect(f.engine.storage.calls).toEqual([]);
+    });
+
+    it("stops when Contabo no longer lists the recorded storage", async () => {
+      const objectStorage = new FakeObjectStorage();
+      const f = await contaboFlow(objectStorage);
+      await writeRecord(f, "gone-1");
+      await expect(runProvision(f.deps, { services: f.services })).rejects.toMatchObject({
+        code: "PHASE_PRECONDITION",
+        message:
+          "Contabo no longer lists the Contabo Object Storage in EU that holds the app's bucket (gone-1). Nothing was changed.",
+      });
+      expect(objectStorage.orders).toEqual([]);
     });
 
     it("with --plan-only shows the order and returns its hash, ordering and planning no bucket", async () => {
@@ -1461,7 +1529,24 @@ describe.skipIf(!findExecutable("git"))(
       await expect(readTextIfExists(orderedStorageFile(f.deps.paths))).resolves.toBeUndefined();
     });
 
-    it("orders nothing when the order is refused", async () => {
+    it("takes --approve <order hash> after --plan-only as the order's, never the infrastructure plan's", async () => {
+      const objectStorage = new FakeObjectStorage();
+      const f = await contaboFlow(objectStorage);
+      const planned = await runProvision(f.deps, { services: f.services, planOnly: true });
+      const orderHash = planned.storagePlanHash as string;
+      const applied = await runProvision(f.deps, {
+        services: f.services,
+        approveHashes: [orderHash],
+      });
+      expect(applied.applied).toBe(true);
+      expect(objectStorage.orders).toHaveLength(1);
+      expect(orderRequests(f).map((r) => r.planHash)).toEqual([orderHash]);
+      // The infrastructure plan was planned afresh, not looked up under the order's hash.
+      expect(f.main.applied).toHaveLength(1);
+      expect(f.main.applied[0]?.approval.approvedPlanHash).not.toBe(orderHash);
+    });
+
+    it("orders nothing when the order is not approved", async () => {
       const objectStorage = new FakeObjectStorage();
       const f = await contaboFlow(objectStorage, {
         answer: (request) => !request.title.startsWith("Order "),
@@ -1484,6 +1569,7 @@ describe.skipIf(!findExecutable("git"))(
         message: expect.stringContaining("is cancelled and ends on 2026-12-01"),
       });
       expect(objectStorage.orders).toEqual([]);
+      expect(f.engine.storage.calls).toEqual([]);
     });
   },
 );
@@ -1516,6 +1602,20 @@ describe("the key of a bucket in Contabo's storage", () => {
     const env = storageEngineEnv({}, plan, key);
     expect(env.TF_VAR_endpoint).toBe(CONTABO_S3_URL);
     expect(env.AWS_SECRET_ACCESS_KEY).toBe(objectStorage.madeKey.secretAccessKey);
+  });
+
+  it("is read from a storage whose cancellation the user asked for: only provision stops there", async () => {
+    const d = await createTestPhaseDeps({ env: {} });
+    const objectStorage = new FakeObjectStorage([
+      { id: "s1", region: "EU", s3Url: CONTABO_S3_URL, cancelledUntil: "2026-12-01" },
+    ]);
+    const key = await requireStorageKey(
+      d,
+      withBucket(testPlan(), "contabo"),
+      { objectStorage },
+      { command: "opscrew drift", asks: false },
+    );
+    expect(key.endpoint).toBe(CONTABO_S3_URL);
   });
 
   it("stops plainly while there is no storage yet", async () => {

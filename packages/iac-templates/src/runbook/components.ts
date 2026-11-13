@@ -320,8 +320,8 @@ export function objectStorageSection(
       "  reads it through Contabo's API whenever it needs it, never keeps it in a file, this repository or infrastructure",
       "  state, and the app gets it as `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, with `AWS_REGION` and",
       "  `AWS_ENDPOINT_URL_S3`.",
-      "- **The storage itself:** OpsCrew ordered it, or used the one your account had; `--delete-data` cancels it only if",
-      "  OpsCrew ordered it and no other bucket is in it, at the next possible date (Contabo bills it until then).",
+      "- **The storage itself** holds every bucket of the account in this region and is billed monthly. OpsCrew never",
+      "  cancels it, `--delete-data` included: when nothing uses it, cancel it in Contabo's Customer Control Panel.",
       "",
     ];
   }

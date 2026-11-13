@@ -812,11 +812,14 @@ describe("designComponents: storage", () => {
   });
 
   it("picks Contabo Object Storage on Contabo by default, priced from its smallest size", () => {
-    const requirements = makeRequirements({ provider: "contabo", region: "eu-central", ...bucket });
-    const { components, lines } = designed(
-      s3,
-      makeRequirements({ ...requirements, expectedMonthlyUsers: ">100k" }),
-    );
+    // 10,000 to 100,000 users: 250 GB, all the storage OpsCrew orders holds.
+    const requirements = makeRequirements({
+      provider: "contabo",
+      region: "eu-central",
+      ...bucket,
+      expectedMonthlyUsers: "10k-100k",
+    });
+    const { components, lines } = designed(s3, requirements);
     expect(components.storage?.objectStorage).toMatchObject({
       provider: "contabo",
       region: "EU",
@@ -832,6 +835,28 @@ describe("designComponents: storage", () => {
       "Contabo Object Storage from €2.49/month (its smallest size, free transfer;",
     );
     expect(line).toContain("a larger size costs what Contabo charges, not checked by OpsCrew");
+    expect(line).not.toContain("is not offered");
+  });
+
+  it("does not offer Contabo Object Storage for more than the 250 GB OpsCrew orders, and says why", () => {
+    const requirements = makeRequirements({
+      provider: "contabo",
+      region: "eu-central",
+      ...bucket,
+      expectedMonthlyUsers: ">100k",
+    });
+    const offers = storageOffers(requirements, { storageGb: 251, egressGbPerMonth: 0 });
+    expect(offers.map((o) => o.provider)).toEqual(["garage"]);
+    const { components, lines } = designed(s3, {
+      ...requirements,
+      dnsProvider: "cloudflare",
+      domain: "shop.example.com",
+    });
+    expect(components.storage?.objectStorage?.provider).toBe("r2");
+    const line = lines.find((l) => l.startsWith("Object storage")) ?? "";
+    expect(line).toContain(
+      "Contabo Object Storage is not offered: OpsCrew orders it with 250 GB, less than the 1000 GB the app is expected to store (storage.objectStorage.expected).",
+    );
   });
 
   it("never picks Garage on a cloud server by itself, and uses it when the interview chose it", () => {

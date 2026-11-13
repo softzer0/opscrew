@@ -1,6 +1,6 @@
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
-import type { ApprovalRecord, ObjectStorageApi, PlanSummary } from "@opscrew/contracts";
+import type { ApprovalRecord, PlanSummary } from "@opscrew/contracts";
 import { exists, OpsCrewError, plural, realSleep } from "@opscrew/core";
 import {
   type RenderContext,
@@ -13,19 +13,16 @@ import { cloudProvider } from "@opscrew/providers";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import {
-  forgetOrderedStorage,
-  type OrderedStorageRecord,
-  orderedStorageApi,
+  orderedStorageStays,
   type ProviderBucket,
   providerBucket,
-  readOrderedStorage,
   requireStorageKey,
   type StorageKey,
   storageEngineEnv,
   storageStateFile,
 } from "../provision";
 import { describeChanges, type ProjectEngine, readValidJson, refusalReason } from "../shared";
-import { listBuckets, storageS3Client } from "../shared/s3";
+import { storageS3Client } from "../shared/s3";
 import { planHeading } from "./checks";
 import { typeNameHint } from "./common";
 import {
@@ -48,11 +45,6 @@ export interface BucketDeletion {
   bucket: ProviderBucket;
   /** The key of a Hetzner, Spaces or Contabo bucket, to check that it is gone. Never logged. */
   key?: StorageKey;
-  /**
-   * The Contabo storage OpsCrew ordered for the bucket, which the deletion then cancels when no
-   * other bucket is in it; absent for every other bucket, and for a storage OpsCrew did not order.
-   */
-  ordered?: { record: OrderedStorageRecord & { storageId: string }; api: ObjectStorageApi };
 }
 
 /** Where the bucket is, in words: `shop-uploads on Hetzner Object Storage (fsn1)`. */
@@ -66,26 +58,11 @@ export function bucketStays(bucket: ProviderBucket): string {
 }
 
 /** Said before the confirmation when `--delete-data` deletes the app's bucket. */
-export function bucketDeletionWarning(
-  deletion: Pick<BucketDeletion, "bucket" | "ordered">,
-): string {
+export function bucketDeletionWarning(deletion: Pick<BucketDeletion, "bucket">): string {
   const { bucket } = deletion;
-  const warning =
-    bucket.provider === "r2"
-      ? `With --delete-data, OpsCrew also deletes the app's bucket ${bucketWords(bucket)} once it is empty: Cloudflare refuses a bucket that holds files, and OpsCrew never deletes them itself.`
-      : `With --delete-data, OpsCrew also deletes the app's bucket ${bucketWords(bucket)} and every file in it. This cannot be undone.`;
-  const cancel = storageCancelLine(deletion);
-  return cancel === undefined ? warning : `${warning} ${cancel}`;
-}
-
-/** What happens to the Contabo storage that holds the bucket, said before the confirmation. */
-function storageCancelLine(deletion: Pick<BucketDeletion, "bucket" | "ordered">) {
-  const { bucket, ordered } = deletion;
-  if (bucket.provider !== "contabo") return undefined;
-  const storage = `${STORAGE_NAMES.contabo} in ${bucket.region}`;
-  return ordered === undefined
-    ? `OpsCrew did not order your ${storage}, so it stays and Contabo keeps billing it.`
-    : `Then OpsCrew cancels the ${storage} it ordered (${ordered.record.storageId}) if no other bucket is in it, effective at the next possible date: Contabo bills it until then.`;
+  return bucket.provider === "r2"
+    ? `With --delete-data, OpsCrew also deletes the app's bucket ${bucketWords(bucket)} once it is empty: Cloudflare refuses a bucket that holds files, and OpsCrew never deletes them itself.`
+    : `With --delete-data, OpsCrew also deletes the app's bucket ${bucketWords(bucket)} and every file in it. This cannot be undone.`;
 }
 
 /**
@@ -164,15 +141,6 @@ export async function planBucketDeletion(
     bucket.provider === "r2"
       ? undefined
       : await requireStorageKey(deps, plan, services, { command: DELETE_DATA, asks: false });
-  // A Contabo storage OpsCrew ordered for the bucket goes with it, when nothing else is in it.
-  const record = bucket.provider === "contabo" ? await readOrderedStorage(deps) : undefined;
-  const ordered =
-    record?.ordered === true && record.storageId !== undefined
-      ? {
-          record: { ...record, storageId: record.storageId },
-          api: orderedStorageApi(deps, services),
-        }
-      : undefined;
   const dir = join(deps.paths.stateDir, "storage-delete");
   await deletionRoot(deps, plan, dir);
   const env = storageEngineEnv(setup.env, plan, key);
@@ -180,9 +148,7 @@ export async function planBucketDeletion(
   deps.reporter.step(`Planning the deletion of the app's bucket ${bucketWords(bucket)}`);
   await setup.engine.init(dir, { env, backendConfig: { path: state } });
   const summary = await savePlan(session, "destroy-bucket", { destroy: true });
-  if (summary.changes.length > 0) {
-    return { session, summary, bucket, ...(key ? { key } : {}), ...(ordered ? { ordered } : {}) };
-  }
+  if (summary.changes.length > 0) return { session, summary, bucket, ...(key ? { key } : {}) };
   await discardPlan(summary);
   await rm(dir, { recursive: true, force: true });
   return undefined;
@@ -200,14 +166,10 @@ export interface BucketStillListed {
   error: OpsCrewError;
 }
 
-/**
- * What `deleteBucket` did: its approval, the bucket when the provider still lists it, and the
- * Contabo storage OpsCrew ordered when cancelling it failed.
- */
+/** What `deleteBucket` did: its approval, and the bucket when the provider still lists it. */
 export interface BucketDeleted {
   approval: ApprovalRecord;
   stillListed?: BucketStillListed;
-  notCancelled?: BucketStillListed;
 }
 
 /**
@@ -247,73 +209,14 @@ export async function confirmBucketGone(
   };
 }
 
-/**
- * The "What remains" items of a bucket its provider still lists, and of a Contabo storage OpsCrew
- * ordered that it could not cancel, if any.
- */
+/** The "What remains" item of a bucket its provider still lists, if any. */
 export function bucketStillListed(deleted: BucketDeleted | undefined): string[] {
-  return [deleted?.stillListed, deleted?.notCancelled]
-    .filter((left) => left !== undefined)
-    .map((left) => left.remaining);
+  return deleted?.stillListed !== undefined ? [deleted.stillListed.remaining] : [];
 }
 
-/** Ends a finished teardown with the error of what {@link bucketStillListed} names, if any. */
+/** Ends a finished teardown with the error of a bucket its provider still lists, if any. */
 export function failIfBucketListed(deleted: BucketDeleted | undefined): void {
-  const left = deleted?.stillListed ?? deleted?.notCancelled;
-  if (left !== undefined) throw left.error;
-}
-
-/**
- * Cancels the Contabo storage OpsCrew ordered for the deleted bucket (`deletion.ordered`), under
- * the deletion's approval, when no other bucket is in it (S3's list of buckets, with the storage's
- * key): at the next possible date, so Contabo bills it until then. A storage that still holds
- * another bucket stays, and so does its record. Returns what remains when the cancel failed.
- */
-async function cancelOrderedStorage(
-  deletion: BucketDeletion,
-): Promise<BucketStillListed | undefined> {
-  const { ordered, key, bucket } = deletion;
-  const { deps } = deletion.session;
-  if (ordered === undefined || key?.endpoint === undefined) return undefined;
-  const id = ordered.record.storageId;
-  const storage = `${STORAGE_NAMES.contabo} in ${bucket.region} (${id})`;
-  const io = { fetch: deps.fetch, now: () => deps.clock.now() };
-  const check = `Cancel it in ${bucketConsole("contabo")} if nothing else is in it.`;
-  try {
-    const others = await listBuckets({ endpoint: key.endpoint, region: "us-east-1" }, key, io);
-    if (others.length > 0) {
-      deps.reporter.info(
-        `OpsCrew keeps the ${storage} it ordered: other buckets are in it (${others.join(", ")}), and Contabo keeps billing it.`,
-      );
-      return undefined;
-    }
-    deps.reporter.step(`Cancelling the ${storage}`);
-    const until = await ordered.api.cancel(id);
-    await deps.audit.append({
-      kind: "provider-call",
-      actor: "opscrew",
-      action: "cancel object storage",
-      phase: deletion.session.phase,
-      target: `contabo object storage ${id}`,
-      detail: `ends ${until}`,
-    });
-    await forgetOrderedStorage(deps);
-    deps.reporter.success(
-      `Cancelled the ${storage} OpsCrew ordered: it ends on ${until}, and Contabo bills it until then.`,
-    );
-    return undefined;
-  } catch (error) {
-    if (!(error instanceof OpsCrewError)) throw error;
-    const reason = deps.redactor.redact(error.message);
-    return {
-      remaining: `The ${storage} OpsCrew ordered for the bucket, which it could not cancel (${reason}), so Contabo keeps billing it. ${check}`,
-      error: new OpsCrewError(
-        "PROVIDER_ERROR",
-        `The app's bucket is deleted, but cancelling the ${storage} failed: ${reason} The rest of the teardown is done.`,
-        { hint: check },
-      ),
-    };
-  }
+  if (deleted?.stillListed !== undefined) throw deleted.stillListed.error;
 }
 
 /** R2's refusal to delete a bucket that still holds files. */
@@ -353,7 +256,6 @@ export async function deleteBucket(
         bucket.provider === "r2"
           ? "Cloudflare deletes an R2 bucket only when it is empty: if it still holds files, nothing is deleted and OpsCrew says how to empty it. OpsCrew never deletes the files itself."
           : "Every file in the bucket is deleted with it. This cannot be undone.",
-        ...[storageCancelLine(deletion)].filter((line) => line !== undefined),
         `Plan hash: ${summary.planHash}`,
       ].join("\n"),
       planHash: summary.planHash,
@@ -403,8 +305,10 @@ export async function deleteBucket(
       if (stillListed !== undefined) return { approval, stillListed };
     }
     deps.reporter.success(`Deleted the app's bucket ${bucket.bucket} on ${name}.`);
-    const notCancelled = await cancelOrderedStorage(deletion);
-    return notCancelled === undefined ? { approval } : { approval, notCancelled };
+    // Contabo's storage holds every bucket of the account in its region: OpsCrew never cancels it.
+    const stays = await orderedStorageStays(deps, bucket);
+    if (stays !== undefined) deps.reporter.info(stays);
+    return { approval };
   } finally {
     await discardBucketDeletion(deletion);
   }

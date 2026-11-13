@@ -172,8 +172,8 @@ change. So design and advise refuse a new size on Contabo and name two ways:
 
 ## What isn't offered
 
-- **Contabo's Object Storage.** Your app's bucket can be [Garage](object-storage.md) on the server,
-  or Cloudflare R2 when your domain is on Cloudflare.
+- **Contabo's Object Storage for more than 250 GB.** Up to that, your app's bucket can be in it:
+  see [Object storage](object-storage.md).
 - **Contabo's automatic backups.** See [Snapshots](#snapshots).
 - **Contabo's private networks.** OpsCrew's own private network (WireGuard) connects the app's
   servers and your devices as on the other providers: see

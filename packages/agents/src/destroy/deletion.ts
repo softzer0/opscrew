@@ -88,8 +88,8 @@ export interface DeletionScope {
    */
   servers?: ServerSnapshotApi | undefined;
   /**
-   * The object storage OpsCrew ordered for the app's bucket through its provider's API (default:
-   * the connector's): a deletion of the bucket cancels it when nothing else is in it.
+   * The object storage of the app's bucket at a provider that sells it through its API (default:
+   * the connector's), which gives the bucket's key.
    */
   objectStorage?: ObjectStorageApi | undefined;
 }

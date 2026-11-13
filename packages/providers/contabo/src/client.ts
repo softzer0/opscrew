@@ -613,16 +613,6 @@ export class ContaboClient {
   }
 
   /**
-   * Cancels an object storage at the next possible date (`PATCH …/{id}/cancel`, no `cancelDate`
-   * given). The answer's shape is not in the docs read (R15), so the end date is read back.
-   */
-  async cancelObjectStorage(objectStorageId: string): Promise<string> {
-    const path = `/v1/object-storages/${encodeURIComponent(objectStorageId)}`;
-    await this.#request("PATCH", `${path}/cancel`, acknowledged, { body: {} });
-    return (await this.getObjectStorage(objectStorageId)).cancelDate ?? "";
-  }
-
-  /**
    * Reads the object storage every 5 seconds until it is `READY`. One in `ERROR` or `DISABLED`,
    * and one not ready after `timeoutMs`, throw `PROVIDER_ERROR` naming its status.
    */
@@ -848,7 +838,7 @@ export class ContaboClient {
           { hint: "Contabo's API may have changed; please report this to OpsCrew." },
         );
       case "status":
-        return this.#statusError(failure.response, method, path);
+        return ContaboStatusError.of(await this.#statusError(failure.response, method, path));
     }
   }
 
@@ -914,6 +904,15 @@ export class ContaboClient {
     return new OpsCrewError(code, this.#redactor.redact(message), {
       ...(options.hint !== undefined && { hint: this.#redactor.redact(options.hint) }),
       ...(options.cause !== undefined && { cause: options.cause }),
+    });
+  }
+}
+
+/** An error of a request Contabo answered with an error status: Contabo did nothing. */
+export class ContaboStatusError extends OpsCrewError {
+  static of(error: OpsCrewError): ContaboStatusError {
+    return new ContaboStatusError(error.code, error.message, {
+      ...(error.hint !== undefined ? { hint: error.hint } : {}),
     });
   }
 }

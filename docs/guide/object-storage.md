@@ -40,7 +40,7 @@ in `opscrew/plan.yaml`, as below.
 | **Cloudflare R2** | your domain is on Cloudflare | per GB stored and per million requests, no charge for downloads |
 | **DigitalOcean Spaces** | the app runs on DigitalOcean | a monthly base per account, with storage and downloads included |
 | **Hetzner Object Storage** | the app runs on Hetzner Cloud in Falkenstein (fsn1), Nuremberg (nbg1) or Helsinki (hel1) | a monthly base per account, with storage and downloads included |
-| **Contabo Object Storage** | the app runs on [Contabo](contabo.md): in EU for the EU region, US-central for both US regions, SIN for Singapore | a monthly price per storage, with free downloads |
+| **Contabo Object Storage** | the app runs on [Contabo](contabo.md) and is expected to store at most 250 GB: in EU for the EU region, US-central for both US regions, SIN for Singapore | a monthly price per storage, with free downloads |
 | **[Garage](https://garagehq.deuxfleurs.fr/)** | always; on Hetzner Cloud, DigitalOcean and Contabo only when you choose it | free: it keeps the files on the server's own disk and uses 64 MB of its memory |
 
 Garage is a small S3-compatible storage server (AGPL 3.0) that OpsCrew runs as one of the app's
@@ -94,8 +94,9 @@ checked on 2026-10-19. Prices exclude VAT and sales tax.
   objects under 64 kB are billed as 64 kB.
 - **Contabo Object Storage** ([product page](https://contabo.com/en/object-storage/), checked on
   2026-11-13), in EUR: "from 2.49 a month", with free and unlimited downloads. Contabo publishes no
-  price per TB, so OpsCrew shows that price for every use: it is for the size OpsCrew orders,
-  0.25 TB, and a larger storage costs what Contabo charges, which OpsCrew has not checked. Contabo
+  price per TB, so OpsCrew shows that price: it is for the size OpsCrew orders, 0.25 TB, and a
+  larger storage costs what Contabo charges, which OpsCrew has not checked. So OpsCrew offers it
+  only to an app expected to store at most 250 GB, and design says so for a larger one. Contabo
   sells one storage per region and account, which holds all your buckets there.
 - **Garage:** nothing beyond the server.
 
@@ -108,7 +109,7 @@ For the four expected uses above, that gives:
 | 250 GB / 1,000 GB | USD 3.60 | USD 5.00 | EUR 6.49 |
 | 1,000 GB / 5,000 GB | USD 14.85 | USD 54.95 | EUR 10.37 |
 
-At Contabo the price is EUR 2.49 for each of these uses (see above). When your account already
+At Contabo the price is EUR 2.49 for the first three of these uses (see above). When your account already
 pays the Spaces or Hetzner base for other buckets, or has Contabo's storage in the region, this
 app adds only what it uses beyond the shared quota. OpsCrew cannot see that, so it shows the full base price and
 says that it is per account.
@@ -126,11 +127,13 @@ bucket and warns you; its files stay where they are.
 ## What OpsCrew creates
 
 - **At Contabo, the storage first.** If your account has Contabo Object Storage in the bucket's
-  region, OpsCrew puts the bucket there, notes that it did not order that storage, and never
-  cancels it. Otherwise `npx opscrew provision` shows a plan that orders one through Contabo's API
-  (the region, 0.25 TB, the price, and how it is cancelled), which you approve by its hash; with
+  region, OpsCrew puts the bucket there. Otherwise `npx opscrew provision` shows a plan that orders
+  one through Contabo's API (the region, 0.25 TB, the price), which you approve by its hash; with
   `--plan-only`, that order plan is the bucket plan it returns, and the bucket's own plan follows
-  once the storage exists. Contabo bills the storage monthly.
+  once the storage exists. Contabo bills the storage monthly, and OpsCrew never cancels it: it
+  holds every bucket of your account in its region. When nothing uses it any more, cancel it in
+  Contabo's Customer Control Panel. If an order got no clear answer, OpsCrew never sends a second
+  one: it asks you to check the panel first.
 - **One private bucket** for the app, named in `storage.objectStorage.bucket`, in its own
   OpenTofu or Terraform root, `opscrew/infra/storage/`, with a plan you approve by its hash like
   the others. When your app uploads files straight from the browser with presigned URLs, the bucket
@@ -198,10 +201,9 @@ old key in the provider's console.
 ## Removing the app
 
 `npx opscrew destroy` keeps the bucket and its files, which the provider bills until the bucket is
-deleted. To delete it too, add `--delete-data` (and type the app's name). At Contabo, OpsCrew then
-also cancels the storage, but only one it ordered, and only when no other bucket is in it: the
-cancellation takes effect at the next possible date, and Contabo bills the storage until then. A
-storage your account already had stays. An R2 bucket must be
+deleted. To delete it too, add `--delete-data` (and type the app's name). At Contabo, the storage
+stays and is billed monthly, as other buckets may use it: when nothing uses it, cancel it in
+Contabo's Customer Control Panel. An R2 bucket must be
 empty first: Cloudflare refuses to delete a bucket that holds files, and OpsCrew never deletes your
 files itself. Moving the app between Hetzner Cloud and DigitalOcean with [`npx opscrew retarget`](retarget.md) moves
 its bucket too, unless you pass `--keep-bucket`; R2 and Contabo Object Storage stay, and so does a bucket when the app moves

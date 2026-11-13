@@ -37,6 +37,7 @@ import {
   type ObjectStorage,
   type StorageOffer,
   sqliteMove,
+  storageNotOffered,
   storageOffers,
   storageOfferText,
   storagePrice,
@@ -1129,7 +1130,9 @@ export function designComponents(input: {
   lines.push(...componentLines(components, facts));
   lines.push(...externalLines(facts, externalServices, settingProblem));
   const bucketLine =
-    facts.objectStorage === undefined ? undefined : storageText(components, storage.offers);
+    facts.objectStorage === undefined
+      ? undefined
+      : storageText(components, storage.offers, requirements);
   if (facts.objectStorage !== undefined) {
     const { client } = facts.objectStorage;
     if (storage.line !== undefined) lines.push(storage.line);
@@ -1253,8 +1256,15 @@ function externalLines(
   return lines;
 }
 
-/** The object storage choice with the other options and their prices, or undefined without one. */
-function storageText(components: Components, offers: readonly StorageOffer[]): string | undefined {
+/**
+ * The object storage choice with the other options and their prices, and why Contabo's is not
+ * offered when the app is expected to store more than it holds; undefined without a bucket.
+ */
+function storageText(
+  components: Components,
+  offers: readonly StorageOffer[],
+  requirements: Pick<Requirements, "provider">,
+): string | undefined {
   const storage = components.storage?.objectStorage;
   if (storage === undefined) return undefined;
   const { storageGb, egressGbPerMonth } = storage.expected;
@@ -1276,6 +1286,7 @@ function storageText(components: Components, offers: readonly StorageOffer[]): s
         ]
       : []),
     ...notes,
+    ...[storageNotOffered(requirements, storage.expected)].filter((line) => line !== undefined),
     ...(storage.cors ? ["It accepts browser uploads from the app's own domain only."] : []),
   ].join(" ");
 }

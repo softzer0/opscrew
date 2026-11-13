@@ -33,6 +33,7 @@ import {
 import { type DeployPlan, snapshotOffsiteOf } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
+import { CONTABO_STORAGE_GB } from "../design/storage";
 import { vpsConnector } from "../providers";
 import type { RefreshRecoveryOptions } from "../secrets";
 import { knownRecipients } from "../secrets/store";
@@ -352,25 +353,17 @@ async function bucketKey(
 }
 
 /**
- * The size of the object storage OpsCrew orders at Contabo: 0.25 TB, the size Contabo's smallest
- * price is for (026 research R2; unverified live, R15). The user grows it in Contabo's panel.
- */
-export const ORDERED_STORAGE_TB = 0.25;
-
-/**
- * What OpsCrew knows of the object storage that holds the environment's bucket at Contabo: which
- * storage, its S3 endpoint, and whether OpsCrew ordered it (only then may a teardown cancel it). An
- * order under way has no `storageId` yet: a storage found in its region afterwards is the order's.
+ * What OpsCrew knows of the object storage that holds the environment's bucket at Contabo: its id,
+ * so a storage Contabo no longer lists is noticed. Without `storageId`, an order OpsCrew sent and
+ * whose outcome it does not know: it may still be under way, so no second one is offered.
  */
 const OrderedStorageRecordSchema = z.object({
   provider: z.literal("contabo"),
   region: z.string(),
   storageId: z.string().optional(),
-  s3Url: z.string().optional(),
-  ordered: z.boolean(),
   at: z.string(),
 });
-export type OrderedStorageRecord = z.infer<typeof OrderedStorageRecordSchema>;
+type OrderedStorageRecord = z.infer<typeof OrderedStorageRecordSchema>;
 
 /** Where {@link OrderedStorageRecord} is kept, beside the environment's other private files. */
 export function orderedStorageFile(paths: Pick<ProjectPaths, "projectHomeDir">): string {
@@ -378,7 +371,7 @@ export function orderedStorageFile(paths: Pick<ProjectPaths, "projectHomeDir">):
 }
 
 /** The environment's {@link OrderedStorageRecord}, or undefined; a damaged one stops. */
-export async function readOrderedStorage(
+async function readOrderedStorage(
   deps: Pick<PhaseDeps, "paths">,
 ): Promise<OrderedStorageRecord | undefined> {
   const file = orderedStorageFile(deps.paths);
@@ -404,16 +397,11 @@ async function writeOrderedStorage(deps: PhaseDeps, record: Omit<OrderedStorageR
   await writeFileAtomic(file, `${JSON.stringify({ ...record, at })}\n`, { mode: 0o600 });
 }
 
-/** Forgets the record once the storage it names is cancelled. */
-export function forgetOrderedStorage(deps: Pick<PhaseDeps, "paths">): Promise<void> {
-  return rm(orderedStorageFile(deps.paths), { force: true });
-}
-
 /**
  * The object storage API of the bucket's provider: the run's (tests), else its connector's.
  * @throws OpsCrewError `CREDENTIALS_MISSING` when the provider's credentials are not set.
  */
-export function orderedStorageApi(
+function orderedStorageApi(
   deps: Pick<PhaseDeps, "env" | "fetch" | "redactor" | "version">,
   services: Pick<ProvisionServices, "objectStorage">,
 ): ObjectStorageApi {
@@ -432,20 +420,11 @@ function storageWords(bucket: Pick<ProviderBucket, "provider" | "region">): stri
   return `${STORAGE_NAMES[bucket.provider]} in ${bucket.region}`;
 }
 
-/** The plain stop for a storage the user cancelled: it ends, and with it the app's bucket. */
-function cancelledStorage(bucket: Bucket, storage: ProviderObjectStorage, command: string) {
-  return new OpsCrewError(
-    "PHASE_PRECONDITION",
-    `Your ${storageWords(bucket)} (${storage.id}) is cancelled and ends on ${storage.cancelledUntil}, and Contabo sells one storage per region, so OpsCrew can neither use it nor order another. Nothing was changed.`,
-    {
-      hint: `Revoke the cancellation in Contabo's Customer Control Panel (Object Storage), then run \`${command}\` again.`,
-    },
-  );
-}
-
 /**
- * The storage holding the bucket and its key, once it exists (the recorded storage, or the
- * account's one in the region, recorded now as not OpsCrew's); undefined when there is none yet.
+ * The account's storage in the bucket's region (Contabo sells one per region), whoever ordered
+ * it, recorded by its id; undefined when there is none and nothing is under way.
+ * @throws OpsCrewError `PHASE_PRECONDITION` when the recorded storage is no longer listed, or an
+ * order OpsCrew sent may still be under way: never a second order then.
  */
 async function knownStorage(
   deps: PhaseDeps,
@@ -454,34 +433,35 @@ async function knownStorage(
   command: string,
 ): Promise<ProviderObjectStorage | undefined> {
   const record = await readOrderedStorage(deps);
-  const found = await api.find(bucket.region);
   const mine = record?.region === bucket.region ? record : undefined;
+  const found = await api.find(bucket.region);
+  const file = orderedStorageFile(deps.paths);
   if (found === undefined) {
-    if (mine?.storageId === undefined) return undefined;
+    if (mine === undefined) return undefined;
+    if (mine.storageId === undefined) {
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        `An order of ${storageWords(bucket)} that OpsCrew sent got no clear answer, and Contabo lists no storage there yet: the order may still be in progress. Nothing was changed.`,
+        {
+          hint: `Check Object Storage in Contabo's Customer Control Panel, then run \`${command}\` again. If the panel shows no storage and no order there, delete ${file} first: OpsCrew then plans a new order.`,
+        },
+      );
+    }
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       `Contabo no longer lists the ${storageWords(bucket)} that holds the app's bucket (${mine.storageId}). Nothing was changed.`,
       {
-        hint: `Check Object Storage in Contabo's Customer Control Panel. If the storage is gone, delete ${orderedStorageFile(deps.paths)} and run \`${command}\` again: OpsCrew then plans a new one.`,
+        hint: `Check Object Storage in Contabo's Customer Control Panel. If the storage is gone, delete ${file} and run \`${command}\` again: OpsCrew then plans a new one.`,
       },
     );
   }
-  if (found.cancelledUntil !== undefined) throw cancelledStorage(bucket, found, command);
-  if (mine?.storageId !== found.id || mine.s3Url !== found.s3Url) {
-    // An order under way (no id yet) is OpsCrew's; any other storage is the user's own.
-    const ordered = mine !== undefined && mine.storageId === undefined && mine.ordered;
+  if (mine?.storageId !== found.id) {
     await writeOrderedStorage(deps, {
       provider: "contabo",
       region: bucket.region,
       storageId: found.id,
-      s3Url: found.s3Url,
-      ordered,
     });
-    if (!ordered) {
-      deps.reporter.info(
-        `The app's bucket goes into your ${storageWords(bucket)} (${found.id}), which OpsCrew did not order: it never cancels it.`,
-      );
-    }
+    deps.reporter.info(`The app's bucket goes into the ${storageWords(bucket)} (${found.id}).`);
   }
   return found;
 }
@@ -508,7 +488,8 @@ async function storageKeyOf(
 /**
  * The key of a bucket in Contabo's storage with the storage's S3 endpoint, once the storage
  * exists: the key Contabo made with it, read through Contabo's API (never asked, kept in a file or
- * printed).
+ * printed). A storage whose cancellation the user asked for still answers until it ends, so its
+ * key is read too.
  * @throws OpsCrewError `PHASE_PRECONDITION` when the storage is not ordered yet.
  */
 export async function orderedStorageKey(
@@ -527,6 +508,20 @@ export async function orderedStorageKey(
     );
   }
   return storageKeyOf(deps, api, storage);
+}
+
+/**
+ * The line said after `--delete-data` deleted a bucket in Contabo's storage: the storage stays,
+ * since other buckets may use it, and the user cancels it when nothing does. Undefined for every
+ * other bucket.
+ */
+export async function orderedStorageStays(
+  deps: Pick<PhaseDeps, "paths">,
+  bucket: Pick<ProviderBucket, "provider" | "region">,
+): Promise<string | undefined> {
+  if (bucket.provider !== "contabo") return undefined;
+  const id = (await readOrderedStorage(deps))?.storageId;
+  return `${STORAGE_NAMES.contabo}${id === undefined ? "" : ` ${id}`} in ${bucket.region} stays and is billed monthly, as other buckets may use it; when nothing uses it, cancel it in Contabo's Customer Control Panel.`;
 }
 
 /** The plan that orders the object storage, whose SHA-256 its approval binds. */
@@ -551,7 +546,7 @@ function orderPlanText(plan: StorageOrderPlan, hash: string): string[] {
     `Object storage plan: order ${STORAGE_NAMES.contabo} in ${plan.region} through Contabo's API, named ${plan.displayName}.`,
     `  + ${plan.sizeTb * 1000} GB, from ${price}/month with free transfer (${plan.price.source}, checked ${plan.price.checkedOn}); a larger size costs what Contabo charges.`,
     "  Contabo sells one storage per region: every bucket of your account in this region goes into it.",
-    "  Contabo bills it monthly. A teardown with --delete-data cancels it only if it holds no other bucket, effective at the next possible date: Contabo bills it until then.",
+    "  Contabo bills it monthly, and OpsCrew never cancels it, as other buckets may use it: when nothing uses it, cancel it in Contabo's Customer Control Panel.",
     "  Its S3 key is made by Contabo with it: OpsCrew reads it through Contabo's API and gives it to the app as a secret, never printing or storing it.",
     `Order plan hash: ${hash}`,
   ];
@@ -566,15 +561,15 @@ export type OrderedStorage =
     };
 
 /**
- * Before the `storage` root of a bucket in Contabo's storage: the storage it goes into. The one
- * recorded, else the account's storage in the bucket's region (Contabo sells one per region),
- * recorded as not OpsCrew's so that no teardown ever cancels it, else a new one, ordered through
- * Contabo's API after its plan (region, size, price, how it is cancelled) is shown and approved by
- * its SHA-256 (`iac-apply`). Before the order, a record notes that OpsCrew set out to order it, so
- * a storage an interrupted order left is recognised as OpsCrew's. With `planOnly`, the plan is
- * shown and saved, and its hash returned for `--approve`: nothing is ordered. Returns the key
- * Contabo made with the storage (read through its API, registered with the redactor) and its S3
- * endpoint once the storage exists.
+ * Before the `storage` root of a bucket in Contabo's storage: the storage it goes into. The
+ * account's storage in the bucket's region, whoever ordered it (Contabo sells one per region),
+ * else a new one, ordered through Contabo's API after its plan (region, size, price, that OpsCrew
+ * never cancels it) is shown and approved by its SHA-256 (`iac-apply`). A storage whose
+ * cancellation the user asked for stops here: the bucket would go with it. Before the order, a
+ * record notes it, so an order whose outcome is unknown is never sent twice; Contabo's refusal
+ * (nothing was ordered) removes it. With `planOnly`, the plan is shown and saved, and its hash
+ * returned for `--approve`: nothing is ordered. Returns the key Contabo made with the storage
+ * (read through its API, registered with the redactor) and its S3 endpoint once it exists.
  * @throws OpsCrewError `APPROVAL_REFUSED` when the order is not approved: nothing was ordered.
  */
 export async function prepareOrderedStorage(
@@ -587,14 +582,21 @@ export async function prepareOrderedStorage(
   if (bucket?.provider !== "contabo") throw new Error("The plan has no bucket at Contabo.");
   const api = orderedStorageApi(deps, services);
   const known = await knownStorage(deps, bucket, api, options.command);
-  if (known !== undefined) {
-    return { key: await storageKeyOf(deps, api, known) };
+  if (known?.cancelledUntil !== undefined) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `Your ${storageWords(bucket)} (${known.id}) is cancelled and ends on ${known.cancelledUntil}, and Contabo sells one storage per region, so OpsCrew can neither use it nor order another. Nothing was changed.`,
+      {
+        hint: `Revoke the cancellation in Contabo's Customer Control Panel (Object Storage), then run \`${options.command}\` again.`,
+      },
+    );
   }
+  if (known !== undefined) return { key: await storageKeyOf(deps, api, known) };
   const order: StorageOrderPlan = {
     kind: "object-storage-order",
     provider: "contabo",
     region: bucket.region,
-    sizeTb: ORDERED_STORAGE_TB,
+    sizeTb: CONTABO_STORAGE_GB / 1000,
     displayName: `opscrew-${plan.app.name}`,
     price: bucket.price,
   };
@@ -624,19 +626,26 @@ export async function prepareOrderedStorage(
     );
   }
   await deps.approvals.assertApprovedPlan(hash);
-  await writeOrderedStorage(deps, { provider: "contabo", region: bucket.region, ordered: true });
+  await writeOrderedStorage(deps, { provider: "contabo", region: bucket.region });
   deps.reporter.step(`Ordering ${storageWords(bucket)} (Contabo makes it ready in a few minutes)`);
-  const storage = await api.order({
+  const answer = await api.order({
     region: order.region,
     sizeTb: order.sizeTb,
     displayName: order.displayName,
   });
+  if ("refused" in answer) {
+    await rm(orderedStorageFile(deps.paths), { force: true });
+    throw new OpsCrewError(
+      "PROVIDER_ERROR",
+      `Contabo refused the order of ${storageWords(bucket)}, so nothing was ordered: ${deps.redactor.redact(answer.refused)}`,
+      { hint: `Fix what Contabo named, then run \`${options.command}\` again.` },
+    );
+  }
+  const storage = answer.ordered;
   await writeOrderedStorage(deps, {
     provider: "contabo",
     region: bucket.region,
     storageId: storage.id,
-    s3Url: storage.s3Url,
-    ordered: true,
   });
   await deps.audit.append({
     kind: "provider-call",

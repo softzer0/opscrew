@@ -125,41 +125,6 @@ export function s3Client(
 }
 
 /**
- * The names of the buckets `key` reaches at `target.endpoint` (S3's ListBuckets, `GET /`), signed
- * as {@link s3Client} signs. Errors name the host and the HTTP status, never the key.
- */
-export async function listBuckets(
-  target: Omit<S3Bucket, "bucket">,
-  key: Pick<StorageLogin, "accessKeyId" | "secretAccessKey">,
-  io: { fetch: FetchLike; now: () => Date },
-): Promise<string[]> {
-  const url = new URL(`${target.endpoint.replace(/\/+$/, "")}/`);
-  let response: Response;
-  try {
-    response = await io.fetch(url, {
-      method: "GET",
-      headers: signedHeaders("GET", url, target.region, key, io.now()),
-    });
-  } catch (error) {
-    throw new OpsCrewError("PROVIDER_ERROR", `Could not reach ${url.host} to list its buckets.`, {
-      hint: "Check your network connection, then try again.",
-      cause: error,
-    });
-  }
-  const text = await response.text();
-  if (response.status !== 200) {
-    throw new OpsCrewError(
-      "PROVIDER_ERROR",
-      `${url.host} answered HTTP ${response.status} when OpsCrew listed its buckets.`,
-      { hint: "Try again in a few minutes." },
-    );
-  }
-  return [...text.matchAll(/<Bucket>[\s\S]*?<Name>([^<]+)<\/Name>[\s\S]*?<\/Bucket>/g)].map(
-    (match) => match[1] as string,
-  );
-}
-
-/**
  * The {@link s3Client} of a plan's bucket at Hetzner, Spaces or Contabo (its
  * `storage.objectStorage`), at the provider's endpoint for the bucket's region, or at the
  * endpoint that comes with a Contabo storage's key (its s3Url). Spaces and Contabo sign with
