@@ -549,7 +549,7 @@ names the change.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates && npx vitest run --root packages/iac-templates src/hosting/agent && pnpm lint`
   - Effort: medium
 
-- [ ] T2735 The deploy job passes only when the agent's health check would (research R13)
+- [x] T2735 The deploy job passes only when the agent's health check would (research R13)
   - Owns: `packages/iac-templates/src/hosting/workflow.ts`, `packages/iac-templates/src/hosting/workflow.test.ts`, `packages/iac-templates/src/hosting/__snapshots__/workflow.test.ts.snap`, `packages/cli/test/live/cpanel.test.ts`, `packages/cli/test/live/cpanel-support.ts`, `packages/cli/test/live/cpanel-support.test.ts`
   - Reads: research R13; `iac-templates/src/hosting/workflow.ts` (the wait step), `iac-templates/src/hosting/agent/script.ts` (the health check)
   - Accept:
