@@ -46,7 +46,8 @@ const HEADER_LINES = BASELINE_HEADERS.map(
  * `state/selector-section` (empty when none, or more than one, was added). Each release carries the
  * selector's `node_modules` link, and its `.htaccess` the selector's Passenger block; when its
  * package files differ from the running release's, the selector installs them into the app's one
- * environment before the switch; then `tmp/restart.txt`. `action=destroy` runs the selector's
+ * environment before the switch (an answer that the install was performed but the selector's own
+ * check of the app failed is a note: the agent's health check decides); then `tmp/restart.txt`. `action=destroy` runs the selector's
  * `destroy`, removes the empty `~/nodevenv/<app root>` (`~/virtualenv/` for Python) and the section
  * of `htaccess_cache` whose header it kept, every other byte as it was; a `note=` in its answer
  * says what it left and why.
@@ -414,6 +415,18 @@ restore_packages() {
   rmdir state/packages
 }
 
+# CloudLinux's selector's install-modules for the app's root, the options after it. An error that
+# says "The operation was performed" means the packages went in and only the selector's own check
+# of the app failed (it compares the app's answers before and after, and before a first release the
+# app root holds the empty placeholder): logged as a note, it counts as installed, and the agent's
+# health check after the switch decides (027 research R13).
+selector_modules() {
+  local performed='The operation was performed'
+  selector install-modules --app-root "$(app_root)" "$@" && return 0
+  [[ $SELECTOR_SAID == *"$performed"* ]] || return 1
+  say "Note: CloudLinux's selector installed the packages, but its own check of the app failed ($SELECTOR_SAID)."
+}
+
 # CloudLinux's selector installs the package files of release folder $1 into the app's one
 # environment. The selector runs npm in the app's root, the running release, so another release's
 # package files stand there while it installs, each of the running release's own put aside first
@@ -421,11 +434,11 @@ restore_packages() {
 selector_install() {
   local release=$1 file ok=yes
   if [ "$APP_KIND" = python ]; then
-    selector install-modules --app-root "$(app_root)" --requirements-file "$DIR/$release/requirements.txt"
+    selector_modules --requirements-file "$DIR/$release/requirements.txt"
     return
   fi
   if [ "$release" = "releases/$(running_id)" ]; then
-    selector install-modules --app-root "$(app_root)"
+    selector_modules
     return
   fi
   mkdir state/packages
@@ -433,7 +446,7 @@ selector_install() {
     if [ -e "current/$file" ]; then mv "current/$file" "state/packages/$file"; else : > "state/packages/$file.none"; fi
     if [ -e "$release/$file" ]; then cp -p "$release/$file" "current/$file"; fi
   done
-  selector install-modules --app-root "$(app_root)" || ok=""
+  selector_modules || ok=""
   restore_packages
   [ -n "$ok" ]
 }
