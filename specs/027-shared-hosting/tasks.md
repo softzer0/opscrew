@@ -396,7 +396,7 @@ names the change.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-sftp --filter=@opscrew/agents --filter=@opscrew/iac-templates && pnpm lint`
   - Effort: xhigh
 
-- [ ] T2718 [P] [US6] Verify, secure, drift and snapshots on a hosting account
+- [x] T2718 [P] [US6] Verify, secure, drift and snapshots on a hosting account
   - Owns: `packages/agents/src/hosting/{verify,secure,drift,snapshot}*.ts`, the hosting dispatch in `packages/agents/src/{verify,secure,drift,snapshot}/run.ts`, `packages/secops/src/hardening/php*.ts`
   - Reads: plan 9; spec US1 (scenario 6), US6; ADR 0030
   - Depends: T2713
@@ -408,7 +408,7 @@ names the change.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/secops && pnpm lint`
   - Effort: xhigh
 
-- [ ] T2720 [P] [US9] The plugin's skills and the MCP tools' text
+- [x] T2720 [P] [US9] The plugin's skills and the MCP tools' text
   - Owns: `plugin/**`, the hosting and OpenLiteSpeed text in `packages/mcp-server/src/**`
   - Depends: T2715, T2716
   - Accept: the skills offer hosting accounts and OpenLiteSpeed where they offer targets and proxies; the plugin validates.
