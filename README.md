@@ -26,6 +26,7 @@ Where it deploys:
 - **Your own computer, with the same production stack in your Docker:** see [Your app's production stack on your own computer](docs/guide/localhost.md). No server, no cloud account and no domain needed.
 - **Cloudflare, with no server, for static and server-rendered sites:** see [Host your site on Cloudflare](docs/guide/cloudflare-hosting.md). Free for static files.
 - **GitHub Pages, for static sites in public repositories:** see [Publish your site on GitHub Pages](docs/guide/github-pages.md). Free, without custom headers or commercial use.
+- **A shared hosting account you already pay for (cPanel, Plesk, DirectAdmin, or SFTP only), for static sites and PHP apps:** see [Deploy to a hosting account](docs/guide/hosting-accounts.md). With a panel, no credential for the account goes to GitHub.
 
 One app can have several environments, such as dev on your computer, staging on a small server and prod on the live one, and a tested image moves to prod unchanged: see [dev, staging and prod](docs/guide/environments.md). Every pull request can get its own preview at its own address, on one small server of its own: see [Previews](docs/guide/previews.md). Deploy jobs can also run on the server itself or on your computer: see [Self-hosted runners](docs/guide/runners.md).
 
@@ -36,7 +37,7 @@ How your app is built and shipped:
 - [Deploys without downtime](docs/guide/zero-downtime.md): a broken release never gets traffic.
 - [Rolling back a release](docs/guide/rollback.md): `opscrew rollback` puts the version before back with no build, and pauses deploys until you resume them.
 - [The image supply chain](docs/guide/supply-chain.md): SBOM, provenance, optional signing, Dependabot and deploy tags.
-- [The reverse proxy](docs/guide/reverse-proxy.md): Caddy or nginx, with your own rules.
+- [The reverse proxy](docs/guide/reverse-proxy.md): Caddy, nginx or OpenLiteSpeed, with your own rules.
 
 How it stays secure:
 - [Security](docs/guide/security.md): what OpsCrew sets up and checks.

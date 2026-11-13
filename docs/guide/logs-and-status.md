@@ -38,7 +38,10 @@ A name `--service` doesn't know is refused, and the refusal lists the names the 
   lines of every cron job.
 - **The edge** on a server is the reverse proxy every OpsCrew app on that server shares, so its lines
   are of all of them. In [a Portainer](portainer-target.md), `edge` exists only when the stack's web
-  mode is `caddy`: it is then the [Caddy](https://caddyserver.com/) in the app's own stack.
+  mode is `caddy`: it is then the [Caddy](https://caddyserver.com/) in the app's own stack. With
+  [OpenLiteSpeed](reverse-proxy.md#openlitespeed), `edge` shows OpsCrew's checks before each
+  restart; OpenLiteSpeed writes its own errors to a file in its container, which `logs` doesn't
+  read.
 
 ### A failed deploy's lines
 
@@ -71,6 +74,8 @@ deploy starts no copy that could fail a health check.
 | [Your computer](localhost.md) | Your local Docker |
 | [Cloudflare's hosting](cloudflare-hosting.md), server-rendered | Cloudflare's logs of the Worker's requests; `--follow` uses Cloudflare's live tail |
 | Cloudflare's hosting with a static site, and [GitHub Pages](github-pages.md) | No request logs: the last deploy runs instead |
+| [A hosting account](hosting-accounts.md) with a panel | The agent's log on the account, through the panel's API (or SFTP on Plesk) |
+| [An SFTP host](sftp.md) | Nothing: no agent runs there |
 
 On a server, `logs` runs fixed, read-only Docker commands (a listing of the part's containers, and
 `docker logs`), built only from names it has checked. It can't run anything else on the server, and each read is written to OpsCrew's audit log
@@ -137,6 +142,17 @@ Cloudflare's [Workers pricing](https://developers.cloudflare.com/workers/platfor
 | Until 2026-11-30 | 200,000 log events a day, kept 3 days | 20 million log events a month, kept 7 days |
 | From 2026-12-01 | 0.5 GB of logs a day, kept 7 days; past it, nothing is kept until 00:00 UTC | 50 GB a month included, then USD 0.25 per GB |
 
+### A hosting account
+
+On a [hosting account](hosting-accounts.md) with a panel, `logs` shows the agent's last lines: each
+release it deployed, refused or switched back from, and why, and each request it carried out. The
+agent keeps its last 1,000 lines. `--tail` works; `--service`, `--since`, `--follow` and `--failed`
+don't apply there, since the account runs no containers. The web server's logs, with your app's
+own errors, are in your panel (cPanel's Errors page, or the `error_log` file in the app's folder).
+
+An [SFTP host](sftp.md) runs no agent: each deploy's lines are in its run of the deploy workflow
+in GitHub Actions.
+
 ### GitHub Pages and static sites on Cloudflare
 
 These hosts serve the site's files without running any of its code, so they keep no request logs.
@@ -173,6 +189,8 @@ Figures past a threshold are flagged with what they mean and what to do:
 | Cloudflare's hosting, server-rendered | The last 24 hours' requests, errors and CPU time per request, against Workers Free's 100,000 requests a day and 10 ms of CPU time per request | |
 | Cloudflare's hosting, static site | The Worker's versions and custom domains | Request figures and request logs: Cloudflare serves the site's files without running any code |
 | GitHub Pages | The latest build and its result | Any figure: no code of the site runs |
+| [A hosting account](hosting-accounts.md#status-logs-and-checks) with a panel | The release that runs, those kept for a rollback, the last attempt and its reason, the certificate and the disk left | |
+| [An SFTP host](sftp.md) | The release that runs and the last attempt; the hostname, its document root and its certificate as yours | |
 
 On Cloudflare:
 

@@ -11,6 +11,8 @@ an app yet.
 - [Your app's production stack on your own computer](localhost.md)
 - [Host your site on Cloudflare, with no server](cloudflare-hosting.md)
 - [Publish your site on GitHub Pages](github-pages.md)
+- [Deploy to a hosting account: cPanel, Plesk, DirectAdmin or SFTP](hosting-accounts.md)
+  ([cPanel](cpanel.md), [Plesk](plesk.md), [DirectAdmin](directadmin.md), [SFTP](sftp.md))
 - [Moving your app somewhere else](retarget.md)
 - [dev, staging and prod: environments](environments.md)
 - [Previews: a link for every pull request](previews.md)
@@ -28,7 +30,7 @@ an app yet.
 - [Deploys without downtime](zero-downtime.md)
 - [Self-hosted runners and runner machines: where the deploy job and the build run](runners.md)
 - [The image supply chain](supply-chain.md)
-- [The reverse proxy: Caddy or nginx, and your own rules](reverse-proxy.md)
+- [The reverse proxy: Caddy, nginx or OpenLiteSpeed, and your own rules](reverse-proxy.md)
 
 ## What runs next to your app
 

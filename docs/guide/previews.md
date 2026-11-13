@@ -265,8 +265,8 @@ OpsCrew refuses, before anything changes:
 - **a server without public SSH**: one whose public SSH was closed with
   `opscrew secure --close-public-ssh`, or one served through a [Cloudflare Tunnel](https://www.cloudflare.com/products/tunnel/), because GitHub's
   machines reach previews over SSH;
-- **a server whose proxy is [nginx](https://nginx.org/)**: previews are served by [Caddy](https://caddyserver.com/), which every app on a server
-  shares;
+- **a server whose proxy is [nginx](https://nginx.org/) or OpenLiteSpeed**: previews are served by
+  [Caddy](https://caddyserver.com/), which every app on a server shares;
 - **a server on a private network** (other servers, your devices, services or dashboards you
   granted): a preview's containers could reach them without escaping anything;
 - **a preview environment, a [Portainer](https://www.portainer.io/), this computer or a site**;

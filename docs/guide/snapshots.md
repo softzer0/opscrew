@@ -366,6 +366,31 @@ them when they are off.
 Sites on [Cloudflare's hosting](cloudflare-hosting.md) and [GitHub Pages](github-pages.md) keep no
 data on a server, so there is nothing to snapshot.
 
+## On a hosting account
+
+On a [hosting account](hosting-accounts.md) with a panel, the agent on the account takes and
+restores snapshots, between deploys, so a snapshot never meets a deploy halfway:
+
+```bash
+npx opscrew snapshot          # the database and the shared files, together
+npx opscrew restore <id>      # put them back, after you type the hostname
+```
+
+- **What it holds:** a dump of the app's database (`<id>.sql.gz`), and a copy of the app's shared
+  files (`<id>.shared.tar.gz`) when they hold more than its settings, such as Laravel's `storage`.
+  The settings themselves stay as they are in a restore. `--skip` doesn't apply.
+- **Where it is:** on the account, in `~/opscrew/<app>-<env>/dumps/`, readable by the account's
+  user only. **Download it with the panel's File Manager** to keep a copy elsewhere: a snapshot on
+  the account goes with the account. The File Manager also lists and deletes them;
+  `opscrew snapshot list` and `delete` don't reach them, and there is no schedule and no copy off
+  the account yet.
+- **A restore** first copies what is there now, and puts that copy back when the restore fails.
+
+The dumps the agent takes before each release are in
+[Snapshots](hosting-accounts.md#snapshots) on the hosting page.
+
+An [SFTP host](sftp.md) runs no agent, so it has no snapshots.
+
 ## In a script
 
 | Command | Approved with |

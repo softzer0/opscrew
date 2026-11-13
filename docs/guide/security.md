@@ -115,8 +115,9 @@ Give `GITHUB_TOKEN` (or `GH_TOKEN`) a fine-grained token for your app's reposito
 - Administration: Read and write, only for an app with
   [several environments](environments.md#where-each-environments-secrets-live) (OpsCrew creates
   their GitHub environments), for [self-hosted runners](runners.md) (runner registration and the
-  fork pull request policy) and for [GitHub Pages](github-pages.md) (GitHub accepts nothing
-  narrower for changing a Pages site)
+  fork pull request policy), for [GitHub Pages](github-pages.md) (GitHub accepts nothing
+  narrower for changing a Pages site) and for a [hosting account](hosting-accounts.md) (the
+  read-only deploy key its agent fetches releases with)
 - Environments: Read and write, only for an app with several environments (the secrets in their
   GitHub environments)
 - Pages: Read and write, only for GitHub Pages (turning the site on and off, its custom domain and

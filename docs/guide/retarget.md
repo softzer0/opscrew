@@ -416,6 +416,9 @@ offers a snapshot first), so back up your data first and restore it on the new t
 - **Two Portainer environments,** in one Portainer or two (the app has one deploy branch and one
   Portainer token): move the app to a server first, then into the other environment; or remove it
   with `destroy` and set it up there with `provision`.
+- **A [hosting account](hosting-accounts.md) on either side:** the app's whole design changes. Run
+  `npx opscrew destroy` (it offers a final dump of the database, kept on the account), then
+  `interview`, `design` and `provision` for the new target, and load the dump there.
 - **A site to a server, or a server to a site host:** the app's whole design changes. Run
   `npx opscrew destroy`, then `interview`, `design` and `provision` for the new target.
 - **A move within one cloud provider:** for another size, see
