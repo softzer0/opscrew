@@ -508,6 +508,19 @@ names the change.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server && pnpm lint`
   - Effort: high
 
+## Phase 8c: Fixes from the live passes (lead, 2026-11-13)
+
+- [ ] T2731 cPanel: the account's parked domains (research R13)
+  - Owns: `packages/connectors/cpanel/src/**`, `packages/cli/test/live/cpanel-support.ts`, `packages/cli/test/live/cpanel-support.test.ts`
+  - Reads: research R1, R10, R13; `connectors/cpanel/src/{panel,fake}.ts`
+  - Accept:
+    - The connector reads the account's domains with one `DomainInfo::domains_data` call without `format`: the main domain, addon domains and subdomains with their document roots, and each parked domain by name with the main domain's document root. A hostname under a parked domain is added as a subdomain of it; a parked domain is never removed, as today.
+    - `fakeCpanel` answers `domains_data` as cPanel does: with `format=list`, without parked domains; without `format`, `main_domain` as an object, `addon_domains` and `sub_domains` as arrays of objects, `parked_domains` as names.
+    - The cPanel pass's inventory and cleanup list parked domains too, so step 0 accepts a parked `OPSCREW_E2E_CPANEL_DOMAIN` and the inventory after compares them.
+    - Tests for each, with the fake.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-cpanel && pnpm turbo run typecheck --filter=opscrew && npx vitest run --root packages/cli test/live/cpanel-support.test.ts && pnpm lint`
+  - Effort: medium
+
 ## Phase 9: Live passes and release (lead)
 
 - [ ] T2722 The cPanel live pass (lead): `docs/e2e-coverage.md` row and results.
