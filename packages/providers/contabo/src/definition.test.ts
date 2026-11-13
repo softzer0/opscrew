@@ -113,7 +113,9 @@ describe("Contabo's cloud provider definition", () => {
     expect(texts.destroy.lookup("shop")).toContain("opscrew-app:shop");
     expect(texts.destroy.tokenHint("opscrew destroy")).toContain("`opscrew destroy`");
     expect(texts.destroy.deletedBackups).toBeUndefined();
-    expect(texts.destroy.storageConsole).toBeUndefined();
+    expect(texts.destroy.storageConsole).toBe(
+      "the Contabo Customer Control Panel (Object Storage)",
+    );
   });
 
   it("builds the module arguments of the app's server, an extra server and the previous one", () => {

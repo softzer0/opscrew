@@ -15,6 +15,7 @@ import {
   readContaboCredentials,
 } from "./client";
 import { contaboFirewallApi } from "./firewalls";
+import { contaboObjectStorageApi } from "./object-storage";
 import { contaboServerApi } from "./servers";
 
 /** Credentials OpsCrew needs for Contabo: all four of the account's API credentials. */
@@ -33,7 +34,7 @@ export interface ContaboConnector extends VpsConnector {
 
 /**
  * Creates the Contabo connector: credential check, the dated static catalogue (Contabo has no
- * price API), the server API and the firewalls (ADR 0029, D8). The four credentials are read
+ * price API), the server API, the firewalls (ADR 0029, D8) and the object storage (027 R15). The four credentials are read
  * from `CNTB_OAUTH2_*` and registered with the redactor as they are read; without all four,
  * nothing calls Contabo.
  */
@@ -61,6 +62,7 @@ export function contaboConnector(deps: ProviderConnectorDeps): ContaboConnector 
     configured: client !== undefined,
     servers: client === undefined ? undefined : contaboServerApi(client),
     firewalls: client === undefined ? undefined : contaboFirewallApi(client),
+    objectStorage: client === undefined ? undefined : contaboObjectStorageApi(client),
     catalog: () => {
       catalog ??= new StaticContaboCatalog();
       return catalog;

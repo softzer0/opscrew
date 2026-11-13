@@ -187,6 +187,36 @@ const firewallSchema = z.looseObject({
 /** A firewall, as Contabo's API answers it, with its instances' ids as strings. */
 export type ContaboFirewall = z.infer<typeof firewallSchema>;
 
+/**
+ * An object storage (`ObjectStorageResponse` in the cntb OpenAPI docs, research R15). The JSON
+ * names are the docs' fields in camelCase, as every other Contabo answer: unverified live.
+ */
+const objectStorageSchema = z.looseObject({
+  objectStorageId: z.string(),
+  /** `EU`, `US-central` or `SIN` as ordered; the answer's spelling is unverified. */
+  region: z.string(),
+  /** The S3 endpoint, for example `https://eu2.contabostorage.com`. */
+  s3Url: z.string(),
+  /** `PROVISIONING`, `READY`, `UPGRADING`, `CANCELLED`, `ERROR` or `DISABLED`. */
+  status: z.string(),
+  /** The day a cancelled storage ends; empty while it is not cancelled. */
+  cancelDate: z.string().nullable().optional(),
+});
+/** An object storage, as Contabo's API answers it. */
+export type ContaboObjectStorage = z.infer<typeof objectStorageSchema>;
+
+/** A user of the account (`UserResponse`): only what finds the API user's id. */
+const userSchema = z.looseObject({ userId: z.string(), email: z.string() });
+
+/** An object storage's S3 key (`CredentialData`). The secret is registered with the redactor. */
+const credentialSchema = z.looseObject({
+  objectStorageId: z.string(),
+  accessKey: z.string().min(1),
+  secretKey: z.string().min(1),
+});
+/** An object storage's S3 key, as Contabo's API answers it. */
+export type ContaboCredential = z.infer<typeof credentialSchema>;
+
 /** An inbound rule as OpsCrew writes it: it accepts, and each source list holds a network. */
 export interface FirewallRuleRequest {
   protocol: "tcp" | "udp" | "icmp";
@@ -548,6 +578,124 @@ export class ContaboClient {
     });
   }
 
+  /** Every object storage of the account (`GET /v1/object-storages`, every page). */
+  listObjectStorages(): Promise<ContaboObjectStorage[]> {
+    return this.#listAll("/v1/object-storages", objectStorageSchema);
+  }
+
+  /** One object storage (`GET /v1/object-storages/{id}`). */
+  async getObjectStorage(objectStorageId: string): Promise<ContaboObjectStorage> {
+    const body = await this.#request(
+      "GET",
+      `/v1/object-storages/${encodeURIComponent(objectStorageId)}`,
+      z.looseObject({ data: z.array(objectStorageSchema).length(1) }),
+    );
+    return body.data[0] as ContaboObjectStorage;
+  }
+
+  /**
+   * Orders an object storage (`POST /v1/object-storages`) of `totalPurchasedSpaceTB` TB in
+   * `region`. Contabo answers with it, still `PROVISIONING`: wait with
+   * {@link waitForObjectStorage}. Billed from then on.
+   */
+  async createObjectStorage(request: {
+    region: string;
+    totalPurchasedSpaceTB: number;
+    displayName: string;
+  }): Promise<ContaboObjectStorage> {
+    const body = await this.#request(
+      "POST",
+      "/v1/object-storages",
+      z.looseObject({ data: z.array(objectStorageSchema).length(1) }),
+      { body: request },
+    );
+    return body.data[0] as ContaboObjectStorage;
+  }
+
+  /**
+   * Cancels an object storage at the next possible date (`PATCH …/{id}/cancel`, no `cancelDate`
+   * given). The answer's shape is not in the docs read (R15), so the end date is read back.
+   */
+  async cancelObjectStorage(objectStorageId: string): Promise<string> {
+    const path = `/v1/object-storages/${encodeURIComponent(objectStorageId)}`;
+    await this.#request("PATCH", `${path}/cancel`, acknowledged, { body: {} });
+    return (await this.getObjectStorage(objectStorageId)).cancelDate ?? "";
+  }
+
+  /**
+   * Reads the object storage every 5 seconds until it is `READY`. One in `ERROR` or `DISABLED`,
+   * and one not ready after `timeoutMs`, throw `PROVIDER_ERROR` naming its status.
+   */
+  waitForObjectStorage(
+    objectStorageId: string,
+    options: { timeoutMs: number },
+  ): Promise<ContaboObjectStorage> {
+    const hint = "Check the object storage in Contabo's Customer Control Panel.";
+    return pollAction({
+      read: () => this.getObjectStorage(objectStorageId),
+      finished: (storage) => {
+        if (storage.status === "ERROR" || storage.status === "DISABLED") {
+          throw this.#failure(
+            "PROVIDER_ERROR",
+            `Contabo's object storage ${objectStorageId} is ${storage.status}.`,
+            { hint },
+          );
+        }
+        return storage.status === "READY";
+      },
+      timedOut: (storage) =>
+        this.#failure(
+          "PROVIDER_ERROR",
+          `Contabo's object storage ${objectStorageId} was not ready within ${durationText(options.timeoutMs)}: it is ${storage.status}.`,
+          { hint },
+        ),
+      timeoutMs: options.timeoutMs,
+      intervalMs: STATUS_INTERVAL_MS,
+      sleep: this.#http.sleep,
+      now: this.#http.now,
+    });
+  }
+
+  /**
+   * The id of the API user, the account's user whose email is the API user's login
+   * (`GET /v1/users?email=`, a substring filter, so the email is compared exactly).
+   */
+  async apiUserId(): Promise<string> {
+    const email = this.#credentials.user.toLowerCase();
+    const users = await this.#listAll("/v1/users", userSchema, { email: this.#credentials.user });
+    const user = users.find((entry) => entry.email.toLowerCase() === email);
+    if (user === undefined) {
+      throw this.#failure(
+        "PROVIDER_ERROR",
+        "Contabo lists no user with the API user's email, so OpsCrew cannot read the object storage's key.",
+        { hint: CONTABO_CREDENTIALS_HINT },
+      );
+    }
+    return user.userId;
+  }
+
+  /**
+   * The S3 keys of the object storage `objectStorageId`
+   * (`GET /v1/users/{userId}/object-storages/credentials?objectStorageId=`, every page). Each
+   * secret is registered with the redactor as it is read.
+   */
+  async objectStorageCredentials(
+    userId: string,
+    objectStorageId: string,
+  ): Promise<ContaboCredential[]> {
+    const credentials = await this.#listAll(
+      `/v1/users/${encodeURIComponent(userId)}/object-storages/credentials`,
+      credentialSchema,
+      { objectStorageId },
+    );
+    for (const credential of credentials) {
+      this.#redactor.addLiteral(credential.secretKey, "Contabo object storage key");
+      this.#redactor.addLiteral(credential.accessKey, "Contabo object storage key");
+    }
+    // The filter is a guess at a query parameter (the docs do not say where it goes): compared.
+    return credentials.filter((credential) => credential.objectStorageId === objectStorageId);
+  }
+
   async #listAll<T>(
     path: string,
     item: z.ZodType<T>,
@@ -723,7 +871,7 @@ export class ContaboClient {
             hint:
               status === 401
                 ? CONTABO_CREDENTIALS_HINT
-                : "Check in Contabo's Customer Control Panel that the API user may manage compute instances, snapshots, tags and firewalls, then try again.",
+                : "Check in Contabo's Customer Control Panel that the API user may manage compute instances, snapshots, tags, firewalls and object storages, then try again.",
           },
         );
       case 402:

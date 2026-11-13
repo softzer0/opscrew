@@ -111,6 +111,12 @@ export function bucketChoice(
       stays: `${billing}: OpsCrew uses no object storage at ${providerProfile(to).displayName}; ${same}.`,
     };
   }
+  // Contabo's storage is ordered through its API, not the `storage` root a move changes.
+  if (old.provider === "contabo" || to === "contabo") {
+    return {
+      stays: `${billing}: OpsCrew moves a bucket only between Hetzner Object Storage and DigitalOcean Spaces; ${same}.`,
+    };
+  }
   const offer =
     input.requirements === undefined
       ? undefined

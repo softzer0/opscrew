@@ -305,13 +305,28 @@ export function objectStorageSection(
     ];
   }
   const provision = `\`${opscrew(plan, "provision", environments)}\``;
-  return [
+  const intro = [
     "## Object storage",
     "",
     `The app's files are in the private bucket \`${storage.bucket}\` on ${STORAGE_NAMES[storage.provider]} (${storage.region}), about`,
     `${priced}. OpsCrew creates the bucket in its own root, \`${storageRootDir(plan)}/\`, so \`${opscrew(plan, "destroy", environments)}\` keeps it`,
     "with its files unless you add `--delete-data`.",
     "",
+  ];
+  if (storage.provider === "contabo") {
+    return [
+      ...intro,
+      "- **The storage key is Contabo's.** Contabo made it with the account's object storage in this region; OpsCrew",
+      "  reads it through Contabo's API whenever it needs it, never keeps it in a file, this repository or infrastructure",
+      "  state, and the app gets it as `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, with `AWS_REGION` and",
+      "  `AWS_ENDPOINT_URL_S3`.",
+      "- **The storage itself:** OpsCrew ordered it, or used the one your account had; `--delete-data` cancels it only if",
+      "  OpsCrew ordered it and no other bucket is in it, at the next possible date (Contabo bills it until then).",
+      "",
+    ];
+  }
+  return [
+    ...intro,
     "- **The storage key is yours.** OpsCrew never creates one: you created it in the provider's console with the steps",
     `  ${provision} showed. OpsCrew keeps it on the machine that ran ${provision}`,
     `  (\`${projectDir}/storage_key.json\`), never in this repository or in infrastructure state, and the app gets it`,

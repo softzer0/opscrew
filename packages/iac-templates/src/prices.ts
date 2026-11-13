@@ -91,6 +91,25 @@ export const STORAGE_PRICES = {
       };
     },
   },
+  /**
+   * Contabo Object Storage: "prices from €2.49/month", data transfer "free and unlimited"
+   * (027 research R15). Contabo publishes no per-TB table: the minimum size is priced, and what a
+   * larger storage costs is Contabo's (unverified). One storage per region serves all its buckets.
+   */
+  contabo: {
+    monthlyPrice(_use: StorageUse): StoragePrice {
+      return {
+        amount: 2.49,
+        currency: "EUR",
+        note:
+          "This is Contabo's price from its smallest size, with free transfer. What a larger " +
+          "storage costs is Contabo's price, not checked by OpsCrew. One storage per region " +
+          "serves all your buckets there: if your account already has one, this app adds nothing.",
+        source: "https://contabo.com/en/object-storage/",
+        checkedOn: "2026-11-13",
+      };
+    },
+  },
   /** Garage on the user's own server or Portainer: no charge beyond the server. */
   garage: {
     monthlyPrice(_use: StorageUse): StoragePrice {
@@ -110,5 +129,6 @@ export const STORAGE_NAMES: Readonly<Record<keyof typeof STORAGE_PRICES, string>
   r2: "Cloudflare R2",
   digitalocean: "DigitalOcean Spaces",
   hetzner: "Hetzner Object Storage",
+  contabo: "Contabo Object Storage",
   garage: "Garage on your server",
 };

@@ -191,6 +191,22 @@ describe("the runbook's components, edge and storage key", () => {
     );
   });
 
+  it("says a bucket in Contabo's storage has Contabo's key, and when the storage is cancelled", () => {
+    const contabo = { ...R2, provider: "contabo" as const, region: "EU" };
+    const text = renderRunbook(
+      withComponents(testPlan({ domain: "shop.example.com" }), contabo),
+      ctx,
+    ).content;
+    const storage = section(text, "Object storage").replace(/\s+/g, " ");
+    expect(storage).toContain("on Contabo Object Storage (EU)");
+    expect(storage).toContain("**The storage key is Contabo's.**");
+    expect(storage).toContain("never keeps it in a file, this repository or infrastructure state");
+    expect(storage).toContain(
+      "cancels it only if OpsCrew ordered it and no other bucket is in it, at the next possible date",
+    );
+    expect(storage).not.toContain("storage_key.json");
+  });
+
   it("Garage on a server the user owns keeps the files in its data folder, with a generated key", () => {
     const garage = {
       ...R2,

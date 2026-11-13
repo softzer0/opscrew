@@ -19,7 +19,7 @@ import {
 import type { MoveLayoutName } from "./layouts";
 
 /** The object storage OpsCrew creates a bucket for through the `storage` root. */
-export type BucketProvider = "r2" | "digitalocean" | "hetzner";
+export type BucketProvider = "r2" | "digitalocean" | "hetzner" | "contabo";
 
 /** A bucket of the plan (`storage.objectStorage`, `retarget.from.objectStorage`). */
 type ObjectStorage = NonNullable<NonNullable<DeployPlan["storage"]>["objectStorage"]>;
@@ -34,12 +34,16 @@ export function providerBucket(plan: Pick<DeployPlan, "storage">): ProviderBucke
   return storage as ProviderBucket;
 }
 
-/** A bucket at a cloud provider's S3-compatible storage, which a move can take along. */
-type S3Bucket = ProviderBucket & { provider: "digitalocean" | "hetzner" };
+/** A bucket at a cloud provider's S3-compatible storage, reached through the `aws` provider. */
+type S3Bucket = ProviderBucket & { provider: Exclude<BucketProvider, "r2"> };
 
-/** `bucket` when it is at Hetzner or DigitalOcean; throws {@link wrongTarget} otherwise. */
-function s3Bucket(bucket: ObjectStorage | undefined): S3Bucket {
-  if (bucket?.provider !== "hetzner" && bucket?.provider !== "digitalocean") {
+/**
+ * `bucket` at an S3-compatible provider. A move (`moving`) takes a bucket only between Hetzner and
+ * DigitalOcean: anything else throws {@link wrongTarget}.
+ */
+function s3Bucket(bucket: ObjectStorage | undefined, moving: boolean): S3Bucket {
+  const movable = bucket?.provider === "hetzner" || bucket?.provider === "digitalocean";
+  if (bucket === undefined || bucket.provider === "garage" || (moving && !movable)) {
     throw wrongTarget(
       "A bucket moves only between Hetzner Object Storage and DigitalOcean Spaces, and both the bucket being left and the new one must be there.",
     );
@@ -78,7 +82,22 @@ const S3_SERVICES = {
       `Hetzner Object Storage location of ${what}, for example fsn1.`,
     providerRegion: (region: string) => [`  region = var.${region}`],
   },
+  contabo: {
+    name: "Contabo Object Storage",
+    // The storage's own s3Url, which Contabo answers when it is ordered (never built here).
+    endpoint: (_region: string) => "${var.endpoint}",
+    regionDescription: (what: string) =>
+      `Contabo Object Storage's S3 endpoint of ${what} (its s3Url, for example https://eu2.contabostorage.com), which OpsCrew reads from Contabo's API and sets as TF_VAR_endpoint when it runs the engine.`,
+    providerRegion: (_region: string) => [
+      "  # The endpoint picks Contabo's storage; requests are signed for us-east-1 (unverified live).",
+      '  region = "us-east-1"',
+    ],
+  },
 } as const;
+
+/** The variable a provider's S3 endpoint is built from: Contabo's whole endpoint, else the region. */
+const endpointVariable = (provider: S3Bucket["provider"]) =>
+  provider === "contabo" ? "endpoint" : "region";
 
 const NEVER_DESTROYED = [
   "# Never destroyed by a plan: OpsCrew deletes the bucket and its files only when you ask it to",
@@ -199,10 +218,16 @@ function s3Provider(bucket: Pick<S3Bucket, "provider">, previous: boolean): stri
           `# service's key from the ${PREVIOUS_BUCKET_PROFILE} profile of the shared credentials file`,
           "# (AWS_SHARED_CREDENTIALS_FILE), so it is never stored in files, plans or state either.",
         ]
-      : [
-          "# OpsCrew never creates storage keys: the provider reads yours from the AWS_ACCESS_KEY_ID and",
-          "# AWS_SECRET_ACCESS_KEY environment variables, so it is never stored in files, plans or state.",
-        ]),
+      : bucket.provider === "contabo"
+        ? [
+            "# Contabo made the storage's key with it, and OpsCrew reads it through Contabo's API: the",
+            "# provider reads it from the AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment",
+            "# variables, so it is never stored in files, plans or state.",
+          ]
+        : [
+            "# OpsCrew never creates storage keys: the provider reads yours from the AWS_ACCESS_KEY_ID and",
+            "# AWS_SECRET_ACCESS_KEY environment variables, so it is never stored in files, plans or state.",
+          ]),
     'provider "aws" {',
     ...(previous ? ['  alias   = "previous"', `  profile = "${PREVIOUS_BUCKET_PROFILE}"`, ""] : []),
     ...service.providerRegion(region),
@@ -310,8 +335,14 @@ function s3Variables(shape: S3Shape): { specs: VariableSpec[]; values: Record<st
     );
   }
   if (shape.provider) {
-    const description = S3_SERVICES[shape.provider.provider].regionDescription("the bucket");
-    add({ name: "region", type: "string", description }, shape.provider.region);
+    const { provider } = shape.provider;
+    const description = S3_SERVICES[provider].regionDescription("the bucket");
+    if (endpointVariable(provider) === "endpoint") {
+      // Known only from Contabo's answer, never from the plan: the engine gets it as TF_VAR_endpoint.
+      specs.push({ name: "endpoint", type: "string", description });
+    } else {
+      add({ name: "region", type: "string", description }, shape.provider.region);
+    }
   }
   if (shape.previous) {
     add(
@@ -369,6 +400,9 @@ function bucketRootDir(
  *   path-style, with AWS's account, region and key checks off. The user's key reaches the provider
  *   only as `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` in the engine's environment, so no key
  *   is in a rendered file, a saved plan or the state.
+ * - Contabo: the same, at the variable `endpoint` (the storage's s3Url, which only Contabo's
+ *   answer gives, so OpsCrew sets it as `TF_VAR_endpoint` with the key Contabo made with the
+ *   storage when it runs the engine; it is not in the values file).
  *
  * The bucket has `prevent_destroy`: no plan, a destroy included, deletes it or its files. With
  * `deleteData` (`opscrew destroy --delete-data`) it is rendered without it, for the destroy plan
@@ -415,11 +449,11 @@ export function renderStorage(
     provider = CLOUDFLARE_PROVIDER;
     cors = storage.cors;
   } else {
-    const bucket = s3Bucket(storage);
+    const bucket = s3Bucket(storage, old !== undefined);
     const shape =
       old === undefined
         ? { current: bucket, provider: bucket }
-        : moveShape(options.layout ?? "both", bucket, s3Bucket(old));
+        : moveShape(options.layout ?? "both", bucket, s3Bucket(old, true));
     ({ specs: variables, values } = s3Variables(shape));
     main = s3Main(shape, deleteData);
     provider = AWS_PROVIDER;

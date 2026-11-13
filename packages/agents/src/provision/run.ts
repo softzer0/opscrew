@@ -225,11 +225,13 @@ import {
   offsiteEnvFile,
   offsitePreflight,
   offsiteSetup,
+  prepareOrderedStorage,
   providerBucket,
   requireR2Cloudflare,
   requireStorageKey,
   STORAGE_PLAN_SUFFIX,
   storageLogin,
+  storageOrderPlanFile,
 } from "./storage";
 import {
   clearApplyMarker,
@@ -375,10 +377,17 @@ async function tfvarsShowPublicAddress(root: string, plan: DeployPlan): Promise<
   return values !== undefined && !("proxied" in values && values.proxied === true);
 }
 
-/** True when `hash` names a saved host plan (`host-<hash>.json`) or local plan (`local-<hash>.json`). */
+/**
+ * True when `hash` names a saved host plan (`host-<hash>.json`), local plan (`local-<hash>.json`)
+ * or object storage order (`object-storage-<hash>.json`), each granted by the approval handler.
+ */
 async function namesHostOrLocalPlan(deps: PhaseDeps, hash: string): Promise<boolean> {
   const name = hash.toLowerCase();
-  return (await exists(hostPlanFile(deps.paths, name))) || exists(localPlanFile(deps.paths, name));
+  return (
+    (await exists(hostPlanFile(deps.paths, name))) ||
+    (await exists(localPlanFile(deps.paths, name))) ||
+    exists(storageOrderPlanFile(deps.paths, name))
+  );
 }
 
 /**
@@ -625,11 +634,12 @@ async function provisionFlow(
     });
   }
   // The app's bucket at a provider: R2 needs the plan's Cloudflare account, and a Hetzner or
-  // Spaces bucket is created with the user's key, so it is needed now (R2's comes after its bucket).
+  // Spaces bucket is created with the user's key, so it is needed now (R2's comes after its bucket;
+  // a bucket in Contabo's storage has the key Contabo made with it, read at 4b).
   requireR2Cloudflare(plan, cloudflare);
   const bucket = providerBucket(plan);
-  const storageKey =
-    bucket !== undefined && bucket.provider !== "r2"
+  let storageKey =
+    bucket !== undefined && bucket.provider !== "r2" && bucket.provider !== "contabo"
       ? await requireStorageKey(deps, plan, services, { command })
       : undefined;
   // The off-server copies' bucket likewise (024 plan.md 7.), with a key of its own, and the age
@@ -1046,9 +1056,20 @@ async function provisionFlow(
   if (staleEdge !== undefined) deps.reporter.warn(staleEdge);
 
   // 4b. The app's bucket (the `storage` root): its own plan, approved by its hash, before the
-  // infrastructure plan.
+  // infrastructure plan. A bucket in Contabo's storage needs the storage first: the account's in
+  // the region, or one ordered through Contabo's API after its own plan is approved by its hash.
+  let orderPlanHash: string | undefined;
+  if (bucket?.provider === "contabo") {
+    const ordered = await prepareOrderedStorage(deps, plan, services, {
+      command,
+      phase,
+      planOnly: options.planOnly,
+    });
+    if ("orderPlanHash" in ordered) orderPlanHash = ordered.orderPlanHash;
+    else storageKey = ordered.key;
+  }
   const storage =
-    bucket === undefined
+    bucket === undefined || orderPlanHash !== undefined
       ? undefined
       : await applyStorage(deps, {
           engine,
@@ -1081,7 +1102,8 @@ async function provisionFlow(
         });
   if (backups?.approval) approvals.push(approvalEntry(backups.approval));
   const storagePlanHash =
-    storage?.plan !== undefined && storage.plan.changes.length > 0 ? storage.planHash : undefined;
+    orderPlanHash ??
+    (storage?.plan !== undefined && storage.plan.changes.length > 0 ? storage.planHash : undefined);
   const backupsPlanHash =
     backups?.plan !== undefined && backups.plan.changes.length > 0 ? backups.planHash : undefined;
   const storageHash = {

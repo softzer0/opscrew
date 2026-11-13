@@ -190,7 +190,7 @@ describe("the interview tools and the app's components", () => {
         componentQuestions: { id: string; options?: unknown[]; default?: unknown }[];
       }
     ).componentQuestions.find((q) => q.id === "objectStorage");
-    expect(where?.options).toHaveLength(4);
+    expect(where?.options).toHaveLength(5);
     expect(where?.default).toBe("garage");
   });
 });

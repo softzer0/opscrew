@@ -784,6 +784,56 @@ describe("designComponents: storage", () => {
     ]);
   });
 
+  it("offers Contabo Object Storage on Contabo, in the storage region of the server's", () => {
+    const expected = { storageGb: 10, egressGbPerMonth: 50 };
+    const providers = (requirements: Parameters<typeof storageOffers>[0]) =>
+      storageOffers(requirements, expected).map((o) => [o.provider, o.region, o.optIn ?? false]);
+    const garage = ["garage", "garage", true];
+    const contabo = (region: string) => ["contabo", region, false];
+    expect(providers(makeRequirements({ provider: "contabo", region: "eu-central" }))).toEqual([
+      garage,
+      contabo("EU"),
+    ]);
+    // Both US server regions use US-central; Singapore its own.
+    for (const region of ["us-east", "us-west"] as const) {
+      expect(providers(makeRequirements({ provider: "contabo", region }))).toEqual([
+        garage,
+        contabo("US-central"),
+      ]);
+    }
+    expect(providers(makeRequirements({ provider: "contabo", region: "ap-southeast" }))).toEqual([
+      garage,
+      contabo("SIN"),
+    ]);
+    // R2 stays offered beside it when the domain is on Cloudflare.
+    expect(
+      providers(makeRequirements({ provider: "contabo", region: "eu-central", ...onCloudflare })),
+    ).toEqual([garage, ["r2", "auto", false], contabo("EU")]);
+  });
+
+  it("picks Contabo Object Storage on Contabo by default, priced from its smallest size", () => {
+    const requirements = makeRequirements({ provider: "contabo", region: "eu-central", ...bucket });
+    const { components, lines } = designed(
+      s3,
+      makeRequirements({ ...requirements, expectedMonthlyUsers: ">100k" }),
+    );
+    expect(components.storage?.objectStorage).toMatchObject({
+      provider: "contabo",
+      region: "EU",
+      price: {
+        monthly: 2.49,
+        currency: "EUR",
+        source: "https://contabo.com/en/object-storage/",
+        checkedOn: "2026-11-13",
+      },
+    });
+    const line = lines.find((l) => l.startsWith("Object storage")) ?? "";
+    expect(line).toContain(
+      "Contabo Object Storage from €2.49/month (its smallest size, free transfer;",
+    );
+    expect(line).toContain("a larger size costs what Contabo charges, not checked by OpsCrew");
+  });
+
   it("never picks Garage on a cloud server by itself, and uses it when the interview chose it", () => {
     for (const provider of ["hetzner", "digitalocean"] as const) {
       const region = { provider, region: "eu-central" as const };
@@ -865,6 +915,17 @@ describe("designComponents: storage", () => {
       region: "nbg1",
     });
     expect(spaces.lines).toContain(stays("Hetzner Object Storage"));
+    // A bucket in Contabo's storage, with the app moved to Hetzner and Hetzner answered.
+    const fromContabo = designComponents({
+      facts,
+      requirements: later({ objectStorage: "hetzner" }),
+      previous: planWithBucket(makeRequirements({ ...bucket, provider: "contabo" })),
+    });
+    expect(fromContabo.components.storage?.objectStorage).toMatchObject({
+      provider: "contabo",
+      region: "EU",
+    });
+    expect(fromContabo.lines).toContain(stays("Contabo Object Storage"));
     // Garage set by hand, with Hetzner answered.
     const garage = designComponents({
       facts,

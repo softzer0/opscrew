@@ -14,11 +14,21 @@ describe("STORAGE_PRICES", () => {
     expect(price("digitalocean", 10, 50)).toMatchObject({ amount: 5, currency: "USD" });
     expect(price("hetzner", 10, 50)).toMatchObject({ amount: 6.49, currency: "EUR" });
     expect(price("garage", 10, 50)).toMatchObject({ amount: 0 });
+    expect(price("contabo", 10, 50)).toMatchObject({ amount: 2.49, currency: "EUR" });
     for (const provider of Object.keys(STORAGE_PRICES) as (keyof typeof STORAGE_PRICES)[]) {
       const { source, checkedOn } = price(provider, 10, 50);
       expect(source, provider).toMatch(/^https:\/\//);
-      expect(checkedOn, provider).toBe("2026-10-19");
+      // Contabo's storage was added (research R15) after the others were checked.
+      expect(checkedOn, provider).toBe(provider === "contabo" ? "2026-11-13" : "2026-10-19");
     }
+  });
+
+  it("Contabo: its price from the smallest size for any use, saying a larger one is Contabo's", () => {
+    expect(price("contabo", 1_000, 5_000).amount).toBe(2.49);
+    expect(price("contabo", 10, 50).note).toContain(
+      "What a larger storage costs is Contabo's price",
+    );
+    expect(price("contabo", 10, 50).source).toBe("https://contabo.com/en/object-storage/");
   });
 
   it("R2: storage after 10 GB-months, by the started GB-month; egress is free", () => {

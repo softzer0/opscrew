@@ -272,6 +272,60 @@ describe("renderStorage", () => {
   });
 });
 
+describe("renderStorage at Contabo Object Storage", () => {
+  /** The app on a Contabo server with its bucket in Contabo's storage in `EU`. */
+  function contaboPlan(cors = true): DeployPlan {
+    const base = testPlan({ provider: "contabo", domain: "example.com", www: false });
+    return DeployPlanSchema.parse({
+      ...base,
+      storage: {
+        objectStorage: {
+          provider: "contabo",
+          bucket: "shop-uploads",
+          region: "EU",
+          cors,
+          expected: { storageGb: 10, egressGbPerMonth: 50 },
+          price: { monthly: 2.49, currency: "EUR", source: "test", checkedOn: "2026-11-13" },
+        },
+      },
+    });
+  }
+
+  it("creates the bucket through the aws provider at the storage's own endpoint", () => {
+    const files = renderStorage(contaboPlan(), ctx());
+    const main = content(files, "main.tf");
+    expect(main).toContain('s3 = "${var.endpoint}"');
+    expect(main).toContain('region = "us-east-1"');
+    expect(main).toContain("s3_use_path_style           = true");
+    expect(main).toContain('resource "aws_s3_bucket" "this" {');
+    expect(main).toContain("prevent_destroy = true");
+    expect(main).toContain('resource "aws_s3_bucket_cors_configuration" "this" {');
+    expect(main).toContain("Contabo made the storage's key with it");
+    expect(content(files, "variables.tf")).toContain('variable "endpoint"');
+    expect(content(files, "variables.tf")).not.toContain('variable "region"');
+    expect(content(files, "variables.tf")).toContain("sets as TF_VAR_endpoint");
+    // Only Contabo's answer gives the endpoint: OpsCrew sets it when it runs the engine.
+    expect(JSON.parse(content(files, "terraform.tfvars.json"))).toEqual({
+      bucket: "shop-uploads",
+      cors_origins: ["https://example.com"],
+    });
+    const tf = files.filter((f) => f.path.endsWith(".tf"));
+    expect(checkDialect(tf.map((f) => ({ path: f.path, content: f.content })))).toEqual([]);
+  });
+
+  it("drops prevent_destroy only in the root that deletes the data", () => {
+    const files = renderStorage(contaboPlan(false), ctx(), { deleteData: true });
+    expect(content(files, "main.tf")).not.toContain("prevent_destroy");
+    expect(content(files, "main.tf")).not.toContain("cors");
+  });
+
+  it("never writes a storage key into a file", () => {
+    for (const file of renderStorage(contaboPlan(), ctx())) {
+      expect(file.content, file.path).not.toMatch(/access_key|secret_key|sensitive|output/);
+    }
+  });
+});
+
 /** `plan` with the off-server copies of its snapshots in `offsite`'s bucket. */
 function withOffsite(
   plan: DeployPlan,

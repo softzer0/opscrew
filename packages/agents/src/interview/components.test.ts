@@ -165,6 +165,7 @@ describe("the object storage questions (FR-1316a)", () => {
       ["garage", "on the app's server: on a cloud server only if you choose it"],
       ["hetzner", "on Hetzner Cloud in Falkenstein, Nuremberg or Helsinki"],
       ["digitalocean", "on DigitalOcean"],
+      ["contabo", "on Contabo"],
       ["r2", "with the domain on Cloudflare"],
     ]);
     expect(where?.default).toBeUndefined();
@@ -173,7 +174,7 @@ describe("the object storage questions (FR-1316a)", () => {
       keepExternalServices: { s3: false },
       objectStorage: "garage",
     });
-    expect(earlier?.options).toHaveLength(4);
+    expect(earlier?.options).toHaveLength(5);
     expect(earlier?.default).toBe("garage");
   });
 

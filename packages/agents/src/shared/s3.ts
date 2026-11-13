@@ -125,21 +125,57 @@ export function s3Client(
 }
 
 /**
- * The {@link s3Client} of a plan's bucket at Hetzner or Spaces (its `storage.objectStorage`), at
- * the provider's endpoint for the bucket's region. Spaces signs with `us-east-1`, as the `storage`
- * root's provider does; the endpoint picks the region.
+ * The names of the buckets `key` reaches at `target.endpoint` (S3's ListBuckets, `GET /`), signed
+ * as {@link s3Client} signs. Errors name the host and the HTTP status, never the key.
+ */
+export async function listBuckets(
+  target: Omit<S3Bucket, "bucket">,
+  key: Pick<StorageLogin, "accessKeyId" | "secretAccessKey">,
+  io: { fetch: FetchLike; now: () => Date },
+): Promise<string[]> {
+  const url = new URL(`${target.endpoint.replace(/\/+$/, "")}/`);
+  let response: Response;
+  try {
+    response = await io.fetch(url, {
+      method: "GET",
+      headers: signedHeaders("GET", url, target.region, key, io.now()),
+    });
+  } catch (error) {
+    throw new OpsCrewError("PROVIDER_ERROR", `Could not reach ${url.host} to list its buckets.`, {
+      hint: "Check your network connection, then try again.",
+      cause: error,
+    });
+  }
+  const text = await response.text();
+  if (response.status !== 200) {
+    throw new OpsCrewError(
+      "PROVIDER_ERROR",
+      `${url.host} answered HTTP ${response.status} when OpsCrew listed its buckets.`,
+      { hint: "Try again in a few minutes." },
+    );
+  }
+  return [...text.matchAll(/<Bucket>[\s\S]*?<Name>([^<]+)<\/Name>[\s\S]*?<\/Bucket>/g)].map(
+    (match) => match[1] as string,
+  );
+}
+
+/**
+ * The {@link s3Client} of a plan's bucket at Hetzner, Spaces or Contabo (its
+ * `storage.objectStorage`), at the provider's endpoint for the bucket's region, or at the
+ * endpoint that comes with a Contabo storage's key (its s3Url). Spaces and Contabo sign with
+ * `us-east-1`, as the `storage` root's provider does; the endpoint picks the region.
  */
 export function storageS3Client(
   bucket: Pick<ObjectStorage, "provider" | "region" | "bucket">,
-  key: Pick<StorageLogin, "accessKeyId" | "secretAccessKey">,
+  key: Pick<StorageLogin, "accessKeyId" | "secretAccessKey" | "endpoint">,
   io: { fetch: FetchLike; now: () => Date },
 ): S3Client {
-  const endpoint = STORAGE_ENDPOINTS[bucket.provider];
-  if (endpoint === undefined) throw new Error(`No S3 endpoint is known for ${bucket.provider}.`);
+  const at = STORAGE_ENDPOINTS[bucket.provider]?.(bucket.region) ?? key.endpoint;
+  if (at === undefined) throw new Error(`No S3 endpoint is known for ${bucket.provider}.`);
   return s3Client(
     {
-      endpoint: endpoint(bucket.region),
-      region: bucket.provider === "digitalocean" ? "us-east-1" : bucket.region,
+      endpoint: at,
+      region: bucket.provider === "hetzner" ? bucket.region : "us-east-1",
       bucket: bucket.bucket,
     },
     key,

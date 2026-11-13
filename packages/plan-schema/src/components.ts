@@ -228,13 +228,16 @@ export function serviceOf<K extends PlanService["kind"]>(
   );
 }
 
-/** Object storage: an S3-compatible bucket at a provider, or Garage on the user's own server. */
+/**
+ * Object storage: an S3-compatible bucket at a provider, or Garage on the user's own server.
+ * `contabo` is Contabo's Object Storage, which OpsCrew orders (or reuses) through Contabo's API.
+ */
 const ObjectStorageSchema = z.strictObject({
-  provider: z.enum(["r2", "digitalocean", "hetzner", "garage"]),
+  provider: z.enum(["r2", "digitalocean", "hetzner", "contabo", "garage"]),
   bucket: z.string().regex(/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/, {
     message: "must be 3–63 lower-case letters, digits or hyphens, starting and ending with one",
   }),
-  /** The provider's region or location, for example `auto` (R2) or `fsn1`. */
+  /** The provider's region or location, for example `auto` (R2), `fsn1` or `EU` (Contabo). */
   region: z.string().min(1),
   /** A CORS rule for presigned browser uploads, only when detection finds them. */
   cors: z.boolean().default(false),

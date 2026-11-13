@@ -102,24 +102,35 @@ export function expectedStorageUse(users: UserScale): ObjectStorage["expected"] 
 export const HETZNER_STORAGE_LOCATIONS: readonly string[] = ["fsn1", "nbg1", "hel1"];
 /** Droplet locations whose Spaces region has another name. */
 const SPACES_REGION: Readonly<Record<string, string>> = { nyc1: "nyc3" };
+/**
+ * Contabo Object Storage's region (EU, US-central or SIN; research R15) at each Contabo server
+ * region: both US server regions use US-central.
+ */
+const CONTABO_STORAGE_REGION: Readonly<Record<string, string>> = {
+  EU: "EU",
+  "US-east": "US-central",
+  "US-west": "US-central",
+  SIN: "SIN",
+};
 
 /** A cloud provider that sells the buckets OpsCrew uses (plan 3: bucket providers stay apart). */
 type BucketCloud = Extract<StorageProvider, CloudProvider>;
 
-/** True for a cloud provider that sells the buckets OpsCrew uses: Hetzner and DigitalOcean. */
+/** True for a cloud provider that sells the buckets OpsCrew uses: Hetzner, DigitalOcean, Contabo. */
 export function sellsBuckets(provider: DeployProvider): provider is BucketCloud {
-  return provider === "hetzner" || provider === "digitalocean";
+  return provider === "hetzner" || provider === "digitalocean" || provider === "contabo";
 }
 
 /**
  * The region of `provider`'s object storage at its server location `location`: the location
  * itself at Hetzner where it has object storage (else undefined), the Spaces region at
- * DigitalOcean.
+ * DigitalOcean, Contabo Object Storage's region at Contabo.
  */
 export function storageRegionAt(provider: BucketCloud, location: string): string | undefined {
   if (provider === "hetzner") {
     return HETZNER_STORAGE_LOCATIONS.includes(location) ? location : undefined;
   }
+  if (provider === "contabo") return CONTABO_STORAGE_REGION[location];
   return SPACES_REGION[location] ?? location;
 }
 
@@ -186,10 +197,13 @@ export function defaultStorageOffer(offers: readonly StorageOffer[]): StorageOff
 
 /**
  * `Cloudflare R2 $0.00/month`; for Garage also its memory on the server, and that the files live
- * only there.
+ * only there; for Contabo that its price is from its smallest size, and above it Contabo's.
  */
 export function storageOfferText(offer: Pick<StorageOffer, "provider" | "price">): string {
   const text = `${STORAGE_NAMES[offer.provider]} ${formatMoney(offer.price)}/month`;
+  if (offer.provider === "contabo") {
+    return `${STORAGE_NAMES.contabo} from ${formatMoney(offer.price)}/month (its smallest size, free transfer; OpsCrew orders it through Contabo's API, or uses the one your account has in the region; a larger size costs what Contabo charges, not checked by OpsCrew)`;
+  }
   if (offer.provider !== "garage") return text;
   return `${text} plus ${serviceSpec("garage").memory.defaultMb} MB of the server's memory, with the files on that server only`;
 }

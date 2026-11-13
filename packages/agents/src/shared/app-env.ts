@@ -437,7 +437,10 @@ export function storageVariableKind(name: string): StorageVariableKind | undefin
   return undefined;
 }
 
-/** The S3 endpoints of the providers whose endpoint the plan alone gives (R2's needs the account). */
+/**
+ * The S3 endpoints of the providers whose endpoint the plan alone gives (R2's needs the account,
+ * Contabo's is its storage's own s3Url).
+ */
 export const STORAGE_ENDPOINTS: Readonly<Record<string, (region: string) => string>> = {
   hetzner: (region) => `https://${region}.your-objectstorage.com`,
   digitalocean: (region) => `https://${region}.digitaloceanspaces.com`,
@@ -449,14 +452,17 @@ export function r2Endpoint(accountId: string): string {
 }
 
 /**
- * The user's key for a provider's bucket (Spaces, Hetzner, or an R2 token's S3 keys) and, for R2,
- * the endpoint, which names the user's Cloudflare account. Provision keeps it like a provider
- * token; it is never logged.
+ * The key for a provider's bucket (the user's for Spaces and Hetzner, an R2 token's S3 keys, or
+ * the one Contabo made with its storage) and, for R2 and Contabo, the endpoint. Provision keeps the
+ * user's like a provider token; it is never logged.
  */
 export interface StorageLogin {
   accessKeyId: string;
   secretAccessKey: string;
-  /** R2's `https://<account>.r2.cloudflarestorage.com`; the other providers' come from the plan. */
+  /**
+   * R2's `https://<account>.r2.cloudflarestorage.com`, or Contabo's storage's s3Url; the other
+   * providers' come from the plan.
+   */
   endpoint?: string;
 }
 

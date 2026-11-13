@@ -1,13 +1,21 @@
 import { mkdir, rm } from "node:fs/promises";
 import { devNull } from "node:os";
 import { dirname, join } from "node:path";
-import type { IacEngine, PhaseName } from "@opscrew/contracts";
+import type {
+  IacEngine,
+  ObjectStorageApi,
+  PhaseName,
+  ProviderObjectStorage,
+} from "@opscrew/contracts";
 import {
+  canonicalJson,
   exists,
+  formatMoney,
   OpsCrewError,
   type ProjectPaths,
   readTextIfExists,
   realSleep,
+  sha256Hex,
   writeFileAtomic,
 } from "@opscrew/core";
 import {
@@ -25,6 +33,7 @@ import {
 import { type DeployPlan, snapshotOffsiteOf } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
+import { vpsConnector } from "../providers";
 import type { RefreshRecoveryOptions } from "../secrets";
 import { knownRecipients } from "../secrets/store";
 import {
@@ -44,8 +53,13 @@ export { backupsStateFile, storageStateFile } from "../shared";
 
 export { type BucketProvider, type ProviderBucket, providerBucket };
 
-/** The user's key for the bucket: an access key ID and its secret. Never logged. */
-export type StorageKey = Pick<StorageLogin, "accessKeyId" | "secretAccessKey">;
+/**
+ * The key for the bucket: an access key ID and its secret, and for a bucket in Contabo's storage
+ * the storage's S3 endpoint, which comes with its key. Never logged.
+ */
+export type StorageKey = Pick<StorageLogin, "accessKeyId" | "secretAccessKey"> & {
+  endpoint?: string;
+};
 
 /** What `askStorageKey` asks with: the provider in words, the bucket and the console steps. */
 export interface StorageKeyQuestion {
@@ -78,8 +92,13 @@ type KeyVars = typeof STORAGE_KEY_VARS | typeof NEW_STORAGE_KEY_VARS | typeof OF
 /** A bucket as its key, its marker and its S3 endpoint need it. */
 type Bucket = Pick<ProviderBucket, "provider" | "bucket" | "region">;
 
+/** A bucket whose key the user creates: every provider's but Contabo's, which Contabo makes. */
+type UserKeyedBucket = Bucket & { provider: Exclude<BucketProvider, "contabo"> };
+
 /** The steps to create the key in each provider's console, for `app` and `bucket`. */
-const KEY_STEPS: Readonly<Record<BucketProvider, (app: string, bucket: string) => string[]>> = {
+const KEY_STEPS: Readonly<
+  Record<UserKeyedBucket["provider"], (app: string, bucket: string) => string[]>
+> = {
   hetzner: (app) => [
     "Open the Hetzner Cloud Console (https://console.hetzner.cloud), choose the project the server is in, and go to Security → S3 credentials.",
     `Choose Generate credentials, with the description opscrew-${app}. A Hetzner key works for every bucket of its project; a key of this app's own can be revoked without touching other apps.`,
@@ -123,7 +142,7 @@ export const STORAGE_PLAN_SUFFIX = "-storage.tfplan";
  * it is read from ({@link NEW_STORAGE_KEY_VARS} for the new bucket of a move).
  */
 function keyHint(
-  bucket: Bucket,
+  bucket: UserKeyedBucket,
   app: string,
   command: string,
   how: { asks: boolean; vars: KeyVars },
@@ -207,7 +226,10 @@ async function keepKeys(deps: Pick<PhaseDeps, "paths">, keys: readonly StoredKey
 }
 
 /** The kept key for this bucket, or undefined (none kept for it). */
-async function storedKey(deps: PhaseDeps, bucket: Bucket): Promise<StorageKey | undefined> {
+async function storedKey(
+  deps: PhaseDeps,
+  bucket: UserKeyedBucket,
+): Promise<StorageKey | undefined> {
   const kept = (await keptKeys(deps)).find((key) => sameBucket(key, bucket));
   if (kept === undefined) return undefined;
   return { accessKeyId: kept.accessKeyId, secretAccessKey: kept.secretAccessKey };
@@ -231,7 +253,9 @@ export async function forgetStorageKey(
  * beside the other buckets' keys). While a move takes the bucket along
  * (`plan.retarget.from.objectStorage`), those variables hold only the key of the bucket being left,
  * and the new bucket's is read from {@link NEW_STORAGE_KEY_VARS} instead. Hetzner's and Spaces' key is needed before the bucket, R2's (a
- * token limited to the bucket) after it. Registered with the redactor.
+ * token limited to the bucket) after it. A bucket in Contabo's storage has the key Contabo made
+ * with the storage, read through its API ({@link orderedStorageKey}), never asked, kept or
+ * taken from the variables. Registered with the redactor.
  * @throws OpsCrewError `CREDENTIALS_MISSING` with the steps when no key is known and nobody can be
  * asked; `already` says what is done (default: nothing was changed), and with `asks: false` (a
  * command that never asks) the hint names only the variables.
@@ -239,16 +263,17 @@ export async function forgetStorageKey(
 export async function requireStorageKey(
   deps: PhaseDeps,
   plan: DeployPlan,
-  services: Pick<ProvisionServices, "askStorageKey">,
+  services: Pick<ProvisionServices, "askStorageKey" | "objectStorage">,
   options: { command: string; already?: string; asks?: boolean; bucket?: ProviderBucket },
 ): Promise<StorageKey> {
   const bucket = options.bucket ?? providerBucket(plan);
   if (bucket === undefined) throw new Error("The plan has no bucket at a provider.");
+  if (bucket.provider === "contabo") return orderedStorageKey(deps, bucket, services, options);
   const leaving = plan.retarget?.from.objectStorage;
   const vars =
     leaving !== undefined && !sameBucket(bucket, leaving) ? NEW_STORAGE_KEY_VARS : STORAGE_KEY_VARS;
   return bucketKey(deps, services, options, {
-    bucket,
+    bucket: bucket as UserKeyedBucket,
     vars,
     noun: "The app's bucket",
     keyName: plan.app.name,
@@ -288,7 +313,7 @@ async function bucketKey(
   deps: PhaseDeps,
   services: Pick<ProvisionServices, "askStorageKey">,
   options: { command: string; already?: string; asks?: boolean },
-  what: { bucket: Bucket; vars: KeyVars; noun: string; keyName: string },
+  what: { bucket: UserKeyedBucket; vars: KeyVars; noun: string; keyName: string },
 ): Promise<StorageKey> {
   const { bucket, vars, noun } = what;
   const name = STORAGE_NAMES[bucket.provider];
@@ -327,6 +352,305 @@ async function bucketKey(
 }
 
 /**
+ * The size of the object storage OpsCrew orders at Contabo: 0.25 TB, the size Contabo's smallest
+ * price is for (026 research R2; unverified live, R15). The user grows it in Contabo's panel.
+ */
+export const ORDERED_STORAGE_TB = 0.25;
+
+/**
+ * What OpsCrew knows of the object storage that holds the environment's bucket at Contabo: which
+ * storage, its S3 endpoint, and whether OpsCrew ordered it (only then may a teardown cancel it). An
+ * order under way has no `storageId` yet: a storage found in its region afterwards is the order's.
+ */
+const OrderedStorageRecordSchema = z.object({
+  provider: z.literal("contabo"),
+  region: z.string(),
+  storageId: z.string().optional(),
+  s3Url: z.string().optional(),
+  ordered: z.boolean(),
+  at: z.string(),
+});
+export type OrderedStorageRecord = z.infer<typeof OrderedStorageRecordSchema>;
+
+/** Where {@link OrderedStorageRecord} is kept, beside the environment's other private files. */
+export function orderedStorageFile(paths: Pick<ProjectPaths, "projectHomeDir">): string {
+  return join(paths.projectHomeDir, "object-storage.json");
+}
+
+/** The environment's {@link OrderedStorageRecord}, or undefined; a damaged one stops. */
+export async function readOrderedStorage(
+  deps: Pick<PhaseDeps, "paths">,
+): Promise<OrderedStorageRecord | undefined> {
+  const file = orderedStorageFile(deps.paths);
+  const text = await readTextIfExists(file);
+  if (text === undefined) return undefined;
+  try {
+    return OrderedStorageRecordSchema.parse(JSON.parse(text));
+  } catch {
+    throw new OpsCrewError(
+      "ARTIFACT_INVALID",
+      `OpsCrew's note of the app's object storage (${file}) is damaged, so OpsCrew stopped. Nothing was changed.`,
+      {
+        hint: "Check in Contabo's Customer Control Panel which object storage holds the app's bucket, delete that file, then run the command again.",
+      },
+    );
+  }
+}
+
+async function writeOrderedStorage(deps: PhaseDeps, record: Omit<OrderedStorageRecord, "at">) {
+  const file = orderedStorageFile(deps.paths);
+  await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+  const at = deps.clock.now().toISOString();
+  await writeFileAtomic(file, `${JSON.stringify({ ...record, at })}\n`, { mode: 0o600 });
+}
+
+/** Forgets the record once the storage it names is cancelled. */
+export function forgetOrderedStorage(deps: Pick<PhaseDeps, "paths">): Promise<void> {
+  return rm(orderedStorageFile(deps.paths), { force: true });
+}
+
+/**
+ * The object storage API of the bucket's provider: the run's (tests), else its connector's.
+ * @throws OpsCrewError `CREDENTIALS_MISSING` when the provider's credentials are not set.
+ */
+export function orderedStorageApi(
+  deps: Pick<PhaseDeps, "env" | "fetch" | "redactor" | "version">,
+  services: Pick<ProvisionServices, "objectStorage">,
+): ObjectStorageApi {
+  const api = services.objectStorage ?? vpsConnector("contabo", deps).objectStorage;
+  if (api !== undefined) return api;
+  const { credentials } = vpsConnector("contabo", deps);
+  throw new OpsCrewError(
+    "CREDENTIALS_MISSING",
+    `The app's bucket is in Contabo Object Storage, which OpsCrew reaches through Contabo's API, and its credentials (${credentials.envVars.join(", ")}) are not set.`,
+    { hint: "Set them, then run the command again." },
+  );
+}
+
+/** Where the bucket's storage is, in words: `Contabo Object Storage in EU`. */
+function storageWords(bucket: Pick<ProviderBucket, "provider" | "region">): string {
+  return `${STORAGE_NAMES[bucket.provider]} in ${bucket.region}`;
+}
+
+/** The plain stop for a storage the user cancelled: it ends, and with it the app's bucket. */
+function cancelledStorage(bucket: Bucket, storage: ProviderObjectStorage, command: string) {
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `Your ${storageWords(bucket)} (${storage.id}) is cancelled and ends on ${storage.cancelledUntil}, and Contabo sells one storage per region, so OpsCrew can neither use it nor order another. Nothing was changed.`,
+    {
+      hint: `Revoke the cancellation in Contabo's Customer Control Panel (Object Storage), then run \`${command}\` again.`,
+    },
+  );
+}
+
+/**
+ * The storage holding the bucket and its key, once it exists (the recorded storage, or the
+ * account's one in the region, recorded now as not OpsCrew's); undefined when there is none yet.
+ */
+async function knownStorage(
+  deps: PhaseDeps,
+  bucket: Bucket,
+  api: ObjectStorageApi,
+  command: string,
+): Promise<ProviderObjectStorage | undefined> {
+  const record = await readOrderedStorage(deps);
+  const found = await api.find(bucket.region);
+  const mine = record?.region === bucket.region ? record : undefined;
+  if (found === undefined) {
+    if (mine?.storageId === undefined) return undefined;
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `Contabo no longer lists the ${storageWords(bucket)} that holds the app's bucket (${mine.storageId}). Nothing was changed.`,
+      {
+        hint: `Check Object Storage in Contabo's Customer Control Panel. If the storage is gone, delete ${orderedStorageFile(deps.paths)} and run \`${command}\` again: OpsCrew then plans a new one.`,
+      },
+    );
+  }
+  if (found.cancelledUntil !== undefined) throw cancelledStorage(bucket, found, command);
+  if (mine?.storageId !== found.id || mine.s3Url !== found.s3Url) {
+    // An order under way (no id yet) is OpsCrew's; any other storage is the user's own.
+    const ordered = mine !== undefined && mine.storageId === undefined && mine.ordered;
+    await writeOrderedStorage(deps, {
+      provider: "contabo",
+      region: bucket.region,
+      storageId: found.id,
+      s3Url: found.s3Url,
+      ordered,
+    });
+    if (!ordered) {
+      deps.reporter.info(
+        `The app's bucket goes into your ${storageWords(bucket)} (${found.id}), which OpsCrew did not order: it never cancels it.`,
+      );
+    }
+  }
+  return found;
+}
+
+/**
+ * The storage's key, read through the provider's API and registered with the redactor, with the
+ * storage's S3 endpoint.
+ */
+async function storageKeyOf(
+  deps: PhaseDeps,
+  api: ObjectStorageApi,
+  storage: ProviderObjectStorage,
+): Promise<StorageKey> {
+  const key = await api.key(storage.id);
+  deps.redactor.addLiteral(key.accessKeyId, "storage-key");
+  deps.redactor.addLiteral(key.secretAccessKey, "storage-key");
+  return {
+    accessKeyId: key.accessKeyId,
+    secretAccessKey: key.secretAccessKey,
+    endpoint: storage.s3Url,
+  };
+}
+
+/**
+ * The key of a bucket in Contabo's storage with the storage's S3 endpoint, once the storage
+ * exists: the key Contabo made with it, read through Contabo's API (never asked, kept in a file or
+ * printed).
+ * @throws OpsCrewError `PHASE_PRECONDITION` when the storage is not ordered yet.
+ */
+export async function orderedStorageKey(
+  deps: PhaseDeps,
+  bucket: Bucket,
+  services: Pick<ProvisionServices, "objectStorage">,
+  options: { command: string; already?: string },
+): Promise<StorageKey> {
+  const api = orderedStorageApi(deps, services);
+  const storage = await knownStorage(deps, bucket, api, options.command);
+  if (storage === undefined) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `The app's bucket ${bucket.bucket} needs ${storageWords(bucket)}, and there is none yet. ${options.already ?? "Nothing was changed."}`,
+      { hint: "Run `opscrew provision`: it plans the storage's order for you to approve." },
+    );
+  }
+  return storageKeyOf(deps, api, storage);
+}
+
+/** The plan that orders the object storage, whose SHA-256 its approval binds. */
+interface StorageOrderPlan {
+  kind: "object-storage-order";
+  provider: "contabo";
+  region: string;
+  sizeTb: number;
+  displayName: string;
+  price: ProviderBucket["price"];
+}
+
+/** Where an order plan is saved, so a later run's `--approve` knows its hash. */
+export function storageOrderPlanFile(paths: Pick<ProjectPaths, "files">, hash: string): string {
+  return join(paths.files.plansDir, `object-storage-${hash.toLowerCase()}.json`);
+}
+
+/** The order plan in plain English, with its hash: shown before the approval. */
+function orderPlanText(plan: StorageOrderPlan, hash: string): string[] {
+  const price = formatMoney({ amount: plan.price.monthly, currency: plan.price.currency });
+  return [
+    `Object storage plan: order ${STORAGE_NAMES.contabo} in ${plan.region} through Contabo's API, named ${plan.displayName}.`,
+    `  + ${plan.sizeTb * 1000} GB, from ${price}/month with free transfer (${plan.price.source}, checked ${plan.price.checkedOn}); a larger size costs what Contabo charges.`,
+    "  Contabo sells one storage per region: every bucket of your account in this region goes into it.",
+    "  Contabo bills it monthly. A teardown with --delete-data cancels it only if it holds no other bucket, effective at the next possible date: Contabo bills it until then.",
+    "  Its S3 key is made by Contabo with it: OpsCrew reads it through Contabo's API and gives it to the app as a secret, never printing or storing it.",
+    `Order plan hash: ${hash}`,
+  ];
+}
+
+/** What {@link prepareOrderedStorage} found or did: the key (with the endpoint), or the plan. */
+export type OrderedStorage =
+  | { key: StorageKey }
+  | {
+      /** The order plan's hash, for `--approve`: nothing was ordered. */
+      orderPlanHash: string;
+    };
+
+/**
+ * Before the `storage` root of a bucket in Contabo's storage: the storage it goes into. The one
+ * recorded, else the account's storage in the bucket's region (Contabo sells one per region),
+ * recorded as not OpsCrew's so that no teardown ever cancels it, else a new one, ordered through
+ * Contabo's API after its plan (region, size, price, how it is cancelled) is shown and approved by
+ * its SHA-256 (`iac-apply`). Before the order, a record notes that OpsCrew set out to order it, so
+ * a storage an interrupted order left is recognised as OpsCrew's. With `planOnly`, the plan is
+ * shown and saved, and its hash returned for `--approve`: nothing is ordered. Returns the key
+ * Contabo made with the storage (read through its API, registered with the redactor) and its S3
+ * endpoint once the storage exists.
+ * @throws OpsCrewError `APPROVAL_REFUSED` when the order is not approved: nothing was ordered.
+ */
+export async function prepareOrderedStorage(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  services: Pick<ProvisionServices, "objectStorage">,
+  options: { command: string; phase: PhaseName; planOnly?: boolean | undefined },
+): Promise<OrderedStorage> {
+  const bucket = providerBucket(plan);
+  if (bucket?.provider !== "contabo") throw new Error("The plan has no bucket at Contabo.");
+  const api = orderedStorageApi(deps, services);
+  const known = await knownStorage(deps, bucket, api, options.command);
+  if (known !== undefined) {
+    return { key: await storageKeyOf(deps, api, known) };
+  }
+  const order: StorageOrderPlan = {
+    kind: "object-storage-order",
+    provider: "contabo",
+    region: bucket.region,
+    sizeTb: ORDERED_STORAGE_TB,
+    displayName: `opscrew-${plan.app.name}`,
+    price: bucket.price,
+  };
+  const hash = sha256Hex(canonicalJson(order));
+  const text = orderPlanText(order, hash);
+  const file = storageOrderPlanFile(deps.paths, hash);
+  await mkdir(dirname(file), { recursive: true });
+  await writeFileAtomic(file, `${canonicalJson(order)}\n`);
+  if (options.planOnly) {
+    for (const line of text) deps.reporter.info(line);
+    return { orderPlanHash: hash };
+  }
+  const approval = await deps.approvals.request({
+    kind: "iac-apply",
+    title: `Order ${storageWords(bucket)} for the app's bucket ${bucket.bucket}`,
+    details: text.join("\n"),
+    planHash: hash,
+    costDelta: { amount: bucket.price.monthly, currency: bucket.price.currency },
+  });
+  if (!approval.approved) {
+    throw new OpsCrewError(
+      "APPROVAL_REFUSED",
+      `The order of ${storageWords(bucket)} was not approved${approval.reason ? ` (${approval.reason})` : ""}. Nothing was ordered.`,
+      {
+        hint: `Run \`${options.command}\` again to review it, or approve it with --approve ${hash}.`,
+      },
+    );
+  }
+  await deps.approvals.assertApprovedPlan(hash);
+  await writeOrderedStorage(deps, { provider: "contabo", region: bucket.region, ordered: true });
+  deps.reporter.step(`Ordering ${storageWords(bucket)} (Contabo makes it ready in a few minutes)`);
+  const storage = await api.order({
+    region: order.region,
+    sizeTb: order.sizeTb,
+    displayName: order.displayName,
+  });
+  await writeOrderedStorage(deps, {
+    provider: "contabo",
+    region: bucket.region,
+    storageId: storage.id,
+    s3Url: storage.s3Url,
+    ordered: true,
+  });
+  await deps.audit.append({
+    kind: "provider-call",
+    actor: "opscrew",
+    action: "order object storage",
+    phase: options.phase,
+    target: `contabo object storage ${storage.id}`,
+    detail: `${bucket.region}, ${order.sizeTb} TB`,
+  });
+  deps.reporter.success(`Ordered ${storageWords(bucket)} (${storage.id}).`);
+  return { key: await storageKeyOf(deps, api, storage) };
+}
+
+/**
  * Stops before any change when the plan's bucket is on R2 but the plan has no domain on
  * Cloudflare: R2 needs OpsCrew's Cloudflare token and account.
  */
@@ -352,7 +676,10 @@ export function requireR2Cloudflare(plan: DeployPlan, cloudflare: CloudflareSetu
   }
 }
 
-/** What the app receives besides `key`: R2's endpoint, from the zone's Cloudflare account. */
+/**
+ * What the app receives besides `key`: R2's endpoint, from the zone's Cloudflare account; a
+ * bucket in Contabo's storage has its storage's endpoint in `key`.
+ */
 export function storageLogin(
   plan: DeployPlan,
   key: StorageKey,
@@ -394,7 +721,10 @@ export function backupsEngineEnv(
   return s3EngineEnv(env, key);
 }
 
-/** `env` without `AWS_*`, with `key` for the `aws` provider and no AWS files but `credentials`. */
+/**
+ * `env` without `AWS_*`, with `key` for the `aws` provider and no AWS files but `credentials`;
+ * a Contabo storage's endpoint, which comes with its key, as `TF_VAR_endpoint`.
+ */
 function s3EngineEnv(
   env: Record<string, string | undefined>,
   key: StorageKey | undefined,
@@ -408,6 +738,7 @@ function s3EngineEnv(
     AWS_SECRET_ACCESS_KEY: key.secretAccessKey,
     AWS_CONFIG_FILE: devNull,
     AWS_SHARED_CREDENTIALS_FILE: credentials ?? devNull,
+    ...(key.endpoint !== undefined ? { TF_VAR_endpoint: key.endpoint } : {}),
   };
 }
 
@@ -639,7 +970,7 @@ export function backupsCreateFile(paths: Pick<ProjectPaths, "projectHomeDir">): 
 }
 
 const CreateMarkerSchema = z.object({
-  provider: z.enum(["r2", "digitalocean", "hetzner"]),
+  provider: z.enum(["r2", "digitalocean", "hetzner", "contabo"]),
   bucket: z.string(),
   region: z.string(),
   planHash: z.string(),

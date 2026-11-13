@@ -308,6 +308,7 @@ export const definition: CloudProviderDefinition = {
       lookup: (app) =>
         `tagged opscrew-app:${app}, or with no OpsCrew tag and named ${app} or ${app}-…`,
       tokenHint: (command) => `${CONTABO_CREDENTIALS_HINT} Then run \`${command}\` again.`,
+      storageConsole: "the Contabo Customer Control Panel (Object Storage)",
     },
     secops: SECOPS,
   },

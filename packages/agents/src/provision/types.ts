@@ -13,6 +13,7 @@ import type { HostFacts } from "@opscrew/connector-ssh-host";
 import type {
   CredentialCheck,
   IacEngine,
+  ObjectStorageApi,
   PolicyResult,
   RemoteExec,
   ResourceChange,
@@ -149,6 +150,11 @@ export interface ProvisionServices {
    * console steps (CLI prompt, hidden input). Never logged.
    */
   askStorageKey?: (question: StorageKeyQuestion) => Promise<StorageKey>;
+  /**
+   * The object storage OpsCrew orders through its provider's API for a bucket there (Contabo;
+   * default: the connector's `objectStorage`).
+   */
+  objectStorage?: ObjectStorageApi;
   /**
    * GitHub Pages: interactive question for the value of GitHub's domain verification record, which
    * GitHub shows only on its settings `page` once `domain` is added there (CLI prompt). Not a
@@ -313,7 +319,8 @@ export interface ProvisionResult {
   cloudflarePlanDeletes?: true;
   /**
    * The `storage` root's plan hash (the app's bucket), when it has changes: applied by this run
-   * or, with `--plan-only`, the hash to approve.
+   * or, with `--plan-only`, the hash to approve. Before Contabo's object storage is ordered, the
+   * hash of the plan that orders it: the bucket's plan follows once the storage exists.
    */
   storagePlanHash?: string;
   /**

@@ -72,11 +72,11 @@ function quotedIds(): string[] {
 describe("cloud provider ids", () => {
   it("are never quoted outside the object-storage code", () => {
     expect(quotedIds()).toEqual([
-      // A bucket at Hetzner or DigitalOcean (Spaces) stays wherever the app runs.
+      // A bucket at Hetzner, DigitalOcean (Spaces) or Contabo stays wherever the app runs.
       'design/components.ts: old.provider === "hetzner" ||',
-      'design/components.ts: old.provider === "digitalocean");',
-      // Spaces signs with us-east-1, whatever the bucket's region.
-      'shared/s3.ts: region: bucket.provider === "digitalocean" ? "us-east-1" : bucket.region,',
+      'design/components.ts: old.provider === "digitalocean" ||',
+      // Only Hetzner signs with the bucket's region; Spaces and Contabo with us-east-1.
+      'shared/s3.ts: region: bucket.provider === "hetzner" ? bucket.region : "us-east-1",',
     ]);
   });
 });

@@ -3,14 +3,29 @@ import type {
   IacEngine,
   IacInitOptions,
   IacRunOptions,
+  ObjectStorageApi,
+  ObjectStorageKey,
+  ProviderObjectStorage,
   ResourceChange,
 } from "@opscrew/contracts";
+import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { FakeEngine } from "./deploy";
 
+/** A provider of the app's bucket in the storage tests. */
+type BucketAt = "r2" | "hetzner" | "digitalocean" | "contabo";
+
+/** Each provider's region of the app's bucket in the storage tests. */
+const BUCKET_REGIONS = {
+  r2: "auto",
+  hetzner: "fsn1",
+  digitalocean: "fra1",
+  contabo: "EU",
+} as const;
+
 /** The bucket's resources as a plan of the `storage` root creates them. */
 export function bucketChanges(
-  provider: "r2" | "hetzner" | "digitalocean",
+  provider: BucketAt,
   action: ResourceChange["action"] = "create",
 ): ResourceChange[] {
   const r2 = provider === "r2";
@@ -31,7 +46,7 @@ export function bucketChanges(
  * `plan` keeping the app's files in the bucket `shop-uploads` at `provider`, without CORS, with
  * the variables design gives the app for it.
  */
-export function withBucket(plan: DeployPlan, provider: "r2" | "hetzner" | "digitalocean") {
+export function withBucket(plan: DeployPlan, provider: BucketAt) {
   const variables = ["AWS_ACCESS_KEY_ID", "AWS_ENDPOINT_URL_S3", "AWS_REGION"].map((name) => ({
     name,
     secret: name === "AWS_ACCESS_KEY_ID",
@@ -51,11 +66,11 @@ export function withBucket(plan: DeployPlan, provider: "r2" | "hetzner" | "digit
       objectStorage: {
         provider,
         bucket: "shop-uploads",
-        region: provider === "r2" ? "auto" : provider === "hetzner" ? "fsn1" : "fra1",
+        region: BUCKET_REGIONS[provider],
         cors: false,
         expected: { storageGb: 10, egressGbPerMonth: 50 },
         price: {
-          monthly: provider === "r2" ? 0 : 6.49,
+          monthly: provider === "r2" ? 0 : provider === "contabo" ? 2.49 : 6.49,
           currency: provider === "digitalocean" ? "USD" : "EUR",
           source: "test",
           checkedOn: "2026-10-19",
@@ -123,7 +138,7 @@ export class RootEngine<S extends IacEngine = FakeEngine> implements IacEngine {
 
 /** A fake `storage` engine whose plans create (or with `action`, change) the bucket. */
 export function bucketEngine(
-  provider: "r2" | "hetzner" | "digitalocean",
+  provider: BucketAt,
   scenario: ConstructorParameters<typeof FakeEngine>[0] = {},
 ): FakeEngine {
   return new FakeEngine({
@@ -132,4 +147,53 @@ export function bucketEngine(
     planJson: { format_version: "1.2", planned_values: { root_module: {} } },
     ...scenario,
   });
+}
+
+/** The S3 endpoint of the fake Contabo storage. */
+export const CONTABO_S3_URL = "https://eu2.contabostorage.com";
+
+/**
+ * Contabo's object storage API, faked: the account's storages, what was ordered and cancelled, and
+ * the key Contabo made with each storage (synthetic).
+ */
+export class FakeObjectStorage implements ObjectStorageApi {
+  readonly orders: { region: string; sizeTb: number; displayName: string }[] = [];
+  readonly cancelled: string[] = [];
+  readonly keysRead: string[] = [];
+  /** The key Contabo made with every storage here. */
+  readonly madeKey: ObjectStorageKey = {
+    accessKeyId: fakeSecret("aws-access-key-id", "contabo-storage"),
+    secretAccessKey: fakeSecret("aws-secret-access-key", "contabo-storage"),
+  };
+
+  constructor(readonly storages: ProviderObjectStorage[] = []) {}
+
+  async find(region: string): Promise<ProviderObjectStorage | undefined> {
+    return this.storages.find((storage) => storage.region === region);
+  }
+
+  async order(request: {
+    region: string;
+    sizeTb: number;
+    displayName: string;
+  }): Promise<ProviderObjectStorage> {
+    this.orders.push(request);
+    const storage = {
+      id: `os-${this.orders.length}`,
+      region: request.region,
+      s3Url: CONTABO_S3_URL,
+    };
+    this.storages.push(storage);
+    return storage;
+  }
+
+  async key(storageId: string): Promise<ObjectStorageKey> {
+    this.keysRead.push(storageId);
+    return this.madeKey;
+  }
+
+  async cancel(storageId: string): Promise<string> {
+    this.cancelled.push(storageId);
+    return "2026-12-13";
+  }
 }

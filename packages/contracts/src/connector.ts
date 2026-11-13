@@ -211,6 +211,51 @@ export interface FirewallApi {
   remove(name: string): Promise<boolean>;
 }
 
+/** An object storage at a provider that sells one per region and account (Contabo). */
+export interface ProviderObjectStorage {
+  /** The provider's id of the storage. */
+  id: string;
+  /** The provider's region of the storage, for example `EU`. */
+  region: string;
+  /** Its S3 endpoint, `https://…`, as the provider reports it. */
+  s3Url: string;
+  /** When a cancelled storage ends (`2026-12-11`); absent while it is not cancelled. */
+  cancelledUntil?: string;
+}
+
+/** A storage's S3 key pair. Never logged, printed, or written to Terraform state. */
+export interface ObjectStorageKey {
+  accessKeyId: string;
+  secretAccessKey: string;
+}
+
+/**
+ * Object storage ordered and cancelled through a provider's API, for a provider whose Terraform
+ * cannot manage it (Contabo: its object storage cannot be imported). Buckets are made over S3 with
+ * the storage's key, never through this API.
+ */
+export interface ObjectStorageApi {
+  /** The account's storage in `region` that is not cancelled yet, if any (one per region). */
+  find(region: string): Promise<ProviderObjectStorage | undefined>;
+  /**
+   * Orders a storage of `sizeTb` TB in `region` and resolves once the provider reports it ready,
+   * with its S3 endpoint. It is billed from then on. Mutating: only after an approved plan.
+   */
+  order(request: {
+    region: string;
+    sizeTb: number;
+    displayName: string;
+  }): Promise<ProviderObjectStorage>;
+  /** The S3 key the provider made with the storage `storageId`. Registered with the redactor. */
+  key(storageId: string): Promise<ObjectStorageKey>;
+  /**
+   * Cancels the storage at the next possible date (the end of its term; it stays billed until
+   * then) and resolves with that day (`2026-12-11`). A storage already cancelled resolves with its
+   * end date and is not cancelled again. Destroy-grade.
+   */
+  cancel(storageId: string): Promise<string>;
+}
+
 /** A VPS provider connector: credentials, price catalogue and server API. */
 export interface VpsConnector extends Connector {
   /** True when a token is set (it may still be invalid). */
@@ -223,4 +268,9 @@ export interface VpsConnector extends Connector {
    * when no token is set and for every other provider.
    */
   readonly firewalls?: FirewallApi | undefined;
+  /**
+   * Object storage through the provider's API, for a provider that sells it that way (Contabo);
+   * undefined when no token is set and for every other provider.
+   */
+  readonly objectStorage?: ObjectStorageApi | undefined;
 }

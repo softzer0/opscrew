@@ -43,6 +43,7 @@ export interface DestroyServices
     | "remote"
     | "serverHost"
     | "firewalls"
+    | "objectStorage"
   > {
   /** Cloudflare API (default: client from `CLOUDFLARE_API_TOKEN`); `null` means no token. */
   cloudflare?: DestroyCloudflareApi | null;

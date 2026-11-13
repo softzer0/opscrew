@@ -325,6 +325,7 @@ const OFFERED_WHERE: Readonly<Record<StorageOffer["provider"], string>> = {
   garage: "on the app's server: on a cloud server only if you choose it",
   hetzner: "on Hetzner Cloud in Falkenstein, Nuremberg or Helsinki",
   digitalocean: "on DigitalOcean",
+  contabo: "on Contabo",
   r2: "with the domain on Cloudflare",
 };
 

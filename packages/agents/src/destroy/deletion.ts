@@ -4,6 +4,7 @@ import type {
   ApprovalRecord,
   AppServer,
   IacEngine,
+  ObjectStorageApi,
   PhaseName,
   PlanSummary,
   ResourceChange,
@@ -86,6 +87,11 @@ export interface DeletionScope {
    * connectors'): an apply that removes such a server cancels it through this first.
    */
   servers?: ServerSnapshotApi | undefined;
+  /**
+   * The object storage OpsCrew ordered for the app's bucket through its provider's API (default:
+   * the connector's): a deletion of the bucket cancels it when nothing else is in it.
+   */
+  objectStorage?: ObjectStorageApi | undefined;
 }
 
 /** A deletion of a provider's server, which may have snapshots and delete protection. */

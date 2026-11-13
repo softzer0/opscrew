@@ -19,7 +19,7 @@ import { renderDeployment } from "@opscrew/iac-templates";
 import { DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { deploymentRenderContext } from "../provision/render";
-import { STORAGE_KEY_VARS, storageStateFile } from "../provision/storage";
+import { orderedStorageFile, STORAGE_KEY_VARS, storageStateFile } from "../provision/storage";
 import type { ProvisionServices } from "../provision/types";
 import { ensureDeployKey, ensureStatePassphrase, writeRenderedFiles } from "../shared";
 import {
@@ -37,7 +37,7 @@ import {
   SERVER_IPV4,
   testPlan,
 } from "../testing";
-import { RootEngine, withBucket } from "../testing/storage";
+import { CONTABO_S3_URL, FakeObjectStorage, RootEngine, withBucket } from "../testing/storage";
 import { driftNextSteps, renderDriftReport } from "./render";
 import { runDrift } from "./run";
 import {
@@ -343,6 +343,34 @@ describe.skipIf(!findExecutable("git"))("runDrift", () => {
     }
     expect(report.clean).toBe(false);
     expect(await driftPlanFiles(deps.paths.files.plansDir)).toEqual([]);
+  });
+
+  it("checks a bucket in Contabo's storage with the key and endpoint read through Contabo's API", async () => {
+    const bucketEngine = new DriftEngine({ drift: [drifted("aws_s3_bucket.this", "delete")] });
+    const engine = new RootEngine(new DriftEngine(), bucketEngine);
+    const objectStorage = new FakeObjectStorage([
+      { id: "os-1", region: "EU", s3Url: CONTABO_S3_URL },
+    ]);
+    const { deps, services } = await setup({
+      plan: withBucket(testPlan({ deployed: true }), "contabo"),
+      services: { engine: async () => engine, objectStorage },
+    });
+    const file = orderedStorageFile(deps.paths);
+    await mkdir(dirname(file), { recursive: true });
+    const record = { provider: "contabo", region: "EU", storageId: "os-1", s3Url: CONTABO_S3_URL };
+    await writeFile(file, JSON.stringify({ ...record, ordered: true, at: "x" }));
+    await writeFile(storageStateFile(deps.paths), stateContent("plain") ?? "");
+    const report = await runDrift(deps, { services });
+    expect(report.drift).toEqual([
+      expect.objectContaining({ address: "aws_s3_bucket.this", action: "delete" }),
+    ]);
+    expect(objectStorage.keysRead).toEqual(["os-1"]);
+    expect(bucketEngine.plans.length).toBeGreaterThan(0);
+    for (const call of bucketEngine.plans) {
+      expect(call.env?.AWS_SECRET_ACCESS_KEY).toBe(objectStorage.madeKey.secretAccessKey);
+      expect(call.env?.TF_VAR_endpoint).toBe(CONTABO_S3_URL);
+    }
+    expect(renderDriftReport(report)).not.toContain(objectStorage.madeKey.secretAccessKey);
   });
 
   it("ignores the bucket's inline copy of the CORS rule its own resource manages", async () => {

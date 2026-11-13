@@ -667,6 +667,7 @@ async function destroyDeployment(
       ...teardownScope(deps, plan, provider),
       firewalls: services.firewalls,
       servers: services.servers,
+      objectStorage: services.objectStorage,
     },
     { ...setup, dir: join(deps.paths.root, plan.infra.dir) },
   );

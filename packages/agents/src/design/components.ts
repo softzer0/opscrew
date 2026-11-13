@@ -912,7 +912,8 @@ function objectStorageFor(input: StorageInput): {
     old !== undefined &&
     (offers.some((offer) => offer.provider === old.provider) ||
       old.provider === "hetzner" ||
-      old.provider === "digitalocean");
+      old.provider === "digitalocean" ||
+      old.provider === "contabo");
   const chosen = keepsOld
     ? { provider: old.provider, region: old.provider === "garage" ? "garage" : old.region }
     : (asked ?? defaultStorageOffer(offers));
