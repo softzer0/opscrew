@@ -521,6 +521,16 @@ names the change.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-cpanel && pnpm turbo run typecheck --filter=opscrew && npx vitest run --root packages/cli test/live/cpanel-support.test.ts && pnpm lint`
   - Effort: medium
 
+- [ ] T2732 The account's web server from the first of its domains that answers (research R13)
+  - Owns: `packages/agents/src/hosting/facts.ts`, `packages/agents/src/hosting/facts.test.ts`, `packages/agents/src/hosting/__fixtures__/**`
+  - Reads: research R10, R11, R13; `agents/src/hosting/{facts,php,provision,status}.ts`
+  - Accept:
+    - `readHostingAccount` reads the `Server` header of the main domain first, then of the account's addon, parked and subdomains in that order, at most 5 domains in all, and keeps the first that names a web server, with the domain it came from.
+    - Design's line names that domain (`LiteSpeed, from <domain>'s Server header`); when none answers, it says the account's domains don't name it.
+    - Tests: a main domain that doesn't resolve and a parked domain that answers `LiteSpeed`; none answering; the 5-domain limit.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/hosting && pnpm lint`
+  - Effort: medium
+
 ## Phase 9: Live passes and release (lead)
 
 - [ ] T2722 The cPanel live pass (lead): `docs/e2e-coverage.md` row and results.
