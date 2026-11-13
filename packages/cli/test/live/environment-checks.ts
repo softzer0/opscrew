@@ -757,7 +757,13 @@ export class AppEnvironments {
         await attempt("remove this run's runners from GitHub", () => this.removeRunners());
         await attempt(
           "remove the GitHub environments, deploy secrets and pauses this run left",
-          () => this.removeGithubLeftovers(),
+          () =>
+            removeGithubLeftovers(run, {
+              environments: [...this.apps.keys()],
+              paths: (environment) => this.paths(environment),
+              readPlan: (environment) => this.readPlan(environment),
+              before: this.githubBefore,
+            }),
         );
         if (this.options.restoreMain === true && run.repoReady) {
           await attempt("put main back to the example's commit", () => run.restoreMain());
@@ -819,45 +825,60 @@ export class AppEnvironments {
     }
     return problems;
   }
+}
 
-  private async removeGithubLeftovers(): Promise<string[]> {
-    const { github } = this.run;
-    const problems: string[] = [];
-    const remove = async (path: string, what: string) => {
-      const deleted = await github.call("DELETE", path);
-      if (deleted.status !== 204 && deleted.status !== 404) {
-        problems.push(`GitHub kept ${what} (HTTP ${deleted.status})`);
-      }
-      return deleted.status === 204;
-    };
-    for (const environment of this.apps.keys()) {
-      // The environment's entry in the deploy pause variable, which a run stopped between a
-      // rollback and its --resume leaves behind. A failure here never skips the secrets below.
-      const cleared = await this.readPlan(environment)
-        .then((plan) => clearDeployPause(github, checkEnvironmentKey(plan)))
-        .catch((error: Error) => [`the deploy pause of ${environment}: ${error.message}`]);
-      problems.push(...cleared);
-      const record = await secretsRecord(this.paths(environment));
-      if (record === undefined || record.repo.toLowerCase() !== github.name.toLowerCase()) continue;
-      for (const name of record.names) {
-        await remove(`/repos/${github.name}/actions/secrets/${name}`, `the secret ${name}`);
-        if (record.environment !== undefined) {
-          await remove(
-            `/repos/${github.name}/environments/${encodeURIComponent(record.environment)}/secrets/${name}`,
-            `the secret ${name} of ${record.environment}`,
-          );
-        }
+/**
+ * What a run left at GitHub for an app's `environments`, removed: each one's entry in the deploy
+ * pause variable (a run stopped between a rollback and its --resume leaves it), the deploy secrets
+ * OpsCrew's record of it names when the record is of this repository, and the GitHub environments
+ * that are not in `before` (none without it). Returns what GitHub kept.
+ */
+export async function removeGithubLeftovers(
+  run: LiveRun,
+  input: {
+    environments: readonly string[];
+    paths: (environment: string) => { files: { deploySecrets: string } };
+    readPlan: (environment: string) => Promise<DeployPlan>;
+    before: readonly string[] | undefined;
+  },
+): Promise<string[]> {
+  const { github } = run;
+  const problems: string[] = [];
+  const remove = async (path: string, what: string) => {
+    const deleted = await github.call("DELETE", path);
+    if (deleted.status !== 204 && deleted.status !== 404) {
+      problems.push(`GitHub kept ${what} (HTTP ${deleted.status})`);
+    }
+    return deleted.status === 204;
+  };
+  for (const environment of input.environments) {
+    // The environment's entry in the deploy pause variable, which a run stopped between a
+    // rollback and its --resume leaves behind. A failure here never skips the secrets below.
+    const cleared = await input
+      .readPlan(environment)
+      .then((plan) => clearDeployPause(github, checkEnvironmentKey(plan)))
+      .catch((error: Error) => [`the deploy pause of ${environment}: ${error.message}`]);
+    problems.push(...cleared);
+    const record = await secretsRecord(input.paths(environment));
+    if (record === undefined || record.repo.toLowerCase() !== github.name.toLowerCase()) continue;
+    for (const name of record.names) {
+      await remove(`/repos/${github.name}/actions/secrets/${name}`, `the secret ${name}`);
+      if (record.environment !== undefined) {
+        await remove(
+          `/repos/${github.name}/environments/${encodeURIComponent(record.environment)}/secrets/${name}`,
+          `the secret ${name} of ${record.environment}`,
+        );
       }
     }
-    const before = this.githubBefore;
-    if (before === undefined) return problems;
-    for (const name of await environmentNames(github)) {
-      if (before.includes(name)) continue;
-      const path = `/repos/${github.name}/environments/${encodeURIComponent(name)}`;
-      if (await remove(path, `the GitHub environment ${name}`)) {
-        this.run.log(`removed the GitHub environment ${name}, which appeared during the run`);
-      }
-    }
-    return problems;
   }
+  const { before } = input;
+  if (before === undefined) return problems;
+  for (const name of await environmentNames(github)) {
+    if (before.includes(name)) continue;
+    const path = `/repos/${github.name}/environments/${encodeURIComponent(name)}`;
+    if (await remove(path, `the GitHub environment ${name}`)) {
+      run.log(`removed the GitHub environment ${name}, which appeared during the run`);
+    }
+  }
+  return problems;
 }

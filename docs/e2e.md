@@ -701,6 +701,61 @@ deploys, the addition, origin TLS and two switches; the second app's one more), 
 server (about one or two cents of server time), plus GitHub Actions minutes. The cleanup is that of
 your own server; if a run was interrupted, delete what it left by hand as described there.
 
+## Your own server with OpenLiteSpeed
+
+`packages/cli/test/live/own-openlitespeed.test.ts`, with `OPSCREW_E2E_OPENLITESPEED=1`, runs the
+pass of [your own server with nginx](#your-own-server-with-nginx) with `target.edge:
+openlitespeed` (feature 027, ADR 0031, SC-2706): the same server, harness, scrubber, cleanup, apps
+and hostnames, with OpenLiteSpeed and certbot in the edge. Its steps are nginx's, in the same
+order, with these differences:
+
+1. The server, outside OpsCrew. Docker must answer on this computer (step 6).
+2. **DNS only with OpenLiteSpeed:** as nginx's step 2; the edge's Compose file must say
+   `x-opscrew-edge-proxy: openlitespeed`, and the CAA records name only `letsencrypt.org`.
+3. **An addition:** `opscrew/proxy/additions.openlitespeed`, a `context /opscrew-e2e-addition`
+   that sends the request on to the app (`handler kamal-proxy`) with the header
+   `X-OpsCrew-Addition`, since OpenLiteSpeed's additions only send requests on. The path must
+   answer (any status below 500) with that header, and with OpsCrew's
+   `Strict-Transport-Security` and `X-Content-Type-Options` headers.
+4. **A forced renewal under load,** as nginx's step 4: OpenLiteSpeed must serve the new
+   certificate within 3 minutes after its graceful restart, and no request may fail.
+5. **A deploy empties the app's page cache** (ADR 0031 D4): the test files a stand-in kept answer
+   (`e2e/answer`) and a file of the cache's own (`.cacheman-e2e`) in the app's cache folder in
+   the OpenLiteSpeed container (`/usr/local/lsws/cachedata/<app>`), then merges a change and waits
+   for its deploy. The kept answer must be gone, the cache's own file still there, and the
+   container the same one (a replaced container would prove nothing).
+6. **`secure --deep` through OpenLiteSpeed,** as nginx's step 5.
+7. **A second app on the same edge,** with OpenLiteSpeed; the first app's `target.edge` set to
+   `caddy` must be refused before any change, as in nginx's step 6.
+8. **The second app's destroy,** as nginx's step 7.
+9. **Origin TLS on OpenLiteSpeed:** as nginx's step 8; design must keep `openlitespeed`. There a
+   connection without Cloudflare's client certificate fails the handshake (`clientVerify 2`,
+   research R12), which counts as refused.
+10. **A switch to Caddy and back to OpenLiteSpeed,** each within 15 seconds of interruption under
+    load, the addition rewritten in each proxy's syntax and answering on it.
+11. **`destroy --undo-host`,** as nginx's step 10.
+12. **The leak search,** as nginx's step 11.
+
+| Variable | What it is |
+|---|---|
+| `OPSCREW_E2E_OPENLITESPEED` | `1` runs this test. |
+| `OPSCREW_E2E_HCLOUD_TOKEN`, `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_REPO_B`, `OPSCREW_E2E_GITHUB_TOKEN`, `OPSCREW_E2E_CLOUDFLARE_TOKEN`, `OPSCREW_E2E_DOMAIN` | As for [your own server with nginx](#your-own-server-with-nginx). |
+| `OPSCREW_E2E_REGION`, `OPSCREW_E2E_OWN_SERVER_TYPE`, `OPSCREW_E2E_APP`, `OPSCREW_E2E_APP_ENV` | Optional, as there (not `express-api`, the second app's). |
+
+```bash
+pnpm --filter opscrew build
+cd packages/cli
+OPSCREW_E2E_OPENLITESPEED=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e \
+  OPSCREW_E2E_GITHUB_REPO_B=you/opscrew-e2e-b OPSCREW_E2E_GITHUB_TOKEN=… \
+  OPSCREW_E2E_CLOUDFLARE_TOKEN=… OPSCREW_E2E_DOMAIN=e2e.example.com \
+  npx vitest run test/live/own-openlitespeed.test.ts
+```
+
+**Expected time and cost** (not measured yet): as nginx's pass with one deploy more (step 5),
+about 80–100 minutes on the smallest x86 server (one or two cents of server time), plus GitHub
+Actions minutes. OpenLiteSpeed's image is about 1.1 GB, so each first deploy on the server takes a
+little longer. The cleanup is that of your own server: it leaves nothing.
+
 ## Your existing Portainer
 
 `packages/cli/test/live/portainer-target.test.ts` runs the flow for a Portainer the user already
@@ -3395,6 +3450,245 @@ Not measured yet: Contabo's create time is unverified. The pass makes one deploy
 What this pass doesn't cover (fakes do): moves to and from Contabo, several servers, previews,
 monitoring, rollback, data snapshots, `advise` and `rotate` on Contabo; a create that times out
 (SC-2605); the snapshot limit's refusal; a cancel Contabo refuses; the regions other than EU.
+
+## A cPanel account
+
+`packages/cli/test/live/cpanel.test.ts`, with `OPSCREW_E2E_CPANEL=1`, runs feature 027 on the
+founder's cPanel account (SC-2701 to SC-2704). The account is ordinary shared hosting served by
+LiteSpeed, and its SSH doesn't answer from outside (research R10, R11); the test reaches it through
+cPanel's API only, as OpsCrew does. OpsCrew gets the account's address, user and token as
+`OPSCREW_HOSTING_URL`, `OPSCREW_HOSTING_USER` and `OPSCREW_HOSTING_TOKEN`, as a user's run does,
+and no `OPSCREW_SFTP_*` or Cloudflare variable.
+
+Every object the run makes on the account is named after the run's tag, the last 6 characters of
+its id: each app is `e2e-<tag>-<leg>` on its own subdomain `e2e-<tag>-<leg>.<domain>` of
+`OPSCREW_E2E_CPANEL_DOMAIN`, its folder `~/opscrew/e2e-<tag>-<leg>-prod`, its database
+`<prefix>e2e_<tag>_<leg>`. The account keeps the domain's DNS, so the interview answers
+`dnsProvider: other` and cPanel adds each subdomain's record itself. The log masks the account's
+user, the panel's host and every domain the account serves, also in the form cPanel's certificate
+ids use.
+
+The pass runs one leg per app on the throwaway repository, one after another (each leg's
+`prepareRepo` resets it). A failure stops the legs after it; the cleanup then destroys the one it
+stopped.
+
+0. **The account before:** its inventory: the domains with their document roots, the databases and
+   their users, the cron lines, the SSH keys (also the public ones), the API tokens' names, the home
+   folder's top level, what `~/opscrew` and `~/nodevenv/opscrew` hold, the SHA-256 of each file in
+   `~/.cl.selector`, the records of `OPSCREW_E2E_CPANEL_DOMAIN`'s zone by name and type (never
+   their values), and the SSL certificates, keys and installed hosts. `OPSCREW_E2E_CPANEL_DOMAIN`
+   must be one of the account's domains, and no object may be named after the run yet. The
+   database prefix cPanel gives the account (part of its user name) is masked in the log too. Each
+   `e2e-…` object of another run is logged as a warning; the run never touches it.
+
+Then, for each leg (its steps numbered `<leg>.<step>`: 1 for `php`, 2 `site`, 3 `node`, 4
+`laravel`):
+
+1. **Interview and design:** the example in the throwaway repository, `init --fix`,
+   `analyze --no-ai`, the app named `e2e-<tag>-<leg>` in `opscrew/architecture.json`, and
+   `interview --answers` with `provider: hosting` and the hostname: the interview must find cPanel
+   by itself. Design must plan a hosting target on cPanel with the app's kind and web root
+   (`public` for the PHP and Node.js apps, `.` for the static site), its document root the release
+   itself (`direct`), and for the plain PHP app a database. Its line on the web server is logged.
+   The recovery copy goes to a folder, its age key to a file (`--key-out`), as in the other passes.
+2. **Provision:** each plan approved by its hash; at least two hosting plans must be shown (the
+   agent's, then the app's, built from the agent's report). The hostname's document root must be
+   `~/opscrew/<app>-prod/current/<web root>`, the account must have the agent's cron line and one
+   per cron job of the plan, and for the plain PHP app one database of the run. The plain PHP app's
+   PHP must come through the hostname's handler line (the account's own PHP is too old for it); its
+   version is logged. The agent's private GitHub key and the secret settings in the app's `.env`
+   on the account (the database's password among them) are read through cPanel's API into the
+   scrubber, never printed.
+3. **The first deploy:** the deploy-setup pull request merged; its deploy run must succeed with its
+   job "Wait for <hostname> to serve the release". The app must answer 200 on its health path with
+   an `X-OpsCrew-Release` header (its release, `<run id>-<attempt>`), `verify` must pass, `status`
+   must name that release, and `logs` must run. The plain PHP app must answer from MySQL, keep a
+   note in MySQL and in its kept `storage/` (`PUT /data`, `GET /data`), and its cron job must run
+   within 5 minutes (`GET /cron`). The Node.js app prints its findings (below).
+4. **A second release (SC-2703):** a change to a page whose answer tells the releases apart:
+   `public/opscrew-e2e-release.php` for the PHP apps (in both releases, "release one", then "release
+   two"), `public/opscrew-e2e-release.txt` for the static site (only in the second), the message of
+   `src/index.ts` for the Node.js app. While its deploy runs and for 20 seconds after it, the page
+   is asked every second: from the first answer naming another release on, every answer must name
+   that release and show its page, never the old release or its page. Errors and 5xx answers after
+   the switch are counted as findings. `status` must name the new release; the plain PHP app's note
+   must still be there.
+5. **Rollback (SC-2703):** `opscrew rollback` run first without `--approve`, as in
+   [Rollback](#rollback), must go back to the first release; then the command it printed, with its
+   database choice (on prod, keeping the database), watched the same way: every answer from the
+   first one of the first release on must be its. `status` must name it, the note must be there,
+   then `rollback --resume --yes`.
+6. **`secure` and `drift`** must pass.
+7. **A snapshot and its restore** (the plain PHP app only): `snapshot`, a changed note, then
+   `restore <id>` run first without `--approve` and then with `--confirm <hostname> --approve
+   <hash>`; the note must be back in MySQL and in storage.
+8. **Destroy:** `destroy --confirm <hostname> --no-snapshot`, each plan approved by its hash. The
+   account must no longer serve the hostname or have the app's cron lines, database or folder (nor,
+   for the Node.js app, its `~/nodevenv` folder), and GitHub no deploy key of the agent. Then the
+   leg's own leak search: its commits (every branch), pull requests, audit log, saved plans,
+   reports and folder copy, and the agent's log on the account (read before the destroy), for the
+   token, the agent's key, the app's settings and the age identity.
+
+The legs, in order:
+- `php`: `examples/php-plain-mysql`, steps 1 to 8;
+- `site`: `examples/static-vite`, steps 1 to 6 and 8;
+- `node`: `examples/hono-api` through CloudLinux's selector, steps 1 to 6 and 8, with one setting
+  of its own (`OPSCREW_E2E_SETTING`, a random value) to see where the selector keeps it;
+- `laravel`: `examples/laravel-app`. With `OPSCREW_E2E_CPANEL_LARAVEL=1` (once the account's PHP
+  is 8.4 or newer, R11), steps 1 to 6 and 8. Without it, step 2 instead runs provision until it
+  stops after the agent's report, with "OpsCrew never changes the account's PHP version, so it
+  stopped before making the hostname or the database." and the PHP selector named as the way out;
+  no hostname or database of the run may be there. Step 8 then removes the agent.
+
+The Node.js app's findings are printed lines (`finding: …`), not checks: which files in
+`~/.cl.selector` name the app's root and whether it is the `current` link (which a switch moves) or
+a release folder; what `~/nodevenv/opscrew/<app>-prod` holds; the names (never the values) of the
+app's variables in the selector's files and in the served folder's `.htaccess`, so the run shows
+whether the selector's environment variables landed in a `.htaccess` inside the release; and that
+`install-modules` with an absolute `--requirements-file` (a Python app's) is untested, since the
+pass has no Python app. Step 4 shows whether the app followed the switch.
+
+Then, for the whole pass:
+
+10. **The account after (SC-2702),** always run: its inventory again, compared field by field with
+    the one before. Every entry of the run left and every other difference is a problem, logged
+    masked. `~/.lsphp_restart.txt` (LiteSpeed's restart file, which the agent touches on each PHP
+    switch), `~/.cache` (which cPanel's API makes, R10) and `~/.npm` (npm's cache) new in the home
+    folder are logged as observations and removed by the cleanup. A leftover subdomain record shows
+    in the zone's records; the value AutoSSL rewrites in the zone's `_cpanel-dcv-test-record`
+    (R11) doesn't, since values aren't compared.
+11. **Nothing leaked (SC-2704),** always run: the legs' leak searches, and every CLI output of the
+    run, for the token, the agent's key, the app's settings and the age identities.
+
+### Cleanup
+
+After every step and always:
+- a leg a failure stopped after its provision started is destroyed with `opscrew destroy --confirm
+  <hostname> --no-snapshot`;
+- at GitHub: the agent's deploy keys titled `opscrew-e2e-<tag>-…`, the deploy secrets OpsCrew's
+  record names, the GitHub environments that appeared during the run and the environment's deploy
+  pause; the repository is reset last;
+- on the account, through cPanel's API, only what names the run: its cron lines, subdomains,
+  databases and their users, its folders in `~/opscrew` and `~/nodevenv/opscrew` (then those
+  folders, and `~/nodevenv`, when empty and new), the section the run added to a file of
+  `~/.cl.selector` (the file is put back to its bytes from before the run, with its own mode, only
+  when the run added one block of lines in one place and nothing else in it changed; otherwise that
+  is a problem to fix by hand), `~/.lsphp_restart.txt`, `~/.cache` and `~/.npm` when new, and the certificates AutoSSL issued for the run's hostnames: new since the inventory
+  before, their id named after one of the hostnames (`e2e_<tag>_…`, `www_e2e_<tag>_…`), installed
+  nowhere, each with its key when no other certificate uses it. Nothing else on the account is
+  ever touched;
+- the inventory again: any difference from the one before is a problem that fails the run.
+
+**If a run was interrupted:** in cPanel, remove the cron lines naming `opscrew/e2e-<tag>`, the
+subdomains `e2e-<tag>-…`, the databases and users `<prefix>e2e_<tag>_…`, the folders
+`~/opscrew/e2e-<tag>-…` (and `~/opscrew` if empty), and under SSL/TLS the certificates and keys of
+those subdomains. For the Node.js app, first the app in Setup Node.js App, then the folder
+`~/nodevenv/opscrew/e2e-<tag>-…` and the run's section in `~/.cl.selector/htaccess_cache` (the
+lines naming `opscrew/e2e-<tag>-…`). Remove `~/.lsphp_restart.txt`, `~/.cache` and `~/.npm` if
+they weren't there before the run. In the throwaway repository, delete the deploy keys
+`opscrew-e2e-<tag>-…` and the `prod` environment if the run made it.
+
+| Variable | What it is |
+|---|---|
+| `OPSCREW_E2E_CPANEL` | `1` runs this test. |
+| `OPSCREW_E2E_CPANEL_URL` | The panel's address, `https://<host>:2083` (`https://` and port 2083 are added when missing). |
+| `OPSCREW_E2E_CPANEL_USER`, `OPSCREW_E2E_CPANEL_TOKEN` | The account's user and an API token (Security → Manage API Tokens). The token reaches the whole account (R10): give it an expiry date. |
+| `OPSCREW_E2E_CPANEL_DOMAIN` | A domain the account serves, whose DNS the account keeps: each app gets a subdomain of it. In `.env.e2e`, never in the repository. |
+| `OPSCREW_E2E_CPANEL_LARAVEL` | Optional: `1` runs the Laravel leg whole instead of checking its refusal. |
+| `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN` | The throwaway repository and its token, as for environments; the token also needs Administration: Read and write, for the agent's deploy key. |
+
+```bash
+pnpm --filter opscrew build
+cd packages/cli
+OPSCREW_E2E_CPANEL=1 OPSCREW_E2E_CPANEL_URL=… OPSCREW_E2E_CPANEL_USER=… \
+  OPSCREW_E2E_CPANEL_TOKEN=… OPSCREW_E2E_CPANEL_DOMAIN=… \
+  OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e OPSCREW_E2E_GITHUB_TOKEN=… \
+  npx vitest run test/live/cpanel.test.ts
+```
+
+**Expected time and cost** (not measured yet): about 30–45 minutes per leg (each provision waits
+up to 3 minutes for the agent's report and up to 5 for AutoSSL's certificate; two deploy runs
+per leg but the refused Laravel leg), so 2 to 3 hours in all. It costs no money beyond the account
+the founder already pays, and GitHub Actions minutes. It leaves nothing on the account but what
+AutoSSL rewrites on its own (the zone's `_cpanel-dcv-test-record` value, R11), and at GitHub the
+closed pull requests.
+
+What this pass doesn't cover (fakes do, SC-2705): Plesk and DirectAdmin, an account whose document
+roots must stay in `public_html` (`docroot: link`), MultiPHP, an Apache-served account, Python apps,
+and a hostname whose DNS is on Cloudflare.
+
+## An SFTP-only host
+
+`packages/cli/test/live/sftp-host.test.ts`, with `OPSCREW_E2E_SFTP=1`, runs feature 027's SFTP-only
+hosts (FR-2712, plan 10) on a throwaway Hetzner server the test sets up as such a host, the way a
+user finds one: an account `e2esftp` chrooted to its home with `internal-sftp` (no shell), whose
+SFTP session starts in its folder `files/` (with its own keys in `files/.ssh/authorized_keys`, where
+OpsCrew finds them over SFTP); Apache serving each app's document root with `.htaccess` allowed, and
+PHP through a PHP-FPM pool running as that account, so `.htaccess` and `.user.ini` apply and PHP
+reads the app's 0600 settings. OpsCrew gets the host, the account and the path of its key file as
+`OPSCREW_SFTP_HOST`, `OPSCREW_SFTP_USER` and `OPSCREW_SFTP_KEY`, and no `OPSCREW_HOSTING_*` or
+Cloudflare variable.
+
+1. **The host:** the server, made as for [your own server](#your-own-server) (`OPSCREW_E2E_APP` is
+   ignored); then, as root: Apache, PHP 8.3 with PHP-FPM, MariaDB with the PHP app's database and
+   its user (a random password, in the scrubber), the account and its key (a new one, in the
+   scrubber), and a site per app. What stays the user's on such a host the test does too, as the
+   plan names it: each hostname's DNS record at the server (DNS only, through Cloudflare's API),
+   then its Let's Encrypt certificate through certbot's Apache plugin.
+
+Then, as steps 2.1 to 2.6 for `examples/static-vite` (`OPSCREW_E2E_GITHUB_REPO`) and 3.1 to 3.6
+for `examples/php-plain-mysql` (`OPSCREW_E2E_GITHUB_REPO_B`), each on the run's own hostname
+(`e2e-<run id>.<zone>`, `e2e-<run id>-b.<zone>`) and in its own folder `e2e-<tag>-<leg>`:
+
+- **x.1 Interview and design:** `init --fix`, `analyze --no-ai`, the app named `e2e-<tag>-<leg>`, and
+  `interview --answers` with the host's key confirmed by its fingerprint (`hosting.hostKey`), port
+  22, the folder as SFTP shows it and its full path as PHP sees it (`/srv/sftp/e2esftp/files/…`).
+  Design must plan a hosting target with panel `sftp`. The PHP app's settings are the database's
+  values (`OPSCREW_APP_ENV_FILE`), and its `target.php` is set to `8.3`, the host's PHP, as the
+  guide says (OpsCrew can't read it over SFTP).
+- **x.2 Provision:** its plan approved by its hash and applied over SFTP. The plan must name the
+  document root the site serves (`<path>/current`, or `<path>/current/public`), `current` must be a
+  link on the host, and the account's `authorized_keys` must hold GitHub Actions' key with
+  `restrict`.
+- **x.3 The first deploy:** the deploy-setup pull request merged; its run must succeed with its job
+  "Upload the release over SFTP and switch <hostname> to it". The app must answer 200 with its
+  release header, `verify` must pass and `status` must name the release; the PHP app must answer
+  from MySQL and keep a note.
+- **x.4 A second release,** watched as in the cPanel pass's step 4. For the PHP app the answers count
+  only from the end of the deploy run, whose own check waits past PHP's realpath cache (Apache
+  keeps the old release for up to 120 seconds).
+- **x.5 Rollback over SFTP** from this computer to the first release, watched the same way (for the
+  PHP app, the answers from 125 seconds after it on), `status`, then `rollback --resume --yes`.
+- **x.6 Destroy,** `destroy --confirm <hostname>`: the app's folder must be gone from the host, and
+  GitHub Actions' key line with it.
+
+4. **Nothing leaked,** always run: no key, password or token in any CLI output, commit, pull
+   request, audit entry, saved plan, report or folder copy of either app.
+
+The cleanup destroys an app a failure stopped (`opscrew destroy --confirm <hostname>`), removes
+what each app left at GitHub (the deploy secrets OpsCrew's record names, the GitHub environments
+that appeared during the run, the deploy pause), deletes the server, its SSH key and the hostnames'
+DNS records, and resets both repositories. If a run was interrupted, delete what it left by hand as
+for [your own server](#your-own-server).
+
+| Variable | What it is |
+|---|---|
+| `OPSCREW_E2E_SFTP` | `1` runs this test. |
+| `OPSCREW_E2E_HCLOUD_TOKEN`, `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_REPO_B`, `OPSCREW_E2E_GITHUB_TOKEN`, `OPSCREW_E2E_CLOUDFLARE_TOKEN`, `OPSCREW_E2E_DOMAIN` | As for [your own server](#your-own-server): the Cloudflare token adds and removes the hostnames' records. |
+| `OPSCREW_E2E_REGION`, `OPSCREW_E2E_OWN_SERVER_TYPE` | Optional, as for your own server. |
+
+```bash
+pnpm --filter opscrew build
+cd packages/cli
+OPSCREW_E2E_SFTP=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e \
+  OPSCREW_E2E_GITHUB_REPO_B=you/opscrew-e2e-b OPSCREW_E2E_GITHUB_TOKEN=… \
+  OPSCREW_E2E_CLOUDFLARE_TOKEN=… OPSCREW_E2E_DOMAIN=e2e.example.com \
+  npx vitest run test/live/sftp-host.test.ts
+```
+
+**Expected time and cost** (not measured yet): about 60–90 minutes, with two deploy runs per app,
+on the smallest x86 server (one or two cents of server time), two Let's Encrypt certificates for the
+run's own names, and GitHub Actions minutes. It leaves nothing.
 
 ## Price tables
 
