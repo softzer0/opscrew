@@ -521,7 +521,7 @@ names the change.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-cpanel && pnpm turbo run typecheck --filter=opscrew && npx vitest run --root packages/cli test/live/cpanel-support.test.ts && pnpm lint`
   - Effort: medium
 
-- [ ] T2732 The account's web server from the first of its domains that answers (research R13)
+- [x] T2732 The account's web server from the first of its domains that answers (research R13)
   - Owns: `packages/agents/src/hosting/facts.ts`, `packages/agents/src/hosting/facts.test.ts`, `packages/agents/src/hosting/__fixtures__/**`
   - Reads: research R10, R11, R13; `agents/src/hosting/{facts,php,provision,status}.ts`
   - Accept:
@@ -529,6 +529,24 @@ names the change.
     - Design's line names that domain (`LiteSpeed, from <domain>'s Server header`); when none answers, it says the account's domains don't name it.
     - Tests: a main domain that doesn't resolve and a parked domain that answers `LiteSpeed`; none answering; the 5-domain limit.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/hosting && pnpm lint`
+  - Effort: medium
+
+- [ ] T2733 The deploy workflow's wait for the release, whatever headers follow (research R13)
+  - Owns: `packages/iac-templates/src/hosting/workflow.ts`, `packages/iac-templates/src/hosting/workflow.test.ts`, `packages/iac-templates/src/hosting/__snapshots__/workflow.test.ts.snap`
+  - Reads: research R13; `iac-templates/src/hosting/workflow.ts` (the step "Wait for the account to switch to the release")
+  - Accept:
+    - The step reads the `X-OpsCrew-Release` header without a pipeline that can fail when a reader stops early: under `bash -e` with `set -uo pipefail` it keeps asking until the release is served or its attempts run out, however many header lines follow the release's.
+    - A test runs the step's script with bash, `-e` and `pipefail` against answers where the header comes first among many headers, last, and missing (a fake `curl` on `PATH` is enough), on Linux (the Hosting agent workflow runs `src/hosting`).
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates && npx vitest run --root packages/iac-templates src/hosting/workflow && pnpm lint`
+  - Effort: medium
+
+- [ ] T2734 The agent leaves no read-only file, so destroy can remove its folder (research R13)
+  - Owns: `packages/iac-templates/src/hosting/agent/**`
+  - Reads: research R10, R13; `iac-templates/src/hosting/agent/script.ts`; `agents/src/hosting/destroy.ts` (the folder step)
+  - Accept:
+    - After each fetch (and anything else the agent runs that writes read-only files: git's objects and packs, a key it makes), the agent makes them writable by the account's user (`chmod -R u+w` of what it wrote, never wider), so a panel's file removal, which skips read-only files, removes its folder.
+    - A Linux test: after the agent's first deploy and a second release, no file under the app's folder lacks the owner's write bit (`find ! -perm -u+w` finds nothing).
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates && npx vitest run --root packages/iac-templates src/hosting/agent && pnpm lint`
   - Effort: medium
 
 ## Phase 9: Live passes and release (lead)
