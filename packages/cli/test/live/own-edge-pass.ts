@@ -22,6 +22,7 @@ import { describe, expect } from "vitest";
 import { parse } from "yaml";
 import { underLoad } from "./builder-checks";
 import { type CloudflareZone, minutes, resolveIpv4, servedCertificate, waitFor } from "./cloud";
+import { nothingDeployed } from "./cpanel-support";
 import { LiveRun, localLeakSources, serverSettings } from "./harness";
 import {
   addressLinesOutsidePurpose,
@@ -114,6 +115,8 @@ export function edgePass(pass: EdgePass): void {
       const run = new LiveRun({ label: pass.label, name: pass.folder, settings: SETTINGS });
       const { log, scrubber } = run;
       const b = run.second(SECOND_APP);
+      /** The apps OpsCrew began provisioning, which the cleanup destroys unless a step did. */
+      const provisioned = new Set<LiveRun>();
       let fingerprint = "";
       let number = 0;
       /** The next step's title, numbered. */
@@ -235,12 +238,16 @@ export function edgePass(pass: EdgePass): void {
           `ssh-${app.app()}.${zone.name}`,
           `portainer.${app.appHost}`,
         ]);
+        // The pass tests the edge, not off-server copies, whose R2 bucket needs a key only the user
+        // can make in Cloudflare's dashboard (as the Contabo and rotation passes do).
+        await app.opscrewOk("snapshot", "offsite", "off");
         // The recovery copy: its first key to a file of the test's own, the copy to a folder too
         // (a public repository gets no committed copy in a script).
         await mkdir(copies(app), { recursive: true });
         await app.opscrewOk("secrets", "folder", copies(app));
         app.provisionFlags = ["--key-out", keyFile(app)];
         await app.adaptAndMerge();
+        provisioned.add(app);
         await app.provisionUntilDone(what);
         await app.rememberSecretFile(app.paths().files.deployKey, "deploy-private-key");
         await app.rememberSecretFile(app.paths().files.statePassphrase, "state-passphrase");
@@ -540,7 +547,20 @@ export function edgePass(pass: EdgePass): void {
         { always: true },
       );
 
-      run.registerCleanup();
+      run.registerCleanup({
+        // An app a failed step left provisioned is destroyed by OpsCrew first: its destroy takes
+        // the app's hostnames out of OpsCrew's shared rules in the zone, which the cleanup never
+        // edits when they list other hostnames too.
+        teardown: async (attempt) => {
+          for (const app of [b, run]) {
+            if (!provisioned.has(app) || app.destroyed) continue;
+            app.log("the app was not destroyed: running opscrew destroy first");
+            await attempt(`opscrew destroy of ${app.app()}`, () =>
+              destroyApp(app, []).catch(nothingDeployed),
+            );
+          }
+        },
+      });
     },
   );
 }
