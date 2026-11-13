@@ -12,18 +12,18 @@ Every change still waits for your approval of its exact plan, in a dialog that o
 Inside a Claude Code session:
 
 ```text
-/plugin marketplace add softzer0/opscrew
+/plugin marketplace add opscrew-hub/opscrew
 /plugin install opscrew@opscrew
 ```
 
 Or from your shell:
 
 ```bash
-claude plugin marketplace add softzer0/opscrew
+claude plugin marketplace add opscrew-hub/opscrew
 claude plugin install opscrew@opscrew
 ```
 
-The first command adds OpsCrew's plugin marketplace, the `softzer0/opscrew` repository on [GitHub](https://github.com/).
+The first command adds OpsCrew's plugin marketplace, the `opscrew-hub/opscrew` repository on [GitHub](https://github.com/).
 The second installs the `opscrew` plugin from it.
 
 ## What it runs
@@ -95,7 +95,7 @@ Every target works from the chat: a cloud server, [a server you already have](ow
 
 The MCP server runs on your computer, sends nothing to OpsCrew and has no telemetry. It talks only
 to the services your steps need, with your own tokens: see
-[Data and the services it talks to](https://github.com/softzer0/opscrew/tree/main/plugin#data-and-the-services-it-talks-to)
+[Data and the services it talks to](https://github.com/opscrew-hub/opscrew/tree/main/plugin#data-and-the-services-it-talks-to)
 in the plugin's README, and OpsCrew's [privacy policy](https://opscrew.dev/privacy/).
 
 ## From the chat or from the terminal
@@ -105,4 +105,4 @@ interview in a terminal with `npx opscrew interview` (it keeps addresses you typ
 then continue in Claude Code, or the other way round.
 
 The plugin's own page, with the files it ships, is
-[the plugin's README](https://github.com/softzer0/opscrew/tree/main/plugin).
+[the plugin's README](https://github.com/opscrew-hub/opscrew/tree/main/plugin).

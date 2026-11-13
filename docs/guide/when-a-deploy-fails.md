@@ -18,7 +18,7 @@ The rules behind every case:
 ## The app in this walkthrough
 
 `shop` is a [Next.js](https://nextjs.org/) app with [PostgreSQL](https://www.postgresql.org/), like
-[`examples/nextjs-postgres`](https://github.com/softzer0/opscrew/tree/main/examples/nextjs-postgres),
+[`examples/nextjs-postgres`](https://github.com/opscrew-hub/opscrew/tree/main/examples/nextjs-postgres),
 with [Prisma](https://www.prisma.io/) migrations. It runs on a [Hetzner Cloud](https://www.hetzner.com/cloud) server, and visitors reach it at
 `shop.example.com` through [Cloudflare](https://www.cloudflare.com/)'s proxy. Its plan in `opscrew/plan.yaml` has:
 

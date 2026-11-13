@@ -610,7 +610,7 @@ Effort`.
 
 - [X] T1513b [US1] The localhost CI's first run on GitHub: fix what it found on macOS and Windows (done in 1f294242, 8426f77c, d469ae08 and 8e19bdc7; the off-Linux Buildpacks build left the Intel macOS job, where the Paketo builder's 1.5 GB pull kills Colima's VM, and passed by hand on Windows, docs/e2e-coverage.md)
   - Owns: `packages/agents/src/localhost/**`, `packages/cli/test/e2e/**`, `.github/workflows/localhost.yml` (+ tests)
-  - Reads: the CI run (`gh run view 39790397663 --repo softzer0/opscrew --log`); quickstart.md "1."; research.md "Spike results" 8
+  - Reads: the CI run (`gh run view 39790397663 --repo opscrew-hub/opscrew --log`); quickstart.md "1."; research.md "Spike results" 8
   - Depends: T1513
   - Accept:
     - **Linux** passed all 7 Docker-pass tests in CI; it stays green.

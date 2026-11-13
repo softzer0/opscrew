@@ -8,11 +8,11 @@ needed for the plugin.
 ## Install
 
 ```bash
-claude plugin marketplace add softzer0/opscrew
+claude plugin marketplace add opscrew-hub/opscrew
 claude plugin install opscrew@opscrew
 ```
 
-Or inside a Claude Code session: `/plugin marketplace add softzer0/opscrew`, then
+Or inside a Claude Code session: `/plugin marketplace add opscrew-hub/opscrew`, then
 `/plugin install opscrew@opscrew`.
 
 When Claude Code installs the plugin, it also installs the OpsCrew CLI at the plugin's version

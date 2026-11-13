@@ -38,7 +38,7 @@ for (const line of end === -1 ? rest : rest.slice(0, end)) {
 }
 const body = unwrapped.join("\n").trim();
 
-const tree = `https://github.com/softzer0/opscrew/blob/v${version}/`;
+const tree = `https://github.com/opscrew-hub/opscrew/blob/v${version}/`;
 const notes = body.replace(/\]\((?!https?:|#)([^)]+)\)/g, (_, path) => `](${tree}${path})`);
 const compare = lines.find((line) => line.startsWith(`[${version}]: `))?.slice(version.length + 4);
 

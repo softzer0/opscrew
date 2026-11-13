@@ -1,4 +1,4 @@
-<p align="center"><img src="https://raw.githubusercontent.com/softzer0/opscrew/main/.github/assets/opscrew-header.png" alt="OpsCrew: the ops crew you didn't hire" width="100%"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/opscrew-hub/opscrew/main/.github/assets/opscrew-header.png" alt="OpsCrew: the ops crew you didn't hire" width="100%"></p>
 
 From a GitHub repo to a hardened production deployment on your own cloud. Any cloud. You keep the infrastructure code.
 
@@ -74,7 +74,7 @@ Run these in your app's repository, in order:
 
 To install it once instead of fetching it with `npx` each time, run `npm install -g opscrew`, then `opscrew init`, `opscrew analyze` and so on.
 
-In Claude Code, the OpsCrew plugin runs the same steps from the chat, and every plan still waits for your approval: `/plugin marketplace add softzer0/opscrew`, then `/plugin install opscrew@opscrew`. See [the plugin's README](https://github.com/softzer0/opscrew/tree/main/plugin).
+In Claude Code, the OpsCrew plugin runs the same steps from the chat, and every plan still waits for your approval: `/plugin marketplace add opscrew-hub/opscrew`, then `/plugin install opscrew@opscrew`. See [the plugin's README](https://github.com/opscrew-hub/opscrew/tree/main/plugin).
 
 ## After the first deploy
 

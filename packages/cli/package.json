@@ -16,13 +16,13 @@
     "claude",
     "cli"
   ],
-  "homepage": "https://github.com/softzer0/opscrew#readme",
+  "homepage": "https://github.com/opscrew-hub/opscrew#readme",
   "bugs": {
-    "url": "https://github.com/softzer0/opscrew/issues"
+    "url": "https://github.com/opscrew-hub/opscrew/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/softzer0/opscrew.git",
+    "url": "git+https://github.com/opscrew-hub/opscrew.git",
     "directory": "packages/cli"
   },
   "license": "Apache-2.0",
