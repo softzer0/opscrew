@@ -41,7 +41,7 @@ const SftpSchema = z.strictObject({
  * An object OpsCrew made for the app, with the key it goes by. Besides the account's own objects:
  * the GitHub deploy key the agent fetches with (`deploy-key`), the release signing key whose
  * private half is the GitHub secret (`signing-key`), and a step the user took in the panel at
- * OpsCrew's request (`panel-step`).
+ * OpsCrew's request (`panel-step`), and the Node.js or Python app CloudLinux's selector runs (`app`).
  */
 const HostingObjectSchema = z.strictObject({
   kind: z.enum([
@@ -56,16 +56,18 @@ const HostingObjectSchema = z.strictObject({
     "deploy-key",
     "signing-key",
     "panel-step",
+    "app",
   ]),
   /**
    * The panel's key: the hostname, the database's full name, the cron line's key, the path below
    * the home folder, the certificate's id; GitHub's id of the deploy key; the SHA-256 of the
-   * signing key's public half; the panel step's id.
+   * signing key's public half; the panel step's id; the app's interpreter (`nodejs`, `python`).
    */
   key: z.string().min(1),
   /**
-   * What a later run compares: a cron line's `<schedule> <command>`, a PHP version, the digest of
-   * the values in the app's settings file, the deploy key's public half, a panel step's value.
+   * What a later run compares: a cron line's `<schedule> <command>`, a PHP version, the app's
+   * version in the selector, the digest of the values in the app's settings file, the deploy key's
+   * public half, a panel step's value.
    */
   value: z.string().min(1).optional(),
 });

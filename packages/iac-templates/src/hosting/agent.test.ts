@@ -129,4 +129,28 @@ describe("renderAgentSettings", () => {
       renderAgentSettings({ ...STATIC_SITE, phpHandler: "application/x-httpd-alt-php85___lsphp" }),
     ).toThrow(/phpHandler/);
   });
+
+  it("takes a Node.js or Python app's version and startup file, for those apps only (T2717)", () => {
+    const node: AgentSettings = {
+      ...STATIC_SITE,
+      appKind: "node",
+      runtimeVersion: "22",
+      startupFile: "dist/server.js",
+    };
+    expect(renderAgentSettings(node)).toContain(
+      "\nRUNTIME_VERSION='22'\nSTARTUP_FILE='dist/server.js'\n",
+    );
+    expect(() => renderAgentSettings({ ...node, runtimeVersion: undefined })).toThrow(
+      / runtimeVersion /,
+    );
+    expect(() => renderAgentSettings({ ...node, runtimeVersion: "22; rm" })).toThrow(
+      / runtimeVersion /,
+    );
+    expect(() => renderAgentSettings({ ...node, startupFile: "../app.js" })).toThrow(
+      / startupFile /,
+    );
+    expect(() => renderAgentSettings({ ...STATIC_SITE, runtimeVersion: "22" })).toThrow(
+      / runtimeVersion /,
+    );
+  });
 });

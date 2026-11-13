@@ -41,6 +41,10 @@ export interface AgentSettings {
   snapshots: boolean;
   /** The database's full name, the account's prefix included; absent without one. */
   database?: string;
+  /** A Node.js or Python app's version in CloudLinux's selector (`22`, `3.12`); those apps only. */
+  runtimeVersion?: string;
+  /** The file the selector starts a Node.js or Python app from, in the release; those apps only. */
+  startupFile?: string;
 }
 
 const APP_NAME = /^[a-z0-9][a-z0-9-]{0,40}$/;
@@ -53,6 +57,7 @@ const PATH_SEGMENT = /^[A-Za-z0-9._-]+$/;
 const PHP_HANDLER = /^application\/x-httpd-[a-z0-9_-]+$/;
 const DATABASE = /^[A-Za-z0-9_]{1,64}$/;
 const APP_KINDS = ["static", "php", "node", "python"];
+const RUNTIME_VERSION = /^\d+(?:\.\d+){0,2}$/;
 
 /** Each `/`-separated part a name, none `.` or `..`. */
 function isPath(value: string): boolean {
@@ -62,6 +67,7 @@ function isPath(value: string): boolean {
 /** The first field of `settings` that doesn't have its form, with what it must be. */
 function problemOf(s: AgentSettings): [field: string, rule: string] | undefined {
   const php = s.appKind === "php";
+  const selected = s.appKind === "node" || s.appKind === "python";
   const checks: [field: string, ok: boolean, rule: string][] = [
     ["app", APP_NAME.test(s.app), "1-41 lower-case letters, digits or hyphens"],
     ["environment", ENVIRONMENT_NAME_PATTERN.test(s.environment), "an environment's name"],
@@ -105,6 +111,16 @@ function problemOf(s: AgentSettings): [field: string, rule: string] | undefined 
       s.database === undefined || DATABASE.test(s.database),
       "a database's name, or absent",
     ],
+    [
+      "runtimeVersion",
+      selected ? RUNTIME_VERSION.test(s.runtimeVersion ?? "") : s.runtimeVersion === undefined,
+      "a version such as 22 or 3.12 for a Node.js or Python app, absent otherwise",
+    ],
+    [
+      "startupFile",
+      selected ? isPath(s.startupFile ?? "") : s.startupFile === undefined,
+      "a relative path without . or .. for a Node.js or Python app, absent otherwise",
+    ],
   ];
   const failed = checks.find(([, ok]) => !ok);
   return failed && [failed[0], failed[2]];
@@ -141,6 +157,8 @@ export function renderAgentSettings(settings: AgentSettings): string {
     ["KEEP", String(settings.keep)],
     ["SNAPSHOTS", settings.snapshots ? "yes" : "no"],
     ["DATABASE", settings.database ?? ""],
+    ["RUNTIME_VERSION", settings.runtimeVersion ?? ""],
+    ["STARTUP_FILE", settings.startupFile ?? ""],
   ];
   return [
     `# OpsCrew's agent settings for ${settings.app} in ${settings.environment}, rendered by OpsCrew. No secret.`,

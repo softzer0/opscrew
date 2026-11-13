@@ -1,6 +1,7 @@
 /**
  * One-time requests to the agent on a hosting account (027 plan 6, ADR 0030 D5): what the user
- * starts from this computer (a rollback, a settings change, a snapshot, a restore), written through
+ * starts from this computer (a rollback, a settings change, a snapshot, a restore, a Node.js or
+ * Python app made in or removed from CloudLinux's selector), written through
  * the panel's API after the approval and carried out once by the agent, which answers in a result
  * file. Only the holder of the panel's token can write one; CI never can.
  */
@@ -20,7 +21,9 @@ export type HostingRequest =
    * The snapshot `<id>` in `dumps/` put back (its database dump and its shared files, whichever it
    * holds), the current ones copied first into a new snapshot.
    */
-  | { kind: "restore"; snapshot: string };
+  | { kind: "restore"; snapshot: string }
+  /** A Node.js or Python app made in CloudLinux's selector, or removed from it (`apps.ts`). */
+  | { kind: "app"; action: "create" | "destroy" };
 
 /** How long a request stays valid after it is written: 30 minutes. */
 export const REQUEST_TTL_SECONDS = 30 * 60;
@@ -59,6 +62,8 @@ export function requestText(request: HostingRequest, hash: string, now: Date): s
     fields.push(["release", request.release], ["restore", request.restore ? "yes" : "no"]);
   } else if (request.kind === "restore") {
     fields.push(["snapshot", request.snapshot]);
+  } else if (request.kind === "app") {
+    fields.push(["action", request.action]);
   }
   for (const [key, value] of fields) {
     const field = FIELDS[key];
@@ -84,6 +89,8 @@ export const RequestResultSchema = z.strictObject({
   shared: z.string().min(1).optional(),
   /** The id of the snapshot a restore took first; none when there was nothing to copy. */
   saved: z.string().min(1).optional(),
+  /** What an app's removal left as it was, and why. */
+  note: z.string().min(1).optional(),
 });
 
 export type RequestResult = z.infer<typeof RequestResultSchema>;

@@ -212,6 +212,7 @@ export async function provisionHosting(
       domain.documentRoot === undefined ? [] : [domain.documentRoot],
     ),
     redactor: deps.redactor,
+    warn: (text: string) => deps.reporter.warn(text),
     sleep,
     now: () => deps.clock.now(),
     made: async (object: Parameters<typeof recordObject>[1]) => {

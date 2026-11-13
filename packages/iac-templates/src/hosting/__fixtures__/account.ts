@@ -146,7 +146,7 @@ export class Account {
       GIT_COMMITTER_EMAIL: "opscrew@example.com",
     };
 
-    const shims = ["curl", "php", "ssh", "mysqldump", "mysql", "sleep", ...(HAS_FLOCK ? [] : ["flock"])];
+    const shims = ["curl", "php", "ssh", "mysqldump", "mysql", "sleep", "cloudlinux-selector", ...(HAS_FLOCK ? [] : ["flock"])];
     for (const name of shims) this.executable(`${this.bin}/${name}`, shim(name));
     for (const path of ["usr/local/bin/php", "opt/alt/php85/usr/bin/php"]) {
       this.executable(`${this.phpRoot}/${path}`, shim("php"));

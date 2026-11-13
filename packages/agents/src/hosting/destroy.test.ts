@@ -36,7 +36,7 @@ import {
   hostingDestroyHash,
 } from "./destroy";
 import { agentCronCommand } from "./php";
-import { readHostingRecord } from "./record";
+import { readHostingRecord, recordObject, updateHostingRecord } from "./record";
 
 /** GitHub as the teardown reaches it, each change logged in `events`. */
 function destroyGitHub(events: string[]) {
@@ -229,6 +229,88 @@ describe("destroy on a cPanel account", () => {
     expect(w.app.account.paths().filter((path) => path.startsWith("opscrew/"))).toEqual([
       "opscrew/blog-prod/agent.sh",
     ]);
+  });
+
+  it("removes the Node.js app from CloudLinux's selector through the agent, first (T2717)", async () => {
+    const note =
+      "~/.cl.selector/htaccess_cache stays as it is: the app's section [/home/acct/opscrew/notes-prod/current] is in it more than once, so OpsCrew can't tell which is the app's";
+    const w = await world({
+      answer: (request) => (request.kind === "app" ? `result=done\nnote=${note}\n` : undefined),
+    });
+    await recordObject((await w.app.deps()).paths, { kind: "app", key: "nodejs", value: "22" });
+    const { deps, handler, result, error } = await w.run({ snapshot: false });
+    expect(error).toBeUndefined();
+    const plan = HostingDestroyPlanSchema.parse(
+      JSON.parse(
+        await readFile(join(deps.paths.files.plansDir, "hosting-prod-destroy.json"), "utf8"),
+      ),
+    );
+    // While the agent still runs: before its cron line goes.
+    expect(plan.steps.slice(0, 2)).toEqual([
+      { kind: "app", interpreter: "nodejs" },
+      expect.objectContaining({ kind: "cron", agent: true }),
+    ]);
+    expect(handler.requests[0]?.details).toContain(
+      "Remove the Node.js app from CloudLinux's selector, with its empty folder in ~/nodevenv/ and its section of ~/.cl.selector/htaccess_cache",
+    );
+    expect(w.agent.requests).toEqual([
+      {
+        kind: "app",
+        hash: handler.requests[0]?.planHash,
+        expires: expect.stringMatching(/^\d+$/),
+        action: "destroy",
+      },
+    ]);
+    expect(result?.remaining).toContain(`Of the app in CloudLinux's selector: ${note}.`);
+    expect((await readHostingRecord(deps.paths))?.objects).toEqual([]);
+  });
+
+  it("stops before anything else when the selector can't remove the app (T2717)", async () => {
+    const w = await world({
+      answer: (request) =>
+        request.kind === "app"
+          ? "result=failed\nreason=CloudLinux's selector didn't remove the app: no such app\n"
+          : undefined,
+    });
+    await recordObject((await w.app.deps()).paths, { kind: "app", key: "python", value: "3.12" });
+    const { deps, error } = await w.run({ snapshot: false });
+    expect(error).toBeInstanceOf(OpsCrewError);
+    expect((error as OpsCrewError).message).toContain(
+      "The agent didn't remove the app in CloudLinux's selector: CloudLinux's selector didn't remove the app: no such app. Nothing was removed before it.",
+    );
+    expect(w.app.account.hostnames()).toEqual([HOSTNAME]);
+    const objects = (await readHostingRecord(deps.paths))?.objects ?? [];
+    expect(objects).toContainEqual({ kind: "app", key: "python", value: "3.12" });
+  });
+
+  it("stops plainly, changing nothing, when the record names the app's interpreter wrongly (T2717)", async () => {
+    const w = await world();
+    await recordObject((await w.app.deps()).paths, { kind: "app", key: "ruby" });
+    const { handler, error } = await w.run({ snapshot: false });
+    expect(error).toBeInstanceOf(OpsCrewError);
+    expect((error as OpsCrewError).message).toBe(
+      `.opscrew/hosting.json records the app in CloudLinux's selector as "ruby", which is neither nodejs nor python, so OpsCrew can't tell how to remove it. Nothing was changed.`,
+    );
+    expect(handler.requests).toEqual([]);
+    expect(w.app.account.hostnames()).toEqual([HOSTNAME]);
+  });
+
+  it("names the app for the panel when no agent runs to remove it (T2717)", async () => {
+    const w = await world();
+    const paths = (await w.app.deps()).paths;
+    await recordObject(paths, { kind: "app", key: "nodejs", value: "22" });
+    // The agent's cron line is gone already.
+    const line = agentCronCommand(w.app.folder);
+    await updateHostingRecord(paths, (current) => ({
+      ...current,
+      objects: current.objects.filter((o) => !(o.kind === "cron" && o.value?.endsWith(line))),
+    }));
+    const { result, error } = await w.run({ snapshot: false });
+    expect(error).toBeUndefined();
+    expect(w.agent.requests).toEqual([]);
+    expect(result?.remaining).toContain(
+      "The Node.js app in CloudLinux's selector: no agent runs on the account to remove it, so remove it on the panel's Setup Node.js App page.",
+    );
   });
 
   it("removes a database that came back once more at the end (R10), and keeps a certificate another site uses", async () => {

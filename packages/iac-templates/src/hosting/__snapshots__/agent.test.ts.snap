@@ -17,6 +17,8 @@ SHARED_PATHS='.env storage'
 KEEP='3'
 SNAPSHOTS='no'
 DATABASE='acct_notes'
+RUNTIME_VERSION=''
+STARTUP_FILE=''
 "
 `;
 
@@ -37,5 +39,7 @@ SHARED_PATHS=''
 KEEP='3'
 SNAPSHOTS='yes'
 DATABASE=''
+RUNTIME_VERSION=''
+STARTUP_FILE=''
 "
 `;

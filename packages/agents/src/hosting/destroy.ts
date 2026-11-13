@@ -55,6 +55,7 @@ import {
 } from "../destroy/deletion";
 import type { DestroyOptions, DestroyResult } from "../destroy/types";
 import { type AdapterPlanItem, describeAdapterPlan, hasDeployment, refusalReason } from "../shared";
+import { RUNTIME_NAMES, selectorApp } from "./apps";
 import { HOSTING_TOKEN_VAR, PANEL_NAMES } from "./panels";
 import { AGENT_SCHEDULE, agentCronCommand } from "./php";
 import { HostnameSchema, PanelStepSchema, PathSchema } from "./plan";
@@ -71,6 +72,7 @@ import { destroySftp } from "./sftp-destroy";
 import { type HostingAccountServices, reachHostingAccount } from "./status";
 
 const NameSchema = z.string().regex(/^[A-Za-z0-9_]{1,64}$/);
+const InterpreterSchema = z.enum(["nodejs", "python"]);
 
 /** The recorded object a step ends. */
 const ObjectRefSchema = z.strictObject({
@@ -82,6 +84,9 @@ const ObjectRefSchema = z.strictObject({
 const DestroyStepSchema = z.discriminatedUnion("kind", [
   // The final dump of the database, by the agent (a `snapshot` request), kept in `dumps/`.
   z.strictObject({ kind: z.literal("dump"), database: NameSchema }),
+  // The Node.js or Python app in CloudLinux's selector, removed by the agent (an `app` request)
+  // with what the selector leaves, while the agent still runs.
+  z.strictObject({ kind: z.literal("app"), interpreter: InterpreterSchema }),
   // A cron line OpsCrew made, by the panel's key; the agent's comes first.
   z.strictObject({
     kind: z.literal("cron"),
@@ -149,6 +154,13 @@ function stepItem(plan: HostingDestroyPlan, step: DestroyStep): AdapterPlanItem 
         state: "change",
         reason:
           "The agent takes it. To remove the app without it, run `opscrew destroy --no-snapshot`.",
+      };
+    case "app":
+      return {
+        title: `Remove the ${RUNTIME_NAMES[step.interpreter]} app from CloudLinux's selector, with its empty folder in ~/${step.interpreter === "nodejs" ? "nodevenv" : "virtualenv"}/ and its section of ~/.cl.selector/htaccess_cache`,
+        state: "change",
+        reason:
+          "The agent runs the selector's destroy while it still runs. The file's other sections stay byte for byte; if OpsCrew can't tell which section is the app's, the file stays as it is and OpsCrew says so.",
       };
     case "cron":
       return step.agent
@@ -248,6 +260,29 @@ function finalDumps(objects: readonly HostingObject[], folder: string): HostingO
   return objects.filter((o) => o.kind === "file" && o.key.startsWith(`${folder}/dumps/`));
 }
 
+/** The interpreter the record names for the app in CloudLinux's selector. */
+function recordedInterpreter(app: HostingObject): z.infer<typeof InterpreterSchema> {
+  const parsed = InterpreterSchema.safeParse(app.key);
+  if (parsed.success) return parsed.data;
+  throw new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `.opscrew/hosting.json records the app in CloudLinux's selector as ${JSON.stringify(app.key)}, which is neither nodejs nor python, so OpsCrew can't tell how to remove it. Nothing was changed.`,
+    {
+      hint: 'Restore .opscrew/hosting.json from the recovery copy, or set the key of its entry of kind "app" to nodejs or python; then run `opscrew destroy` again.',
+    },
+  );
+}
+
+/** The app in CloudLinux's selector that no agent runs to remove: the user removes it in the panel. */
+function appLeft(record: HostingRecord, plan: HostingDestroyPlan): string[] {
+  const app = record.objects.find((o) => o.kind === "app");
+  if (app === undefined || plan.steps.some((step) => step.kind === "app")) return [];
+  const name = RUNTIME_NAMES[recordedInterpreter(app)];
+  return [
+    `The ${name} app in CloudLinux's selector: no agent runs on the account to remove it, so remove it on the panel's Setup ${name} App page.`,
+  ];
+}
+
 /** `<schedule> <command>` as a panel's cron step names it. */
 function cronDetails(line: string): Record<string, string> {
   const [, schedule = "", command = ""] = /^(\S+(?: \S+){4}) (.+)$/.exec(line) ?? [];
@@ -283,6 +318,10 @@ function buildHostingDestroyPlan(input: DestroyPlanInput): HostingDestroyPlan {
   const agentRuns = agentCron !== undefined || agentStep !== undefined;
   if (input.finalDump && !dumped && database !== undefined && files !== undefined && agentRuns) {
     steps.push({ kind: "dump", database: database.key });
+  }
+  const app = of("app")[0];
+  if (app !== undefined && files !== undefined && agentRuns) {
+    steps.push({ kind: "app", interpreter: recordedInterpreter(app) });
   }
   const agentFirst = (agent: HostingObject | undefined) => (a: HostingObject, b: HostingObject) =>
     Number(b === agent) - Number(a === agent);
@@ -377,6 +416,8 @@ export interface HostingDestroyOutcome {
   dumps: string[];
   /** Why each certificate kept was: another site still uses it. */
   kept: string[];
+  /** What the selector's removal left as it was, and why. */
+  left: string[];
 }
 
 /** A destroy that stopped at a failure: `applied` lists the steps taken before it. */
@@ -449,7 +490,7 @@ export async function applyHostingDestroy(
       { hint: "Look at the current destroy plan and approve it by its hash." },
     );
   }
-  const outcome: HostingDestroyOutcome = { applied: [], dumps: [], kept: [] };
+  const outcome: HostingDestroyOutcome = { applied: [], dumps: [], kept: [], left: [] };
   const databases: { name: string; user: string }[] = [];
   let failure: { error: unknown } | undefined;
   try {
@@ -520,6 +561,15 @@ async function destroyStep(
         await ctx.made({ kind: "file", key: `${folder}/dumps/${answer.shared}` });
       }
       return;
+    }
+    case "app": {
+      const note = await selectorApp(filesOf(ctx), folder, "destroy", {
+        hash: ctx.approvedHash,
+        now: ctx.now(),
+        sleep: ctx.sleep,
+      });
+      if (note !== undefined) state.outcome.left.push(note);
+      return ctx.forget((o) => o.kind === "app");
     }
     case "cron":
       await panel.removeCron(step.key);
@@ -745,7 +795,7 @@ export async function destroyHosting(
 
   // 6. The destroy plan, applied in its order.
   let destroyed: ResourceChange[] = [];
-  let outcome: HostingDestroyOutcome = { applied: [], dumps: [], kept: [] };
+  let outcome: HostingDestroyOutcome = { applied: [], dumps: [], kept: [], left: [] };
   if (destroyPlan.steps.length > 0) {
     deps.reporter.step(`Removing the app from the ${name} account`);
     const audit = (action: string, decision: "approved" | "refused", detail: string) =>
@@ -838,6 +888,8 @@ export async function destroyHosting(
         `${SHARED_COPY.test(dump) ? "The final copy of the app's shared files" : "The final dump of the database"}, ~/${folder}/dumps/${dump}: download it in ${name}'s File Manager. ~/${folder}/ and ~/${posix.dirname(folder)}/ stay because they hold it.`,
     ),
     ...outcome.kept.map((why) => `A certificate the hostname had stays: ${why}`),
+    ...outcome.left.map((note) => `Of the app in CloudLinux's selector: ${note}.`),
+    ...appLeft(record, destroyPlan),
     ...destroyPlan.steps.flatMap((step) =>
       step.kind === "panel-step"
         ? [

@@ -247,9 +247,10 @@ class MemoryFiles implements HostingFiles {
 
 /**
  * The agent on a fake account, run at each of OpsCrew's waits: its first report once its cron line
- * is there, then an answer to each request (an `env` request puts `.env.next` in place).
+ * is there, then an answer to each request (an `env` request puts `.env.next` in place), each
+ * request's text logged in `requests`.
  */
-function agent(account: Account, text: () => string) {
+function agent(account: Account, text: () => string, requests: string[] = []) {
   return async () => {
     if (account.agentRuns() && account.read(`${FOLDER}/state/report`) === undefined) {
       account.write(`${FOLDER}/state/report`, text());
@@ -257,6 +258,7 @@ function agent(account: Account, text: () => string) {
     for (const path of account.paths()) {
       const match = new RegExp(`^${FOLDER}/requests/([0-9a-f]{64})\\.req$`).exec(path);
       if (match === null) continue;
+      requests.push(account.read(path) ?? "");
       const next = account.read(`${FOLDER}/shared/.env.next`);
       if (/^kind=env$/m.test(account.read(path) ?? "") && next !== undefined) {
         account.write(`${FOLDER}/shared/.env`, next);
@@ -355,6 +357,7 @@ async function project(account: Account, o: ProjectOptions = {}) {
     },
   });
   const text = o.report ?? (() => report());
+  const requests: string[] = [];
   const engine = new FakeEngine({
     changes: [
       {
@@ -389,7 +392,7 @@ async function project(account: Account, o: ProjectOptions = {}) {
       github: new LoggedGitHub(log),
       engine: async () => engine,
       cloudflare,
-      sleep: agent(account, text),
+      sleep: agent(account, text, requests),
     };
     const work =
       o.hosting === undefined
@@ -418,7 +421,7 @@ async function project(account: Account, o: ProjectOptions = {}) {
     await git(root, "checkout", "-q", "main");
     await git(root, "merge", "-q", "--ff-only", branch);
   };
-  return { root, github, engine, run, merge };
+  return { root, github, engine, run, merge, requests };
 }
 
 /** A project on a fake cPanel account. */
@@ -787,6 +790,105 @@ describe("provision on a cPanel account", () => {
     );
     expect(tfvars).toMatchObject({ domain: HOSTNAME, account_ipv4: "192.0.2.10" });
     expect(s.engine.applied).toHaveLength(1);
+  });
+
+  it("makes a Node.js app in CloudLinux's selector through the agent, once (T2717)", async () => {
+    const s = await setup({ example: "hono-api" });
+    const { deps, handler, error } = await s.run();
+    expect(error).toBeUndefined();
+    const plan = HostingPlanSchema.parse(
+      JSON.parse(await readFile(hostingPlanFile(deps.paths, "prod", "app"), "utf8")),
+    );
+    const steps = plan.steps.map((step) => step.kind);
+    // After the agent's settings and the hostname the selector serves it on.
+    expect(steps.indexOf("app")).toBeGreaterThan(steps.indexOf("hostname"));
+    expect(steps.indexOf("app")).toBeGreaterThan(steps.indexOf("file"));
+    const step = plan.steps.find((candidate) => candidate.kind === "app");
+    expect(step).toEqual({
+      kind: "app",
+      interpreter: "nodejs",
+      version: expect.stringMatching(/^\d+/),
+      startup: "dist/index.js",
+    });
+    expect(said(deps)).toContain(
+      `Make the Node.js ${step?.kind === "app" ? step.version : ""} app in CloudLinux's selector, started from dist/index.js in ~/${FOLDER}/current and served at https://${HOSTNAME}/`,
+    );
+
+    // The agent's request, bound to plan B's hash; its settings name the runtime.
+    const planB = handler.requests.filter((request) => request.kind === "hosting-apply")[1];
+    expect(s.requests).toEqual([
+      expect.stringMatching(
+        new RegExp(`^kind=app\\nhash=${planB?.planHash}\\nexpires=\\d+\\naction=create\\n$`),
+      ),
+    ]);
+    const settings = s.fake.readText(`${FOLDER}/settings.sh`) ?? "";
+    expect(settings).toContain("\nAPP_KIND='node'\n");
+    expect(settings).toContain(`\nRUNTIME_VERSION='${step?.kind === "app" ? step.version : ""}'\n`);
+    expect(settings).toContain("\nSTARTUP_FILE='dist/index.js'\n");
+    // The hostname serves the release's public/; the selector's app root, the release with the
+    // source and the linked settings file, stays outside it.
+    expect(plan.steps).toContainEqual({
+      kind: "hostname",
+      hostname: HOSTNAME,
+      documentRoot: `${FOLDER}/current/public`,
+    });
+    expect(settings).toContain("\nWEB_ROOT='public'\n");
+    expect(settings).toContain("\nSHARED_PATHS='.env'\n");
+    expect((await record(s.root)).objects).toContainEqual({
+      kind: "app",
+      key: "nodejs",
+      value: step?.kind === "app" ? step.version : "",
+    });
+
+    // A run again makes nothing new in the selector.
+    await s.merge();
+    expect((await s.run()).error).toBeUndefined();
+    expect(s.requests.filter((request) => request.startsWith("kind=app\n"))).toHaveLength(1);
+  });
+
+  it("stops with the agent's reason when the selector can't make the app (T2717)", async () => {
+    const fake = fakeCpanel({ user: "acct", token: TOKEN, mainDomain: "example.com" });
+    const account = cpanelAccount(fake);
+    const failing: Account = {
+      ...account,
+      write: (path, text) =>
+        account.write(
+          path,
+          /\/state\/[0-9a-f]{64}\.result$/.test(path)
+            ? "result=failed\nreason=CloudLinux's selector didn't make the app: no version 99\n"
+            : text,
+        ),
+    };
+    const s = await project(failing, { example: "hono-api" });
+    const { error } = await s.run();
+    expect(error).toBeInstanceOf(OpsCrewError);
+    expect((error as OpsCrewError).message).toContain(
+      "The agent didn't make the app in CloudLinux's selector: CloudLinux's selector didn't make the app: no version 99.",
+    );
+    expect((error as OpsCrewError).hint).toContain("target.runtime");
+    expect((await record(s.root)).objects.some((object) => object.kind === "app")).toBe(false);
+  });
+
+  it("records the app and shows the note when the selector refused its settings (T2717)", async () => {
+    const note =
+      "CloudLinux's selector made the app but refused its settings, so the app gets them only from its .env file until a settings change hands them over again";
+    const fake = fakeCpanel({ user: "acct", token: TOKEN, mainDomain: "example.com" });
+    const account = cpanelAccount(fake);
+    const noted: Account = {
+      ...account,
+      write: (path, text) =>
+        account.write(
+          path,
+          /\/state\/[0-9a-f]{64}\.result$/.test(path) ? `result=done\nnote=${note}\n` : text,
+        ),
+    };
+    const s = await project(noted, { example: "hono-api" });
+    const { deps, error } = await s.run();
+    expect(error).toBeUndefined();
+    expect(said(deps)).toContain(`${note}.`);
+    expect((await record(s.root)).objects).toContainEqual(
+      expect.objectContaining({ kind: "app", key: "nodejs" }),
+    );
   });
 
   it("never shows the panel's token: outputs, plan files, audit entries", async () => {

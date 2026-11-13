@@ -272,7 +272,7 @@ describe("design on a cPanel account", () => {
     expect(plan.target).toMatchObject({
       provider: "hosting",
       app: "node",
-      webRoot: ".",
+      webRoot: "public",
       runtime: { interpreter: "nodejs", startup: "index.js" },
     });
     expect(

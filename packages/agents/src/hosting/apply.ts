@@ -10,6 +10,7 @@ import { posix } from "node:path";
 import { tarStream } from "@opscrew/connector-docker";
 import type { HostingFiles, HostingPanel } from "@opscrew/contracts";
 import { canonicalJson, isPlanHash, OpsCrewError, type Redactor, sha256Hex } from "@opscrew/core";
+import { selectorApp } from "./apps";
 import { type AppStep, type HostingPlan, type HostingStep, hostingPlanHash } from "./plan";
 import type { HostingObject } from "./record";
 import { sendRequest } from "./requests";
@@ -69,6 +70,8 @@ export interface HostingApplyContext {
   /** The document roots of the account's other hostnames (`inspect()`), for a panel's own root. */
   otherRoots: readonly string[];
   redactor: Redactor;
+  /** Shows what a step left undone, such as the settings the selector refused (`app`). */
+  warn?: (text: string) => void;
   /** The agent's answer to a settings change. */
   sleep: (ms: number) => Promise<void>;
   now: () => Date;
@@ -373,6 +376,17 @@ async function applyStep(
     case "php":
       await panel.setPhpVersion(step.hostname, step.version);
       return ctx.made({ kind: "php", key: step.hostname, value: step.version });
+    case "app": {
+      const note = await selectorApp(files, folder, "create", {
+        hash: ctx.approvedHash,
+        now: ctx.now(),
+        sleep: ctx.sleep,
+      });
+      // Recorded even when the selector refused the settings: the app is there.
+      await ctx.made({ kind: "app", key: step.interpreter, value: step.version });
+      if (note !== undefined) ctx.warn?.(`${note}.`);
+      return;
+    }
     case "remove-cron":
       await panel.removeCron(step.key);
       return ctx.forget("cron", step.key);

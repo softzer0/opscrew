@@ -17,6 +17,7 @@ import {
 } from "@opscrew/core";
 import { z } from "zod";
 import { type AdapterPlanItem, describeAdapterPlan } from "../shared";
+import { RUNTIME_NAMES } from "./apps";
 import { PANEL_NAMES } from "./panels";
 
 /** A path below the home folder (or the app's folder): names of `[A-Za-z0-9._-]`, never `.` or `..`. */
@@ -128,6 +129,14 @@ const AppStepSchema = z.discriminatedUnion("kind", [
     kind: z.literal("php"),
     hostname: HostnameSchema,
     version: z.string().regex(/^\d+\.\d+$/),
+  }),
+  // A Node.js or Python app in CloudLinux's selector, made by the agent on an `app` request
+  // (`apps.ts`): its interpreter, version and startup file, as the agent's settings name them.
+  z.strictObject({
+    kind: z.literal("app"),
+    interpreter: z.enum(["nodejs", "python"]),
+    version: z.string().regex(/^\d+(?:\.\d+){0,2}$/),
+    startup: PathSchema,
   }),
   // One of the app's cron lines.
   z.strictObject({ kind: z.literal("cron"), schedule: ScheduleSchema, command: CommandSchema }),
@@ -256,6 +265,13 @@ function stepItem(plan: HostingPlan, step: HostingStep): AdapterPlanItem {
       };
     case "php":
       return { title: `Set ${step.hostname}'s PHP version to ${step.version}`, state: "change" };
+    case "app":
+      return {
+        title: `Make the ${RUNTIME_NAMES[step.interpreter]} ${step.version} app in CloudLinux's selector, started from ${step.startup} in ~/${folder}/current and served at https://${plan.hostname}/`,
+        state: "change",
+        reason:
+          "The agent runs the selector's create on the account. Each release whose package files changed has them installed into the app's one environment just before its switch, so the running release gets them a moment early.",
+      };
     case "remove-cron":
       return {
         title: `Remove the cron line OpsCrew made, which the app no longer has: ${step.line}`,

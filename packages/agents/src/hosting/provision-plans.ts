@@ -12,6 +12,7 @@ import {
   snapshotsByDefault,
 } from "@opscrew/plan-schema";
 import { signingKeyId } from "./apply";
+import { appStep } from "./apps";
 import { AGENT_SCHEDULE, agentCronCommand, appCronCommand, type PhpChoice } from "./php";
 import type { AgentPlan, AgentStep, AppPlan, AppStep } from "./plan";
 import { type HostingRecord, recordedObject } from "./record";
@@ -91,10 +92,15 @@ export function agentSettingsText(
     ...(input.php !== undefined ? { phpCli: input.php.cli } : {}),
     ...(input.php?.handler !== undefined ? { phpHandler: input.php.handler } : {}),
     ...(plan.app.releaseCommand !== undefined ? { releaseCommand: plan.app.releaseCommand } : {}),
-    sharedPaths: input.laravel ? [".env", "storage"] : [],
+    // A Node.js or Python app reads its settings from its environment (the selector gives it them)
+    // or from the linked file.
+    sharedPaths: input.laravel ? [".env", "storage"] : target.runtime !== undefined ? [".env"] : [],
     keep: 3,
     snapshots: hostingSnapshots(plan) && input.database !== undefined,
     ...(input.database !== undefined ? { database: input.database } : {}),
+    ...(target.runtime !== undefined
+      ? { runtimeVersion: target.runtime.version, startupFile: target.runtime.startup }
+      : {}),
   });
 }
 
@@ -226,7 +232,8 @@ export interface AppPlanInput {
  * agent's settings with the chosen PHP, the hostname with its document root (`direct`; a link in
  * `public_html` made before
  * it; or the panel's own empty root replaced by a link after it), its PHP version (cPanel's
- * MultiPHP, or a step in the panel on Plesk and DirectAdmin), the app's cron lines with the
+ * MultiPHP, or a step in the panel on Plesk and DirectAdmin), a Node.js or Python app in
+ * CloudLinux's selector (`apps.ts`), the app's cron lines with the
  * chosen PHP (and the removal of those OpsCrew made that the app no longer has), and the
  * certificate's request. A database that exists and that OpsCrew didn't make stops it.
  */
@@ -310,6 +317,9 @@ export async function buildAppPlan(input: AppPlanInput): Promise<AppPlan> {
       steps.push({ kind: "php", hostname, version: php.version });
     }
   }
+  // After the hostname, which the selector serves the app on, and the settings naming its runtime.
+  const app = appStep(target, record);
+  if (app !== undefined) steps.push(app);
   steps.push(
     ...cronSteps({ folder, panel, record, target, php, envPhp: contents.has("shared/env.php") }),
   );

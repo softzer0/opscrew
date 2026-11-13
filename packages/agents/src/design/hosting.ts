@@ -250,9 +250,11 @@ function appKind(
 
 /**
  * The folder a release serves (plan 1): `public` for Laravel, a plain PHP app's web root
- * (`public` with `public/index.php`), else the release itself.
+ * (`public` with `public/index.php`), and a Node.js or Python app's `public/` (the selector's
+ * app root is the release, which the hostname never serves); else the release itself.
  */
 function webRootFor(app: HostingDeployTarget["app"], facts: ProjectFacts): string {
+  if (app === "node" || app === "python") return "public";
   if (app !== "php") return ".";
   if (facts.frameworks.some((framework) => framework.name === "laravel")) return "public";
   return facts.webRoot ?? ".";
