@@ -587,6 +587,15 @@ names the change.
   - Verify: `pnpm turbo run typecheck --filter=opscrew && npx vitest run --root packages/cli test/live/cpanel-support.test.ts && pnpm lint`
   - Effort: medium
 
+- [ ] T2739 A kept folder the release doesn't ship starts empty in shared/ (from T2737)
+  - Owns: `packages/iac-templates/src/hosting/agent/**`, `packages/iac-templates/src/hosting/agent.ts`
+  - Reads: T2737; `iac-templates/src/hosting/agent/script.ts` (`link_shared`), `iac-templates/src/hosting/sftp-workflow.ts` (its kept folders)
+  - Accept:
+    - When neither `shared/<path>` nor the release's `<path>` exists, `link_shared` makes `shared/<path>` an empty folder (0755, as the SFTP workflow does) before linking, so the link never points nowhere; `.env` is always in `shared/` already. A Linux test with a kept folder the release lacks: the app can write through the link, and a second release sees it.
+    - `sharedPaths`' TSDoc names the plan's kept folders.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates && npx vitest run --root packages/iac-templates src/hosting/agent && pnpm lint`
+  - Effort: medium
+
 ## Phase 9: Live passes and release (lead)
 
 - [ ] T2722 The cPanel live pass (lead): `docs/e2e-coverage.md` row and results.
