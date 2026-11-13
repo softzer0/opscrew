@@ -722,7 +722,7 @@ The founder added these to 0.2.8.
 ## Phase 9: Live passes and release (lead)
 
 - [x] T2722 The cPanel live pass (lead): `docs/e2e-coverage.md` row and results.
-- [ ] T2723 The SFTP live pass (lead).
+- [x] T2723 The SFTP live pass (lead).
 - [ ] T2724 The OpenLiteSpeed live pass (lead).
 - [ ] T2725 Simplify across the feature's code (lead).
 - [ ] T2726 `CLAUDE.md`'s package list, and the roadmap: 027 done (lead).
