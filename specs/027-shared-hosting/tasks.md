@@ -641,7 +641,7 @@ names the change.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates --filter=@opscrew/agents && npx vitest run --root packages/iac-templates src/hosting/agent && npx vitest run --root packages/agents src/hosting && pnpm lint`
   - Effort: xhigh
 
-- [ ] T2745 Each Node.js release links node_modules to the selector's environment (research R14)
+- [x] T2745 Each Node.js release links node_modules to the selector's environment (research R14)
   - Owns: `packages/iac-templates/src/hosting/agent/**`, `packages/iac-templates/src/hosting/agent-apps.test.ts`, `packages/iac-templates/src/hosting/__fixtures__/shims/cloudlinux-selector.sh`
   - Reads: research R14 (its last paragraph); `iac-templates/src/hosting/agent/script.ts` (the node_modules link, the carried Passenger block)
   - Accept:
@@ -650,7 +650,7 @@ names the change.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates && npx vitest run --root packages/iac-templates src/hosting/agent && pnpm lint`
   - Effort: medium
 
-- [ ] T2746 A Node.js or Python app runs the new release from the first answer after each switch (research R14)
+- [x] T2746 A Node.js or Python app runs the new release from the first answer after each switch (research R14)
   - Owns: `packages/iac-templates/src/hosting/agent/**`, `packages/iac-templates/src/hosting/agent.ts`, `packages/iac-templates/src/hosting/agent-apps.test.ts`, `packages/iac-templates/src/hosting/__fixtures__/shims/cloudlinux-selector.sh`, `packages/agents/src/hosting/**`, `docs/guide/hosting-accounts.md`
   - Reads: research R14 (its last paragraphs); `iac-templates/src/hosting/agent/script.ts` (`app_create`, `own_passenger`, `own_running`, `switch_to`, `end_processes`, `touch_restart`)
   - Accept:
