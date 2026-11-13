@@ -234,6 +234,14 @@ describe.skipIf(MISSING.length > 0)(
       if (verdict.switchedAt === undefined || verdict.release === undefined) {
         throw new Error(`No answer named another release than ${input.from} (${what}).`);
       }
+      if (verdict.problems.length > 0) {
+        log(
+          `the answers after the switch that weren't the new release's (${what}), the first 5:\n${verdict.problems
+            .slice(0, 5)
+            .map((problem) => run.scrub(problem))
+            .join("\n")}`,
+        );
+      }
       expect(verdict.problems, `the answers after the switch (${what}, SC-2703)`).toEqual([]);
       if (verdict.others > 0) {
         run.findings.push(
