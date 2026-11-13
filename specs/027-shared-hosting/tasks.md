@@ -689,7 +689,7 @@ names the change.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates --filter=@opscrew/agents && npx vitest run --root packages/iac-templates src/hosting && npx vitest run --root packages/agents src/hosting && pnpm lint`
   - Effort: high
 
-- [ ] T2755 The check of the proxy additions downloads the proxy's image on its own first (the OpenLiteSpeed pass, run 2)
+- [x] T2755 The check of the proxy additions downloads the proxy's image on its own first (the OpenLiteSpeed pass, run 2)
   - Owns: `packages/agents/src/provision/additions.ts`, `packages/agents/src/provision/additions.test.ts`
   - Accept:
     - Before the checks, the image (`IMAGES.<proxy>.ref`, pinned) is downloaded with `docker pull` in a step of its own: "Downloading <label>'s image for the check (once; OpenLiteSpeed's is about 1.1 GB)". The pull has its own limit of 30 minutes. It is skipped when `docker image inspect <ref>` finds the image already there.
@@ -716,7 +716,7 @@ The founder added these to 0.2.8.
   - Owns: `packages/providers/contabo/**`, `packages/agents/src/design/**` (Contabo's backup lines), `docs/guide/contabo.md`
   - Accept: per R15, `target.backups` on Contabo turns Auto Backup on through the API and off again, priced in design; the same prod-only default as T2750. Tests with the fake; the Contabo guide says what it keeps and costs.
 
-- [ ] T2752 Contabo's Object Storage as a bucket provider (after T2749)
+- [x] T2752 Contabo's Object Storage as a bucket provider (after T2749)
   - Owns: `packages/iac-templates/src/infra/storage.ts`, `packages/iac-templates/src/prices.ts`, `packages/iac-templates/src/runbook/components.ts`, `packages/agents/src/design/**` (the storage lines), `packages/agents/src/interview/components.ts`, `packages/agents/src/infra/**`, `packages/agents/src/provision/**`, `packages/agents/src/destroy/**`, `packages/agents/src/drift/**`, `packages/agents/src/retarget/bucket.ts`, `packages/agents/src/shared/{s3,app-env}.ts`, `packages/agents/src/testing/storage.ts`, `packages/providers/contabo/**`, `packages/contracts/src/connector.ts` (`ObjectStorageApi`, lead-sanctioned), `packages/plan-schema/src/components.ts` (the `contabo` bucket provider), `packages/mcp-server/src/tools/{deploy.ts,interview.test.ts}`, `docs/guide/object-storage.md`, `docs/guide/contabo.md` (its Object Storage line)
   - Accept:
     - Per R15, an app on Contabo is offered Contabo's Object Storage beside Garage and R2, priced, when the expected storage fits the 0.25 TB OpsCrew orders.
