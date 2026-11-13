@@ -164,6 +164,28 @@ describe.skipIf(MISSING.length > 0)(
       if (verdict.release === undefined) {
         throw new Error(`No answer named another release than ${input.from} (${what}).`);
       }
+      if (verdict.problems.length > 0) {
+        const shown = [...verdict.problems.slice(0, 3), "…", ...verdict.problems.slice(-2)];
+        log(
+          `the answers after the switch that weren't the new release's (${what}):\n${shown.join("\n")}`,
+        );
+        // Evidence: how long PHP keeps serving the old page with no restart (R5: its caches).
+        const pages = input.toFirst
+          ? { isNew: marker.isFirst, isOld: marker.isSecond }
+          : { isNew: marker.isSecond, isOld: marker.isFirst };
+        let fresh = 0;
+        const stopsAt = Date.now() + minutes(10);
+        while (fresh < 6 && Date.now() < stopsAt) {
+          const answer = await request(`https://${leg.app.appHost}${marker.path}`).catch(
+            () => undefined,
+          );
+          fresh = answer !== undefined && pages.isNew(answer.status, answer.body) ? fresh + 1 : 0;
+          if (fresh < 6) await new Promise((resolve) => setTimeout(resolve, 5_000));
+        }
+        log(
+          `observed: ${what}: the old page stopped ${fresh >= 6 ? `${Math.round((Date.now() - start) / 1000)} s after the watch began` : "not within 10 minutes after the watch"} (the new release's 6 answers in a row)`,
+        );
+      }
       expect(verdict.problems, `the answers after the switch (${what})`).toEqual([]);
       if (verdict.others > 0) {
         run.findings.push(
