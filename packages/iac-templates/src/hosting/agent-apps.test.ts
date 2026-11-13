@@ -1,7 +1,6 @@
-import { spawnSync } from "node:child_process";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
-  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -9,10 +8,10 @@ import {
   readFileSync,
   readlinkSync,
   realpathSync,
-  renameSync,
   rmSync,
   statSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { fakeSecret } from "@opscrew/core/testing";
@@ -100,26 +99,21 @@ function nodeRelease(marker: string, lock = "1"): Record<string, string> {
   };
 }
 
-/** The selector's Passenger block for the Node.js app (research R14), its app root `root`. */
-function passengerBlock(a: Account, root: string): string {
+/**
+ * The selector's Passenger block for the Node.js app as the selector writes it (research R14): its
+ * app root app/, its startup file through the link app/current.
+ */
+function passengerBlock(a: Account): string {
   return [
     "# DO NOT REMOVE. CLOUDLINUX PASSENGER CONFIGURATION BEGIN",
-    `PassengerAppRoot "${root}"`,
+    `PassengerAppRoot "${a.home}/${ROOT}"`,
     `PassengerNodejs "${a.home}/nodevenv/${ROOT}/22/bin/node"`,
     "PassengerAppType node",
-    "PassengerStartupFile index.js",
+    "PassengerStartupFile current/index.js",
     'PassengerBaseURI "/"',
     "# DO NOT REMOVE. CLOUDLINUX PASSENGER CONFIGURATION END\n",
   ].join("\n");
 }
-
-/** The fake selector, wrapped to make the served folder read-only after a set while $STUB/lock-served is there. */
-const LOCKING = `#!/bin/bash
-"$(dirname "$0")/cloudlinux-selector.fake" "$@"
-code=$?
-if [ "$1" = set ] && [ -f "$STUB/lock-served" ]; then chmod 0555 "$APP_DIR/current/$SERVED"; fi
-exit $code
-`;
 
 /** Runs the fake selector itself with the account's environment, as a run of the agent would. */
 function runSelector(a: Account, ...args: string[]) {
@@ -139,33 +133,39 @@ describe.skipIf(reason !== undefined)(
   "the hosting agent's selector apps",
   { timeout: 180_000 },
   () => {
-    it("makes a Node.js app in the selector on an app request, and keeps its section's header", () => {
-      const a = account();
-      a.run();
-      writeCache(a, OTHER);
-      expect(app(a, "create")).toEqual({ result: "done" });
-      expect(calls(a)).toEqual([
-        `cloudlinux-selector create --json --interpreter nodejs --version 22 --app-root ${ROOT} --app-uri / --app-mode production --domain notes.example.com --startup-file index.js`,
-        `cloudlinux-selector set --json --interpreter nodejs --app-root ${ROOT} --env-vars {"APP_NAME":"notes"}`,
-      ]);
-      // The home folder as bash names it (/d/… under Git for Windows).
-      const header = a.file("state/selector-section") ?? "";
-      expect(header).toMatch(/^\[\S+\/home\/opscrew\/notes-prod\/app\]\n$/);
-      expect(readFileSync(cacheFile(a), "utf8")).toBe(`${OTHER}${header}app_root = ${ROOT}\n\n`);
-      // The app's root is the folder app/ the agent made, never a link or a release: the selector
-      // keeps it, with its placeholder app.
-      expect(lstatSync(`${a.dir}/app`).isDirectory()).toBe(true);
-      expect(a.stubFile("selector-apps")).toBe(`nodejs ${ROOT} 22 index.js\n`);
-      expect(a.file("app/index.js")).toContain("It works!");
-      expect(existsSync(`${a.dir}/releases/0-0/index.js`)).toBe(false);
-    });
+    switching(
+      "makes a Node.js app in the selector on an app request, and keeps its section's header",
+      () => {
+        const a = account();
+        a.run();
+        writeCache(a, OTHER);
+        expect(app(a, "create")).toEqual({ result: "done" });
+        expect(calls(a)).toEqual([
+          `cloudlinux-selector create --json --interpreter nodejs --version 22 --app-root ${ROOT} --app-uri / --app-mode production --domain notes.example.com --startup-file current/index.js`,
+          `cloudlinux-selector set --json --interpreter nodejs --app-root ${ROOT} --env-vars {"APP_NAME":"notes"}`,
+        ]);
+        // The home folder as bash names it (/d/… under Git for Windows).
+        const header = a.file("state/selector-section") ?? "";
+        expect(header).toMatch(/^\[\S+\/home\/opscrew\/notes-prod\/app\]\n$/);
+        expect(readFileSync(cacheFile(a), "utf8")).toBe(`${OTHER}${header}app_root = ${ROOT}\n\n`);
+        // The app's root is the folder app/ the agent made, never a link or a release: the selector
+        // keeps it. Its startup file goes through app/current, the link to current made before the
+        // app, so the placeholder app lands in the running release.
+        expect(lstatSync(`${a.dir}/app`).isDirectory()).toBe(true);
+        expect(readlinkSync(`${a.dir}/app/current`)).toBe("../current");
+        expect(a.stubFile("selector-apps")).toBe(`nodejs ${ROOT} 22 current/index.js\n`);
+        expect(a.file("releases/0-0/index.js")).toContain("It works!");
+        expect(existsSync(`${a.dir}/app/index.js`)).toBe(false);
+        expect(a.file("current/public/.htaccess")).toContain(passengerBlock(a));
+      },
+    );
 
     it("makes a Python app without a mode, which its selector doesn't take", () => {
       const a = account(PYTHON);
       a.run();
       expect(app(a, "create")).toEqual({ result: "done" });
       expect(calls(a)).toEqual([
-        `cloudlinux-selector create --json --interpreter python --version 3.12 --app-root ${ROOT} --app-uri / --domain notes.example.com --startup-file passenger_wsgi.py`,
+        `cloudlinux-selector create --json --interpreter python --version 3.12 --app-root ${ROOT} --app-uri / --domain notes.example.com --startup-file current/passenger_wsgi.py`,
         `cloudlinux-selector set --json --interpreter python --app-root ${ROOT} --env-vars {"APP_NAME":"notes"}`,
       ]);
     });
@@ -393,7 +393,7 @@ describe.skipIf(reason !== undefined)(
       expect(app(a, "destroy")).toMatchObject({ result: "failed" });
       expect(readFileSync(cacheFile(a), "utf8")).toBe(cache);
       expect(existsSync(`${a.home}/nodevenv/${ROOT}/22`)).toBe(true);
-      expect(a.file("app/index.js")).toContain("It works!");
+      expect(a.file("app/current/index.js")).toContain("It works!");
     });
 
     switching(
@@ -420,10 +420,8 @@ describe.skipIf(reason !== undefined)(
         expect(readlinkSync(`${a.dir}/releases/101-1/.env`)).toBe("../../shared/.env");
         const htaccess = a.file("releases/101-1/public/.htaccess") ?? "";
         expect(htaccess).toContain('Header always set X-OpsCrew-Release "101-1"\n');
-        expect(htaccess).toContain(
-          `# END OpsCrew\n${passengerBlock(a, `${a.dir}/releases/101-1`)}`,
-        );
-        expect(existsSync(`${a.dir}/releases/101-1/tmp/restart.txt`)).toBe(true);
+        expect(htaccess).toContain(`# END OpsCrew\n${passengerBlock(a)}`);
+        expect(existsSync(`${a.dir}/app/tmp/restart.txt`)).toBe(true);
         expect(existsSync(`${a.home}/.lsphp_restart.txt`)).toBe(false);
 
         // The same packages: nothing to install; the release is linked to the same environment.
@@ -431,7 +429,7 @@ describe.skipIf(reason !== undefined)(
         expect(a.run().output).toContain("Release 102-1 serves.");
         expect(calls(a).filter((line) => line.includes("install-modules"))).toHaveLength(2);
         expect(readlinkSync(`${a.dir}/releases/102-1/node_modules`)).toBe(environment);
-        expect(appRoots(a, "releases/102-1")).toEqual([`${a.dir}/releases/102-1`]);
+        expect(appRoots(a, "releases/102-1")).toEqual([`${a.home}/${ROOT}`]);
 
         // A changed lockfile: installed from app/ before the switch, the running release's own
         // files untouched.
@@ -557,7 +555,7 @@ describe.skipIf(reason !== undefined)(
         expect(readlinkSync(`${a.dir}/current`)).toBe("releases/501-1");
         expect(installed().at(-1)).toBe(one);
         expect(a.keyValues("state/status").reason).toMatch(/; switched back to 501-1$/);
-        expect(appRoots(a, "current")).toEqual([`${a.dir}/releases/501-1`]);
+        expect(appRoots(a, "current")).toEqual([`${a.home}/${ROOT}`]);
 
         // Installing the running release's packages again fails: the status says so.
         writeFileSync(`${a.stub}/install-fails-for`, '"version":"one"');
@@ -583,9 +581,13 @@ describe.skipIf(reason !== undefined)(
       );
       expect(a.file("app/requirements.txt")).toBe("flask==3.1.0\n");
       expect(existsSync(`${a.dir}/releases/301-1/node_modules`)).toBe(false);
+      // Passenger finds the release's passenger_wsgi.py through app/current, the startup file the
+      // app was made with; the block stays as the selector wrote it, naming app/.
+      expect(a.stubFile("selector-apps")).toBe(`python ${ROOT} 3.12 current/passenger_wsgi.py\n`);
+      expect(a.file("app/current/passenger_wsgi.py")).toBe("application = None\n");
       expect(a.file("releases/301-1/public/.htaccess")).toContain(
         [
-          `PassengerAppRoot "${a.dir}/releases/301-1"`,
+          `PassengerAppRoot "${a.home}/${ROOT}"`,
           `PassengerPython "${a.home}/virtualenv/${ROOT}/3.12/bin/python"`,
           'PassengerBaseURI "/"',
         ].join("\n"),
@@ -616,8 +618,117 @@ describe.skipIf(reason !== undefined)(
       expect(readlinkSync(`${a.dir}/current`)).toBe("releases/401-1");
       const installs = a.stubFile("selector.log").match(/^package\.json: .*$/gm);
       expect(installs?.at(-1)).toBe('package.json: {"name":"notes","version":"one"}');
-      expect(appRoots(a, "current")).toEqual([`${a.dir}/releases/401-1`]);
+      expect(appRoots(a, "current")).toEqual([`${a.home}/${ROOT}`]);
     });
+
+    switching(
+      "restarts the app through app/ and ends its processes on a deploy, a rollback, a switch back and destroy, the selector's block as it wrote it (R14)",
+      async () => {
+        const a = account();
+        a.run();
+        app(a, "create");
+        a.publish(nodeRelease("one"), { run: 111 });
+        a.run();
+        // The restart file of the one app root LiteSpeed knows, app/; none in the releases.
+        const signal = `${a.dir}/app/tmp/restart.txt`;
+        // The restart file dated long ago, then the time the run (and its switch) starts.
+        const before = () => {
+          if (existsSync(signal)) utimesSync(signal, 946684800, 946684800);
+          return Date.now() - 1000;
+        };
+        const restarted = (since: number) => statSync(signal).mtimeMs >= since;
+        // The served block names app/ and current/index.js, as the selector wrote it.
+        const asWritten = () =>
+          expect(a.file("current/public/.htaccess")).toContain(passengerBlock(a));
+        const perRelease = () =>
+          a.releases().filter((id) => existsSync(`${a.dir}/releases/${id}/tmp/restart.txt`));
+        // Stand-ins for processes: a sleep working in a folder, or a node process whose command
+        // line names a path (as LiteSpeed's lsnode names the app's folder).
+        const standIns: ChildProcess[] = [];
+        const keep = (child: ChildProcess) => {
+          standIns.push(child);
+          return child;
+        };
+        const workingIn = (cwd: string) => keep(spawn("sleep", ["300"], { cwd, stdio: "ignore" }));
+        const naming = (path: string) =>
+          keep(
+            spawn(process.execPath, ["-e", "setTimeout(() => {}, 300000)", path], {
+              cwd: a.root,
+              stdio: "ignore",
+            }),
+          );
+        const ends = (child: ChildProcess) =>
+          new Promise<boolean>((resolve) => {
+            if (child.exitCode !== null || child.signalCode !== null) resolve(true);
+            child.once("exit", () => resolve(true));
+            setTimeout(() => resolve(false), 5000);
+          });
+        const running = (child: ChildProcess) =>
+          child.exitCode === null && child.signalCode === null;
+        // Not the app's: another app's folder beside it (its name starting the same) and a folder
+        // outside the app's.
+        const sibling = `${a.home}/opscrew/notes-production/app`;
+        mkdirSync(sibling, { recursive: true });
+        const others = [naming(`${sibling}/index.js`), workingIn(sibling), workingIn(a.root)];
+        try {
+          // A deploy: 112-1 switched to, 111-1 switched from; the app's processes end, the one
+          // naming app/ and the one working in a release.
+          const lsnode = naming(`${a.dir}/app/current/index.js`);
+          const old = workingIn(`${a.dir}/releases/111-1`);
+          a.publish(nodeRelease("two"), { run: 112 });
+          let since = before();
+          let output = a.run().output;
+          expect(output).toContain("Release 112-1 serves.");
+          expect(output).toContain("2 of the app's processes ended.");
+          expect(restarted(since)).toBe(true);
+          asWritten();
+          expect(perRelease()).toEqual([]);
+          expect(await ends(lsnode)).toBe(true);
+          expect(await ends(old)).toBe(true);
+          expect(others.every(running)).toBe(true);
+
+          // A rollback: 111-1 switched to, 112-1 switched from; a process in a folder under a
+          // release ends.
+          const under = workingIn(`${a.dir}/releases/112-1/public`);
+          const expires = String(Math.floor(Date.now() / 1000) + 1800);
+          const rollback = a.request(
+            `kind=rollback\nhash=${HASH}\nexpires=${expires}\nrelease=111-1\nrestore=no\n`,
+          );
+          since = before();
+          output = a.run().output;
+          expect(a.keyValues(`state/${rollback}.result`)).toEqual({ result: "done" });
+          expect(output).toContain("1 of the app's processes ended.");
+          expect(restarted(since)).toBe(true);
+          asWritten();
+          expect(await ends(under)).toBe(true);
+          expect(others.every(running)).toBe(true);
+
+          // A switch back after a failed check: 111-1 runs again, restarted; 113-1 is gone.
+          a.publish({ ...nodeRelease("three"), "public/health-status": "500" }, { run: 113 });
+          since = before();
+          output = a.run().output;
+          expect(output).toContain("0 of the app's processes ended.");
+          expect(readlinkSync(`${a.dir}/current`)).toBe("releases/111-1");
+          expect(restarted(since)).toBe(true);
+          asWritten();
+          expect(perRelease()).toEqual([]);
+          expect(existsSync(`${a.dir}/releases/113-1`)).toBe(false);
+          expect(existsSync(`${a.home}/.lsphp_restart.txt`)).toBe(false);
+
+          // Destroy ends the app's processes too, which the selector's destroy leaves running.
+          const left = [naming(`${a.dir}/app/current/index.js`), workingIn(`${a.dir}/current`)];
+          const logged = (a.file("state/agent.log") ?? "").length;
+          expect(app(a, "destroy")).toEqual({ result: "done" });
+          expect((a.file("state/agent.log") ?? "").slice(logged)).toContain(
+            "2 of the app's processes ended.",
+          );
+          for (const child of left) expect(await ends(child)).toBe(true);
+          expect(others.every(running)).toBe(true);
+        } finally {
+          for (const child of standIns) child.kill("SIGKILL");
+        }
+      },
+    );
 
     switching(
       "installs the running release's packages again when a rollback's dump or restore fails after installing the target's",
@@ -702,72 +813,60 @@ describe.skipIf(reason !== undefined)(
     );
 
     switching(
-      "leaves the served .htaccess whole when it can't rewrite it, says so, and rewrites it on the next run",
+      "keeps a failed release's errors from app/stderr.log, where Passenger writes them, and empties it after",
       () => {
         const a = account();
-        // A selector that leaves the served folder read-only after it wrote its block again on set.
-        const bin = `${a.root}/bin/cloudlinux-selector`;
-        renameSync(bin, `${bin}.fake`);
-        writeFileSync(bin, LOCKING);
-        chmodSync(bin, 0o755);
         a.run();
         app(a, "create");
-        a.publish(nodeRelease("one"), { run: 801 });
-        expect(a.run().output).toContain("Release 801-1 serves.");
-
-        const served = `${a.dir}/releases/801-1/public`;
-        writeFileSync(`${a.stub}/lock-served`, "");
-        writeFileSync(`${a.dir}/shared/.env.next`, "APP_NAME=renamed\n");
-        const expires = Math.floor(Date.now() / 1000) + 1800;
-        const env = a.request(`kind=env\nhash=${HASH}\nexpires=${expires}\n`);
-        let output = "";
-        try {
-          output = a.run().output;
-        } finally {
-          chmodSync(served, 0o755);
-        }
-        expect(a.keyValues(`state/${env}.result`)).toEqual({ result: "done" });
-        expect(output).toContain(
-          "Release 801-1's .htaccess couldn't be rewritten to send Passenger to the release, so the site may run CloudLinux's placeholder in app/ until a later run rewrites it: check the account's disk quota.",
-        );
-        const htaccess = a.file("releases/801-1/public/.htaccess") ?? "";
-        expect(htaccess).toContain('Header always set X-OpsCrew-Release "801-1"\n');
-        expect(htaccess).toContain(passengerBlock(a, `${a.home}/${ROOT}`));
-        expect(existsSync(`${served}/.htaccess.partial`)).toBe(false);
-
-        // The next run starts by sending Passenger to the running release again.
-        rmSync(`${a.stub}/lock-served`);
+        a.publish(nodeRelease("one"), { run: 921 });
         a.run();
-        expect(appRoots(a, "current")).toEqual([`${a.dir}/releases/801-1`]);
+        // What Passenger wrote into the app root's stderr.log while the release failed.
+        const secret = fakeSecret("generic-password", "app-stderr");
+        writeFileSync(`${a.dir}/app/stderr.log`, `starting\nError: ${secret}\n`);
+        a.publish({ ...nodeRelease("two"), "public/health-status": "500" }, { run: 922 });
+        a.run();
+        expect(readlinkSync(`${a.dir}/current`)).toBe("releases/921-1");
+        expect(a.file("state/922-1.stderr.log")).toBe(`starting\nError: ${secret}\n`);
+        expect(statSync(`${a.dir}/state/922-1.stderr.log`).mode & 0o777).toBe(0o600);
+        expect(a.file("app/stderr.log")).toBe("");
+        expect(a.keyValues("state/status").reason).toMatch(
+          /; the app's own errors are in ~\/opscrew\/notes-prod\/state\/922-1\.stderr\.log$/,
+        );
+        expect(a.file("state/agent.log")).not.toContain(secret);
+
+        // With app/stderr.log empty, the release's own stderr.log is kept.
+        a.publish(
+          { ...nodeRelease("three"), "public/health-status": "500", "stderr.log": "own\n" },
+          { run: 923 },
+        );
+        a.run();
+        expect(a.file("state/923-1.stderr.log")).toBe("own\n");
       },
     );
 
     switching(
-      "sends Passenger to each release's own folder through two releases, a settings change and a rollback, and destroy still finds the app",
+      "keeps the selector's block as it wrote it, naming app/, through two releases, a settings change and a rollback, and destroy still finds the app and leaves the releases",
       () => {
         const a = account();
         a.run();
         expect(app(a, "create")).toEqual({ result: "done" });
         // The selector wrote its block, naming app/, into the placeholder's .htaccess.
-        expect(appRoots(a, "releases/0-0")).toEqual([`${a.dir}/releases/0-0`]);
+        expect(appRoots(a, "releases/0-0")).toEqual([`${a.home}/${ROOT}`]);
 
         a.publish(nodeRelease("one"), { run: 101 });
         expect(a.run().output).toContain("Release 101-1 serves.");
         a.publish(nodeRelease("two", "2"), { run: 102 });
         expect(a.run().output).toContain("Release 102-1 serves.");
-        expect(appRoots(a, "releases/101-1")).toEqual([`${a.dir}/releases/101-1`]);
-        expect(a.file("current/public/.htaccess")).toContain(
-          passengerBlock(a, `${a.dir}/releases/102-1`),
-        );
+        expect(appRoots(a, "releases/101-1")).toEqual([`${a.home}/${ROOT}`]);
+        expect(a.file("current/public/.htaccess")).toContain(passengerBlock(a));
 
-        // A settings change: the selector writes its block again, naming app/; the running
-        // release's names that release again.
+        // A settings change: the selector writes its block again, naming app/.
         const expires = String(Math.floor(Date.now() / 1000) + 1800);
         writeFileSync(`${a.dir}/shared/.env.next`, "APP_NAME=renamed\n");
         const env = a.request(`kind=env\nhash=${HASH}\nexpires=${expires}\n`);
         a.run();
         expect(a.keyValues(`state/${env}.result`)).toEqual({ result: "done" });
-        expect(appRoots(a, "current")).toEqual([`${a.dir}/releases/102-1`]);
+        expect(appRoots(a, "current")).toEqual([`${a.home}/${ROOT}`]);
 
         // A rollback runs the first release again, with its packages.
         const rollback = a.request(
@@ -776,7 +875,7 @@ describe.skipIf(reason !== undefined)(
         a.run();
         expect(a.keyValues(`state/${rollback}.result`)).toEqual({ result: "done" });
         expect(readlinkSync(`${a.dir}/current`)).toBe("releases/101-1");
-        expect(appRoots(a, "current")).toEqual([`${a.dir}/releases/101-1`]);
+        expect(a.file("current/public/.htaccess")).toContain(passengerBlock(a));
         expect(a.file("app/package.json")).toBe('{"name":"notes","version":"one"}\n');
 
         // Every selector command named app/, so the selector still finds the app.
@@ -784,6 +883,8 @@ describe.skipIf(reason !== undefined)(
         expect(calls(a).filter((line) => !line.includes(`--app-root ${ROOT}`))).toEqual([]);
         expect(existsSync(`${a.dir}/app`)).toBe(false);
         expect(existsSync(`${a.home}/nodevenv/opscrew`)).toBe(false);
+        // app/current was a link: the release it pointed at stays.
+        expect(a.file("current/index.js")).toBe('console.log("one");\n');
       },
     );
 

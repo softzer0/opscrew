@@ -1,7 +1,7 @@
 /**
  * A Node.js or Python app on a hosting account (027 plan 8): CloudLinux's selector runs it, its
- * app root the folder `app/` of the app's folder, served at the hostname's root from the release
- * `current` points at (research R14). The agent drives the selector on an `app` request
+ * app root the folder `app/` of the app's folder, which runs `current/<startup file>` through its
+ * link `app/current` to the running release, served at the hostname's root (research R14). The agent drives the selector on an `app` request
  * (`AGENT_SH`): plan B's `app` step makes the app, destroy's removes it with what the selector
  * leaves. Each release's packages are the agent's to install, before its switch.
  */

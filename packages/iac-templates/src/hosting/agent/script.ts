@@ -45,22 +45,28 @@ const HEADER_LINES = BASELINE_HEADERS.map(
  * file, then hands the selector the values of `shared/.env` (`set --env-vars`), as an `env` request
  * does again; the file is linked into each release too. The header of the section the selector
  * added to `~/.cl.selector/htaccess_cache` is kept in `state/selector-section` (empty when none, or
- * more than one, was added). Each release's `.htaccess` carries the selector's Passenger block with
- * `PassengerAppRoot` naming the release's own folder, so Passenger runs the release `current`
- * points at; a Node.js release that ships no `node_modules` gets one linked to the packages of the
- * environment the block's `PassengerNodejs` names (`<env>/bin/node`, packages in
- * `<env>/lib/node_modules`, research R14); after each selector command the
- * running release's block names it again. When a release's package files differ from the running
- * release's, they go into `app/` and the selector installs them into the app's one environment
- * before the switch (an answer that the install was performed but the selector's own check of the
- * app failed is a note: the agent's health check decides); then `tmp/restart.txt`. A release that
- * fails its check leaves the last 100 lines of the app's own errors (`stderr.log` in its folder) in
- * `state/<id>.stderr.log` (0600, the newest 3 kept), which its reason names. A run that finds
- * another release's package files in `app/` (one before it stopped part-way) installs the running
- * release's again. `action=destroy` runs the selector's `destroy` (a selector that no longer has the
- * app is noted, not a failure), removes `app/`, the empty `~/nodevenv/<app root>` (`~/virtualenv/`
- * for Python) and the section of `htaccess_cache` whose header it kept, every other byte as it was;
- * a `note=` in its answer says what it left and why.
+ * more than one, was added). The app is made with the startup file `current/<startup file>`, and
+ * `app/current` is a link to `../current` (made before the app, kept), so Passenger, whose
+ * `PassengerAppRoot` stays the `app/` the selector names (its block is carried into each release's
+ * `.htaccess` as the selector wrote it), runs the running release's code through the link. A
+ * Node.js release that ships no `node_modules` gets one linked to the packages of the environment
+ * the block's `PassengerNodejs` names (`<env>/bin/node`, packages in `<env>/lib/node_modules`,
+ * research R14). When a release's package files differ from the running release's, they go into
+ * `app/` and the selector installs them into the app's one environment before the switch (an
+ * answer that the install was performed but the selector's own check of the app failed is a note:
+ * the agent's health check decides). Each switch (deploy, rollback, switch back) touches
+ * `app/tmp/restart.txt`, the restart file of the one app root LiteSpeed knows, and ends the app's
+ * processes (the account user's whose command line names the app's folder or whose working folder
+ * is in it; TERM, then KILL after about 3 seconds), before the health check, so the first answer
+ * after the switch runs the new release's code (research R14).
+ * A release that fails its check leaves the last 100 lines of the app's own errors (`stderr.log`
+ * in its folder) in `state/<id>.stderr.log` (0600, the newest 3 kept), which its reason names. A
+ * run that finds another release's package files in `app/` (one before it stopped part-way)
+ * installs the running release's again. `action=destroy` runs the selector's `destroy` (a
+ * selector that no longer has the app is noted, not a failure), ends the app's processes, removes
+ * `app/`, the empty `~/nodevenv/<app root>` (`~/virtualenv/` for Python) and the section of
+ * `htaccess_cache` whose header it kept, every other byte as it was; a `note=` in its answer says
+ * what it left and why.
  *
  * A release is the newest commit of the release branch with one line `OpsCrew-Release: <run
  * id> <attempt> <env> <signature>`, the signature `openssl dgst -sha256 -sign`'s (ECDSA P-256, DER,
@@ -326,7 +332,8 @@ compose() {
 # Carries into release $1's served folder what the panel and the selector wrote into the running
 # release's: the certificate checks' folders in .well-known/; php.ini and .user.ini where the app
 # has none of its own; .htaccess composed with the app's own (the selector's Passenger block among
-# what it keeps, sent to release $1); then the release's node_modules link (environment_modules).
+# what it keeps, as the selector wrote it); then the release's node_modules link
+# (environment_modules).
 carry() {
   local to="releases/$1/$WEB_ROOT" from="current/$WEB_ROOT" check
   mkdir -p "$to"
@@ -338,7 +345,6 @@ carry() {
   done
   if [ -f "$from/php.ini" ] && [ ! -e "$to/php.ini" ]; then cp -p "$from/php.ini" "$to/php.ini"; fi
   compose "$to/.htaccess" '#' "$from/.htaccess" htaccess_block "$1"
-  own_passenger "$1"
   environment_modules "$1"
   compose "$to/.user.ini" ';' "$from/.user.ini" user_ini_block "$1" own
 }
@@ -356,20 +362,6 @@ environment_modules() {
     sed -n 's/^PassengerNodejs[[:space:]]*"\\{0,1\\}\\([^"[:space:]]*\\)"\\{0,1\\}[[:space:]]*$/\\1/p' | tail -n 1)
   [ -n "$node" ] || return 0
   ln -s "\${node%/*/*}/lib/node_modules" "releases/$1/node_modules"
-}
-
-# Points the Passenger block CloudLinux's selector wrote into release $1's .htaccess at that
-# release's own folder, for a Node.js or Python app: its PassengerAppRoot line names releases/$1,
-# quoted as the selector quotes it, and every other line stays byte for byte (the app's own part is
-# left alone). The selector names the folder it registered, app/, which Passenger would run instead
-# of the release (research R14).
-own_passenger() {
-  local file="releases/$1/$WEB_ROOT/.htaccess" root
-  case $APP_KIND in node | python) ;; *) return 0 ;; esac
-  if [ ! -f "$file" ] || ! grep -q '^PassengerAppRoot ' "$file"; then return 0; fi
-  root=$(printf '%s' "$DIR/releases/$1" | sed 's/[\\\\&|]/\\\\&/g')
-  sed -e '/^# BEGIN OpsCrew: app$/,/^# END OpsCrew: app$/b' \\
-    -e "s|^PassengerAppRoot .*|PassengerAppRoot \\"$root\\"|" "$file" | put "$file"
 }
 
 # Links each shared path of release folder $1 to shared/<path>. A path shared/ doesn't hold yet
@@ -391,22 +383,79 @@ link_shared() {
   done
 }
 
-# Points current at release $1 in one rename.
+# Points current at release $1 in one rename. A Node.js or Python app restarts: app/tmp/restart.txt,
+# the restart file of the one app root LiteSpeed knows, then the app's processes end, as LiteSpeed
+# acts on restart.txt on its own timing; the next request starts current/<startup file>.
 switch_to() {
   rm -f current.next
   ln -s "releases/$1" current.next
   mv -T current.next current
+  case $APP_KIND in
+    node | python)
+      touch_restart app
+      end_app_processes || true
+      ;;
+  esac
+}
+
+# Ends the app's processes: the account user's own processes whose command line names the app's
+# folder ($DIR/: app/, the releases, current) or whose working folder is in it, never the agent or
+# its parents. TERM, then KILL for those still alive after about 3 seconds; one line says how
+# many. Never fails.
+end_app_processes() {
+  local root dir pid cwd cmd ancestors=" " found="" alive="" n=0 try
+  if ! readlink "/proc/$$/cwd" > /dev/null 2>&1; then
+    say "The app's processes weren't looked for: /proc isn't readable here."
+    return 0
+  fi
+  root=$(pwd -P)
+  pid=$$
+  while [ -n "$pid" ] && [ "$pid" -gt 1 ]; do
+    ancestors="$ancestors$pid "
+    pid=$(awk '/^PPid:/ { print $2 }' "/proc/$pid/status" 2> /dev/null) || pid=""
+  done
+  for dir in /proc/[0-9]*; do
+    pid=\${dir#/proc/}
+    case $ancestors in *" $pid "*) continue ;; esac
+    if [ ! -O "$dir" ]; then continue; fi
+    cwd=$(readlink "$dir/cwd" 2> /dev/null) || cwd=""
+    cmd=$(tr '\\0' ' ' < "$dir/cmdline" 2> /dev/null) || cmd=""
+    case "$cwd" in "$root"/* | "$DIR"/*) ;; *)
+      case "$cmd" in *"$root/"* | *"$DIR/"*) ;; *) continue ;; esac
+      ;;
+    esac
+    found="$found $pid"
+    n=$((n + 1))
+  done
+  if [ -n "$found" ]; then
+    kill -TERM $found 2> /dev/null || true
+    for try in 1 2 3 4 5 6; do
+      alive=""
+      for pid in $found; do
+        if kill -0 "$pid" 2> /dev/null; then alive="$alive $pid"; fi
+      done
+      if [ -z "$alive" ]; then break; fi
+      sleep 0.5
+    done
+    if [ -n "$alive" ]; then kill -KILL $alive 2> /dev/null || true; fi
+  fi
+  say "$n of the app's processes ended."
+}
+
+# Touches tmp/restart.txt (made with its folder) in folder $1, Passenger's restart signal; a
+# folder that isn't there is skipped, and a touch that fails never fails the run.
+touch_restart() {
+  if [ -d "$1" ]; then
+    { mkdir -p "$1/tmp" && touch "$1/tmp/restart.txt"; } 2> /dev/null || true
+  fi
 }
 
 # Restarts the app's processes: every PHP process of the account (LiteSpeed's per-user restart,
-# harmless elsewhere), or a Node.js or Python app of release $1.
+# harmless elsewhere), or a Node.js or Python app.
 restart() {
   case $APP_KIND in
     php) touch "$HOME/.lsphp_restart.txt" ;;
-    node | python)
-      mkdir -p "releases/$1/tmp"
-      touch "releases/$1/tmp/restart.txt"
-      ;;
+    node | python) touch_restart app ;;
   esac
 }
 
@@ -417,26 +466,14 @@ app_root() {
 }
 
 # Runs CloudLinux's selector's command $1 with --json and the app's interpreter, then the options
-# after it; SELECTOR_SAID holds its answer on one line. Fails unless it answers success. The
-# selector may write its Passenger block, naming app/, into the .htaccess the hostname serves: the
-# running release's names that release again after it (own_running).
+# after it; SELECTOR_SAID holds its answer on one line. Fails unless it answers success.
 selector() {
   local command=$1 interpreter=nodejs success='"result": *"success"' code=0
   shift
   if [ "$APP_KIND" = python ]; then interpreter=python; fi
   SELECTOR_SAID=$(cloudlinux-selector "$command" --json --interpreter "$interpreter" "$@" 2>&1) || code=$?
   SELECTOR_SAID=$(line_of "$SELECTOR_SAID")
-  own_running
   [ "$code" -eq 0 ] && [[ $SELECTOR_SAID =~ $success ]]
-}
-
-# Points the Passenger block of the running release's .htaccess at that release (own_passenger),
-# saying so when it can't.
-own_running() {
-  local running
-  running=$(running_id)
-  [ -n "$running" ] || return 0
-  own_passenger "$running" || say "Release $running's .htaccess couldn't be rewritten to send Passenger to the release, so the site may run CloudLinux's placeholder in app/ until a later run rewrites it: check the account's disk quota."
 }
 
 # The package files of the app's kind: Node.js's package.json and package-lock.json, Python's
@@ -688,15 +725,24 @@ deploy() {
 }
 
 # Before the folder of release $1, a Node.js or Python app that failed its check, goes: the last
-# 100 lines of the app's own errors there (stderr.log, which CloudLinux's Passenger writes in the
-# app's root) are kept as state/$1.stderr.log (0600), with the newest 3 such files only, and
-# STDERR_SAID names it. Its content is never logged: it may hold the app's secrets.
+# 100 lines of the app's own errors (stderr.log, which CloudLinux's Passenger writes in the app's
+# root: app/stderr.log when it has lines, else the release's own) are kept as state/$1.stderr.log
+# (0600), with the newest 3 such files only, and STDERR_SAID names it; app/stderr.log is emptied
+# after, so the next failure's lines aren't mixed with these. Its content is never logged: it may
+# hold the app's secrets.
 keep_stderr() {
-  local file
+  local file from
   STDERR_SAID=""
   case $APP_KIND in node | python) ;; *) return 0 ;; esac
-  [ -f "releases/$1/stderr.log" ] || return 0
-  (umask 077 && tail -n 100 "releases/$1/stderr.log" > "state/$1.stderr.log")
+  if [ -s app/stderr.log ]; then
+    from=app/stderr.log
+  elif [ -f "releases/$1/stderr.log" ]; then
+    from=releases/$1/stderr.log
+  else
+    return 0
+  fi
+  (umask 077 && tail -n 100 "$from" > "state/$1.stderr.log")
+  if [ "$from" = app/stderr.log ]; then { : > app/stderr.log; } 2> /dev/null || true; fi
   STDERR_SAID="; the app's own errors are in ~/opscrew/$APP-$ENVIRONMENT/state/$1.stderr.log"
   for file in $(ls state | grep -E '^[1-9][0-9]*-[1-9][0-9]*\\.stderr\\.log$' | sort -t - -k 1,1nr -k 2,2nr | tail -n +4 || true); do
     rm -f "state/$file"
@@ -1076,16 +1122,18 @@ cache_headers() {
   if [ -f "$cache" ]; then grep '^\\[' "$cache" || true; fi
 }
 
-# Makes the app in CloudLinux's selector, its root the folder app/ (made first), served at the
-# hostname's root; keeps the header of the section the selector added to htaccess_cache (empty
+# Makes the app in CloudLinux's selector, its root the folder app/ (made first, with app/current a
+# link to ../current, kept), started from current/<startup file> through that link and served at
+# the hostname's root; keeps the header of the section the selector added to htaccess_cache (empty
 # when it added none, or more than one). When the selector made the app but refused its settings,
 # the answer is done, its note saying so.
 app_create() {
   local name=$1 mode=() added
   if [ "$APP_KIND" = node ]; then mode=(--app-mode production); fi
   mkdir -p app
+  if [ ! -L app/current ]; then ln -s ../current app/current; fi
   cache_headers > state/selector.before
-  if ! selector create --version "$RUNTIME_VERSION" --app-root "$(app_root)" --app-uri / \${mode[@]+"\${mode[@]}"} --domain "$HOST_NAME" --startup-file "$STARTUP_FILE"; then
+  if ! selector create --version "$RUNTIME_VERSION" --app-root "$(app_root)" --app-uri / \${mode[@]+"\${mode[@]}"} --domain "$HOST_NAME" --startup-file "current/$STARTUP_FILE"; then
     rm -f state/selector.before
     answer "$name" failed "CloudLinux's selector didn't make the app: \${SELECTOR_SAID:-no answer}"
     return 0
@@ -1212,9 +1260,10 @@ forget_cache_section() {
   rm -f state/selector-section
 }
 
-# Removes the app from CloudLinux's selector, then what the selector leaves of it: its root app/,
-# its empty environment folder (~/nodevenv/<app root>, ~/virtualenv/ for Python) with the empty
-# folders above it, and its section of htaccess_cache. A selector that no longer has the app (a
+# Removes the app from CloudLinux's selector, then what the selector leaves of it: its processes
+# (end_app_processes, as the selector's destroy leaves them running), its root app/, its empty
+# environment folder (~/nodevenv/<app root>, ~/virtualenv/ for Python) with the empty folders
+# above it, and its section of htaccess_cache. A selector that no longer has the app (a
 # destroy run again after one that stopped part-way) is no failure: the rest is removed. The
 # answer's note says what stays, and why.
 app_destroy() {
@@ -1227,6 +1276,7 @@ app_destroy() {
     fi
     note="CloudLinux's selector no longer had the app"
   fi
+  end_app_processes || true
   rm -rf app
   # The environment folder and each folder above it up to the home folder, while empty; one the
   # selector removed itself is skipped.
@@ -1315,9 +1365,7 @@ main() {
     mkdir -p "releases/0-0/$WEB_ROOT"
     ln -s releases/0-0 current
   fi
-  # What a run that stopped part-way through the selector's work left: the selector's block naming
-  # app/ in the running release's .htaccess, another release's packages.
-  own_running
+  # What a run that stopped part-way through the selector's work left: another release's packages.
   running_packages
   GIT_SSH_COMMAND=$(printf '%q ' "\${SSH[@]}")
   export DIR PHP_CLI GIT_SSH_COMMAND GIT_TERMINAL_PROMPT=0

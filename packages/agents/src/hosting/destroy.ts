@@ -160,7 +160,7 @@ function stepItem(plan: HostingDestroyPlan, step: DestroyStep): AdapterPlanItem 
         title: `Remove the ${RUNTIME_NAMES[step.interpreter]} app ~/${folder}/app from CloudLinux's selector, then that folder, its empty folder in ~/${step.interpreter === "nodejs" ? "nodevenv" : "virtualenv"}/ and its section of ~/.cl.selector/htaccess_cache`,
         state: "change",
         reason:
-          "The agent runs the selector's destroy while it still runs. The file's other sections stay byte for byte; if OpsCrew can't tell which section is the app's, the file stays as it is and OpsCrew says so.",
+          "The agent runs the selector's destroy while it still runs. The app ran current/<startup file> from that folder through its link current, so the releases stay. The file's other sections stay byte for byte; if OpsCrew can't tell which section is the app's, the file stays as it is and OpsCrew says so.",
       };
     case "cron":
       return step.agent

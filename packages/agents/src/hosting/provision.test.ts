@@ -830,7 +830,7 @@ describe("provision on a cPanel account", () => {
       startup: "dist/index.js",
     });
     expect(said(deps)).toContain(
-      `Make the Node.js ${step?.kind === "app" ? step.version : ""} app ~/${FOLDER}/app in CloudLinux's selector, started from dist/index.js in each release and served at https://${HOSTNAME}/`,
+      `Make the Node.js ${step?.kind === "app" ? step.version : ""} app ~/${FOLDER}/app in CloudLinux's selector, started from current/dist/index.js and served at https://${HOSTNAME}/`,
     );
 
     // The agent's request, bound to plan B's hash; its settings name the runtime.

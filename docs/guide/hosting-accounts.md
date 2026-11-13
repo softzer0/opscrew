@@ -118,7 +118,7 @@ Everything OpsCrew puts on the account is in `~/opscrew/<app>-<env>/`:
 | `agent.sh`, `settings.sh` | The agent and its settings, copies of `opscrew/hosting/agent.sh` and `opscrew/hosting/<env>.sh` in your repository |
 | `releases/` | The running release and the 3 before it |
 | `current` | The link to the running release; the hostname serves it |
-| `app/` | A Node.js or Python app's root in CloudLinux's selector, whose packages every release runs with: don't remove it by hand while the app exists |
+| `app/` | A Node.js or Python app's root in CloudLinux's selector, whose packages every release runs with; the app runs `current/<startup file>` from it, through its link `app/current` to the running release: don't remove it by hand while the app exists |
 | `shared/` | The app's settings (`.env`, 0600), the database's login for its dumps, Laravel's `storage` and the app's kept folders (`storage.files.dir`, `storage.sqlite.dir` in `opscrew/plan.yaml`), linked into each release so what the app writes there outlives it |
 | `dumps/` | The database dumps and [snapshots](#snapshots) |
 | `state/` | The agent's status, its log (its last 1,000 lines) and the app's cron output |

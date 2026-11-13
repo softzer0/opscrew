@@ -43,7 +43,10 @@ export interface AgentSettings {
   database?: string;
   /** A Node.js or Python app's version in CloudLinux's selector (`22`, `3.12`); those apps only. */
   runtimeVersion?: string;
-  /** The file the selector starts a Node.js or Python app from, in the release; those apps only. */
+  /**
+   * The file a Node.js or Python app starts from, in the release; the selector runs it as
+   * `current/<file>` from `app/`. Those apps only.
+   */
   startupFile?: string;
 }
 

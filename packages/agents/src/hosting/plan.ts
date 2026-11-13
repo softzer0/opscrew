@@ -267,9 +267,9 @@ function stepItem(plan: HostingPlan, step: HostingStep): AdapterPlanItem {
       return { title: `Set ${step.hostname}'s PHP version to ${step.version}`, state: "change" };
     case "app":
       return {
-        title: `Make the ${RUNTIME_NAMES[step.interpreter]} ${step.version} app ~/${folder}/app in CloudLinux's selector, started from ${step.startup} in each release and served at https://${plan.hostname}/`,
+        title: `Make the ${RUNTIME_NAMES[step.interpreter]} ${step.version} app ~/${folder}/app in CloudLinux's selector, started from current/${step.startup} and served at https://${plan.hostname}/`,
         state: "change",
-        reason: `The agent runs the selector's create on the account. The selector keeps the app's one environment for ~/${folder}/app, and each release runs from its own folder with it. Each release whose package files changed has them installed into that environment just before its switch, so the running release gets them a moment early.`,
+        reason: `The agent runs the selector's create on the account. The selector keeps the app's one environment for ~/${folder}/app, and the app runs current/${step.startup} from there, through the link ~/${folder}/app/current to the running release. Each release whose package files changed has them installed into that environment just before its switch, so the running release gets them a moment early.`,
       };
     case "remove-cron":
       return {
