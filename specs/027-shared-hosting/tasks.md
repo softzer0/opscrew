@@ -568,6 +568,25 @@ names the change.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates && npx vitest run --root packages/iac-templates src/hosting && pnpm lint`
   - Effort: medium
 
+- [ ] T2737 The app's kept folders outlive each release on a hosting account (research R13)
+  - Owns: `packages/agents/src/hosting/**`, `packages/iac-templates/src/hosting/sftp-workflow.ts`, `packages/iac-templates/src/hosting/sftp-workflow.test.ts`, `packages/iac-templates/src/hosting/__snapshots__/sftp-workflow.test.ts.snap`, `docs/guide/hosting-accounts.md`, `docs/guide/sftp.md`
+  - Reads: research R13; plan 5 (the release's shared paths); `agents/src/hosting/provision-plans.ts` (`sharedPaths`), `iac-templates/src/hosting/agent/script.ts` (`link_shared`), `iac-templates/src/hosting/sftp-workflow.ts`, `plan-schema` (`storage.files`, `storage.sqlite`)
+  - Accept:
+    - On a panel account the agent's shared paths are `.env` (Laravel, Node.js and Python apps, as now), Laravel's `storage`, and the plan's kept folders (`storage.files.dir`, `storage.sqlite.dir`), each once; `link_shared` already moves a folder into `shared/` on the first release and links it in each later one.
+    - On an SFTP host the deploy workflow does the same for those kept folders before the switch: on the first deploy the release's folder (or an empty one) becomes `shared/<dir>` (sftp `rename`), and each release gets `<dir>` as a symbolic link to `shared/<dir>` (sftp `symlink`, relative like the agent's). A rollback's release keeps its link.
+    - Tests for both (a second release sees what the first wrote in the kept folder), and the guide's two pages name the kept folders among what `shared/` holds.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents --filter=@opscrew/iac-templates && npx vitest run --root packages/agents src/hosting && npx vitest run --root packages/iac-templates src/hosting && pnpm lint`
+  - Effort: high
+
+- [ ] T2738 The cPanel pass names AutoSSL's challenge records of its hostnames, and leaves them (research R13)
+  - Owns: `packages/cli/test/live/cpanel-support.ts`, `packages/cli/test/live/cpanel-support.test.ts`, `docs/e2e.md`
+  - Reads: research R10, R11, R13; `cli/test/live/cpanel-support.ts` (the inventory's `zone`, `inventoryProblems`)
+  - Accept:
+    - A TXT record new since the inventory before, named `_acme-challenge.<run hostname>` or `_acme-challenge.www.<run hostname>`, is an observation, not a problem: the pass never edits the founder's zone. The run's end lists such records for removal by hand (cPanel's Zone Editor). A unit test.
+    - docs/e2e.md's cleanup, interrupted-run and "what it leaves" text name them.
+  - Verify: `pnpm turbo run typecheck --filter=opscrew && npx vitest run --root packages/cli test/live/cpanel-support.test.ts && pnpm lint`
+  - Effort: medium
+
 ## Phase 9: Live passes and release (lead)
 
 - [ ] T2722 The cPanel live pass (lead): `docs/e2e-coverage.md` row and results.
