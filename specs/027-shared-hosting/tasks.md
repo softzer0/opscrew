@@ -596,6 +596,15 @@ names the change.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates && npx vitest run --root packages/iac-templates src/hosting/agent && pnpm lint`
   - Effort: medium
 
+- [ ] T2740 cPanel: an empty file reads as empty (research R13)
+  - Owns: `packages/connectors/cpanel/src/**`
+  - Reads: research R13; `connectors/cpanel/src/{panel,fake}.ts` (`readFile`, `get_file_content`)
+  - Accept:
+    - `readFile` answers `""` for a file cPanel gives `content: null` (an empty file); a missing file still answers `undefined`.
+    - `fakeCpanel` answers `content: null` for an empty file, as cPanel does. Tests for both.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-cpanel && pnpm lint`
+  - Effort: medium
+
 ## Phase 9: Live passes and release (lead)
 
 - [ ] T2722 The cPanel live pass (lead): `docs/e2e-coverage.md` row and results.
