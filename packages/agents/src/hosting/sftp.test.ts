@@ -527,7 +527,10 @@ async function project(host: FakeSftpHost) {
       env: [...designed.app.env, { name: "NOTES_API_KEY", secret: true, source: "user" }],
     },
   });
-  const run = async (answer: (request: ApprovalRequest) => boolean = () => true) => {
+  const run = async (
+    answer: (request: ApprovalRequest) => boolean = () => true,
+    options: { planOnly?: boolean } = {},
+  ) => {
     const handler = new ScriptedApprovalHandler(answer);
     const runDeps = await createTestPhaseDeps({
       root,
@@ -538,7 +541,7 @@ async function project(host: FakeSftpHost) {
     });
     const log: string[] = [];
     const github = new LoggedGitHub(log);
-    const outcome = await runProvision(runDeps, { services: { github } }).then(
+    const outcome = await runProvision(runDeps, { services: { github }, ...options }).then(
       (result) => ({ result, error: undefined }),
       (error: unknown) => ({ result: undefined, error }),
     );
@@ -659,6 +662,28 @@ describe("provision on an SFTP-only host", () => {
     expect(again.error).toBeUndefined();
     expect(again.deps.reporter.text()).toContain("The hosting plan has nothing to change");
     expect(kinds(again.handler.requests)).not.toContain("hosting-apply");
+  });
+
+  it("with --plan-only gives the plan's hash to approve, as a panel account's, and changes nothing", async () => {
+    const host = new FakeSftpHost();
+    const p = await project(host);
+    const { deps, handler, error, result } = await p.run(undefined, { planOnly: true });
+    expect(error).toBeUndefined();
+    const plan = SftpPlanSchema.parse(
+      JSON.parse(await readFile(sftpPlanFile(deps.paths, "prod"), "utf8")),
+    );
+    expect(result).toMatchObject({ applied: false, hostingPlanHashes: [sftpPlanHash(plan)] });
+    expect(kinds(handler.requests)).not.toContain("hosting-apply");
+    expect(host.nodes.get("opscrew")).toBeUndefined();
+  });
+
+  it("says plainly that the hosting plan wasn't approved, and changes nothing", async () => {
+    const host = new FakeSftpHost();
+    const p = await project(host);
+    const { error } = await p.run(() => false);
+    expect(String(error)).toContain("The hosting plan was not approved");
+    expect(String(error)).not.toContain("The The");
+    expect(host.nodes.get("opscrew")).toBeUndefined();
   });
 
   it("lists GitHub Actions' key for the host's panel where it doesn't show authorized_keys, then continues", async () => {

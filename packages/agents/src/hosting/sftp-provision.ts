@@ -197,7 +197,14 @@ export async function provisionSftp(
         approvedHash: hash,
       }),
   });
-  if (planOnly) return { applied: false, outputs: {} };
+  // As a panel account's: the plan's hash, so the CLI and the MCP tool name the --approve to run.
+  if (planOnly) {
+    return {
+      applied: false,
+      outputs: {},
+      ...(sftpPlan.steps.length > 0 ? { hostingPlanHashes: [sftpPlanHash(sftpPlan)] } : {}),
+    };
+  }
 
   // 4. The key, in the host's panel; the host is set up either way.
   const approvals = outcome.approval === undefined ? [] : [approvalEntry(outcome.approval)];
@@ -303,7 +310,7 @@ async function sftpPlanStep(
   });
   if (!approval.approved) {
     throw new PlanRefusedError({
-      plan: "The hosting plan",
+      plan: "hosting plan",
       ...(approval.reason ? { reason: approval.reason } : {}),
       unchanged: "Nothing on the SFTP host was changed by it.",
       hint: approveLaterHint(command, hash),
