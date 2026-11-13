@@ -193,6 +193,15 @@ export function hostingRunProblem(run: Pick<DeployRun, "conclusion" | "jobs">, j
 }
 
 /**
+ * A cleanup's destroy that found nothing deployed (the leg stopped before provision recorded
+ * anything) has nothing to remove; any other failure stays one.
+ */
+export function nothingDeployed(error: unknown): undefined {
+  if (/Nothing is deployed for this project/.test(String(error))) return undefined;
+  throw error;
+}
+
+/**
  * What a hosting pass left at GitHub in `app`'s repository: the agent's deploy keys whose title
  * starts with `keyPrefix` (`opscrew-e2e-<tag>-`), then, for prod when `live` (its folder is still
  * there; a destroy took the rest), the environments' leftovers ({@link removeGithubLeftovers}).

@@ -24,6 +24,7 @@ import {
   hostingGithubLeftovers,
   hostingRunProblem,
   type Marker,
+  nothingDeployed,
   PANEL_VARIABLES,
   PHP_MARKER,
   releaseOf,
@@ -453,7 +454,7 @@ describe.skipIf(MISSING.length > 0)(
             await attempt(`opscrew destroy of ${leg.key}`, () =>
               opscrewUntilApproved(leg.app, ["destroy", "--confirm", leg.app.appHost], (...args) =>
                 leg.app.opscrewWithin(CLEANUP_DESTROY_RUN_MS, ...args),
-              ),
+              ).catch(nothingDeployed),
             );
           }
           if (!leg.app.repoReady) continue;

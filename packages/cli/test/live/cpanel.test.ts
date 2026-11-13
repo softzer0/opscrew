@@ -44,6 +44,7 @@ import {
   legNames,
   type Marker,
   namesRun,
+  nothingDeployed,
   otherRunsObjects,
   PANEL_DEPLOY_JOB,
   PHP_MARKER,
@@ -803,7 +804,7 @@ describe.skipIf(MISSING.length > 0)(
               run,
               ["destroy", "--confirm", leg.hostname, "--no-snapshot"],
               (...args) => run.opscrewWithin(CLEANUP_DESTROY_RUN_MS, ...args),
-            ),
+            ).catch(nothingDeployed),
           );
         }
         if (!run.repoReady) return;

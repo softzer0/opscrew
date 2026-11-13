@@ -857,7 +857,12 @@ export async function removeGithubLeftovers(
     const cleared = await input
       .readPlan(environment)
       .then((plan) => clearDeployPause(github, checkEnvironmentKey(plan)))
-      .catch((error: Error) => [`the deploy pause of ${environment}: ${error.message}`]);
+      // No plan.yaml: the run stopped before design, so there is no pause to clear.
+      .catch((error: Error) =>
+        /plan\.yaml does not exist/.test(error.message)
+          ? []
+          : [`the deploy pause of ${environment}: ${error.message}`],
+      );
     problems.push(...cleared);
     const record = await secretsRecord(input.paths(environment));
     if (record === undefined || record.repo.toLowerCase() !== github.name.toLowerCase()) continue;
