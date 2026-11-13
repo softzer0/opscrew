@@ -618,7 +618,7 @@ names the change.
   - Owns: `packages/iac-templates/src/hosting/workflow.ts`, its test and snapshot
   - Accept: the wait step's URL is `https://<hostname><plan.app.healthPath>`.
 
-- [ ] T2743 A certificate counts as OpsCrew's only when it names nothing but the hostname (research R13)
+- [x] T2743 A certificate counts as OpsCrew's only when it names nothing but the hostname (research R13)
   - Owns: `packages/connectors/cpanel/src/**`, `packages/connectors/directadmin/src/**`, `packages/agents/src/hosting/**`
   - Reads: research R13; `contracts/src/hosting.ts` (`HostingCertificate.names`, added by the lead), `agents/src/hosting/{provision,destroy}.ts`, the connectors' `certificate()`
   - Accept:
