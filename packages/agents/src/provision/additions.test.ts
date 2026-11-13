@@ -79,7 +79,7 @@ async function project(
     sharedCloudflare: fakeSharedCloudflare(zone),
     which: (name) => (name === "gixy" && o.gixy !== undefined ? "gixy" : undefined),
   };
-  return { ...created, deps, handler, services, zone, docker };
+  return { ...created, deps, handler, services, zone, docker, runner };
 }
 
 /** Writes the user's additions file into the project. */
@@ -89,6 +89,22 @@ async function write(s: { root: string }, path: string, text: string): Promise<v
 }
 
 const ok = (stdout = ""): CommandResult => ({ exitCode: 0, stdout, stderr: "" });
+/** Docker's answer to `image inspect` for an image this computer does not have yet. */
+const missing = (ref: string): CommandResult => ({
+  exitCode: 1,
+  stdout: "[]",
+  stderr: `Error response from daemon: No such image: ${ref}`,
+});
+/** A proxied-off app whose edge runs OpenLiteSpeed. */
+const openLiteSpeed = (): DeployPlan => {
+  const base = testPlan({ domain: "shop.example.com" });
+  return DeployPlanSchema.parse({
+    ...base,
+    target: { ...base.target, edge: "openlitespeed" },
+    dns: { ...base.dns, proxied: false },
+  });
+};
+const OPENLITESPEED_ADDITIONS = "context /api/ {\n  type proxy\n  handler kamal-proxy\n}\n";
 const refusedBefore = async (s: Awaited<ReturnType<typeof project>>) => {
   const error = (await runProvision(s.deps, { services: s.services }).catch(
     (e: unknown) => e,
@@ -139,16 +155,10 @@ describe.skipIf(!findExecutable("git"))("opscrew provision: the app's own additi
   });
 
   it("on OpenLiteSpeed checks the additions with OpsCrew's rules, then each site file with the edge's own check", async () => {
-    const base = testPlan({ domain: "shop.example.com" });
-    const plan = DeployPlanSchema.parse({
-      ...base,
-      target: { ...base.target, edge: "openlitespeed" },
-      dns: { ...base.dns, proxied: false },
-    });
     const s = await project({
-      plan,
+      plan: openLiteSpeed(),
       docker: (args) =>
-        args[0] === "version"
+        args[0] !== "run"
           ? ok("29.1.3\n")
           : {
               exitCode: 2,
@@ -166,7 +176,7 @@ describe.skipIf(!findExecutable("git"))("opscrew provision: the app's own additi
     expect(ruled.message).toContain("line 3 (upstream)");
     expect(s.docker.filter((args) => args[0] === "run")).toEqual([]);
 
-    await write(s, OPENLITESPEED, "context /api/ {\n  type proxy\n  handler kamal-proxy\n}\n");
+    await write(s, OPENLITESPEED, OPENLITESPEED_ADDITIONS);
     const checked = (await runProvision(s.deps, { services: s.services }).catch(
       (e: unknown) => e,
     )) as OpsCrewError;
@@ -214,6 +224,86 @@ describe.skipIf(!findExecutable("git"))("opscrew provision: the app's own additi
     expect(await s.git(s.root, "show", "--name-only", "HEAD")).toContain(CADDY);
   });
 
+  it("does not download the proxy's image when this computer already has it", async () => {
+    const s = await project({ docker: (args) => ok(args[0] === "version" ? "29.1.3\n" : "") });
+    await write(s, CADDY, "header X-Robots-Tag noindex\n");
+    await runProvision(s.deps, { services: s.services });
+    expect(s.docker).toContainEqual(["image", "inspect", IMAGES.caddy.ref]);
+    expect(s.docker.filter((args) => args[0] === "pull")).toEqual([]);
+    expect(s.deps.reporter.text()).not.toContain("Downloading");
+  });
+
+  it("downloads the proxy's image in a step of its own, with its own limit, then checks", async () => {
+    const ref = IMAGES.openlitespeed.ref;
+    const s = await project({
+      plan: openLiteSpeed(),
+      docker: (args) =>
+        args[0] === "image" ? missing(ref) : ok(args[0] === "version" ? "29.1.3\n" : ""),
+    });
+    await write(s, OPENLITESPEED, OPENLITESPEED_ADDITIONS);
+    await runProvision(s.deps, { services: s.services });
+    const calls = s.runner.calls.filter((c) => c.command === "docker" && c.args[0] !== "version");
+    expect(calls.map((c) => c.args.slice(0, 2))).toEqual([
+      ["image", "inspect"],
+      ["pull", ref],
+      ...calls.slice(2).map(() => ["run", "--rm"]),
+    ]);
+    expect(calls.length).toBeGreaterThan(2);
+    // The download has 30 minutes; the check, once the image is here, 5.
+    expect(calls[1]?.options?.timeoutMs).toBe(30 * 60_000);
+    for (const run of calls.slice(2)) expect(run.options?.timeoutMs).toBe(5 * 60_000);
+    const steps = s.deps.reporter.lines.filter((l) => l.level === "step").map((l) => l.message);
+    const download = steps.indexOf(
+      "Downloading OpenLiteSpeed's image for the check (once; it is about 1.1 GB)",
+    );
+    expect(download).toBeGreaterThanOrEqual(0);
+    expect(steps[download + 1]).toBe("Checking your additions with OpenLiteSpeed (Docker)");
+  });
+
+  it("says when Docker could not download the proxy's image, never that the proxy refused", async () => {
+    const ref = IMAGES.openlitespeed.ref;
+    let pull: CommandResult = {
+      exitCode: 1,
+      stdout: "",
+      stderr:
+        'Error response from daemon: Get "https://registry-1.docker.io/v2/": dial tcp: lookup registry-1.docker.io: no such host',
+    };
+    const s = await project({
+      plan: openLiteSpeed(),
+      docker: (args) =>
+        args[0] === "image"
+          ? missing(ref)
+          : args[0] === "pull"
+            ? pull
+            : ok(args[0] === "version" ? "29.1.3\n" : ""),
+    });
+    await write(s, OPENLITESPEED, OPENLITESPEED_ADDITIONS);
+    const failed = await refusedBefore(s);
+    expect(failed.code).toBe("COMMAND_FAILED");
+    expect(failed.message).toBe(
+      `Docker couldn't download OpenLiteSpeed's image (${ref}) to check your additions in ${OPENLITESPEED}:\n${pull.stderr}\nNothing was changed.`,
+    );
+    expect(failed.hint).toBe(
+      "Check this computer's connection to the internet, then run the command again.",
+    );
+    expect(s.docker.filter((args) => args[0] === "run")).toEqual([]);
+
+    // A download cut off at its limit says so, with Docker's last lines.
+    pull = {
+      exitCode: 1,
+      stdout: ["a1: Pulling fs layer", "b2: Pulling fs layer", "a1: Download complete"].join("\n"),
+      stderr: "",
+      timedOut: true,
+    };
+    const timedOut = await refusedBefore(s);
+    expect(timedOut.code).toBe("COMMAND_FAILED");
+    expect(timedOut.message).toBe(
+      `Docker couldn't download OpenLiteSpeed's image (${ref}) to check your additions in ${OPENLITESPEED} (the download did not finish in 30 minutes):\n${pull.stdout}\nNothing was changed.`,
+    );
+    expect(timedOut.message).not.toContain("refused");
+    expect(s.docker.filter((args) => args[0] === "run")).toEqual([]);
+  });
+
   it("on nginx checks each of the app's site files with nginx -t, and stops on its refusal", async () => {
     const nginx = (plan: DeployPlan) =>
       DeployPlanSchema.parse({ ...plan, target: { ...plan.target, edge: "nginx" } });
@@ -221,7 +311,7 @@ describe.skipIf(!findExecutable("git"))("opscrew provision: the app's own additi
     const s = await project({
       plan: nginx({ ...base, dns: { ...base.dns, proxied: false } }),
       docker: (args) =>
-        args[0] === "version"
+        args[0] !== "run"
           ? ok("29.1.3\n")
           : {
               exitCode: 1,

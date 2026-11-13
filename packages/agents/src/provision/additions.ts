@@ -7,6 +7,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { CommandResult } from "@opscrew/contracts";
 import {
   findExecutable,
   generateP256,
@@ -37,8 +38,43 @@ import type { PhaseDeps } from "../context";
 import { planFile } from "../runners/words";
 import type { ProvisionServices } from "./types";
 
-/** How long the proxy's checker may take, pulling its pinned image included. */
+/** How long the proxy's checker may take, once its pinned image is on this computer. */
 const CHECK_TIMEOUT_MS = 5 * 60_000;
+/** How long downloading the proxy's pinned image may take (OpenLiteSpeed's is about 1.1 GB). */
+const PULL_TIMEOUT_MS = 30 * 60_000;
+
+/** The last lines of a command's answer, its errors last. */
+function lastLines(result: CommandResult): string {
+  return `${result.stdout}\n${result.stderr}`.trim().split("\n").slice(-8).join("\n");
+}
+
+/**
+ * Downloads the proxy's pinned image for its check, in a step of its own with its own limit, unless
+ * this computer has it already, so a slow download is never taken for the proxy's refusal.
+ * Throws `COMMAND_FAILED` with Docker's last lines when the download fails or runs out of time.
+ */
+async function downloadCheckImage(
+  deps: Pick<PhaseDeps, "runner" | "redactor" | "reporter">,
+  proxy: EdgeProxy,
+  path: string,
+): Promise<void> {
+  const { label } = EDGE_PROXIES[proxy];
+  const { ref } = IMAGES[proxy];
+  const there = await deps.runner.run("docker", ["image", "inspect", ref], { timeoutMs: 30_000 });
+  if (there.exitCode === 0 && !there.timedOut) return;
+  deps.reporter.step(
+    `Downloading ${label}'s image for the check (once${proxy === "openlitespeed" ? "; it is about 1.1 GB" : ""})`,
+  );
+  const result = await deps.runner.run("docker", ["pull", ref], { timeoutMs: PULL_TIMEOUT_MS });
+  if (result.exitCode === 0 && !result.timedOut) return;
+  throw new OpsCrewError(
+    "COMMAND_FAILED",
+    deps.redactor.redact(
+      `Docker couldn't download ${label}'s image (${ref}) to check your additions in ${path}${result.timedOut ? " (the download did not finish in 30 minutes)" : ""}:\n${lastLines(result)}\nNothing was changed.`,
+    ),
+    { hint: "Check this computer's connection to the internet, then run the command again." },
+  );
+}
 
 /**
  * The files of the edge's proxy that its Compose file holds (`configs.<name>.content`), by where the
@@ -165,11 +201,10 @@ async function runProxyChecker(
         { timeoutMs: CHECK_TIMEOUT_MS },
       );
       if (result.exitCode === 0 && !result.timedOut) continue;
-      const output = `${result.stdout}\n${result.stderr}`.trim().split("\n").slice(-8).join("\n");
       throw new OpsCrewError(
         "PHASE_PRECONDITION",
         deps.redactor.redact(
-          `${label} refused this app's site with your additions in ${additions.path}${result.timedOut ? " (its check did not finish in time)" : ""}:\n${output}\nNothing was changed.`,
+          `${label} refused this app's site with your additions in ${additions.path}${result.timedOut ? " (its check did not finish in time)" : ""}:\n${lastLines(result)}\nNothing was changed.`,
         ),
         { hint: `Fix ${additions.path} for the reason above, then run the command again.` },
       );
@@ -256,6 +291,7 @@ export async function checkAdditions(
   }
   const { label } = EDGE_PROXIES[proxy];
   if ((await localDockerProblem(localDocker(deps.runner))) === undefined) {
+    await downloadCheckImage(deps, proxy, path);
     deps.reporter.step(`Checking your additions with ${label} (Docker)`);
     await runProxyChecker(deps, plan, ctx, { path, text });
   } else {
