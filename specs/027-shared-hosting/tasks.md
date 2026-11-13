@@ -660,6 +660,15 @@ names the change.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates --filter=@opscrew/agents && npx vitest run --root packages/iac-templates src/hosting/agent && npx vitest run --root packages/agents src/hosting && pnpm lint`
   - Effort: high
 
+- [ ] T2747 The agent forces HTTPS right after a deploy when the certificate already verifies (research R13)
+  - Owns: `packages/iac-templates/src/hosting/agent/**`, `packages/iac-templates/src/hosting/agent-runs.test.ts`
+  - Reads: `iac-templates/src/hosting/agent/script.ts` (`main`, `https_check`)
+  - Accept:
+    - After `new_release` the agent runs `https_check` again (it returns at once once HTTPS is forced), so a first release whose certificate verifies by the end of its deploy gets the redirect in the same run, not a run later (the cPanel pass, run 28: HTTPS was forced at the next run, 50 s after the deploy, after verify).
+    - A Linux test: the certificate starts verifying during the deploy; after that one run `state/https` exists and the running release's `.htaccess` redirects.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates && npx vitest run --root packages/iac-templates src/hosting/agent && pnpm lint`
+  - Effort: medium
+
 ## Phase 9: Live passes and release (lead)
 
 - [ ] T2722 The cPanel live pass (lead): `docs/e2e-coverage.md` row and results.
