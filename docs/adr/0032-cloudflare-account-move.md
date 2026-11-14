@@ -1,6 +1,6 @@
 # ADR 0032: Moving an app to another Cloudflare account: shadow states, marks in the new zone
 
-**Status**: Proposed (DRAFT, 2026-11-14, feature 028). The founder asked for the move and set its
+**Status**: Accepted (2026-11-14, feature 028). The founder asked for the move and set its
 scope on 2026-11-14: it ships as 0.2.9; a zone serving several apps moves with all of them; R2
 buckets are copied; a site on Cloudflare's hosting runs in the new account before the switch;
 deploys through Cloudflare Access keep working during the move; the live pass is the real move of

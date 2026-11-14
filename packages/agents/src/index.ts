@@ -4,6 +4,7 @@ export * from "./advise";
 export * from "./analyze";
 export * from "./apps";
 export * from "./check";
+export * from "./cloudflare-move";
 export * from "./context";
 export * from "./design";
 export * from "./destroy";

@@ -15,6 +15,7 @@ export const PHASES = [
   "secure",
   "verify",
   "retarget",
+  "cloudflare-move",
   "portainer",
 ] as const;
 export type PhaseName = (typeof PHASES)[number];
