@@ -230,6 +230,18 @@ describe("a second app", () => {
     expect(codes(plan)).toEqual(["tunnel-project-taken"]);
     expect(plan.findings[0]?.message).toContain('the OpsCrew app "shop-tunnel" on this server');
   });
+
+  it("refuses a tunnel connector whose beside connector's project is another app's name", async () => {
+    const fake = new FakeHost();
+    const other = { app: "shop-tunnel-next", projectId: "stn-1", hostnames: ["stn.example.com"] };
+    await provision(fake, tunnelDesired(fake, other), { secrets: { tunnelToken: tunnelToken() } });
+    deployApp(fake, "shop-tunnel-next", "tunnel");
+    const plan = await planFor(fake, tunnelDesired(fake));
+    expect(codes(plan)).toEqual(["tunnel-project-taken"]);
+    expect(plan.findings[0]?.message).toContain(
+      'the OpsCrew app "shop-tunnel-next" on this server',
+    );
+  });
 });
 
 describe("an app without a domain answers every name on port 80", () => {

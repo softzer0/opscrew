@@ -1742,10 +1742,15 @@ function conflicts(
 ): string | undefined {
   const before = found.length;
   if (desired.app === EDGE_PROJECT) found.push(findings.reservedAppName(desired.app));
-  // The app's tunnel connector would run as another app's Compose project and take it over.
-  const project = tunnelProject(desired.app);
-  if (desired.tunnel !== undefined && readableRecords(facts.apps).some((r) => r.app === project)) {
-    found.push(findings.tunnelProjectTaken(project));
+  // The app's tunnel connector, or the one beside it during a move to another Cloudflare account
+  // (`planNextTunnelConnector`), would run as another app's Compose project and take it over.
+  if (desired.tunnel !== undefined) {
+    const project = tunnelProject(desired.app);
+    for (const taken of [project, `${project}-next`]) {
+      if (readableRecords(facts.apps).some((r) => r.app === taken)) {
+        found.push(findings.tunnelProjectTaken(taken));
+      }
+    }
   }
   const claim = { ...desired, access: accessMode(desired) };
   found.push(...claimFindings(facts.apps, facts.record?.apps ?? [], claim, findings));
@@ -2964,14 +2969,17 @@ export function planTunnelToken(options: {
  * its current one, as the Compose project `<app>-tunnel-next` in `nextTunnelDir` as root (as the
  * login in `connector.dir`, whose name ends in `-next`). Its token is supplied at apply (`tunnelToken`, on
  * standard input, never part of this plan) and written to a file only its owner reads. Up to date,
- * the step is skipped. Apply it with `applyHostPlan` like any host plan.
+ * the step is skipped. `facts`: the server as `inspectHost` read it; refused when another OpsCrew
+ * app there is named `<app>-tunnel-next`. Apply it with `applyHostPlan` like any host plan.
  */
 export function planNextTunnelConnector(options: {
+  facts: HostFacts;
   app: string;
   runAs: RunAs;
   connector: { dir?: string; compose: string; tunnelId: string };
 }): HostPlan {
   const { app, runAs, connector } = options;
+  nextProjectFree(options.facts, app);
   const dir = connector.dir ?? nextTunnelDir(app);
   const step = tunnelConnectorStep(app, runAs, { ...connector, dir, needsToken: true }, "");
   return nextConnectorPlan(app, {
@@ -2984,14 +2992,17 @@ export function planNextTunnelConnector(options: {
 
 /**
  * A one-step host plan that stops and removes the connector `planNextTunnelConnector` runs and its
- * folder; the app's current connector stays. Apply it with `applyHostPlan` like any host plan.
+ * folder; the app's current connector stays. `facts` and the refusal as there. Apply it with
+ * `applyHostPlan` like any host plan.
  */
 export function planNextTunnelConnectorRemoval(options: {
+  facts: HostFacts;
   app: string;
   runAs: RunAs;
   dir?: string;
 }): HostPlan {
   const { app, runAs } = options;
+  nextProjectFree(options.facts, app);
   const dir = options.dir ?? nextTunnelDir(app);
   return nextConnectorPlan(app, {
     id: "tunnel-connector",
@@ -3001,6 +3012,20 @@ export function planNextTunnelConnectorRemoval(options: {
     reason: `Its Compose project ${tunnelProject(app)}-next and ${dir}; the current connector stays.`,
     params: { remove: true, next: true, app, dir, runAs },
   });
+}
+
+/** Refuses when the beside connector's Compose project is another OpsCrew app's name. */
+function nextProjectFree(facts: HostFacts, app: string): void {
+  const project = `${tunnelProject(app)}-next`;
+  if (readableRecords(parseFacts(facts).apps).some((record) => record.app === project)) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `The new Cloudflare account's tunnel connector of "${app}" runs as the Compose project "${project}" beside the current one, and the OpsCrew app "${project}" on this server already has that name. Nothing was changed.`,
+      {
+        hint: `Give "${project}" another name (opscrew interview and opscrew provision in its project), or move it to another server, then run the command again.`,
+      },
+    );
+  }
 }
 
 function nextConnectorPlan(app: string, step: HostStep): HostPlan {

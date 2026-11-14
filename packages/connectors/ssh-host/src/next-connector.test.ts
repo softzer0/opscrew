@@ -1,5 +1,6 @@
+import { OpsCrewError } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
-import { FakeHost } from "./__fixtures__/fake-host";
+import { deployApp, FakeHost } from "./__fixtures__/fake-host";
 import {
   applyApproved,
   provision,
@@ -9,6 +10,7 @@ import {
   tunnelToken,
 } from "./__fixtures__/helpers";
 import { hostPlanHash } from "./hash";
+import { inspectHost } from "./inspect";
 import { planNextTunnelConnector, planNextTunnelConnectorRemoval } from "./plan";
 import { stepScripts } from "./steps";
 import type { HostPlan } from "./types";
@@ -16,6 +18,19 @@ import type { HostPlan } from "./types";
 const NEXT_ID = "7a2e1d3f-2222-4b6c-8d4e-123456789abc";
 const MAIN_DIR = "/srv/opscrew/cloudflared/shop";
 const NEXT_DIR = "/srv/opscrew/cloudflared-next/shop";
+
+/** A server with no OpsCrew app on it. */
+const BLANK = await inspectHost(new FakeHost());
+
+function thrown(make: () => unknown): OpsCrewError {
+  try {
+    make();
+  } catch (error) {
+    if (error instanceof OpsCrewError) return error;
+    throw error;
+  }
+  throw new Error("expected a refusal");
+}
 
 function scriptsOf(plan: HostPlan) {
   return plan.steps.map((step) => stepScripts(plan, step));
@@ -28,6 +43,7 @@ describe("planNextTunnelConnector", () => {
     const mainEnv = fake.files.get(`${MAIN_DIR}/tunnel.env`);
 
     const plan = planNextTunnelConnector({
+      facts: await inspectHost(fake),
       app: "shop",
       runAs: "root",
       connector: { compose: TUNNEL_COMPOSE, tunnelId: NEXT_ID },
@@ -64,6 +80,7 @@ describe("planNextTunnelConnector", () => {
     expect(hostPlanHash(plan)).toBe(
       hostPlanHash(
         planNextTunnelConnector({
+          facts: BLANK,
           app: "shop",
           runAs: "root",
           connector: { compose: TUNNEL_COMPOSE, tunnelId: NEXT_ID },
@@ -79,6 +96,7 @@ describe("planNextTunnelConnector", () => {
   it("runs as the login in the given folder on a server OpsCrew created", async () => {
     const fake = new FakeHost({ login: "deploy", sudo: "none" });
     const plan = planNextTunnelConnector({
+      facts: BLANK,
       app: "shop",
       runAs: "login",
       connector: {
@@ -98,6 +116,7 @@ describe("planNextTunnelConnector", () => {
   it("is refused before any approval in the main connector's folder", () => {
     expect(() =>
       planNextTunnelConnector({
+        facts: BLANK,
         app: "shop",
         runAs: "root",
         connector: { dir: MAIN_DIR, compose: TUNNEL_COMPOSE, tunnelId: NEXT_ID },
@@ -105,6 +124,7 @@ describe("planNextTunnelConnector", () => {
     ).toThrow(/dir/);
     expect(() =>
       planNextTunnelConnector({
+        facts: BLANK,
         app: "shop",
         runAs: "login",
         connector: {
@@ -118,11 +138,13 @@ describe("planNextTunnelConnector", () => {
 
   it("has scripts that match their snapshot", () => {
     const root = planNextTunnelConnector({
+      facts: BLANK,
       app: "shop",
       runAs: "root",
       connector: { compose: TUNNEL_COMPOSE, tunnelId: NEXT_ID },
     });
     const login = planNextTunnelConnector({
+      facts: BLANK,
       app: "shop",
       runAs: "login",
       connector: {
@@ -142,6 +164,7 @@ describe("planNextTunnelConnectorRemoval", () => {
     await applyApproved(
       fake,
       planNextTunnelConnector({
+        facts: await inspectHost(fake),
         app: "shop",
         runAs: "root",
         connector: { compose: TUNNEL_COMPOSE, tunnelId: NEXT_ID },
@@ -149,11 +172,17 @@ describe("planNextTunnelConnectorRemoval", () => {
       { secrets: { tunnelToken: `${tunnelToken()}NEXT` } },
     );
 
-    const plan = planNextTunnelConnectorRemoval({ app: "shop", runAs: "root" });
+    const plan = planNextTunnelConnectorRemoval({
+      facts: await inspectHost(fake),
+      app: "shop",
+      runAs: "root",
+    });
     expect(plan.steps.map((step) => [step.id, step.state])).toEqual([
       ["tunnel-connector", "change"],
     ]);
     expect(plan.steps[0]?.params).toMatchObject({ remove: true, dir: NEXT_DIR, next: true });
+    // Its own parent folder, which goes once empty; never the main connectors' parent.
+    expect(scriptsOf(plan)[0]?.apply).toContain("PARENT='/srv/opscrew/cloudflared-next'\n");
     const result = await applyApproved(fake, plan);
     expect(result.applied).toEqual(["tunnel-connector"]);
     expect([...fake.files.keys()].some((path) => path.startsWith(`${NEXT_DIR}/`))).toBe(false);
@@ -165,11 +194,12 @@ describe("planNextTunnelConnectorRemoval", () => {
 
   it("is refused before any approval in the main connector's folder", () => {
     expect(() =>
-      planNextTunnelConnectorRemoval({ app: "shop", runAs: "root", dir: MAIN_DIR }),
+      planNextTunnelConnectorRemoval({ facts: BLANK, app: "shop", runAs: "root", dir: MAIN_DIR }),
     ).toThrow(/dir/);
     // Nor the main folder of another app named "shop-next".
     expect(() =>
       planNextTunnelConnectorRemoval({
+        facts: BLANK,
         app: "shop",
         runAs: "root",
         dir: "/srv/opscrew/cloudflared/shop-next",
@@ -177,6 +207,7 @@ describe("planNextTunnelConnectorRemoval", () => {
     ).toThrow(/dir/);
     expect(() =>
       planNextTunnelConnectorRemoval({
+        facts: BLANK,
         app: "shop",
         runAs: "login",
         dir: "/home/deploy/opscrew/cloudflared",
@@ -185,12 +216,41 @@ describe("planNextTunnelConnectorRemoval", () => {
   });
 
   it("has scripts that match their snapshot", () => {
-    const root = planNextTunnelConnectorRemoval({ app: "shop", runAs: "root" });
+    const root = planNextTunnelConnectorRemoval({ facts: BLANK, app: "shop", runAs: "root" });
     const login = planNextTunnelConnectorRemoval({
+      facts: BLANK,
       app: "shop",
       runAs: "login",
       dir: "/home/deploy/opscrew/cloudflared-next",
     });
     expect({ root: scriptsOf(root), login: scriptsOf(login) }).toMatchSnapshot();
+  });
+});
+
+describe("the beside connector's Compose project", () => {
+  it("is refused before any change when another app on the server has its name", async () => {
+    const fake = new FakeHost();
+    const other = { app: "shop-tunnel-next", projectId: "stn-1", hostnames: ["stn.example.com"] };
+    await provision(fake, tunnelDesired(fake, other), { secrets: { tunnelToken: tunnelToken() } });
+    deployApp(fake, "shop-tunnel-next", "tunnel");
+    const facts = await inspectHost(fake);
+    const plans = [
+      () =>
+        planNextTunnelConnector({
+          facts,
+          app: "shop",
+          runAs: "root",
+          connector: { compose: TUNNEL_COMPOSE, tunnelId: NEXT_ID },
+        }),
+      () => planNextTunnelConnectorRemoval({ facts, app: "shop", runAs: "root" }),
+    ];
+    for (const plan of plans) {
+      fake.calls.length = 0;
+      const error = thrown(plan);
+      expect(error.message).toContain('the OpsCrew app "shop-tunnel-next" on this server');
+      expect(error.message).toMatch(/Nothing was changed\.$/);
+      expect(error.hint).toContain("another name");
+      expect(fake.calls).toEqual([]);
+    }
   });
 });
