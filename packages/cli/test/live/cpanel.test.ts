@@ -198,6 +198,18 @@ describe.skipIf(MISSING.length > 0)(
           const shown = await run.opscrew(command);
           log(`opscrew ${command} after the failed deploy:\n${run.scrub(shown.output)}`);
         }
+        // What the deploy job's wait saw: the health path's answers from here, as GitHub asks it.
+        if (current !== undefined) {
+          const url = `https://${current.hostname}${(await run.readPlan()).app.healthPath}`;
+          for (let ask = 1; ask <= 3; ask++) {
+            const answer = await request(url).catch((error: unknown) => String(error));
+            log(
+              typeof answer === "string"
+                ? `the health path, ask ${ask}: ${run.scrub(answer)}`
+                : `the health path, ask ${ask}: ${answer.status}, release ${releaseOf(answer) ?? "none"}, Server ${String(answer.headers.server ?? "none")}, body ${run.scrub(answer.body.slice(0, 120))}`,
+            );
+          }
+        }
         const kept =
           folder === undefined ? [] : ((await cpanel().panel.list(`${folder}/state`)) ?? []);
         for (const name of kept.filter((file) => file.endsWith(".stderr.log"))) {
