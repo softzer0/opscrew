@@ -739,6 +739,36 @@ The founder added these to 0.2.8.
   - Owns: `docs/guide/hetzner.md`, `docs/guide/digitalocean.md`, `docs/guide/index.md`, `README.md`
   - Accept: each page as Contabo's: when to choose it, the token, regions and server types, hourly billing, the provider's backups (prod by default), what OpsCrew makes, removing the app; the README's provider lines shrink to links, as for Contabo.
 
+## Phase 8e: Off-server copies to storage you already have (founder, 2026-11-14)
+
+The founder asked for more places for the snapshots' encrypted copies, in 0.2.8: a machine of the user's own, and the S3-compatible stores (Wasabi, Backblaze B2, MinIO, AWS S3, Contabo). OpsCrew's copy already runs through rclone, which reaches all of them. Native Google Cloud Storage and Azure Blob come with those providers' features; OpenStack Swift waits for a user; FTP is left out (it sends the login in clear).
+
+- [ ] T2756 The snapshots' off-server copy to an S3-compatible bucket or an SFTP machine the user already has
+  - Owns: the code that handles `snapshots.offsite` wherever it is today: `packages/plan-schema/src/plan.ts` (`snapshots.offsite`, `snapshotOffsiteOf`) and its JSON schema; `packages/iac-templates/src/{offsite.ts,workflow/snapshot-script.ts,infra/storage.ts,portainer-target/**,runbook/**}`; `packages/agents/src/{snapshot,provision,design,destroy,status,retarget,rotate,init,advise,hosting}/**` (their offsite lines); `packages/cli/src/commands/{snapshot,provision,restore}.ts`; `packages/mcp-server/src/tools/{snapshots,deploy}.ts`; `docs/guide/snapshots.md`; `plugin/skills/opscrew-snapshots/SKILL.md`; the colocated tests and fixtures
+  - Reads: `docs/guide/snapshots.md` ("An encrypted copy off the server"); 024's `plan.md` 7 and its decisions on the copy (D10, D16); `packages/connectors/sftp` and `agents/src/hosting/sftp.ts` (how 027 confirms an SFTP host's key)
+  - Decided by the lead:
+    - `snapshots.offsite.provider` gains `s3` and `sftp`, as a union on `provider`:
+      - `s3`: `endpoint` (an https URL), `bucket`, `region` (optional; absent means `us-east-1`), `days`. rclone's S3 with provider `Other`.
+      - `sftp`: `host`, `port` (absent: 22), `user`, `path` (an absolute folder), `hostKey` (the host's public key, confirmed by its SHA-256 fingerprint when it is turned on), `days`. rclone's `sftp` with `key_file` and `known_hosts_file`.
+    - OpsCrew never creates, empties or deletes the user's bucket or folder. The server deletes the copies older than `days` after each upload, as on Spaces. `destroy --delete-data` leaves them there and says where.
+    - The login:
+      - `s3` reads the existing `OPSCREW_OFFSITE_ACCESS_KEY_ID` / `OPSCREW_OFFSITE_SECRET_ACCESS_KEY` (or the terminal's prompt), as now.
+      - `sftp` reads `OPSCREW_OFFSITE_SFTP_KEY`, the path of a private key file on this computer. Its public half is in the remote account's `authorized_keys`, which the user does; OpsCrew never logs in there to change anything. The guide says to use an account of its own, limited to that folder.
+      - The key or secret reaches the server in the deploy user's 0600 file, as the S3 key does today, and never goes to GitHub, logs or the plan.
+    - Provision plans no bucket for them; nothing is priced. Design says the copies go to the user's own storage, which its provider bills.
+    - The copy works wherever the copy to R2, Hetzner and Spaces works today (servers OpsCrew creates, the user's own servers, their Portainer), with the same encryption on the machine that holds the data. A target that refuses the copy today still refuses it.
+  - Accept:
+    - `opscrew snapshot offsite on` and the MCP tool:
+      - `--to s3 --endpoint <url> --bucket <name> [--region <r>] [--days <n>]`;
+      - `--to sftp --host <h> [--port <p>] --user <u> --path <folder> [--days <n>]`. It reads the host's key, prints its fingerprint for the user to confirm in a terminal, or takes it with `--host-key SHA256:…` in a script, and writes `hostKey` to the plan.
+      - Plain errors for a missing flag, an http endpoint or a relative path.
+    - Provision places the login on the server and checks, before it ends, that the server's rclone can write and delete a test file there. A refusal names what to fix.
+    - Each upload, the retention, `snapshot list`, the restore from the copy on this computer (`opscrew restore <id> --from offsite`), `status` and drift work for both. A restore over SFTP pins the host key.
+    - Tests for the schema, the CLI's flags, the rendered rclone settings for both (no secret in them), the retention line, provision's write check, restore, and destroy leaving the copies.
+    - The guide's table gets the two rows, the steps for an SFTP account of its own with its key, and the limit that the login can delete.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/plan-schema --filter=@opscrew/iac-templates --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server && npx vitest run --root packages/plan-schema && npx vitest run --root packages/iac-templates src/workflow src/offsite src/infra src/portainer-target && npx vitest run --root packages/agents src/snapshot src/provision src/design src/destroy src/status && pnpm lint`
+  - Effort: xhigh
+
 ## Phase 9: Live passes and release (lead)
 
 - [x] T2722 The cPanel live pass (lead): `docs/e2e-coverage.md` row and results.
