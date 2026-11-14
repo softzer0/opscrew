@@ -73,6 +73,21 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
     - Everything the spike made is removed, and both accounts are listed afterwards.
   - Effort: lead
 
+## Phase 1b: Build arguments from the plan (founder, 2026-11-14; independent of the move)
+
+Asked for through the control plane's session: a non-secret build setting whatever its name (for example a list of plugins pinned to commits) reaches a Dockerfile build, as the browser-prefixed variables do. It can ship before the move.
+
+- [ ] T2831 A plan variable marked as a build argument
+  - Owns: `packages/plan-schema/src/plan.ts` (the app's `env` entry) and `packages/plan-schema/schemas/**`; `packages/iac-templates/src/{workflow/build.ts,docker/**,portainer-target/stack.ts}`; `packages/agents/src/{shared/app-env.ts,localhost/apply.ts,design/builder.ts}`; `docs/guide/builders.md`; the colocated tests and snapshots
+  - Reads: `docs/guide/builders.md` (the browser prefixes, secret mounts); `CLIENT_ENV_PREFIXES` and `isClientExposedEnvName` in `iac-templates/src/docker/stacks.ts`
+  - Decided by the lead:
+    - The mark is `buildArg: true` on an entry of `app.env` in `opscrew/plan.yaml` (`- name: PLUGINS`, `secret: false`, `source: user`, `buildArg: true`). `buildArg: true` with `secret: true` is refused by the schema, in plain words: a secret reaches the build only as a secret mount.
+    - A marked variable goes to a Dockerfile build with `--build-arg` everywhere a browser-prefixed one does (the deploy workflow's build, Portainer's and this computer's builds), from the same values, and the provenance record lists it as it lists them. Unmarked variables behave exactly as today.
+    - Buildpacks and Railpack builds: as the browser-prefixed variables reach them today, or not at all if they reach them not; the guide says which.
+  - Accept: the schema field and its refusal; every build path passes marked variables as build arguments; tests for each path and the refusal; `docs/guide/builders.md` describes `buildArg: true` next to the browser prefixes, with a neutral example (a list of plugins pinned to commits).
+  - Verify: `pnpm --filter @opscrew/plan-schema gen:schemas && pnpm turbo run typecheck --filter=@opscrew/plan-schema --filter=@opscrew/iac-templates --filter=@opscrew/agents && npx vitest run --root packages/plan-schema && npx vitest run --root packages/iac-templates src/workflow src/docker src/portainer-target && npx vitest run --root packages/agents src/shared src/localhost src/design && pnpm lint`
+  - Effort: high
+
 ## Phase 2: Wave 1 (parallel)
 
 - [x] T2803 [P] [US1] The move's record in the plan
@@ -187,7 +202,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Verify: `PATH="$PWD/.tools/bin:$PATH" pnpm turbo run typecheck --filter=@opscrew/iac-templates && npx vitest run --root packages/iac-templates src/infra/cloudflare-move src/runtime src/portainer-target src/hosting && pnpm lint`
   - Effort: high
 
-- [ ] T2808 [P] [US1] [US4] Templates: the workflows' `_NEW` paths and the Workers root's `custom_domains`
+- [x] T2808 [P] [US1] [US4] Templates: the workflows' `_NEW` paths and the Workers root's `custom_domains`
   - Owns: `packages/iac-templates/src/workflow/{index,portainer,cloudflare-workers}.ts` (the parts below), `packages/iac-templates/src/infra/serverless.ts`, the snapshots and tests those change
   - Reads: plan 4.1, 10.; data-model 6; `workflow/index.ts` (the tunnel's `ProxyCommand`, `TUNNEL_DEPLOY_SECRETS`), `workflow/portainer.ts` (`WEBHOOK_CALL`, `PORTAINER_DEPLOY_SECRETS`), `workflow/cloudflare-workers.ts` (`CLOUDFLARE_DEPLOY_SECRETS`), `infra/serverless.ts` (`workerHost`)
   - Depends: T2801
@@ -315,6 +330,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
 
 - [ ] T2813 [P] [US1] [US3] [US4] Shadow states
   - Owns: `packages/agents/src/cloudflare-move/shadow*.ts`
+  - Lead note (after T2810): `checkMoveStart` (T2810) already refuses when a covered environment's infrastructure state is not on this computer; shadow states can rely on it.
   - Lead note (after T2807): `accountVariables(tfvars, ctx)` takes the root's parsed `terraform.tfvars.json` and `{ cloudflare: { zoneId, accountId, oneTimePinIdentityProviderId } }` from B's setup.
   - Reads: plan 3.; data-model 3; research R10; `shared/engine.ts`, `provision/plan-apply.ts`, `retarget/plans.ts` (`planBounded`, saved-plan approvals), `provision/storage.ts`, `destroy/deletion.ts`
   - Depends: T2802, T2807, T2808, T2810, T2811, T2812
@@ -410,6 +426,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
 
 - [ ] T2817 [P] [US1] [US2] The zone plan: B's zone, the copy, the marks, coverage
   - Owns: `packages/agents/src/cloudflare-move/{zone,marks}*.ts`
+  - Lead note (after T2810): coverage also needs the hostnames only OpsCrew's shared rules name; the lead exports a parser of those rules' hostnames from `@opscrew/connector-cloudflare` before this task starts. `listZoneWorkerDomains` needs Workers permission on A's token: probe first and, without it, say the custom domains were not read rather than skip them silently.
   - Lead note (after T2807): `opscrewRecordNames(plan, zone)` leaves out GitHub's verification TXT record (`_github-pages-challenge-<owner>.<domain>`); coverage counts a `_github-pages-challenge-*` TXT record as the Pages app's by that prefix.
   - Reads: plan 4.3, 4.5, 5.1, 5.2, 7.8; data-model 4, 5; `provision/shared-cloudflare.ts` (how a `cloudflare-apply` plan is shown and approved); T2804's and T2809's blocks
   - Depends: T2804, T2805, T2807, T2809, T2810
@@ -607,6 +624,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   with the checklist of plan 15.; `docs/e2e-coverage.md`'s row and results (the gap's figures,
   SC-2801 to SC-2807); then `.env.e2e`'s tokens for the zone become B's.
 - [ ] T2828 Simplify across the feature's code (lead): read-only reviews per area, then one
+  - From T2810: export `deploysInPlace` from `@opscrew/iac-templates` (the summary repeats it inline); let the two-account fake answer `GET /ips` so tests drop their fetch wrapper.
   - From T2812's review: the guard's hints name no `--app <key>`/`--env` (as retarget's); pass the command's flags to `requireNoCloudflareMove`.
   - From T2807's review: `runtime/tunnel-next.ts` and `portainer-target/next-connector.ts` copy the main connector's renderers; give those a "next" variant (name suffix and folder) and drop the copies.
   implementer per area so no two edit the same file; known so far: the move's and retarget's
