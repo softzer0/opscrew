@@ -22,7 +22,7 @@ import { deploymentRenderContext } from "../provision/render";
 import { orderedStorageFile, STORAGE_KEY_VARS, storageStateFile } from "../provision/storage";
 import type { ProvisionServices } from "../provision/types";
 import { ensureDeployKey, ensureStatePassphrase, writeRenderedFiles } from "../shared";
-import { syncProviderBackups } from "../shared/provider-backups";
+import { markWantedBackups, syncProviderBackups } from "../shared/provider-backups";
 import {
   CF_V4,
   CF_V6,
@@ -476,7 +476,7 @@ describe.skipIf(!findExecutable("git"))("runDrift", () => {
     expect((await runDrift(deps, { services })).drift).toEqual([record]);
   });
 
-  it("compares Contabo's automated backups the plan has on with OpsCrew's record only, and says so", async () => {
+  it("notes what OpsCrew's record says of Contabo's automated backups, never as drift provision undoes", async () => {
     const engine = new DriftEngine({});
     const backup = (on: boolean) => ({
       provider: "contabo",
@@ -492,42 +492,44 @@ describe.skipIf(!findExecutable("git"))("runDrift", () => {
       engine,
       services: { firewalls: { contabo: new FakeFirewalls() } },
     });
-    const note =
-      "Contabo's automated backups are compared with OpsCrew's record of turning them on, not with Contabo: its API doesn't say which add-on they are.";
-    const address = "module.server.terraform_data.backup";
+    const basis =
+      "Contabo's automated backups are compared with OpsCrew's record of ordering them, not with Contabo: its API doesn't say which add-on they are.";
     const report = await runDrift(deps, { services });
-    expect(report.drift).toEqual([
-      {
-        address,
-        type: "terraform_data",
-        name: "backup",
-        provider: "terraform.io/builtin/terraform",
-        action: "update",
-        attributes: [],
-        differences: [
-          "The plan has Contabo's automated backups of server 202611001 on, and OpsCrew has no record of turning them on.",
-        ],
-      },
-    ]);
-    expect(report.notes).toContain(note);
-    expect(renderDriftReport(report)).toContain(`Note: ${note}`);
-
-    // Recorded as turned on: as the plan wants it.
-    await syncProviderBackups(
-      {
-        deps,
-        phase: "provision",
-        command: "opscrew provision",
-        backups: { contabo: new FakeProviderBackups() },
-      },
-      { wanted_backups: { server: backup(true) } },
+    expect(report.drift).toEqual([]);
+    expect(report.notes).toEqual(
+      expect.arrayContaining([
+        basis,
+        "The plan has Contabo's automated backups of server 202611001 on, and OpsCrew has no record of turning them on on this computer: check the server in the Contabo Customer Control Panel.",
+      ]),
     );
-    expect((await runDrift(deps, { services })).drift).toEqual([]);
+    const text = renderDriftReport(report);
+    expect(text).toContain(`Note: ${basis}`);
+    expect(text).not.toContain("would undo");
 
-    // The plan has them off, and OpsCrew turned them on: they stay on until the panel turns them off.
+    // Ordered after an approved plan turned them on: nothing to say but the basis.
+    const run = {
+      deps,
+      phase: "provision" as const,
+      command: "opscrew provision",
+      backups: { contabo: new FakeProviderBackups() },
+    };
+    const outputs = { wanted_backups: { server: backup(true) } };
+    const plan = {
+      resource_changes: [
+        {
+          address: "module.server.terraform_data.backup",
+          change: { actions: ["create"], after: { input: { on: true } } },
+        },
+      ],
+    };
+    await syncProviderBackups(run, outputs, await markWantedBackups(run, plan, outputs));
+    expect((await runDrift(deps, { services })).notes).toEqual([basis]);
+
+    // The plan has them off, and OpsCrew turned them on: they stay on until the panel cancels them.
     on = false;
-    expect((await runDrift(deps, { services })).drift[0]?.differences).toEqual([
-      "The plan has Contabo's automated backups of server 202611001 off, but OpsCrew turned them on: they stay on until you cancel them in the Contabo Customer Control Panel.",
+    expect((await runDrift(deps, { services })).notes).toEqual([
+      basis,
+      "The plan has Contabo's automated backups of server 202611001 off, but OpsCrew turned them on: they stay on, and billed, until you cancel them in the Contabo Customer Control Panel.",
     ]);
   });
 

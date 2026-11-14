@@ -24,6 +24,7 @@ import {
 } from "@opscrew/plan-schema";
 import { z } from "zod";
 import { checkReachesOverSsh } from "../check/provision";
+import { orderPageBackupsText, orderPageProviders } from "../design/backups";
 import { workflowBranch } from "../environments/branches";
 import { providerProfile } from "../providers";
 import {
@@ -198,6 +199,10 @@ export async function createStep(session: MoveSession): Promise<RetargetResult |
     notes: [
       `This creates the new ${fresh.noun} on ${fresh.name} next to ${old}; your app keeps running there.`,
       `The new ${fresh.noun} is billed until the move is finished or aborted: about ${formatMoney(session.plan.cost.monthly)} per month extra while both run.`,
+      // Backups only the provider's order page prices are not in that price (Contabo's).
+      ...orderPageProviders([session.plan.target]).map((provider) =>
+        orderPageBackupsText(provider, "that price"),
+      ),
       `Then OpsCrew deploys the app there with the deploy workflow and keeps its web server (${EDGE_PROXIES[edgeProxy(session.plan)].label}) stopped until traffic is switched to it.`,
     ],
     // `opscrew design` refuses during a move: another size means aborting and starting again.

@@ -5,7 +5,8 @@
  * (research R5). The app is named after the run, so nothing of an earlier run is ever taken for
  * this one's. Steps, in order:
  * 1. the interview chooses Contabo from its four credentials alone;
- * 2. design: the plan, its dated price, its setup fee and minimum term, no provider backups;
+ * 2. design: the plan, its dated price, its setup fee and minimum term, Auto Backup on and left
+ *    out of the price; the pass then turns it off (a paid add-on, not bought without the founder's OK);
  * 3. provision: one server, its firewall and SSH key, and no takeover;
  * 4. the first deploy, verify, and the app on its domain;
  * 5. a whole-server snapshot; 6. its restore, and verify again;
@@ -220,7 +221,7 @@ describe.skipIf(MISSING.length > 0)(
     );
 
     run.step(
-      `2. design: one Cloud VPS 4 (${CONTABO_PLAN}) in ${CONTABO_REGION} priced from the table of ${STATIC_PRICES_AS_OF.slice(0, 10)}, its setup fee and minimum term said, no provider backups (US1)`,
+      `2. design: one Cloud VPS 4 (${CONTABO_PLAN}) in ${CONTABO_REGION} priced from the table of ${STATIC_PRICES_AS_OF.slice(0, 10)}, its setup fee and minimum term said, Auto Backup on but not in the price, then turned off for the pass (US1, T2751)`,
       minutes(10),
       async () => {
         const designed = await run.opscrewOk("design");
@@ -231,7 +232,8 @@ describe.skipIf(MISSING.length > 0)(
           { provider: target.provider, plan: target.serverType, region: target.location },
           "the server design planned",
         ).toEqual({ provider: "contabo", plan: CONTABO_PLAN, region: CONTABO_REGION });
-        expect(target.backups, "provider backups").toBe(false);
+        // Prod with data that matters: design turns Contabo's Auto Backup on (T2750, T2751).
+        expect(target.backups, "provider backups").toBe(true);
         expect(
           { source: plan.cost.source, asOf: plan.cost.asOf },
           "the price's source and date",
@@ -244,6 +246,12 @@ describe.skipIf(MISSING.length > 0)(
           unsaid(designed.output, designTexts(STATIC_PRICES_AS_OF)).join("\n"),
           `what design said:\n${run.tail(designed.output)}`,
         ).toBe("");
+        // Auto Backup is a paid monthly add-on, priced only on Contabo's order page: the pass
+        // doesn't buy it without the founder's OK, so it turns it off as a user would in the plan.
+        await writeArtifact("plan", run.paths().files.plan, {
+          ...plan,
+          target: { ...target, backups: false },
+        });
         await run.snapshotCloudflare(() => [run.appHost, `www.${run.appHost}`]);
         // The pass tests Contabo, not off-server copies, whose R2 bucket needs a key only the user
         // can make in Cloudflare's dashboard; the recovery copy still needs its age key, which a

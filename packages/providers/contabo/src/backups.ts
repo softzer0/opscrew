@@ -19,8 +19,11 @@ export function contaboBackupsApi(client: ContaboClient): ProviderBackupsApi {
       try {
         await client.upgradeWithBackup(id);
       } catch (error) {
-        // Contabo answered with an error status, so it turned nothing on.
-        if (error instanceof ContaboStatusError) return { refused: error.message };
+        // Below 500 (429 included) Contabo turned nothing on; a 5xx may follow a taken order, so
+        // its outcome is unknown.
+        if (error instanceof ContaboStatusError && error.status < 500) {
+          return { refused: error.message };
+        }
         throw error;
       }
       return undefined;

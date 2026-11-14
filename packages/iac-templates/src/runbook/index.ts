@@ -13,6 +13,7 @@ import { siteHosts } from "../runtime";
 import { artefactsFolder } from "../runtime-dir";
 import type { RenderedFile } from "../types";
 import { runbookFilePath } from "../workflow/shared";
+import { orderPageBackupsText, orderPageProviders } from "./backups";
 import {
   componentsSection,
   dataCell,
@@ -42,6 +43,7 @@ import {
   troubleshooting,
 } from "./shared";
 
+export { backupsOnOrderPage, orderPageBackupsText, orderPageProviders } from "./backups";
 export { componentsSection, objectStorageSection, recoverySection } from "./components";
 export { renderLocalRunbook } from "./localhost";
 export { checkSection } from "./observability";
@@ -63,7 +65,15 @@ function money(plan: DeployPlan, provider: CloudProviderDefinition): string {
     plan.cost.source === "static"
       ? `, estimate from ${provider.name}'s price list of ${plan.cost.asOf.slice(0, 10)}`
       : "";
-  return `${formatMoney(monthly)} per month (${tax}${source})`;
+  // Backups only the provider's order page prices are never in the cost (Contabo's Auto Backup).
+  const servers = [plan.target, ...(plan.servers ?? []).map((server) => server.target)];
+  const unpriced = orderPageProviders(
+    servers.map((target) => ({
+      provider: target.provider,
+      backups: "backups" in target ? target.backups : false,
+    })),
+  ).map((id) => ` ${orderPageBackupsText(id, "this cost")}`);
+  return `${formatMoney(monthly)} per month (${tax}${source})${unpriced.join("")}`;
 }
 
 /**

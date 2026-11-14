@@ -849,7 +849,10 @@ export class ContaboClient {
           { hint: "Contabo's API may have changed; please report this to OpsCrew." },
         );
       case "status":
-        return ContaboStatusError.of(await this.#statusError(failure.response, method, path));
+        return new ContaboStatusError(
+          await this.#statusError(failure.response, method, path),
+          failure.response.status,
+        );
     }
   }
 
@@ -919,12 +922,16 @@ export class ContaboClient {
   }
 }
 
-/** An error of a request Contabo answered with an error status: Contabo did nothing. */
+/**
+ * An error of a request Contabo answered with an error `status`. Below 500 Contabo did nothing; a
+ * 5xx may come after Contabo took a write.
+ */
 export class ContaboStatusError extends OpsCrewError {
-  static of(error: OpsCrewError): ContaboStatusError {
-    return new ContaboStatusError(error.code, error.message, {
-      ...(error.hint !== undefined ? { hint: error.hint } : {}),
-    });
+  readonly status: number;
+
+  constructor(error: OpsCrewError, status: number) {
+    super(error.code, error.message, error.hint === undefined ? {} : { hint: error.hint });
+    this.status = status;
   }
 }
 

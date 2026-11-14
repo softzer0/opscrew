@@ -240,8 +240,10 @@ describe("costRules: the other provider", () => {
 describe("costRules: the other provider on the same basis (Contabo)", () => {
   const important = makeRequirements({ dataCriticality: "important" });
   /** Contabo's Auto Backup has no price per plan (R15): both sides go without backups. */
-  const BOTH_LEFT_OUT =
-    "Both prices leave out the automated backups: Contabo publishes no price per plan for its own, only on its order page";
+  const BOTH_LEFT_OUT = [
+    "Both prices leave out the automated backups []",
+    "Contabo's automated backups are priced on Contabo's order page: Contabo publishes no price per plan for them []",
+  ].join("\n");
   const CONTABO_AS_OF = "2026-11-11T00:00:00.000Z";
 
   /** Contabo's prices in its EU region: `offers` (VAT included, as its price list has them). */

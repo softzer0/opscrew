@@ -68,7 +68,7 @@ describe("what the pass reads in OpsCrew's output", () => {
     expect(unsaid(design, designTexts("2026-11-11T00:00:00.000Z"))).toEqual([
       "Plus a one-time setup fee of",
       "The contract runs at least 1 month; a removal ends it at the end of the term.",
-      "Contabo offers no automatic backups through OpsCrew",
+      "Contabo's automated backups are not in this price: they are priced on Contabo's order page.",
     ]);
     const destroy = [
       `Contabo does not delete the server ${app} at once: it ends its contract at the end of its current term (1 month at least) and bills it until then.`,

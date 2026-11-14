@@ -67,6 +67,20 @@ describe("backups (Contabo's Auto Backup)", () => {
     expect(calls()).toEqual([UPGRADE]);
   });
 
+  it("answers a rate limit as a refusal: Contabo did nothing", async () => {
+    const { api } = setup({ [UPGRADE]: { status: 429, body: { message: "Too many requests" } } });
+    expect(await api.turnOn("101")).toMatchObject({
+      refused: expect.stringContaining("Contabo's rate limit was reached"),
+    });
+  });
+
+  it("rejects on a 5xx answer, as Contabo may have taken the order, and never sends it twice", async () => {
+    const { api, calls } = setup({ [UPGRADE]: { status: 502, body: { message: "Bad Gateway" } } });
+    const error = await failure(api.turnOn("101"));
+    expect(error.message).toContain("HTTP 502");
+    expect(calls()).toEqual([UPGRADE]);
+  });
+
   it("rejects without a clear answer, and never sends the upgrade twice", async () => {
     const { api, calls } = setup({
       [UPGRADE]: { error: new TypeError("fetch failed") },

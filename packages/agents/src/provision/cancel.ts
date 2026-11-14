@@ -14,7 +14,8 @@ import {
   type DeployPlan,
   isCloudProvider,
 } from "@opscrew/plan-schema";
-import { CLOUD_PROVIDERS } from "@opscrew/providers";
+import { CLOUD_PROVIDERS, cloudProvider } from "@opscrew/providers";
+import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import {
   byProvider,
@@ -187,8 +188,45 @@ export async function showCancelDates(
   for (const { scope, servers, input } of providerCalls(ctx, saved)) {
     lines.push(...(await cancelDates(scope, servers, input)));
   }
+  lines.push(...cancelledBackupsLines(ctx.plan, saved));
   for (const line of lines) ctx.deps.reporter.info(line);
   return lines;
+}
+
+/** A `terraform_data.backup` whose prior state had the backups on. */
+const BackupOnBeforeSchema = z.looseObject({
+  address: z.string(),
+  change: z.looseObject({
+    before: z.looseObject({ input: z.looseObject({ on: z.literal(true) }) }),
+  }),
+});
+
+/** The plan JSON's changes, as far as {@link cancelledBackupsLines} reads them. */
+const PlanChangesSchema = z.looseObject({ resource_changes: z.array(z.unknown()).optional() });
+
+/**
+ * For each server `saved` cancels whose automated backups its prior state had on, what the
+ * provider leaves of them for the user to end (`texts.destroy.keptBackupsRemaining`: Contabo
+ * cancels its Auto Backup add-on apart from the server), naming the server.
+ */
+export function cancelledBackupsLines(
+  plan: Pick<DeployPlan, "app">,
+  saved: Pick<SavedPlan, "changes" | "planJson">,
+): string[] {
+  const parsed = PlanChangesSchema.safeParse(saved.planJson);
+  const backupsOn = new Set(
+    (parsed.success ? (parsed.data.resource_changes ?? []) : []).flatMap((change) => {
+      const backup = BackupOnBeforeSchema.safeParse(change);
+      return backup.success ? [backup.data.address] : [];
+    }),
+  );
+  return cancelledByPlan(plan, saved).flatMap((server) => {
+    const remaining = cloudProvider(server.provider).texts.destroy.keptBackupsRemaining;
+    if (remaining === undefined || !backupsOn.has(`${server.module}terraform_data.backup`)) {
+      return [];
+    }
+    return [`${remaining.replace(/.$/, "")} (server ${server.name ?? plan.app.name}).`];
+  });
 }
 
 /**

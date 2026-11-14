@@ -13,7 +13,7 @@ import {
 } from "@opscrew/plan-schema";
 import { providerProfile, VPS_PROVIDERS } from "../providers";
 import { type MemoryLimit, memoryHeadroom, SYSTEM_RESERVE_MB } from "../shared/memory";
-import { backupsOnOrderPage, orderPageBackupsText } from "./backups";
+import { backupsOnOrderPage, orderPageBackupsText, orderPageProviders } from "./backups";
 import {
   convertMoney,
   EXCHANGE_RATE_NOTE,
@@ -374,7 +374,8 @@ export function totalCost(app: CostEstimate, servers: readonly DesignedServer[])
     const ipv4 = cost.breakdown.some((line) => line.item.startsWith("Primary IPv4 address"));
     const included = [
       ...(ipv4 ? ["its IPv4 address"] : []),
-      ...(target.backups ? ["backups"] : []),
+      // Backups only the provider's order page prices are not in the price (Contabo's).
+      ...(target.backups && !backupsOnOrderPage(target.provider) ? ["backups"] : []),
     ];
     const extras = included.length === 0 ? "" : `, with ${listText(included)}`;
     const where = ` (${target.serverType} in ${target.location})`;
@@ -414,11 +415,19 @@ export function withoutServerCost(cost: CostEstimate, name: string): CostEstimat
 
 /**
  * `Monthly total for the app's 2 servers: €12.18 (estimate as of 2026-09-01).`, with the exchange
- * rate when a server's price was converted.
+ * rate when a server's price was converted, and the backups only a provider's order page prices,
+ * of `app` or another server, left out of it (Contabo's Auto Backup).
  */
-export function totalLine(total: CostEstimate, servers: readonly DesignedServer[]): string {
+export function totalLine(
+  total: CostEstimate,
+  servers: readonly DesignedServer[],
+  app: DesignedServer,
+): string {
   const converted = servers.some(
     (s) => s.cost !== undefined && s.cost.monthly.currency !== total.monthly.currency,
   );
-  return `Monthly total for the app's ${servers.length + 1} servers: ${formatMoney(total.monthly)} (${priceLabel(total)}).${converted ? ` ${EXCHANGE_RATE_NOTE}` : ""}`;
+  const unpriced = orderPageProviders([app, ...servers].map(({ server }) => server.target)).map(
+    (provider) => ` ${orderPageBackupsText(provider, "this total")}`,
+  );
+  return `Monthly total for the app's ${servers.length + 1} servers: ${formatMoney(total.monthly)} (${priceLabel(total)}).${converted ? ` ${EXCHANGE_RATE_NOTE}` : ""}${unpriced.join("")}`;
 }

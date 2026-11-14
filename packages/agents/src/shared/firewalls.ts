@@ -11,13 +11,13 @@ import type {
   WantedFirewall,
   WantedFirewallOutput,
 } from "@opscrew/contracts";
-import { listText, OpsCrewError, upperFirst, zodIssues } from "@opscrew/core";
+import { OpsCrewError, upperFirst } from "@opscrew/core";
 import { type CloudProvider, isCloudProvider } from "@opscrew/plan-schema";
 import { cloudProvider } from "@opscrew/providers";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { vpsConnector } from "../providers";
-import { hintOf, reasonOf } from "./errors";
+import { credentialsMissing, hintOf, reasonOf, unreadableOutputs } from "./errors";
 
 /** Each provider's firewalls, where tests pass fakes (default: the provider connector's). */
 export type FirewallApis = Partial<Record<CloudProvider, FirewallApi>>;
@@ -92,13 +92,7 @@ const PlannedOutputsSchema = z.looseObject({
 });
 
 function unreadable(error: z.ZodError): OpsCrewError {
-  return new OpsCrewError(
-    "ENGINE_FAILED",
-    `OpsCrew could not read the firewalls the servers want from the infrastructure's outputs (${zodIssues(error)}).`,
-    {
-      hint: "Undo manual edits under opscrew/infra (they are regenerated), then run the command again.",
-    },
-  );
+  return unreadableOutputs("the firewalls the servers want", error);
 }
 
 /** The firewalls a root's outputs want (`wanted_firewalls`); none without that output. */
@@ -136,12 +130,7 @@ export function firewallApi(
 ): FirewallApi {
   const api = run.firewalls?.[provider] ?? vpsConnector(provider, run.deps).firewalls;
   if (api !== undefined) return api;
-  const { displayName, credentials } = cloudProvider(provider);
-  throw new OpsCrewError(
-    "CREDENTIALS_MISSING",
-    `OpsCrew cannot reach ${displayName}: its credentials (${listText(credentials.envVars)}) are not set.`,
-    { hint: "Set them, then run the command again." },
-  );
+  throw credentialsMissing(provider);
 }
 
 /**

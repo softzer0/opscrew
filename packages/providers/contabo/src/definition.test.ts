@@ -28,6 +28,10 @@ function resource(
   return { address, type, name: address.split(".").at(-1) ?? "", values, unknown: {} };
 }
 
+/** What remains of a server with Auto Backup: Contabo cancels the add-on apart from the server. */
+const ADD_ON_CANCELLED =
+  "Contabo cancels the server's Auto Backup add-on apart from the server: check in the Contabo Customer Control Panel that it is cancelled too.";
+
 describe("Contabo's cloud provider definition", () => {
   it("has the contract's version, its names and every part", () => {
     expect(definition.contractVersion).toBe(CLOUD_PROVIDER_CONTRACT_VERSION);
@@ -113,11 +117,19 @@ describe("Contabo's cloud provider definition", () => {
     expect(texts.runbook.deletes("shop")).toContain("end of the current term");
     expect(texts.destroy.lookup("shop")).toContain("opscrew-app:shop");
     expect(texts.destroy.tokenHint("opscrew destroy")).toContain("`opscrew destroy`");
-    // Contabo doesn't say whether Auto Backup's backups outlive a cancelled server (R15).
+    // Contabo doesn't say whether Auto Backup's backups outlive a cancelled server (R15), and it
+    // cancels the add-on apart from the server.
     expect(texts.destroy.deletedBackups).toBe(
-      "Contabo's Auto Backup of the server (the add-on ends with the server's contract, and Contabo doesn't promise its backups outlive it)",
+      "Contabo's Auto Backup of the server (Contabo doesn't say whether its backups outlive the server)",
     );
     expect(texts.destroy.keptBackups).toBeUndefined();
+    expect(texts.destroy.keptBackupsRemaining).toBe(ADD_ON_CANCELLED);
+    expect(texts.runbook.whatRemains("img", "opscrew", "wf.yml", true).join("\n")).toContain(
+      "- **Auto Backup:** Contabo cancels the server's Auto Backup add-on apart from the server: check in the\n  Customer Control Panel that it is cancelled too.",
+    );
+    expect(texts.runbook.whatRemains("img", "opscrew", "wf.yml", false).join("\n")).not.toContain(
+      "Auto Backup",
+    );
     expect(texts.destroy.storageConsole).toBe(
       "the Contabo Customer Control Panel (Object Storage)",
     );

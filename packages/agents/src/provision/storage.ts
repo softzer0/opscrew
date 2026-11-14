@@ -44,6 +44,7 @@ import {
   type StorageLogin,
   storageStateFile,
 } from "../shared";
+import { readRecord, writeRecord } from "../shared/records";
 import { storageS3Client } from "../shared/s3";
 import type { CloudflareSetup, GitHubSetup } from "./credentials";
 import { type PlanAndApplyResult, type PlanPrice, planAndApply } from "./plan-apply";
@@ -375,26 +376,23 @@ async function readOrderedStorage(
   deps: Pick<PhaseDeps, "paths">,
 ): Promise<OrderedStorageRecord | undefined> {
   const file = orderedStorageFile(deps.paths);
-  const text = await readTextIfExists(file);
-  if (text === undefined) return undefined;
-  try {
-    return OrderedStorageRecordSchema.parse(JSON.parse(text));
-  } catch {
-    throw new OpsCrewError(
-      "ARTIFACT_INVALID",
-      `OpsCrew's note of the app's object storage (${file}) is damaged, so OpsCrew stopped. Nothing was changed.`,
-      {
-        hint: "Check in Contabo's Customer Control Panel which object storage holds the app's bucket, delete that file, then run the command again.",
-      },
-    );
-  }
+  return readRecord(
+    file,
+    OrderedStorageRecordSchema,
+    () =>
+      new OpsCrewError(
+        "ARTIFACT_INVALID",
+        `OpsCrew's note of the app's object storage (${file}) is damaged, so OpsCrew stopped. Nothing was changed.`,
+        {
+          hint: "Check in Contabo's Customer Control Panel which object storage holds the app's bucket, delete that file, then run the command again.",
+        },
+      ),
+  );
 }
 
 async function writeOrderedStorage(deps: PhaseDeps, record: Omit<OrderedStorageRecord, "at">) {
-  const file = orderedStorageFile(deps.paths);
-  await mkdir(dirname(file), { recursive: true, mode: 0o700 });
   const at = deps.clock.now().toISOString();
-  await writeFileAtomic(file, `${JSON.stringify({ ...record, at })}\n`, { mode: 0o600 });
+  await writeRecord(orderedStorageFile(deps.paths), { ...record, at });
 }
 
 /**

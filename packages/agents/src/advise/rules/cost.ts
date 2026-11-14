@@ -14,8 +14,7 @@ import {
   type Region,
   type Requirements,
 } from "@opscrew/plan-schema";
-import { cloudProvider } from "@opscrew/providers";
-import { backupsByDefault, backupsOnOrderPage } from "../../design/backups";
+import { backupsByDefault, backupsOnOrderPage, orderPageProviders } from "../../design/backups";
 import {
   convertMoney,
   EXCHANGE_RATE_NOTE,
@@ -297,13 +296,10 @@ function backupReasons(
   const bucket = "the bucket for the snapshots' encrypted copy off the server isn't counted";
   const orderPage = [move.other, app.provider].find(backupsOnOrderPage);
   if (orderPage !== undefined) {
-    const { name, sizeNoun } = cloudProvider(orderPage);
     return app.backups
       ? [
-          {
-            text: `Both prices leave out the automated backups: ${name} publishes no price per ${sizeNoun} for its own, only on its order page`,
-            basis: PLAN,
-          },
+          { text: "Both prices leave out the automated backups", basis: PLAN },
+          ...orderPageReasons(orderPage),
         ]
       : [];
   }
@@ -443,13 +439,9 @@ function overBudget(
         },
         ...(converted ? [EXCHANGE_RATE] : []),
         // Backups priced only on a provider's order page are not in the total (Contabo's).
-        ...[
-          ...new Set(
-            priced.flatMap((s) =>
-              s.backups && backupsOnOrderPage(s.provider) ? [s.provider] : [],
-            ),
-          ),
-        ].flatMap((provider) => orderPageReasons(provider, "this total")),
+        ...orderPageProviders(priced).flatMap((provider) =>
+          orderPageReasons(provider, "this total"),
+        ),
         under.length > 0
           ? {
               text: `Each of these proposals brings them under it: ${under.map(({ proposal, saved }) => `${proposal.id} (saves ${formatMoney(saved)})`).join(", ")}`,

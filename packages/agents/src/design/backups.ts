@@ -3,8 +3,7 @@
  * only in prod, while the interview says the data matters; dev, staging and previews rely on
  * OpsCrew's own snapshots. The plan's own `target.backups` decides over the default.
  */
-import { isCloudProvider, type Requirements } from "@opscrew/plan-schema";
-import { cloudProvider } from "@opscrew/providers";
+import type { Requirements } from "@opscrew/plan-schema";
 
 /** Why the backups are on or off: the plan says, prod with data that matters, no data, not prod. */
 export type BackupsReason = "plan" | "prod" | "data" | "environment";
@@ -64,21 +63,11 @@ export function backupsText(
 }
 
 /**
- * True when `provider` prices its automated backups only on its order page (`backupsPrice:
- * "order-page"`, Contabo's Auto Backup, 027 R15): they are never counted in a monthly sum.
+ * Backups only the provider's order page prices (Contabo's Auto Backup, 027 R15): the check and
+ * the one sentence every sum that leaves them out says, kept in iac-templates for the runbook too.
  */
-export function backupsOnOrderPage(provider: string): boolean {
-  return (
-    isCloudProvider(provider) && cloudProvider(provider).offering.backupsPrice === "order-page"
-  );
-}
-
-/**
- * The sentence for backups priced only on `provider`'s order page, left out of `what` (`this
- * price`, `this estimate`): `Contabo's automated backups are not in this price: they are priced on
- * Contabo's order page.`
- */
-export function orderPageBackupsText(provider: string, what: string): string {
-  const { name } = cloudProvider(provider);
-  return `${name}'s automated backups are not in ${what}: they are priced on ${name}'s order page.`;
-}
+export {
+  backupsOnOrderPage,
+  orderPageBackupsText,
+  orderPageProviders,
+} from "@opscrew/iac-templates";

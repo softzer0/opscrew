@@ -1,4 +1,5 @@
 /** Architect: sizing, provider options and costs, code-change derivation and the design phase. */
+export { backupsOnOrderPage, orderPageBackupsText } from "./backups";
 export { convertMoney, costFor, EXCHANGE_RATE_NOTE, priceLabel } from "./cost";
 export { type BuildDesignOptionsInput, buildDesignOptions } from "./options";
 export { OWN_SERVER_BACKUPS_NOTE, OWN_SERVER_LOCATION } from "./own";

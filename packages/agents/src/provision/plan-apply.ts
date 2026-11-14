@@ -43,12 +43,16 @@ import { cloudProvider } from "@opscrew/providers";
 import { blockingPolicyFailures, evaluatePlanPolicies } from "@opscrew/secops";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
-import { backupsOnOrderPage, orderPageBackupsText } from "../design/backups";
+import { orderPageBackupsText, orderPageProviders } from "../design/backups";
 import { planProvider, providerProfile, vpsConnector } from "../providers";
 import { describeChanges, PlanRefusedError } from "../shared";
 import { applyWithConnectorRemoval } from "../shared/connector-removal";
 import { type FirewallApis, removeFirewalls, syncFirewalls } from "../shared/firewalls";
-import { type ProviderBackupsApis, syncProviderBackups } from "../shared/provider-backups";
+import {
+  markWantedBackups,
+  type ProviderBackupsApis,
+  syncProviderBackups,
+} from "../shared/provider-backups";
 import { extraCloudServers } from "../shared/servers";
 import { engineErrorBlocks } from "../shared/tunnel-connections";
 import { neededScopes } from "./credentials";
@@ -311,25 +315,12 @@ function estimatedCost(deployPlan: DeployPlan): string[] {
   const cost = deployPlan.cost.monthly;
   return [
     `Estimated cost: ${formatMoney(cost)} per month (${deployPlan.cost.source === "live" ? "live prices" : `price list of ${deployPlan.cost.asOf.slice(0, 10)}`}, ${taxLabel(cost.currency, deployPlan.cost.pricesIncludeVat)}).`,
-    ...orderPageBackups(deployPlan).map((provider) =>
-      orderPageBackupsText(provider, "this estimate"),
-    ),
+    // Backups only the provider's order page prices are not in the estimate (Contabo's).
+    ...orderPageProviders([
+      ...(isCloudTarget(deployPlan.target) ? [deployPlan.target] : []),
+      ...extraCloudServers(deployPlan),
+    ]).map((provider) => orderPageBackupsText(provider, "this estimate")),
   ];
-}
-
-/**
- * The providers of the plan's servers with automated backups on that only the provider's order
- * page prices (Contabo's Auto Backup), each once: the estimate leaves them out.
- */
-function orderPageBackups(deployPlan: DeployPlan): CloudProvider[] {
-  const servers = [
-    ...(isCloudTarget(deployPlan.target) ? [deployPlan.target] : []),
-    ...extraCloudServers(deployPlan),
-  ];
-  const providers = servers.flatMap(({ provider, backups }) =>
-    backups && backupsOnOrderPage(provider) ? [provider] : [],
-  );
-  return [...new Set(providers)];
 }
 
 /** True when the plan only renames resources in the state (`moved` blocks) and changes nothing. */
@@ -756,8 +747,8 @@ export async function planAndApply(
   if (saved.changes.length === 0 && !movesOnly && imports === 0) {
     deps.reporter.success("The infrastructure is already up to date.");
     const outputs = await engine.output(dir, { env }).catch(() => ({}));
-    // A run after a failed firewall sync plans nothing new and sets the firewalls again; the
-    // backups whose order failed or got no clear answer, likewise.
+    // A run after a failed firewall sync plans nothing new and sets the firewalls again; it sends
+    // again only the backups orders an earlier approved plan recorded as wanted.
     if (options.planOnly !== true) {
       await syncFirewalls(connectorRun, outputs);
       await syncProviderBackups(connectorRun, outputs);
@@ -869,6 +860,9 @@ export async function planAndApply(
         .join(" "),
     });
   }
+  // The automated backups this approved plan turned on, recorded before anything else can fail, so
+  // a later run orders them when this one doesn't get to (Contabo's Auto Backup).
+  const backupsTurnedOn = await markWantedBackups(connectorRun, saved.planJson, result.outputs);
   // Its sidecar records the apply, so a script that names the hash again plans afresh.
   await writePlanSidecar(deps.redactor, { ...saved, appliedAt: deps.clock.now().toISOString() });
   deps.reporter.success(
@@ -882,7 +876,7 @@ export async function planAndApply(
   await removeFirewalls(connectorRun, saved.planJson, result.outputs);
   await syncFirewalls(connectorRun, result.outputs);
   // The automated backups the providers' Terraform cannot turn on (Contabo's Auto Backup).
-  await syncProviderBackups(connectorRun, result.outputs);
+  await syncProviderBackups(connectorRun, result.outputs, backupsTurnedOn);
   return {
     planHash: saved.planHash,
     applied: true,

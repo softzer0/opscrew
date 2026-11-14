@@ -68,8 +68,8 @@ export CNTB_OAUTH2_CLIENT_ID=… CNTB_OAUTH2_CLIENT_SECRET=… CNTB_OAUTH2_USER=
 5. `npx opscrew verify`, `npx opscrew secure` and `npx opscrew drift` work as on the other
    providers. `drift` also compares Contabo's firewall with the plan's and lists each difference,
    such as a rule added or a server removed in the Customer Control Panel; `npx opscrew provision`
-   sets it back. For Auto Backup, `drift` compares the plan with OpsCrew's record of turning it
-   on, not with Contabo: Contabo's API doesn't say which of a server's add-ons is Auto Backup.
+   sets it back. For Auto Backup, `drift` adds notes from OpsCrew's record of ordering it, not
+   from Contabo: Contabo's API doesn't say which of a server's add-ons is Auto Backup.
 
 ## Plans and prices
 
@@ -104,15 +104,16 @@ the oldest deleted first. It stores them off the server, on a separate Contabo s
 - **Priced on Contabo's order page.** Auto Backup is a paid monthly add-on, and Contabo publishes
   no price per plan for it, so OpsCrew shows none. Design, provision and advise leave it out of
   every monthly price and say so: check its price on Contabo's order page.
-- **Turned on after the apply.** Contabo's Terraform provider can't turn it on by name, so OpsCrew
-  turns it on through Contabo's API right after the apply, as it sets the firewall. The plan you
-  approve lists it as `terraform_data.backup`, and nothing is ordered before you approve that exact
-  plan.
-- **Ordered once.** OpsCrew records each server's order on this computer, so a run that plans
-  nothing new never orders it again. A run from another computer has no record and orders it
-  again; whether Contabo takes a second order of a server that already has Auto Backup without
-  harm isn't known yet. When Contabo gives no clear answer, OpsCrew doesn't ask again: provision
-  says how to check the server in the Customer Control Panel, then tell OpsCrew what you found.
+- **Turned on after the apply of the plan that names it.** Contabo's Terraform provider can't
+  turn it on by name, so OpsCrew turns it on through Contabo's API right after the apply, as it
+  sets the firewall. It orders it only for a server whose `terraform_data.backup` the plan you
+  approved creates or turns on.
+- **Ordered once, from this computer.** OpsCrew records each server's order on this computer, so
+  no later run orders it again. When Contabo refuses the order, the record keeps it as wanted and
+  the next `npx opscrew provision` sends it again, saying so. When Contabo gives no clear answer,
+  OpsCrew doesn't ask again: provision says how to check the server in the Customer Control Panel,
+  then tell OpsCrew what you found. A run on another computer has no record, so it never orders
+  it: provision and `drift` say so and point to the Customer Control Panel.
 - **Turned off in the Customer Control Panel only.** Contabo's API can't turn it off. When the
   plan turns it off, provision says so, changes nothing at Contabo, and leaves it to you: cancel the
   Auto Backup add-on of the server in the Customer Control Panel. It stays on, and billed, until
@@ -120,9 +121,12 @@ the oldest deleted first. It stores them off the server, on a separate Contabo s
 - **Restore in the Customer Control Panel.** Under **Servers & Hosting → VPS Auto Backup**, choose
   **Restore last backup** or one of the kept backups. A restore overwrites the server's data, and
   the server is down until it ends.
-- **They go with the server.** The add-on ends with the server's contract, and Contabo doesn't
-  promise that its backups outlive the server. OpsCrew's own data snapshot, with its encrypted copy
-  off the server, is the copy that stays (see [Removing the app](#removing-the-app)).
+- **When the server goes.** Contabo doesn't say whether Auto Backup's backups outlive a cancelled
+  server, so OpsCrew's own data snapshot, with its encrypted copy off the server, is the copy to
+  count on (see [Removing the app](#removing-the-app)). Contabo cancels the add-on apart from the
+  server: after `npx opscrew destroy`, or a provision that removes an extra server, check in the
+  Customer Control Panel that the server's Auto Backup add-on is cancelled too; destroy and
+  provision remind you.
 
 ## Regions
 

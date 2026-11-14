@@ -3,10 +3,12 @@ import { describe, expect, it } from "vitest";
 import { euCatalog, MemoryCatalog, offer } from "../testing";
 import {
   type CloudServerInput,
+  type DesignedServer,
   designCloudServer,
   extraServerNeed,
   sizeExtraServer,
   totalCost,
+  totalLine,
   withoutServerCost,
 } from "./servers";
 import { selfHostedServices } from "./sizing";
@@ -228,5 +230,47 @@ describe("the plan's cost with extra servers", () => {
       monthly: appCost.monthly,
     });
     expect(withoutServerCost(total, "data")).toBe(total);
+  });
+});
+
+describe("totalCost and totalLine with Contabo's Auto Backup", () => {
+  const cost = (amount: number): CostEstimate => ({
+    monthly: { amount, currency: "EUR" },
+    breakdown: [{ item: "Server V153 (EU)", monthly: { amount, currency: "EUR" } }],
+    pricesIncludeVat: false,
+    source: "static",
+    asOf: "2026-11-11T00:00:00.000Z",
+  });
+  /** A designed server `name` on Contabo with `backups`. */
+  const contabo = (name: string, backups: boolean): DesignedServer => ({
+    server: {
+      name,
+      target: {
+        provider: "contabo",
+        mode: "vps-compose",
+        location: "EU",
+        serverType: "V153",
+        backups,
+      },
+    },
+    services: [],
+    vcpus: 4,
+    memoryGb: 8,
+    cost: cost(5.5),
+    warnings: [],
+  });
+  const ORDER_PAGE =
+    "Contabo's automated backups are not in this total: they are priced on Contabo's order page.";
+
+  it("never names backups in a line whose price leaves them out, and says so in the total", () => {
+    const total = totalCost(cost(5.5), [contabo("db", true)]);
+    expect(total.breakdown.at(-1)?.item).toBe("Server db (V153 in EU)");
+    expect(totalLine(total, [contabo("db", true)], contabo("app", false))).toBe(
+      `Monthly total for the app's 2 servers: €11.00 (estimate as of 2026-11-11). ${ORDER_PAGE}`,
+    );
+    expect(totalLine(total, [contabo("db", false)], contabo("app", true))).toContain(ORDER_PAGE);
+    expect(totalLine(total, [contabo("db", false)], contabo("app", false))).not.toContain(
+      "order page",
+    );
   });
 });

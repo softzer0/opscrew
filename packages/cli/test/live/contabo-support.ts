@@ -63,7 +63,8 @@ export function unsaid(output: string, wanted: readonly string[]): string[] {
 
 /**
  * What `opscrew design` must say of the Contabo plan (US1): the price table's date, the setup fee,
- * the minimum term and that Contabo backs nothing up through OpsCrew.
+ * the minimum term, and that Contabo's Auto Backup, on by default in prod when the data matters, is
+ * not in the price (027 T2751).
  */
 export function designTexts(asOf: string): string[] {
   const day = asOf.slice(0, 10);
@@ -72,7 +73,7 @@ export function designTexts(asOf: string): string[] {
     `estimate as of ${day}`,
     "Plus a one-time setup fee of",
     "The contract runs at least 1 month; a removal ends it at the end of the term.",
-    "Contabo offers no automatic backups through OpsCrew",
+    "Contabo's automated backups are not in this price: they are priced on Contabo's order page.",
   ];
 }
 

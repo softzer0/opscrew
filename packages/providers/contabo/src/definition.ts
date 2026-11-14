@@ -304,11 +304,18 @@ export const definition: CloudProviderDefinition = {
         "  ends its contract at the end of the term, when its disk and snapshots go; `opscrew destroy` is the safe way,",
         "  because it shows the plan and the end of the term, offers a snapshot and asks for the typed name first.",
       ],
-      whatRemains: (image, folder, workflowPath) => [
+      whatRemains: (image, folder, workflowPath, backups) => [
         "- **What remains:** the server until the end of its term (Contabo bills it until then; it is shut down, and you",
         "  can start it again in the Customer Control Panel; its disk and its Contabo snapshots go when the term ends),",
         `  the container images in GitHub Container Registry (\`${image}\`), and the files in this repository`,
         `  (\`${folder}/\` and \`${workflowPath}\`).`,
+        // Contabo cancels the add-on and the server apart (R15).
+        ...(backups
+          ? [
+              "- **Auto Backup:** Contabo cancels the server's Auto Backup add-on apart from the server: check in the",
+              "  Customer Control Panel that it is cancelled too.",
+            ]
+          : []),
       ],
       hostKey: "the server's host key",
     },
@@ -322,9 +329,12 @@ export const definition: CloudProviderDefinition = {
       lookup: (app) =>
         `tagged opscrew-app:${app}, or with no OpsCrew tag and named ${app} or ${app}-…`,
       tokenHint: (command) => `${CONTABO_CREDENTIALS_HINT} Then run \`${command}\` again.`,
-      // Contabo doesn't say whether Auto Backup's backups outlive a cancelled server (R15).
+      // Contabo doesn't say whether Auto Backup's backups outlive a cancelled server, and it
+      // cancels the add-on apart from the server (R15).
       deletedBackups:
-        "Contabo's Auto Backup of the server (the add-on ends with the server's contract, and Contabo doesn't promise its backups outlive it)",
+        "Contabo's Auto Backup of the server (Contabo doesn't say whether its backups outlive the server)",
+      keptBackupsRemaining:
+        "Contabo cancels the server's Auto Backup add-on apart from the server: check in the Contabo Customer Control Panel that it is cancelled too.",
       storageConsole: "the Contabo Customer Control Panel (Object Storage)",
     },
     secops: SECOPS,

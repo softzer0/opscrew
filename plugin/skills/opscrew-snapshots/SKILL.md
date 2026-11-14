@@ -86,11 +86,12 @@ On Contabo:
 - Restoring a snapshot that is not the newest deletes the newer ones at Contabo; OpsCrew says so
   before the user approves.
 - A snapshot's id is `<instance>:<snapshot>`; pass it whole.
-- Contabo has no automatic backups OpsCrew turns on, and its snapshots go with the server when its
-  term ends. The data snapshot with its copy off the server is the backup there, and the way to a
-  Contabo server of another size (a plan can't be resized in place; the other way is
-  `npx opscrew retarget` to another provider): take one, `npx opscrew destroy`, design and
-  provision the new size, then `npx opscrew restore <id> --from offsite --key-file <path>`.
+- Contabo's snapshots go with the server when its term ends, and Contabo doesn't say whether its
+  Auto Backup (on by default in prod) outlives it. The data snapshot with its copy off the server is
+  the copy that stays, and the way to a Contabo server of another size (a plan can't be resized in
+  place; the other way is `npx opscrew retarget` to another provider): take one,
+  `npx opscrew destroy`, design and provision the new size, then
+  `npx opscrew restore <id> --from offsite --key-file <path>`.
 
 ## Scheduled snapshots
 

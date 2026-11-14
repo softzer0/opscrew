@@ -332,7 +332,7 @@ function serverLines(
         monitoringLimits(plan, server.server.name),
       ),
     ]),
-    totalLine(plan.cost, designed),
+    totalLine(plan.cost, designed, app),
   ];
 }
 

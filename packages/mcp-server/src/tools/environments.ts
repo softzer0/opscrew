@@ -2,8 +2,10 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   addEnvironment,
   appFlag,
+  backupsOnOrderPage,
   deployJobPlace,
   listEnvironments,
+  orderPageBackupsText,
   type PromoteServices,
   promote,
   promotedText,
@@ -121,6 +123,10 @@ export function registerEnvironmentTools(
         return {
           text: [
             `Added the ${name} environment: ${chosen.title} (${chosen.id}), about ${formatMoney(chosen.cost.monthly)} a month.`,
+            // Backups only the provider's order page prices are not in that price (Contabo's).
+            ...(chosen.backups && backupsOnOrderPage(chosen.target.provider)
+              ? [orderPageBackupsText(chosen.target.provider, "that price")]
+              : []),
             ...design.warnings.map((warning) => `Warning: ${warning}`),
             `Next: the user provisions it with \`npx opscrew provision${await appFlag(call.projectDir, appKey)} --env ${name}\` in a terminal, or call opscrew_plan with environment ${name}${andApp(appKey)}.`,
           ].join("\n"),

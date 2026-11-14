@@ -223,9 +223,10 @@ export function typeChange(
 
 /**
  * That backups priced only on `provider`'s order page (Contabo's Auto Backup) are not in `what`
- * (`this total`, `either price`): none at every other provider.
+ * (`this total`, `either price`), or without `what` where they are priced; none at every other
+ * provider.
  */
-export function orderPageReasons(provider: string, what: string): Reason[] {
+export function orderPageReasons(provider: string, what?: string): Reason[] {
   if (!backupsOnOrderPage(provider)) return [];
   return [{ text: withoutStop(orderPageBackupsText(provider, what)), basis: PLAN }];
 }

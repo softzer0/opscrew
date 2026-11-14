@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { testContext, testPlan } from "../__fixtures__/plans";
+import { splitPlan } from "../infra/__fixtures__/servers";
 import { renderRunbook } from "./index";
 
 const ctx = testContext({ projectId: "shop-0123456789ab" });
@@ -42,5 +43,32 @@ describe("renderRunbook for Contabo's Auto Backup", () => {
       ].join("\n"),
     );
     expect(content).not.toContain("Server size, location, domain");
+  });
+});
+
+describe("renderRunbook's cost with Contabo's Auto Backup", () => {
+  const ORDER_PAGE =
+    "Contabo's automated backups are not in this cost: they are priced on Contabo's order page.";
+  const costRow = (content: string) =>
+    content.split("\n").find((line) => line.startsWith("| Cost |")) ?? "";
+
+  it("says the backups of the app's server are not in the cost", () => {
+    const content = renderRunbook(testPlan({ provider: "contabo", backups: true }), ctx).content;
+    expect(costRow(content)).toContain(ORDER_PAGE);
+    const off = renderRunbook(testPlan({ provider: "contabo", backups: false }), ctx).content;
+    expect(costRow(off)).not.toContain("order page");
+  });
+
+  it("says so for an extra Contabo server with backups on", () => {
+    const plan = splitPlan({ servers: [{ name: "db", provider: "contabo" }] });
+    const withBackups = {
+      ...plan,
+      servers: plan.servers?.map((server) => ({
+        ...server,
+        target: { ...server.target, backups: true },
+      })),
+    };
+    expect(costRow(renderRunbook(plan, ctx).content)).not.toContain("order page");
+    expect(costRow(renderRunbook(withBackups, ctx).content)).toContain(ORDER_PAGE);
   });
 });

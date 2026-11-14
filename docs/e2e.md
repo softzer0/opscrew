@@ -3334,11 +3334,13 @@ Each step below is one numbered test, so a run reads as "N of 9 steps":
    name set in `opscrew/architecture.json`, and `interview --answers` without a provider
    (`eu-central`, the run's own hostname behind Cloudflare). With only Contabo's credentials set,
    the interview must choose Contabo (US1).
-2. **Design.** The plan must be a `V153` in `EU`, without provider backups, priced from the
-   static table at its date, with no backups in the price. Design's output must name the price
-   list and its date, the one-time setup fee, "The contract runs at least 1 month; a removal ends
-   it at the end of the term." and "Contabo offers no automatic backups through OpsCrew". Then
-   `snapshot offsite off` (the pass tests Contabo, not the R2 copies, whose key only Cloudflare's
+2. **Design.** The plan must be a `V153` in `EU`, with Contabo's Auto Backup on (prod, data that
+   matters), priced from the static table at its date, with no backups in the price. Design's
+   output must name the price list and its date, the one-time setup fee, "The contract runs at
+   least 1 month; a removal ends it at the end of the term." and "Contabo's automated backups are
+   not in this price: they are priced on Contabo's order page." Then the pass sets
+   `target.backups: false` in the plan, as Auto Backup is a paid add-on it doesn't buy without the
+   founder's OK, and runs `snapshot offsite off` (the pass tests Contabo, not the R2 copies, whose key only Cloudflare's
    dashboard makes) and, for the recovery copy's age key, `secrets folder` and `--key-out` on
    every provision, as the rotation passes do.
 3. **Provision.** `adapt`'s pull request is merged. Contabo must have no server of the app yet.
