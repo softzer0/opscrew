@@ -302,6 +302,25 @@ preview server. These have unit tests only:
   and the comment's text for each, in the workflow's rendering.
 - **Previews on your own server and at DigitalOcean:** design and provision with fakes.
 
+### Shared hosting and Contabo's add-ons (feature 027)
+
+The cPanel, SFTP-only and OpenLiteSpeed passes ran live (see [At a glance](#at-a-glance)). These
+have tests with fakes only:
+
+- **Plesk and DirectAdmin accounts:** no test account. Their connectors run against fakes built
+  from the panels' API documentation (research R2, R3); the hosting agent's part is the one the
+  cPanel pass ran.
+- **Apache with PHP-FPM behind a panel** (Plesk, DirectAdmin, cPanel without LiteSpeed): the
+  agent's `opcache.revalidate_path` and its 130-second check (T2754) ran live only on the SFTP
+  pass's Apache; the cPanel account runs LiteSpeed.
+- **Contabo's Object Storage** (T2752): its order, reuse, key and bucket, with a fake Contabo API
+  and S3. Contabo's real answers (the field names, its region codes, the order's response) are
+  guesses from its API reference (research R15), marked in the code; an unknown answer stops with
+  an error before any second order.
+- **Contabo's Auto Backup** (T2751): turned on after the apply with a fake Contabo API. Contabo's
+  answer to `/upgrade`, whether a second one is harmless, and the add-on's price are unverified
+  (R15). The Contabo pass turns backups off, so it never buys the add-on.
+
 ## Confirmed live behaviour
 
 What OpsCrew's adapters and tests assumed about other services, and what the live runs found.
