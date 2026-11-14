@@ -1,5 +1,6 @@
 export { PORTAINER_VERSION_PATH } from "../runtime/services";
 export { renderPortainerDeployment } from "./deployment";
+export { renderNextConnectorStacks } from "./next-connector";
 export {
   type PortainerSnapshotPart,
   portainerSnapshotParts,

@@ -55,6 +55,15 @@ import {
 } from "./servers";
 import { type TunnelPieces, tunnelPieces } from "./tunnel";
 
+export {
+  accountVariables,
+  CLOUDFLARE_MODULE_NAMES,
+  type CloudflareAddressScope,
+  cloudflareAddressScope,
+  opscrewRecordNames,
+  type WorkerCustomDomain,
+  workerCustomDomainAddresses,
+} from "./cloudflare-move";
 export { MOVE_LAYOUTS, type MoveLayoutName, moveLayout } from "./layouts";
 export {
   managesPortainerRecords,

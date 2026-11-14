@@ -60,6 +60,7 @@ import {
 } from "./services";
 
 export { shellQuote } from "./services";
+export { renderNextTunnelConnectorCompose } from "./tunnel-next";
 
 /** The app's Compose project on this computer: `opscrew-<app>`, apart from the user's own. */
 export function localComposeProject(plan: Pick<DeployPlan, "app">): string {
