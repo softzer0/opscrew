@@ -139,7 +139,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/connector-cloudflare && npx vitest run --root packages/connectors/cloudflare && pnpm lint`
   - Effort: xhigh
 
-- [ ] T2806 [P] [US1] The connector beside A's on a server
+- [x] T2806 [P] [US1] The connector beside A's on a server
   - Owns: `packages/connectors/ssh-host/src/**`
   - Reads: plan 4.4, 7.4, 8.; `ssh-host/src/plan.ts` (`planTunnelToken`, `tunnelConnectorStep`, `tunnelDir`)
   - Depends: T2801
@@ -155,7 +155,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/connector-ssh-host && npx vitest run --root packages/connectors/ssh-host && pnpm lint`
   - Effort: medium
 
-- [ ] T2807 [P] [US1] [US2] [US4] Templates: Cloudflare's addresses, B's ids, record names, the beside connector
+- [x] T2807 [P] [US1] [US2] [US4] Templates: Cloudflare's addresses, B's ids, record names, the beside connector
   - Owns: new files `packages/iac-templates/src/infra/cloudflare-move*.ts`, `packages/iac-templates/src/runtime/tunnel-next*.ts`, `packages/iac-templates/src/portainer-target/next-connector*.ts` (+ their snapshots), and their export lines in `packages/iac-templates/src/{index,infra/index,runtime/index,portainer-target/index}.ts`
   - Reads: plan 3., 9.; data-model 3, 4; `infra/{index,cloudflare,tunnel,own,portainer,serverless,storage}.ts`, `hosting/dns.ts`, `runtime/index.ts`, `portainer-target/stack.ts`, the vendored modules under `packages/iac-templates/modules/`
   - Depends: T2801
@@ -211,7 +211,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Verify: `PATH="$PWD/.tools/bin:$PATH" pnpm turbo run typecheck --filter=@opscrew/iac-templates && npx vitest run --root packages/iac-templates src/workflow src/infra/serverless && pnpm lint`
   - Effort: high
 
-- [ ] T2809 [P] [US5] The domain commands' pieces, for the move
+- [x] T2809 [P] [US5] The domain commands' pieces, for the move
   - Owns: `packages/agents/src/domain/**`
   - Reads: plan 5.; data-model 2, 5; `domain/{connect,switch,connect-plan,connect-state,connect-dns,services,registrars}.ts`
   - Depends: T2801
