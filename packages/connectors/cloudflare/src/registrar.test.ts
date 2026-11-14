@@ -565,7 +565,7 @@ describe("CloudflareClient registrar calls", () => {
     };
     const { cf } = client({
       "POST /zones": fail(400, [{ code: 1061, message: "a.com already exists" }]),
-      "GET /zones?name=a.com&per_page=1": ok([zone]),
+      "GET /zones?name=a.com": ok([zone]),
     });
     expect(await cf.createZone(ACCOUNT, "a.com")).toMatchObject({ id: "z9", status: "active" });
   });
@@ -573,7 +573,7 @@ describe("CloudflareClient registrar calls", () => {
   it("refuses an existing zone in another account or one it cannot see", async () => {
     const { cf } = client({
       "POST /zones": fail(409, [{ message: "Zone already exists" }]),
-      "GET /zones?name=a.com&per_page=1": [
+      "GET /zones?name=a.com": [
         ok([{ id: "z9", name: "a.com", status: "active", account: { id: "other" } }]),
         ok([]),
       ],

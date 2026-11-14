@@ -244,7 +244,7 @@ async function rejection(promise: Promise<unknown>): Promise<OpsCrewError> {
 describe("CloudflareClient zone records", () => {
   it("returns the zone's nameservers from findZone", async () => {
     const { cf } = client({
-      "GET /zones?name=example.com&per_page=1": [
+      "GET /zones?name=example.com": [
         ok([{ id: "z1", name: ZONE, status: "pending", name_servers: ["a.ns.cloudflare.com"] }]),
       ],
     });

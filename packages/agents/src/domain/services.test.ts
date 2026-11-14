@@ -88,7 +88,7 @@ describe("defaultDomainServices", () => {
           ds: "shopapp.com. 3600 IN DS 2371 13 2 ABCDEF0123",
         }),
       ],
-      "GET /zones?name=shopapp.com&per_page=1": ok([
+      "GET /zones?name=shopapp.com&page=1&per_page=50": ok([
         { id: "z1", name: "shopapp.com", status: "active", name_servers: [] },
       ]),
       "PUT /zones/z1/activation_check": ok({ id: "z1" }),
