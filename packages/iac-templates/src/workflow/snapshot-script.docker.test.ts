@@ -307,5 +307,36 @@ describe.skipIf(reason !== undefined)("the off-server copy on Docker", { timeout
       `${later}/about.json.age`,
       `${later}/db.dump.age`,
     ]);
+
+    // The user's own S3-compatible bucket (T2756), as rclone's Other provider at the endpoint its
+    // offsite.env names: the server deletes the copies older than the retention there too.
+    rclone(
+      hetzner,
+      [
+        "set -e",
+        `echo old | rclone rcat bucket:${BUCKET}/backups/20250102T000000Z/db.dump.age`,
+        `rclone touch -t 2025-01-02T00:00:00 bucket:${BUCKET}/backups/20250102T000000Z/db.dump.age`,
+      ].join("\n"),
+    );
+    const latest = "20261107T020000Z";
+    const own = app(
+      offsitePlan({
+        provider: "s3",
+        endpoint: "https://garage.invalid",
+        bucket: BUCKET,
+        region: "garage",
+      }),
+      "own",
+      latest,
+      randomBytes(1024),
+    );
+    const owned = offsite(own, latest);
+    expect(owned.status, `${owned.output}\n${owned.log}`).toBe(0);
+    for (const text of [owned.output, owned.log]) expect(text).not.toContain(secret);
+    const kept = rclone(own, `rclone lsf -R bucket:${BUCKET}/backups`)
+      .split("\n")
+      .filter((line) => !line.endsWith("/"))
+      .sort();
+    expect(kept).toEqual([...left, `${latest}/about.json.age`, `${latest}/db.dump.age`]);
   });
 });

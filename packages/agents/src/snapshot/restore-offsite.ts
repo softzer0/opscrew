@@ -11,8 +11,6 @@
 import { pipeline, Readable, Transform } from "node:stream";
 import {
   type DockerClient,
-  dialStdioTransport,
-  dockerClient,
   type MountSpec,
   runOneOff,
   type TarEntry,
@@ -20,13 +18,17 @@ import {
 } from "@opscrew/connector-docker";
 import type { CommandResult, DockerTransport } from "@opscrew/contracts";
 import { ageDecryptStream, NodeStreamRunner, OpsCrewError } from "@opscrew/core";
-import { appDir, IMAGES, OFFSITE_PREFIX, rcloneSettings } from "@opscrew/iac-templates";
-import { APP_SERVER, snapshotOffsiteOf } from "@opscrew/plan-schema";
+import { appDir, IMAGES, offsiteFolder, offsiteRoot, rcloneSettings } from "@opscrew/iac-templates";
+import { APP_SERVER, type DeployPlan, snapshotOffsiteOf } from "@opscrew/plan-schema";
 import { setupCloudflare } from "../provision/credentials";
-import { requireOffsiteKey } from "../provision/storage";
+import { serverDocker } from "../provision/offsite-check";
+import {
+  OFFSITE_SFTP_KEY_VAR,
+  requireOffsiteKey,
+  requireOffsiteSftpKey,
+} from "../provision/storage";
 import type { CloudflareApi } from "../provision/types";
-import { privateReach, r2Endpoint, STORAGE_ENDPOINTS, sshArgs } from "../shared";
-import { serverShell } from "../status/servers";
+import { r2Endpoint, STORAGE_ENDPOINTS } from "../shared";
 import { hostFailure, READ_TIMEOUT_MS, type ScriptHost } from "./hosts";
 import type { OffsiteProvider } from "./offsite";
 import { box, DIR, failed, ONE_OFF_LABEL, type PortainerPlace } from "./portainer";
@@ -42,11 +44,21 @@ export interface RestoreServices extends SnapshotServices {
   cloudflare?: CloudflareApi | null;
 }
 
-/** The bucket of the off-server copies as rclone on this computer reaches it. */
+/**
+ * Where the off-server copies are as rclone on this computer reaches it: a bucket, or a folder on
+ * the user's machine over SFTP.
+ */
 export interface OffsiteBucket {
-  /** The bucket's name, for messages and audit entries. */
+  /** What holds the copies, in words. */
+  noun: "bucket" | "folder";
+  /** The bucket's name, or the folder and its machine (`/backups/shop-prod/backups on <host>`). */
   name: string;
-  /** Where the copies are, as rclone names it: `offsite:<bucket>/backups`. */
+  /** The audit entries' target: `bucket <name>` or `folder <folder>`, never an address. */
+  audit: string;
+  /**
+   * Where the copies are, as rclone names it: `offsite:<bucket>/backups`, or
+   * `offsite:<path>/<app>-<env>/backups` on an SFTP machine.
+   */
   root: string;
   /** rclone's command line here, before its own arguments. */
   command: string;
@@ -71,7 +83,7 @@ const ABOUT_OBJECT = "about.json.age";
  * before rclone's own.
  */
 export function offsiteRclone(
-  offsite: { provider: OffsiteProvider; region: string },
+  offsite: { provider: Exclude<OffsiteProvider, "sftp">; region: string },
   endpoint: string,
   key: { accessKeyId: string; secretAccessKey: string },
 ): { settings: Record<string, string>; docker: string[] } {
@@ -81,8 +93,21 @@ export function offsiteRclone(
     RCLONE_CONFIG_OFFSITE_ACCESS_KEY_ID: key.accessKeyId,
     RCLONE_CONFIG_OFFSITE_SECRET_ACCESS_KEY: key.secretAccessKey,
   };
+  return { settings, docker: dockerRclone(settings) };
+}
+
+/**
+ * The arguments that run the pinned rclone image in Docker with `settings` (by name only: their
+ * values stay in the child's environment), before rclone's own.
+ */
+function dockerRclone(settings: Record<string, string>): string[] {
   const env = Object.keys(settings).flatMap((name) => ["-e", name]);
-  return { settings, docker: ["run", "--rm", "-i", ...env, IMAGES.rclone.ref] };
+  return ["run", "--rm", "-i", ...env, IMAGES.rclone.ref];
+}
+
+/** What holds `plan`'s off-server copies, in words: `folder` on an SFTP machine, else `bucket`. */
+export function offsiteNoun(plan: Pick<DeployPlan, "snapshots">): "bucket" | "folder" {
+  return snapshotOffsiteOf(plan)?.provider === "sftp" ? "folder" : "bucket";
 }
 
 /** rclone here: the pinned image in local Docker (`docker`'s arguments), else this computer's rclone. */
@@ -122,6 +147,22 @@ export async function offsiteBucket(
   const { deps, plan } = run;
   const offsite = snapshotOffsiteOf(plan);
   if (offsite === undefined) return undefined;
+  const own = Object.entries(deps.env).filter(([name]) => !/^RCLONE_/i.test(name));
+  if (offsite.provider === "sftp") {
+    // The same private key as the server's, from the file OPSCREW_OFFSITE_SFTP_KEY names, and the
+    // machine's host key pinned as on the server.
+    const { sshKey } = await requireOffsiteSftpKey(deps, plan, { command });
+    const settings = { ...rcloneSettings(offsite), RCLONE_CONFIG_OFFSITE_KEY_PEM: sshKey };
+    const folder = offsiteFolder(plan, offsite);
+    return {
+      noun: "folder",
+      name: `${folder} on ${offsite.host}`,
+      audit: `folder ${folder}`,
+      root: offsiteRoot(plan, offsite),
+      ...(await rcloneHere(run, dockerRclone(settings))),
+      env: { ...Object.fromEntries(own), ...settings },
+    };
+  }
   const key = await requireOffsiteKey(deps, plan, {}, { command });
   let endpoint: string;
   if (offsite.provider === "r2") {
@@ -141,15 +182,18 @@ export async function offsiteBucket(
       );
     }
     endpoint = r2Endpoint(cloudflare.accountId);
+  } else if (offsite.provider === "s3") {
+    endpoint = offsite.endpoint;
   } else {
     endpoint = STORAGE_ENDPOINTS[offsite.provider]?.(offsite.region) ?? "";
   }
   const { settings, docker } = offsiteRclone(offsite, endpoint, key);
   const tool = await rcloneHere(run, docker);
-  const own = Object.entries(deps.env).filter(([name]) => !/^RCLONE_/i.test(name));
   return {
+    noun: "bucket",
     name: offsite.bucket,
-    root: `offsite:${offsite.bucket}/${OFFSITE_PREFIX}`,
+    audit: `bucket ${offsite.bucket}`,
+    root: offsiteRoot(plan, offsite),
     ...tool,
     env: { ...Object.fromEntries(own), ...settings },
   };
@@ -165,8 +209,13 @@ function bucketFailure(
   const said = run.deps.redactor.redact(result.stderr.trim().split(/\r?\n/).at(-1)?.trim() ?? "");
   return new OpsCrewError(
     "PROVIDER_ERROR",
-    `OpsCrew could not ${what} in the bucket ${bucket.name} (exit code ${result.exitCode})${said === "" ? "." : `: ${said.slice(0, 300)}`}`,
-    { hint: "Check the bucket's key and that the bucket is there, then try again." },
+    `OpsCrew could not ${what} in the ${bucket.noun} ${bucket.name} (exit code ${result.exitCode})${said === "" ? "." : `: ${said.slice(0, 300)}`}`,
+    {
+      hint:
+        bucket.noun === "folder"
+          ? `Check that the machine answers, that its host key is still the one the plan pins, and that the public half of the key ${OFFSITE_SFTP_KEY_VAR} names is in the account's authorized_keys, then try again.`
+          : "Check the bucket's key and that the bucket is there, then try again.",
+    },
   );
 }
 
@@ -323,20 +372,20 @@ export async function bucketAbout(
     partPath(id, server, "about.json"),
   )) {
     bytes += (chunk as Buffer).length;
-    if (bytes > MAX_ABOUT_BYTES) throw unreadable(id);
+    if (bytes > MAX_ABOUT_BYTES) throw unreadable(bucket, id);
     chunks.push(chunk as Buffer);
   }
   const text = Buffer.concat(chunks).toString("utf8").trim();
   const about = aboutOf(text);
-  if (about === undefined || about.id !== id) throw unreadable(id);
+  if (about === undefined || about.id !== id) throw unreadable(bucket, id);
   return { about, text };
 }
 
 /** The refusal of a record in the bucket that does not read as the store's contract. */
-function unreadable(id: string): OpsCrewError {
+function unreadable(bucket: Pick<OffsiteBucket, "noun">, id: string): OpsCrewError {
   return new OpsCrewError(
     "ARTIFACT_INVALID",
-    `The record of the copy ${id} in the off-server bucket could not be read, so OpsCrew did not use it. Nothing was changed.`,
+    `The record of the copy ${id} in the off-server ${bucket.noun} could not be read, so OpsCrew did not use it. Nothing was changed.`,
     { hint: "Restore another copy (`opscrew snapshot list`), or take a new snapshot." },
   );
 }
@@ -489,56 +538,18 @@ const PRESENT = 6;
  * The refusal to replace `folder` (in words), whose `about.json` the restore could not read: only
  * the user can tell what it holds, so it is not deleted.
  */
-function unreadableFolder(folder: string, id: string): OpsCrewError {
+function unreadableFolder(
+  bucket: Pick<OffsiteBucket, "noun">,
+  folder: string,
+  id: string,
+): OpsCrewError {
   return new OpsCrewError(
     "PHASE_PRECONDITION",
-    `${folder} has an about.json that OpsCrew can't read, so it did not put the bucket's copy of the snapshot ${id} in its place. Nothing was changed.`,
+    `${folder} has an about.json that OpsCrew can't read, so it did not put the ${bucket.noun}'s copy of the snapshot ${id} in its place. Nothing was changed.`,
     {
-      hint: "Fix that about.json, or remove the folder by hand if you want the bucket's copy instead, then try again.",
+      hint: `Fix that about.json, or remove the folder by hand if you want the ${bucket.noun}'s copy instead, then try again.`,
     },
   );
-}
-
-/**
- * The Docker API of the server `server` of `run`'s plan: `services.docker`'s, else `docker system
- * dial-stdio` over the login `opscrew logs` uses (through `sudo -n` where that login reaches
- * Docker only so), at the address that login reaches, registered with the redactor.
- */
-async function serverDocker(
-  run: SnapshotRun,
-  services: RestoreServices,
-  server: string,
-): Promise<{ client: DockerClient; close(): Promise<void> }> {
-  const { deps, plan } = run;
-  const injected = services.docker?.(server);
-  const transport =
-    injected ??
-    (await (async () => {
-      const { login, sudo } = await serverShell(deps, plan, server, services);
-      const reach = (await privateReach(deps, plan, server, login)) ?? login;
-      deps.redactor.addName(reach.host, "server-address");
-      const streams = deps.streams ?? new NodeStreamRunner();
-      const args = [
-        ...sshArgs({
-          host: reach.host,
-          port: reach.port,
-          user: login.user,
-          ...(login.keyFile === undefined ? {} : { keyFile: login.keyFile }),
-          knownHostsFile: deps.paths.files.knownHosts,
-          fresh: true,
-          // A copy's stream can stay quiet while the next object starts downloading.
-          keepAliveSeconds: 15,
-        }),
-        sudo ? "sudo -n docker system dial-stdio" : "docker system dial-stdio",
-      ];
-      return dialStdioTransport(() => streams.open("ssh", args));
-    })());
-  return {
-    client: dockerClient(transport),
-    close: async () => {
-      await transport.close?.();
-    },
-  };
 }
 
 /**
@@ -563,11 +574,11 @@ export async function copyToServer(
   );
   const owner = /^owner (\d+) (\d+)$/m.exec(prepared.stdout);
   const folder = `The folder ${dir}/${id} in the app's folder ${host.where}`;
-  if (prepared.exitCode === PRESENT) throw unreadableFolder(folder, id);
+  if (prepared.exitCode === PRESENT) throw unreadableFolder(bucket, folder, id);
   if (prepared.exitCode !== 0 || owner === null) {
     throw hostFailure(run, host, prepared, `make room for the copy ${id}`);
   }
-  const docker = await serverDocker(run, services, host.server);
+  const docker = await serverDocker(run.deps, run.plan, host.server, services);
   try {
     const archive = copyArchive(run, bucket, identity, {
       ...input,
@@ -576,8 +587,8 @@ export async function copyToServer(
     });
     const mount: MountSpec = { type: "bind", source: `${appDir(run.plan)}/${dir}`, target: DIR };
     const exitCode = await receive(docker.client, mount, id, archive);
-    if (exitCode === PRESENT) throw unreadableFolder(folder, id);
-    if (exitCode !== 0) throw failedHere(host.where, id, exitCode);
+    if (exitCode === PRESENT) throw unreadableFolder(bucket, folder, id);
+    if (exitCode !== 0) throw failedHere(bucket, host.where, id, exitCode);
   } catch (error) {
     await host.run(`rm -rf ${dir}/${id}.taking`, READ_TIMEOUT_MS).catch(() => undefined);
     throw error;
@@ -587,10 +598,15 @@ export async function copyToServer(
 }
 
 /** The error of a copy that a busybox one-off could not put in place. */
-function failedHere(where: string, id: string, exitCode: number): OpsCrewError {
+function failedHere(
+  bucket: Pick<OffsiteBucket, "noun">,
+  where: string,
+  id: string,
+  exitCode: number,
+): OpsCrewError {
   return new OpsCrewError(
     "COMMAND_FAILED",
-    `OpsCrew could not put the copy ${id} from the bucket in place ${where} (exit code ${exitCode}).`,
+    `OpsCrew could not put the copy ${id} from the ${bucket.noun} in place ${where} (exit code ${exitCode}).`,
     { hint: "Check the free disk there, then try again." },
   );
 }
@@ -615,9 +631,10 @@ export async function copyToPortainer(
   });
   if (exitCode === PRESENT) {
     throw unreadableFolder(
+      bucket,
       `The folder ${id} in your Portainer's snapshots volume ${place.volume}`,
       id,
     );
   }
-  if (exitCode !== 0) throw failed(`put the copy ${id} from the bucket in place`, exitCode);
+  if (exitCode !== 0) throw failed(`put the copy ${id} from the ${bucket.noun} in place`, exitCode);
 }

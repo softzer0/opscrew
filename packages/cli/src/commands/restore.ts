@@ -17,7 +17,7 @@ interface RestoreFlags extends AppEnvFlags {
   only?: string;
   /** `--allow-other-version`: put back the data of a snapshot another version took. */
   allowOtherVersion?: boolean;
-  /** `--from offsite`: the copy in the off-server bucket. */
+  /** `--from offsite`: the copy off the server, in its bucket or SFTP folder. */
   from?: "offsite";
   /** `--key-file <path>`: the age key file that opens the off-server copies. */
   keyFile?: string;
@@ -60,7 +60,7 @@ function checkFlags(flags: RestoreFlags, id: string, given: string): string | un
   if (flags.keyFile !== undefined && flags.from === undefined) {
     throw new OpsCrewError(
       "INVALID_INPUT",
-      "--key-file goes only with --from offsite: it opens the encrypted copy in the off-server bucket.",
+      "--key-file goes only with --from offsite: it opens the encrypted copy off the server.",
       {
         hint: `Run \`${command} --from offsite --key-file <path>\`, or \`${command}\` without --key-file.`,
       },
@@ -138,7 +138,7 @@ export function register(program: Command, ctx: CliContext): void {
     .addOption(
       new Option(
         "--from <where>",
-        "offsite: restore the encrypted copy in the off-server bucket, decrypted on this computer",
+        "offsite: restore the encrypted copy off the server (in its bucket or SFTP folder), decrypted on this computer",
       ).choices(["offsite"]),
     )
     .option(

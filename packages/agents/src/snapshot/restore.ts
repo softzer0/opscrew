@@ -59,6 +59,7 @@ import {
   hideIdentity,
   type OffsiteBucket,
   offsiteBucket,
+  offsiteNoun,
   type RestoreServices,
 } from "./restore-offsite";
 import { restoreInPortainer } from "./restore-portainer";
@@ -160,7 +161,7 @@ function requireOffsite(run: SnapshotRun, id: string, options: RestoreSnapshotOp
   if (options.identity === undefined) {
     throw new OpsCrewError(
       "INVALID_INPUT",
-      `The copies in the off-server bucket are encrypted to the recovery copy's age key, and none was given, so OpsCrew can't read the copy ${id}. ${NOTHING_CHANGED}`,
+      `The copies in the off-server ${offsiteNoun(run.plan)} are encrypted to the recovery copy's age key, and none was given, so OpsCrew can't read the copy ${id}. ${NOTHING_CHANGED}`,
       { hint: "Give the file with your age key (the one `--key-out` wrote), then try again." },
     );
   }
@@ -228,9 +229,9 @@ async function restoreOnHosts(
     const offsite = snapshotOffsiteOf(plan) !== undefined && options.from === undefined;
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `${environment} has no snapshot ${id}${options.from === "offsite" ? ", on its machines or in its off-server bucket" : ""}. ${NOTHING_CHANGED}`,
+      `${environment} has no snapshot ${id}${options.from === "offsite" ? `, on its machines or in its off-server ${offsiteNoun(plan)}` : ""}. ${NOTHING_CHANGED}`,
       {
-        hint: `\`opscrew snapshot list${flags}\` shows its snapshots${offsite ? `; one only in the off-server bucket is restored with \`opscrew restore ${id}${flags} --from offsite\`` : ""}.`,
+        hint: `\`opscrew snapshot list${flags}\` shows its snapshots${offsite ? `; one only in the off-server ${offsiteNoun(plan)} is restored with \`opscrew restore ${id}${flags} --from offsite\`` : ""}.`,
       },
     );
   }
@@ -253,7 +254,9 @@ async function restoreOnHosts(
   // 4. The copies from the bucket, then the restores.
   for (const holder of holders.filter((each) => copies.has(each.server))) {
     const host = hosts.get(holder.server) as ScriptHost;
-    deps.reporter.step(`Copying the snapshot ${id} from the off-server bucket to ${host.name}`);
+    deps.reporter.step(
+      `Copying the snapshot ${id} from the off-server ${offsiteNoun(plan)} to ${host.name}`,
+    );
     await copyToServer(run, services, bucket as OffsiteBucket, options.identity as string, host, {
       id,
       server: holder.server,

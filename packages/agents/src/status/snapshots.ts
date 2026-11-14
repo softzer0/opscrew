@@ -19,6 +19,7 @@ import {
   type PlaceListing,
   portainerPlaceListing,
 } from "../snapshot/list";
+import { offsiteText } from "../snapshot/offsite";
 import { portainerPlace } from "../snapshot/portainer";
 import { type SnapshotRun, snapshotTarget } from "../snapshot/run";
 import { SERVER_SNAPSHOTS } from "../snapshot/store";
@@ -42,6 +43,11 @@ export interface SnapshotStatus {
   last?: SnapshotEntry;
   /** The servers whose last scheduled snapshot, or its off-server copy, failed. */
   scheduledFailures: ScheduledFailure[];
+  /**
+   * Where the copies off the server go, in words and with no secret (`offsiteText`); absent when
+   * the copy is off.
+   */
+  offsite?: string;
 }
 
 /** The lines the probe prints after the listing. */
@@ -119,7 +125,12 @@ async function readSnapshotStatus(run: SnapshotRun): Promise<SnapshotStatus> {
     }
   }
   const [last] = mergeListings(places).sort(newestFirst);
-  return { ...(last === undefined ? {} : { last }), scheduledFailures };
+  const offsite = offsiteText(run.plan);
+  return {
+    ...(last === undefined ? {} : { last }),
+    scheduledFailures,
+    ...(offsite === "off" ? {} : { offsite }),
+  };
 }
 
 /** A snapshot's result: every part copied, or which failed or were left out. */
@@ -147,6 +158,7 @@ export function snapshotStatusLines(status: SnapshotStatus, flags: string): stri
     last === undefined
       ? `Snapshots: none yet; \`opscrew snapshot${flags}\` takes one.`
       : `Last snapshot: ${last.id}, ${KIND_WORDS[last.kind]}, ${formatUtc(last.taken)}, ${resultText(last)}, ${last.where}${last.offsite ? ", copied off the server" : ""}.`,
+    ...(status.offsite === undefined ? [] : [`Copies off the server: ${status.offsite}.`]),
     ...status.scheduledFailures.map((failure) => {
       const what =
         failure.id === undefined

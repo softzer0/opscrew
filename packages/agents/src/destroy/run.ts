@@ -88,7 +88,7 @@ import {
   snapshotKeptNote,
 } from "./deletion";
 import { leaveSharedMonitoring, requireNoMonitoringSenders } from "./monitoring";
-import { destroyOwnServer } from "./own";
+import { destroyOwnServer, offsiteCopiesStay } from "./own";
 import { destroyPortainer } from "./portainer";
 import { destroySharedPreviews } from "./previews";
 import { destroyCloudflareWorkers, destroyGithubPages } from "./serverless";
@@ -299,6 +299,8 @@ async function destroyInfrastructure(
         ...(ctx.servers ?? []),
         ...(warning ? [warning] : []),
         snapshotLine,
+        // The off-server copies outlive the server, wherever they are: OpsCrew never deletes them.
+        ...(offsiteCopiesStay(plan) === "" ? [] : [offsiteCopiesStay(plan).trim()]),
         ...(tunnelChange(summary.changes, "delete") && !serverDeleted
           ? [
               "OpsCrew applies this plan once Cloudflare reports no active connections for the tunnel (Cloudflare deletes a tunnel only after its connector has stopped).",

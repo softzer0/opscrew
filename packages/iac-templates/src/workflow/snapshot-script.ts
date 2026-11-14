@@ -9,9 +9,16 @@ import {
   targetArch,
 } from "@opscrew/plan-schema";
 import { offsiteExpires } from "../infra/storage";
-import { AGE_BINARY, ageFunctions, OFFSITE_PREFIX, rcloneSettings } from "../offsite";
+import {
+  AGE_BINARY,
+  ageFunctions,
+  offsiteLogin,
+  offsiteRetention,
+  offsiteRoot,
+  PORTAINER_OFFSITE_VARIABLES,
+  rcloneSettings,
+} from "../offsite";
 import { IMAGES } from "../pins";
-import { PORTAINER_OFFSITE_VARIABLES } from "../portainer-target/snapshots";
 import { extraServer } from "../runtime/components";
 import { shellQuote } from "../runtime/services";
 import { planFilePath, printfFormat, said } from "./shared";
@@ -73,8 +80,8 @@ export const SCHEDULED_LOG = `${SNAPSHOTS_DIR}/scheduled.log`;
 /**
  * The off-server copy's env file in the app's folder on each server with data (mode 600, 024
  * plan.md 7.), as the deploy writes it from {@link OFFSITE_ENV_SECRET}: `NAME=value` lines of
- * Portainer's variables (`PORTAINER_OFFSITE_VARIABLES`: the bucket's S3 endpoint, its key and the
- * recovery copy's age recipient). It reaches the upload's container only through `docker run
+ * Portainer's variables (`offsiteVariables`: a bucket's S3 endpoint and key, or an SFTP machine's
+ * private key on one line, and the recovery copy's age recipient). It reaches the upload's container only through `docker run
  * --env-file`, never a command line.
  */
 export const OFFSITE_ENV_FILE = "offsite.env";
@@ -109,9 +116,11 @@ const LATE_BUCKET_WAIT_SECONDS = 60;
  * The off-server copy's functions (024 plan.md 7., D10, D16) on `server`, when `snapshots.offsite`
  * is on; none otherwise.
  *
- * `snapshot_offsite <id>` copies the complete snapshot `.snapshots/<id>` to the bucket, from a
- * one-off of the pinned rclone image as the deploy user, with {@link OFFSITE_ENV_FILE} as its
- * environment and the plan's region:
+ * `snapshot_offsite <id>` copies the complete snapshot `.snapshots/<id>` to the bucket, or the
+ * folder on the user's SFTP machine ({@link offsiteRoot}), from a one-off of the pinned rclone image
+ * as the deploy user, with {@link OFFSITE_ENV_FILE} as its environment (the login,
+ * {@link offsiteLogin}) and the plan's settings ({@link rcloneSettings}: a bucket's region, or the
+ * machine's host, user and pinned host key):
  * - age of the server's architecture is made ready (`ageFunctions`: its release archive in
  *   {@link AGE_DIR} checked against its pinned SHA-256, fetched when missing or changed, and its
  *   binary unpacked for this upload only);
@@ -121,8 +130,9 @@ const LATE_BUCKET_WAIT_SECONDS = 60;
  * - for up to 15 minutes, a minute apart, the deletion and each file are sent again while the
  *   bucket answers NoSuchBucket, or rclone's read of an upload finds no object: some of Hetzner's
  *   nodes know a new bucket only that long after it is created;
- * - where the bucket expires nothing itself ({@link offsiteExpires}), the copies older than
- *   `snapshots.offsite.days` are deleted after the upload.
+ * - where the storage expires nothing itself ({@link offsiteExpires}: Spaces, the user's own bucket
+ *   or machine), the copies older than `snapshots.offsite.days` are deleted after the upload, and on
+ *   an SFTP machine the folders that leaves empty ({@link offsiteRetention}).
  * Then the snapshot gets `offsite.done`. A snapshot that holds no file has nothing to copy. The
  * output goes to {@link OFFSITE_LOG}; a failure is a message on stderr, with the log's last error
  * line, and returns 1, and a failed deletion only warns.
@@ -142,13 +152,13 @@ function offsiteFunctions(plan: DeployPlan, server: string): string[] {
   const arch =
     extra === undefined ? targetArch(plan.target) : "arch" in extra ? extra.arch : "amd64";
   const v = PORTAINER_OFFSITE_VARIABLES;
-  const remote = `offsite:${copy.bucket}/${OFFSITE_PREFIX}`;
-  const login = [
-    `RCLONE_CONFIG_OFFSITE_ENDPOINT="$${v.endpoint}"`,
-    `RCLONE_CONFIG_OFFSITE_ACCESS_KEY_ID="$${v.accessKeyId}"`,
-    `RCLONE_CONFIG_OFFSITE_SECRET_ACCESS_KEY="$${v.secretAccessKey}"`,
-  ];
+  const remote = offsiteRoot(plan, copy);
+  const login = Object.entries(offsiteLogin(copy)).map(
+    ([name, variable]) => `${name}="$${variable}"`,
+  );
   const days = offsiteExpires(copy.provider) ? undefined : copy.days;
+  // Where the copies go, in the messages: the bucket, or the folder on the user's machine.
+  const store = copy.provider === "sftp" ? "folder" : "bucket";
   // One line: the deploy embeds the script in its YAML one line at a time. `$1` is the objects'
   // folder under the prefix, the others the snapshot's files; exit 4: only the deletion failed.
   const upload = [
@@ -167,9 +177,7 @@ function offsiteFunctions(plan: DeployPlan, server: string): string[] {
     `put() { ${AGE_BINARY} -r "$${v.recipient}" < /snapshot/"$1" | rclone rcat ${shellQuote(`${remote}/`)}"$to/$1.age"; }`,
     "late unmark || exit 1",
     'for f in "$@" about.json; do late put "$f" || exit 1; done',
-    ...(days === undefined
-      ? []
-      : [`rclone delete --min-age ${days}d ${shellQuote(remote)} || exit 4`]),
+    ...(days === undefined ? [] : [`${offsiteRetention(copy, remote)} || exit 4`]),
   ].join("; ");
   const to = server === APP_SERVER ? '"$1"' : `"$1"/${server}`;
   // `%s` and `%s`: the app's folder, then `; its last error: <line>` or `.`.
@@ -181,7 +189,7 @@ function offsiteFunctions(plan: DeployPlan, server: string): string[] {
   return [
     "snapshot_offsite() {",
     `  if [ ! -f ${OFFSITE_ENV_FILE} ]; then`,
-    `    ${said(`The off-server copy is on, but ${where} has no ${OFFSITE_ENV_FILE} with its bucket's key yet, so the snapshot %s was not copied off the server. Run opscrew provision, then deploy again.`)} "$1" >&2`,
+    `    ${said(`The off-server copy is on, but ${where} has no ${OFFSITE_ENV_FILE} with its ${store}'s key yet, so the snapshot %s was not copied off the server. Run opscrew provision, then deploy again.`)} "$1" >&2`,
     "    return 1",
     "  fi",
     '  if ! snapshot_complete "$1"; then',
@@ -202,7 +210,7 @@ function offsiteFunctions(plan: DeployPlan, server: string): string[] {
     '    if [ -n "$_offsite_error" ]; then _offsite_error="; its last error: $_offsite_error"; else _offsite_error="."; fi',
     "  fi",
     '  if [ "$_offsite_rc" -ne 0 ] && [ "$_offsite_rc" -ne 4 ]; then',
-    `    ${said(`Copying the snapshot %s off the server failed, so the bucket has no complete copy of it yet; the snapshot itself stays on ${where}, and the next snapshot tries again. ${log}`)} "$1" ${folder} "$_offsite_error" >&2`,
+    `    ${said(`Copying the snapshot %s off the server failed, so the ${store} has no complete copy of it yet; the snapshot itself stays on ${where}, and the next snapshot tries again. ${log}`)} "$1" ${folder} "$_offsite_error" >&2`,
     "    return 1",
     "  fi",
     `  (umask 077 && : > ${SNAPSHOTS_DIR}/"$1"/offsite.done) || return 1`,

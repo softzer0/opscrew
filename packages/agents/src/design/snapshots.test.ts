@@ -14,7 +14,7 @@ describe("withDesignedSnapshots", () => {
     expect(DeployPlanSchema.parse(plan)).toEqual(plan);
     expect(snapshotDesignLines(plan, "")).toEqual([
       "Scheduled snapshots of the app's data (snapshots.schedule): weekly, the last 4 kept, on the server; `opscrew snapshot schedule off` turns them off.",
-      "The snapshots stay on the server, so losing it loses them too: `opscrew snapshot offsite on --to hetzner --region <region>` (or `--to digitalocean`) keeps an encrypted copy elsewhere.",
+      "The snapshots stay on the server, so losing it loses them too: `opscrew snapshot offsite on --to hetzner --region <region>` (or `--to digitalocean`) keeps an encrypted copy elsewhere, and `--to s3` or `--to sftp` keeps it in your own S3-compatible bucket or on your own machine, which OpsCrew prices nothing for.",
     ]);
     expect(snapshotDesignLines(plan, " --env staging")[0]).toContain(
       "`opscrew snapshot schedule off --env staging`",
@@ -30,6 +30,27 @@ describe("withDesignedSnapshots", () => {
     expect(snapshotDesignLines(plan, "")[1]).toBe(
       "An encrypted copy of each snapshot off the server (snapshots.offsite): the private bucket shop-prod-backups on Cloudflare R2, each copy kept 90 days. Expected cost: $0.00/month at Cloudflare R2, plus what the copies store beyond what that includes.",
     );
+  });
+
+  it("keeps the user's own bucket or machine, priced by nobody: its provider bills it (T2756)", () => {
+    const own = DeployPlanSchema.parse({
+      ...ownPlan(),
+      snapshots: {
+        offsite: {
+          provider: "sftp",
+          host: "backup.example.com",
+          user: "shop-backups",
+          path: "/backups",
+          hostKey:
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl",
+        },
+      },
+    });
+    const plan = withDesignedSnapshots(ownPlan(), own, important);
+    expect(plan.snapshots).toEqual(own.snapshots);
+    expect(snapshotDesignLines(plan, "")).toEqual([
+      "An encrypted copy of each snapshot off the server (snapshots.offsite): the folder /backups/shop-prod/backups on backup.example.com, each copy kept 90 days. OpsCrew prices nothing for it: the copies go to your own machine, and its provider bills what they store.",
+    ]);
   });
 
   it("proposes none on a cloud server, for data that matters little, without data or for previews", () => {

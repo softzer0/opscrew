@@ -17,9 +17,10 @@ import {
 } from "@opscrew/connector-ssh-host";
 import type { ApprovalRecord, ResourceChange } from "@opscrew/contracts";
 import { listText, lowerFirst, OpsCrewError, plural, replaceNames } from "@opscrew/core";
-import { usesTunnel } from "@opscrew/iac-templates";
+import { offsiteExpires, offsitePlace, usesTunnel } from "@opscrew/iac-templates";
 import {
   APP_SERVER,
+  backupsBucketOf,
   type DeployPlan,
   snapshotOffsiteOf,
   writeArtifact,
@@ -342,14 +343,17 @@ export function appSnapshots(facts: HostFacts, app: string): string | undefined 
 }
 
 /**
- * The sentence that says the off-server copies of the snapshots (`snapshots.offsite`) stay in
- * their bucket after the data is deleted, with a space before it, or "" without them.
+ * The sentence that says the off-server copies of the snapshots (`snapshots.offsite`) stay where
+ * they are after the data is deleted, with a space before it, or "" without them: OpsCrew never
+ * deletes the copies' bucket, the user's own bucket or their folder on the user's machine.
  */
 export function offsiteCopiesStay(plan: DeployPlan): string {
   const offsite = snapshotOffsiteOf(plan);
-  return offsite === undefined
-    ? ""
-    : ` The off-server copies of the snapshots in the bucket ${offsite.bucket} stay until its lifecycle rule expires them.`;
+  if (offsite === undefined) return "";
+  const bucket = backupsBucketOf(plan);
+  return bucket !== undefined && offsiteExpires(bucket.provider)
+    ? ` The off-server copies of the snapshots in the bucket ${bucket.bucket} stay until its lifecycle rule expires them.`
+    : ` The off-server copies of the snapshots stay in ${offsitePlace(plan, offsite)}: OpsCrew never deletes them, and with no more uploads nothing deletes the old ones.`;
 }
 
 /**

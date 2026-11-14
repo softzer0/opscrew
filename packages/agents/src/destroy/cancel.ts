@@ -10,6 +10,7 @@
  */
 import type { ResourceChange } from "@opscrew/contracts";
 import { listText, OpsCrewError, plural, upperFirst } from "@opscrew/core";
+import { offsitePlace } from "@opscrew/iac-templates";
 import {
   APP_SERVER,
   type CloudProvider,
@@ -155,7 +156,7 @@ export function dataSnapshotOffer(
   const first =
     offsite === undefined
       ? `turn on the encrypted copy off the server (\`opscrew snapshot offsite on --to r2${flag}\`, or \`opscrew snapshot offsite on --to hetzner --region <region>${flag}\` (or \`--to digitalocean\`), then \`opscrew provision${flag}\`) and run ${take}`
-      : `run ${take}, which also puts its encrypted copy in the bucket ${offsite.bucket} for ${plural(offsite.days, "day")}`;
+      : `run ${take}, which also puts its encrypted copy in ${offsite.provider === "s3" || offsite.provider === "sftp" ? offsitePlace(plan, offsite) : `the bucket ${offsite.bucket}`} for ${plural(offsite.days, "day")}`;
   const providerSnapshots = listText(
     byProvider(servers).map(([provider]) => {
       const { company, noun } = destroyTexts(provider);

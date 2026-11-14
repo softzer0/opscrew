@@ -15,6 +15,7 @@ import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testContext } from "../__fixtures__/plans";
+import { PORTAINER_OFFSITE_VARIABLES } from "../offsite";
 import { IMAGES, TOOLS, toolDownloadUrl } from "../pins";
 import { shellQuote } from "../runtime/services";
 import { withFiles, withSqlite } from "../workflow/__fixtures__/plans";
@@ -24,7 +25,6 @@ import { portainerTestPlan } from "./__fixtures__/plans";
 import {
   fillPortainerStack,
   PORTAINER_IMAGE_PLACEHOLDER,
-  PORTAINER_OFFSITE_VARIABLES,
   PORTAINER_RELEASE_PLACEHOLDER,
   portainerServiceEnvironment,
   portainerSnapshotParts,
@@ -356,9 +356,12 @@ describe("the off-server copy in a stack", () => {
       "opscrew-shop_snapshot_tools",
       "opscrew-shop_version",
     ]);
-    expect(portainerStackEnvKeys(plan).opscrew).toEqual(
-      expect.arrayContaining(Object.values(PORTAINER_OFFSITE_VARIABLES)),
+    const v = PORTAINER_OFFSITE_VARIABLES;
+    const keys = portainerStackEnvKeys(plan).opscrew;
+    expect(keys).toEqual(
+      expect.arrayContaining([v.endpoint, v.accessKeyId, v.secretAccessKey, v.recipient]),
     );
+    expect(keys).not.toContain(v.sshKey);
   });
 
   it("keeps age's archive in its tools volume, checking its SHA-256 and unpacking age before each use", () => {
@@ -431,6 +434,87 @@ describe("the off-server copy in a stack", () => {
 
   it("matches the snapshot", () => {
     expect(content).toMatchSnapshot();
+  });
+
+  it("leaves the expiry to the bucket's lifecycle rule", () => {
+    expect(script(offsite)).not.toContain("rclone delete");
+  });
+});
+
+describe("the off-server copy in a stack, to the user's own storage", () => {
+  const S3 = {
+    provider: "s3",
+    endpoint: "https://s3.eu-central-1.wasabisys.com",
+    bucket: "shop-backups",
+    region: "eu-central-1",
+    days: 30,
+  };
+  const HOST_KEY =
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+  const SFTP = {
+    provider: "sftp",
+    host: "backup.example.com",
+    port: 23,
+    user: "shop-backups",
+    path: "/backups",
+    hostKey: HOST_KEY,
+  };
+  const of = (copy: object) => render(snapshotPlan({ snapshots: { offsite: copy } }));
+  const v = PORTAINER_OFFSITE_VARIABLES;
+
+  it("reaches an S3-compatible bucket as rclone's Other provider, its endpoint and key from stack variables", () => {
+    const { stack } = of(S3);
+    expect(stack.services.offsite?.environment).toEqual({
+      RCLONE_CONFIG_OFFSITE_TYPE: "s3",
+      RCLONE_CONFIG_OFFSITE_PROVIDER: "Other",
+      RCLONE_CONFIG_OFFSITE_REGION: "eu-central-1",
+      RCLONE_CONFIG_OFFSITE_NO_CHECK_BUCKET: "true",
+      RCLONE_CONFIG_OFFSITE_ENDPOINT: "${OPSCREW_OFFSITE_ENDPOINT}",
+      RCLONE_CONFIG_OFFSITE_ACCESS_KEY_ID: "${OPSCREW_OFFSITE_ACCESS_KEY_ID}",
+      RCLONE_CONFIG_OFFSITE_SECRET_ACCESS_KEY: "${OPSCREW_OFFSITE_SECRET_ACCESS_KEY}",
+      OPSCREW_OFFSITE_RECIPIENT: "${OPSCREW_OFFSITE_RECIPIENT}",
+    });
+    const text = script(stack.services.offsite);
+    expect(text).toContain(`rclone rcat 'offsite:shop-backups/backups/'"$2"`);
+  });
+
+  it("reaches an SFTP machine with its pinned host key, no shell, and the private key from a stack variable", () => {
+    const { stack, content } = of(SFTP);
+    expect(stack.services.offsite?.environment).toEqual({
+      RCLONE_CONFIG_OFFSITE_TYPE: "sftp",
+      RCLONE_CONFIG_OFFSITE_HOST: "backup.example.com",
+      RCLONE_CONFIG_OFFSITE_PORT: "23",
+      RCLONE_CONFIG_OFFSITE_USER: "shop-backups",
+      RCLONE_CONFIG_OFFSITE_HOST_KEYS: HOST_KEY,
+      RCLONE_CONFIG_OFFSITE_SHELL_TYPE: "none",
+      RCLONE_CONFIG_OFFSITE_KEY_PEM: "${OPSCREW_OFFSITE_SSH_KEY}",
+      OPSCREW_OFFSITE_RECIPIENT: "${OPSCREW_OFFSITE_RECIPIENT}",
+    });
+    const plan = snapshotPlan({ snapshots: { offsite: SFTP } });
+    expect(portainerStackEnvKeys(plan).opscrew.filter((key) => key.includes("OFFSITE"))).toEqual([
+      v.recipient,
+      v.sshKey,
+    ]);
+    // The environment's own folder in the user's: two apps on one machine never mix.
+    const text = script(stack.services.offsite);
+    expect(text).toContain(`rclone rcat 'offsite:/backups/shop-prod/backups/'"$2"`);
+    expect(content).not.toContain("BEGIN");
+  });
+
+  it("deletes the copies older than the plan's days after a pass that copied one, and only warns when that fails", () => {
+    const s3 = script(of(S3).stack.services.offsite);
+    expect(s3).toContain(
+      `  if [ "$copied" = 1 ] && ! rclone delete --min-age 30d 'offsite:shop-backups/backups'; then`,
+    );
+    const sftp = script(of(SFTP).stack.services.offsite);
+    expect(sftp).toContain(
+      `  if [ "$copied" = 1 ] && ! { rclone delete --min-age 90d 'offsite:/backups/shop-prod/backups' && rclone rmdirs --leave-root 'offsite:/backups/shop-prod/backups'; }; then`,
+    );
+    expect(sftp).toContain(
+      'echo "OpsCrew: the off-server copies older than 90 days could not be deleted; the next copy tries again." >&2',
+    );
+    expect(sftp.indexOf("      copied=1")).toBeGreaterThan(sftp.indexOf('touch "$d"/offsite.done'));
+    for (const text of [s3, sftp]) expect(shParses(text)).toBe(true);
   });
 });
 

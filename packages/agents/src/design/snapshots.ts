@@ -131,7 +131,7 @@ export function snapshotDesignLines(plan: DeployPlan, flags: string): string[] {
     );
   } else if (ownsData(plan)) {
     lines.push(
-      `The snapshots stay on ${where}, so losing it loses them too: \`opscrew snapshot offsite on --to hetzner --region <region>${flags}\` (or \`--to digitalocean\`) keeps an encrypted copy elsewhere.`,
+      `The snapshots stay on ${where}, so losing it loses them too: \`opscrew snapshot offsite on --to hetzner --region <region>${flags}\` (or \`--to digitalocean\`) keeps an encrypted copy elsewhere, and \`--to s3\` or \`--to sftp\` keeps it in your own S3-compatible bucket or on your own machine, which OpsCrew prices nothing for.`,
     );
   }
   return lines;

@@ -1,4 +1,4 @@
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, readFile, rm } from "node:fs/promises";
 import { devNull } from "node:os";
 import { dirname, join } from "node:path";
 import type {
@@ -30,7 +30,7 @@ import {
   STORAGE_PRICES,
   storageRootDir,
 } from "@opscrew/iac-templates";
-import { type DeployPlan, snapshotOffsiteOf } from "@opscrew/plan-schema";
+import { backupsBucketOf, type DeployPlan, snapshotOffsiteOf } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { CONTABO_STORAGE_GB } from "../design/storage";
@@ -87,8 +87,20 @@ type KeyVars = typeof STORAGE_KEY_VARS | typeof NEW_STORAGE_KEY_VARS | typeof OF
 /** A bucket as its key, its marker and its S3 endpoint need it. */
 type Bucket = Pick<ProviderBucket, "provider" | "bucket" | "region">;
 
-/** A bucket whose key the user creates: every provider's but Contabo's, which Contabo makes. */
-type UserKeyedBucket = Bucket & { provider: Exclude<BucketProvider, "contabo"> };
+/**
+ * A bucket whose key the user creates: every provider's but Contabo's, which Contabo makes, and
+ * the user's own S3-compatible bucket of the off-server copies (`s3`, at its `endpoint`).
+ */
+type UserKeyedBucket = Pick<Bucket, "bucket"> &
+  (
+    | { provider: Exclude<BucketProvider, "contabo">; endpoint?: undefined }
+    | { provider: "s3"; endpoint: string }
+  );
+
+/** Where a bucket whose key the user creates is, in words: the provider, or the endpoint's host. */
+function keyedStorageName(bucket: UserKeyedBucket): string {
+  return bucket.provider === "s3" ? new URL(bucket.endpoint).host : STORAGE_NAMES[bucket.provider];
+}
 
 /** The steps to create the key in each provider's console, for `app` and `bucket`. */
 const KEY_STEPS: Readonly<
@@ -109,13 +121,17 @@ const KEY_STEPS: Readonly<
     `Name it opscrew-${app}, give it the Object Read & Write permission, apply it to specific buckets only and pick ${bucket}.`,
     "Create it and copy the Access Key ID and the Secret Access Key (not the token value): Cloudflare shows the secret only once.",
   ],
+  s3: (app, bucket) => [
+    `In your storage provider's console, create an access key named opscrew-${app} that can list, read, write and delete objects in the bucket ${bucket}, and only there where the provider allows it.`,
+    "Copy the access key ID and the secret key: most providers show the secret only once.",
+  ],
 };
 
 /** A key's ID or secret as providers give them: letters, digits and `+/=_.-`. */
 const KEY_PART = /^[A-Za-z0-9+/=_.-]{16,256}$/;
 
 const StoredKeySchema = z.object({
-  provider: z.enum(["r2", "digitalocean", "hetzner"]),
+  provider: z.enum(["r2", "digitalocean", "hetzner", "s3"]),
   bucket: z.string(),
   accessKeyId: z.string().regex(KEY_PART),
   secretAccessKey: z.string().regex(KEY_PART),
@@ -278,9 +294,9 @@ export async function requireStorageKey(
 /**
  * The user's key for the bucket of the off-server copies (`snapshots.offsite`, 024 plan.md 7.), as
  * {@link requireStorageKey} gets the app's: from {@link OFFSITE_KEY_VARS}, else the key kept for
- * that bucket beside the others, else asked once (interactive runs only) and kept. Hetzner's and
- * Spaces' key is needed before the bucket, R2's (a token limited to the bucket) after it.
- * Registered with the redactor.
+ * that bucket beside the others, else asked once (interactive runs only) and kept. Hetzner's,
+ * Spaces' and the user's own bucket's (`s3`) key is needed before any change, R2's (a token
+ * limited to the bucket) after its bucket. Registered with the redactor.
  * @throws OpsCrewError `CREDENTIALS_MISSING` with the steps when no key is known and nobody can be
  * asked.
  */
@@ -291,13 +307,125 @@ export async function requireOffsiteKey(
   options: { command: string; already?: string },
 ): Promise<StorageLogin> {
   const offsite = snapshotOffsiteOf(plan);
-  if (offsite === undefined) throw new Error("The plan has no off-server copy.");
+  if (offsite === undefined || offsite.provider === "sftp") {
+    throw new Error("The plan has no off-server copy in a bucket.");
+  }
   return bucketKey(deps, services, options, {
-    bucket: offsite,
+    bucket:
+      offsite.provider === "s3"
+        ? { provider: "s3", bucket: offsite.bucket, endpoint: offsite.endpoint }
+        : offsite,
     vars: OFFSITE_KEY_VARS,
-    noun: "The off-server copies' bucket",
+    noun:
+      offsite.provider === "s3"
+        ? "Your bucket of the off-server copies"
+        : "The off-server copies' bucket",
     keyName: `${plan.app.name}-backups`,
   });
+}
+
+/** The variable that names the private key file an SFTP machine of the off-server copies takes. */
+export const OFFSITE_SFTP_KEY_VAR = "OPSCREW_OFFSITE_SFTP_KEY";
+
+/** An SSH private key file's text, as OpenSSH and PEM write it. */
+const PRIVATE_KEY =
+  /^-----BEGIN ([A-Z0-9 ]*)PRIVATE KEY-----\r?\n[\s\S]+\r?\n-----END \1PRIVATE KEY-----\s*$/;
+
+/** True when an OpenSSH private key (`openssh-key-v1`) is encrypted with a passphrase. */
+function opensshEncrypted(text: string): boolean {
+  const body = Buffer.from(text.replace(/-----[A-Z ]+-----/g, "").replace(/\s+/g, ""), "base64");
+  const magic = "openssh-key-v1\0";
+  if (body.subarray(0, magic.length).toString("latin1") !== magic) return false;
+  const length = body.readUInt32BE(magic.length);
+  const cipher = body.subarray(magic.length + 4, magic.length + 4 + length).toString("latin1");
+  return cipher !== "none";
+}
+
+/**
+ * The private key the server logs in to the SFTP machine of the off-server copies with: the file
+ * {@link OFFSITE_SFTP_KEY_VAR} names on this computer, without a passphrase (the server uses it
+ * unattended). Returned as `key_pem` takes it, on one line with its line ends written `\n`, and
+ * registered with the redactor, line by line too. OpsCrew never logs in there with it to change
+ * anything: the user puts its public half in the account's `authorized_keys`.
+ * @throws OpsCrewError `CREDENTIALS_MISSING` without the variable, `INVALID_INPUT` for a file that
+ * can't be read, holds no private key, or has a passphrase.
+ */
+export async function requireOffsiteSftpKey(
+  deps: Pick<PhaseDeps, "env" | "redactor">,
+  plan: DeployPlan,
+  options: { command: string; already?: string },
+): Promise<{ sshKey: string }> {
+  const offsite = snapshotOffsiteOf(plan);
+  if (offsite?.provider !== "sftp") throw new Error("The plan has no off-server copy over SFTP.");
+  const already = options.already ?? "Nothing was changed.";
+  const file = deps.env[OFFSITE_SFTP_KEY_VAR]?.trim() ?? "";
+  const account = `${offsite.user} on ${offsite.host}`;
+  if (file === "") {
+    throw new OpsCrewError(
+      "CREDENTIALS_MISSING",
+      `The off-server copies go to ${account} over SFTP, and the server needs a private key to log in there: ${OFFSITE_SFTP_KEY_VAR} names none. ${already}`,
+      {
+        hint: `Make a key of its own without a passphrase (\`ssh-keygen -t ed25519 -N "" -f ~/.ssh/opscrew-backups\`), add its public half (the .pub file) to ~/.ssh/authorized_keys of ${offsite.user} on the machine, set ${OFFSITE_SFTP_KEY_VAR} to the private key's path, then run \`${options.command}\` again.`,
+      },
+    );
+  }
+  let text: string;
+  try {
+    text = await readFile(file, "utf8");
+  } catch {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `OpsCrew could not read the private key file ${OFFSITE_SFTP_KEY_VAR} names (${file}). ${already}`,
+      {
+        hint: `Set ${OFFSITE_SFTP_KEY_VAR} to the key file's full path, then run \`${options.command}\` again.`,
+      },
+    );
+  }
+  const refuse = (why: string) =>
+    new OpsCrewError(
+      "INVALID_INPUT",
+      `The file ${OFFSITE_SFTP_KEY_VAR} names (${file}) ${why}. ${already}`,
+      {
+        hint: `Make a key of its own without a passphrase (\`ssh-keygen -t ed25519 -N "" -f ~/.ssh/opscrew-backups\`), add its .pub file to ~/.ssh/authorized_keys of ${offsite.user} on the machine, set ${OFFSITE_SFTP_KEY_VAR} to it, then run \`${options.command}\` again.`,
+      },
+    );
+  if (!PRIVATE_KEY.test(text)) throw refuse("holds no SSH private key");
+  const lines = text.trim().split(/\r?\n/);
+  for (const line of lines) {
+    if (line.length >= 16 && !line.startsWith("-----")) deps.redactor.addLiteral(line, "sftp-key");
+  }
+  const sshKey = lines.join("\\n");
+  deps.redactor.addLiteral(sshKey, "sftp-key");
+  if (/ENCRYPTED/.test(text) || opensshEncrypted(text)) {
+    throw refuse("is protected by a passphrase, and the server uses the key unattended");
+  }
+  return { sshKey };
+}
+
+/**
+ * The login the off-server copies upload with: a bucket's key, or an SFTP machine's private key
+ * on one line ({@link requireOffsiteSftpKey}).
+ */
+export type OffsiteLogin = StorageLogin | { sshKey: string };
+
+/** The bucket's key of an off-server copy's login, or undefined for an SFTP machine's (or none). */
+export function bucketKeyOf(login: OffsiteLogin | undefined): StorageLogin | undefined {
+  return login === undefined || "sshKey" in login ? undefined : login;
+}
+
+/**
+ * The login of the off-server copies (`snapshots.offsite`): the private key for an SFTP machine
+ * ({@link requireOffsiteSftpKey}), else the bucket's key ({@link requireOffsiteKey}).
+ */
+export function requireOffsiteLogin(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  services: Pick<ProvisionServices, "askStorageKey">,
+  options: { command: string; already?: string },
+): Promise<OffsiteLogin> {
+  return snapshotOffsiteOf(plan)?.provider === "sftp"
+    ? requireOffsiteSftpKey(deps, plan, options)
+    : requireOffsiteKey(deps, plan, services, options);
 }
 
 /**
@@ -311,7 +439,7 @@ async function bucketKey(
   what: { bucket: UserKeyedBucket; vars: KeyVars; noun: string; keyName: string },
 ): Promise<StorageLogin> {
   const { bucket, vars, noun } = what;
-  const name = STORAGE_NAMES[bucket.provider];
+  const name = keyedStorageName(bucket);
   let key = keyFromEnv(deps.env, vars) ?? (await storedKey(deps, bucket));
   if (key === undefined && deps.interactive && services.askStorageKey !== undefined) {
     deps.reporter.info(
@@ -733,15 +861,17 @@ function s3EngineEnv(
 }
 
 /**
- * The values of the off-server copy's variables (`PORTAINER_OFFSITE_VARIABLES`, by name): the
- * bucket's S3 endpoint (R2's from the zone's Cloudflare account), the bucket's key and the age
- * recipient the copies are encrypted to; the region is the plan's. Portainer's stack holds them as
- * variables; a server as `OFFSITE_ENV_FILE` ({@link offsiteEnvFile}).
+ * The values of the off-server copy's variables (`PORTAINER_OFFSITE_VARIABLES`, by name, only the
+ * ones the copy has: `offsiteVariables`): a bucket's S3 endpoint (R2's from the zone's Cloudflare
+ * account, the user's own bucket's from the plan) and key, or an SFTP machine's private key on one
+ * line, and the age recipient the copies are encrypted to; the rest of rclone's settings is the
+ * plan's. Portainer's stack holds them as variables; a server as `OFFSITE_ENV_FILE`
+ * ({@link offsiteEnvFile}).
  */
 export function offsiteValues(
   plan: DeployPlan,
   input: {
-    key: StorageLogin;
+    login: OffsiteLogin;
     recipient: string;
     cloudflare: Pick<CloudflareSetup, "accountId"> | undefined;
   },
@@ -749,10 +879,17 @@ export function offsiteValues(
   const offsite = snapshotOffsiteOf(plan);
   if (offsite === undefined) throw new Error("The plan has no off-server copy.");
   const v = PORTAINER_OFFSITE_VARIABLES;
+  const { login } = input;
+  if (offsite.provider === "sftp" || "sshKey" in login) {
+    if (!("sshKey" in login)) throw new Error("An SFTP machine needs its private key.");
+    return { [v.sshKey]: login.sshKey, [v.recipient]: input.recipient };
+  }
   let endpoint: string;
   if (offsite.provider === "r2") {
     if (input.cloudflare === undefined) throw new Error("R2 needs the Cloudflare account.");
     endpoint = r2Endpoint(input.cloudflare.accountId);
+  } else if (offsite.provider === "s3") {
+    endpoint = offsite.endpoint;
   } else {
     const at = STORAGE_ENDPOINTS[offsite.provider];
     if (at === undefined) throw new Error(`No S3 endpoint is known for ${offsite.provider}.`);
@@ -760,8 +897,8 @@ export function offsiteValues(
   }
   return {
     [v.endpoint]: endpoint,
-    [v.accessKeyId]: input.key.accessKeyId,
-    [v.secretAccessKey]: input.key.secretAccessKey,
+    [v.accessKeyId]: login.accessKeyId,
+    [v.secretAccessKey]: login.secretAccessKey,
     [v.recipient]: input.recipient,
   };
 }
@@ -804,9 +941,9 @@ export async function requireOffsiteRecipient(
 }
 
 /**
- * Before any change of a run with `snapshots.offsite` (024 plan.md 7., D16): the user's key for a
- * Hetzner or Spaces bucket of the copies ({@link requireOffsiteKey}; R2's comes after its bucket),
- * and, unless the run only plans, the age key they are encrypted to ({@link requireOffsiteRecipient}).
+ * Before any change of a run with `snapshots.offsite` (024 plan.md 7., D16): the copies' login
+ * ({@link requireOffsiteLogin}: a Hetzner, Spaces or own bucket's key, or an SFTP machine's private
+ * key; R2's comes after its bucket), and, unless the run only plans, the age key they are encrypted to ({@link requireOffsiteRecipient}).
  */
 export async function offsitePreflight(
   deps: PhaseDeps,
@@ -817,12 +954,12 @@ export async function offsitePreflight(
     planOnly?: boolean | undefined;
     recovery?: RecoveryAnswers | undefined;
   },
-): Promise<{ key?: StorageLogin; recovery?: RecoveryAnswers }> {
+): Promise<{ key?: OffsiteLogin; recovery?: RecoveryAnswers }> {
   const { command } = options;
   const offsite = snapshotOffsiteOf(plan);
   const key =
     offsite !== undefined && offsite.provider !== "r2"
-      ? await requireOffsiteKey(deps, plan, services, { command })
+      ? await requireOffsiteLogin(deps, plan, services, { command })
       : undefined;
   const recovery = options.planOnly
     ? options.recovery
@@ -851,7 +988,7 @@ export async function offsiteSetup(
     /** Where the recovery copy goes, when this run may make it. */
     github?: GitHubSetup;
     recovery?: RecoveryAnswers;
-    key: StorageLogin | undefined;
+    key: OffsiteLogin | undefined;
     cloudflare: Pick<CloudflareSetup, "accountId"> | undefined;
     command: string;
     /** What is done already, said when it stops. */
@@ -871,17 +1008,17 @@ export async function offsiteSetup(
   if (recipient === undefined) {
     throw noAgeKey(
       input.command,
-      `OpsCrew stored nothing that holds their bucket's key. ${input.already}`,
+      `OpsCrew stored nothing that holds their ${snapshotOffsiteOf(plan)?.provider === "sftp" ? "machine's" : "bucket's"} key. ${input.already}`,
     );
   }
-  const key =
+  const login =
     input.key ??
-    (await requireOffsiteKey(deps, plan, services, {
+    (await requireOffsiteLogin(deps, plan, services, {
       command: input.command,
       already: input.already,
     }));
   return {
-    values: offsiteValues(plan, { key, recipient, cloudflare: input.cloudflare }),
+    values: offsiteValues(plan, { login, recipient, cloudflare: input.cloudflare }),
     ...(recoveryCopy !== undefined ? { recoveryCopy } : {}),
   };
 }
@@ -1233,8 +1370,9 @@ export function applyBackups(
   deps: PhaseDeps,
   input: BucketApplyInput,
 ): Promise<PlanAndApplyResult> {
-  const offsite = snapshotOffsiteOf(input.plan);
-  if (offsite === undefined) throw new Error("The plan has no off-server copy.");
+  const offsite = backupsBucketOf(input.plan);
+  if (offsite === undefined)
+    throw new Error("The plan has no bucket of the off-server copies to plan.");
   const base = STORAGE_PRICES[offsite.provider].monthlyPrice({ storageGb: 0, egressGbPerMonth: 0 });
   const root: BucketRoot = {
     bucket: offsite,

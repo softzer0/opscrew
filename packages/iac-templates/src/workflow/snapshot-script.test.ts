@@ -1072,19 +1072,52 @@ describe.skipIf(!shWorks())("snapshot.sh", { timeout: 300_000 }, () => {
     /** The bucket's made-up key and recipient, which only the env file holds. */
     let secrets: string[] = [];
 
-    /** `plan`'s server with {@link OFFSITE_ENV_FILE} (mode 600) holding a made-up key. */
+    const ownBucket = withSnapshots(BASE, {
+      snapshots: {
+        offsite: {
+          provider: "s3",
+          endpoint: "https://s3.eu-central-1.wasabisys.com",
+          bucket: "shop-backups",
+          region: "eu-central-1",
+          days: 14,
+        },
+      },
+    });
+    const HOST_KEY =
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+    const machine = withSnapshots(BASE, {
+      snapshots: {
+        offsite: {
+          provider: "sftp",
+          host: "backup.example.com",
+          user: "shop-backups",
+          path: "/backups",
+          hostKey: HOST_KEY,
+        },
+      },
+    });
+    /**
+     * `plan`'s server with {@link OFFSITE_ENV_FILE} (mode 600) holding a made-up login: a bucket's
+     * key, or an SFTP machine's private key on one line.
+     */
     function offsiteServer(plan: DeployPlan): void {
       server(plan);
-      secrets = [
-        fakeSecret("aws-access-key-id", "offsite"),
-        fakeSecret("aws-secret-access-key", "offsite"),
-      ];
-      const lines = [
-        `OPSCREW_OFFSITE_ENDPOINT=https://${randomBytes(16).toString("hex")}.r2.cloudflarestorage.com`,
-        `OPSCREW_OFFSITE_ACCESS_KEY_ID=${secrets[0]}`,
-        `OPSCREW_OFFSITE_SECRET_ACCESS_KEY=${secrets[1]}`,
-        `OPSCREW_OFFSITE_RECIPIENT=${generateAgeIdentity().recipient}`,
-      ];
+      const sftp = plan.snapshots?.offsite?.provider === "sftp";
+      const pem = fakeSecret("private-key-pem", "offsite");
+      secrets = sftp
+        ? [pem.split("\n")[1] ?? ""]
+        : [
+            fakeSecret("aws-access-key-id", "offsite"),
+            fakeSecret("aws-secret-access-key", "offsite"),
+          ];
+      const login = sftp
+        ? [`OPSCREW_OFFSITE_SSH_KEY=${pem.split("\n").join("\\n")}`]
+        : [
+            `OPSCREW_OFFSITE_ENDPOINT=https://${randomBytes(16).toString("hex")}.r2.cloudflarestorage.com`,
+            `OPSCREW_OFFSITE_ACCESS_KEY_ID=${secrets[0]}`,
+            `OPSCREW_OFFSITE_SECRET_ACCESS_KEY=${secrets[1]}`,
+          ];
+      const lines = [...login, `OPSCREW_OFFSITE_RECIPIENT=${generateAgeIdentity().recipient}`];
       write(at(OFFSITE_ENV_FILE), `${lines.join("\n")}\n`);
       if (!windows) chmodSync(at(OFFSITE_ENV_FILE), 0o600);
     }
@@ -1364,6 +1397,74 @@ describe.skipIf(!shWorks())("snapshot.sh", { timeout: 300_000 }, () => {
         `OpsCrew copied the snapshot ${result.stdout} off the server, but could not delete the copies there older than 90 days. The upload's output is in ${appDir()}/.snapshots/offsite.log.`,
       );
       expect(existsSync(at(`.snapshots/${result.stdout}/offsite.done`))).toBe(true);
+    });
+
+    it("reaches the user's own S3-compatible bucket as rclone's Other provider, and deletes its old copies itself", () => {
+      offsiteServer(ownBucket);
+      const result = snap(["take", "manual"]);
+      expect(result.status, result.output).toBe(0);
+      const [call] = uploadCalls();
+      expect(call).toContain("-e RCLONE_CONFIG_OFFSITE_TYPE=s3");
+      expect(call).toContain("-e RCLONE_CONFIG_OFFSITE_PROVIDER=Other");
+      expect(call).toContain("-e RCLONE_CONFIG_OFFSITE_REGION=eu-central-1");
+      expect(call).toContain("-e RCLONE_CONFIG_OFFSITE_NO_CHECK_BUCKET=true");
+      // The endpoint and the key come from offsite.env, never the command line.
+      expect(call).not.toContain("wasabisys");
+      const text = script();
+      expect(text).toContain(
+        `export HOME=/tmp RCLONE_CONFIG_OFFSITE_ENDPOINT="$OPSCREW_OFFSITE_ENDPOINT" RCLONE_CONFIG_OFFSITE_ACCESS_KEY_ID="$OPSCREW_OFFSITE_ACCESS_KEY_ID" RCLONE_CONFIG_OFFSITE_SECRET_ACCESS_KEY="$OPSCREW_OFFSITE_SECRET_ACCESS_KEY"`,
+      );
+      expect(text).toContain(`rclone rcat 'offsite:shop-backups/backups/'"$to/$1.age"`);
+      expect(text).toContain(
+        "rclone delete --min-age 14d 'offsite:shop-backups/backups' || exit 4",
+      );
+      expectNoSecret(result.output);
+    });
+
+    it("reaches an SFTP machine with its pinned host key and no shell, the private key only in offsite.env, in the environment's own folder", () => {
+      offsiteServer(machine);
+      const id = "20261106T120000Z";
+      stored(id, "manual", iso(new Date()));
+      const result = snap(["offsite", id]);
+      expect(result.status, result.output).toBe(0);
+      expect(uploads()).toEqual([...files(id), "about.json"].map((file) => `${id}/${file}.age`));
+      const [call] = uploadCalls();
+      expect(call).toContain(`docker run --rm --env-file ${OFFSITE_ENV_FILE} `);
+      for (const setting of [
+        "-e RCLONE_CONFIG_OFFSITE_TYPE=sftp",
+        "-e RCLONE_CONFIG_OFFSITE_HOST=backup.example.com",
+        "-e RCLONE_CONFIG_OFFSITE_PORT=22",
+        "-e RCLONE_CONFIG_OFFSITE_USER=shop-backups",
+        `-e RCLONE_CONFIG_OFFSITE_HOST_KEYS=${HOST_KEY}`,
+        "-e RCLONE_CONFIG_OFFSITE_SHELL_TYPE=none",
+      ]) {
+        expect(call).toContain(setting);
+      }
+      expect(call).not.toMatch(/PROVIDER|REGION|ENDPOINT/);
+      const text = script();
+      expect(text).toContain(
+        `export HOME=/tmp RCLONE_CONFIG_OFFSITE_KEY_PEM="$OPSCREW_OFFSITE_SSH_KEY"`,
+      );
+      expect(text).not.toContain("ACCESS_KEY");
+      // The environment's folder in the user's, so two apps on one machine never mix.
+      expect(text).toContain(
+        `unmark() { rclone deletefile 'offsite:/backups/shop-staging/backups/'"$to/about.json.age" || [ "$?" -eq 4 ]; }`,
+      );
+      expect(text).toContain(`rclone rcat 'offsite:/backups/shop-staging/backups/'"$to/$1.age"`);
+      // No lifecycle rule there: the copies older than 90 days go, then the folders they left empty.
+      expect(text).toContain(
+        "{ rclone delete --min-age 90d 'offsite:/backups/shop-staging/backups' && rclone rmdirs --leave-root 'offsite:/backups/shop-staging/backups'; } || exit 4",
+      );
+      expectNoSecret(result.output);
+      const failed = snap(["offsite", id], { UPLOAD_FAIL: "1" });
+      expect(failed.stderr).toContain(
+        `Copying the snapshot ${id} off the server failed, so the folder has no complete copy of it yet;`,
+      );
+      expectNoSecret(failed.output);
+      rmSync(at(OFFSITE_ENV_FILE));
+      expect(snap(["offsite", id]).stderr).toContain(
+        "The off-server copy is on, but the app's server has no offsite.env with its folder's key yet,",
+      );
     });
 
     it("gives Hetzner the plan's region, and an extra server's parts a folder of their own", () => {

@@ -1808,6 +1808,10 @@ export function snapshotStopOf(plan: Pick<DeployPlan, "target" | "services" | "d
     .map((service) => service.name);
 }
 
+/** What `snapshots.offsite.path` must be, for an SFTP machine. */
+const SFTP_PATH_MESSAGE =
+  "must be an absolute folder such as /backups, of letters, digits, dots, hyphens and underscores, without a trailing slash or . and .. parts";
+
 /**
  * `plan.snapshots`: snapshots on a schedule and an encrypted copy of each off the server. Absent
  * fields take their defaults through `snapshotScheduleOf` and `snapshotOffsiteOf`, so a plan file
@@ -1831,23 +1835,88 @@ export const SnapshotsSchema = z.strictObject({
       stop: z.array(ComponentNameSchema).optional(),
     })
     .optional(),
+  /**
+   * Where the encrypted copies go, by `provider`: a bucket OpsCrew plans in the `backups` root
+   * (R2, Hetzner, DigitalOcean), the user's own S3-compatible bucket (`s3`), or a folder on the
+   * user's own machine over SFTP (`sftp`). OpsCrew never creates, empties or deletes the last two.
+   */
   offsite: z
-    .strictObject({
-      provider: z.enum(["r2", "hetzner", "digitalocean"]),
-      bucket: StorageSchema.shape.objectStorage.unwrap().shape.bucket,
-      /**
-       * The bucket's region or location, for example `fsn1` (Hetzner) or `fra1` (DigitalOcean).
-       * Absent for R2, whose region is `auto`.
-       */
-      region: StorageSchema.shape.objectStorage.unwrap().shape.region.optional(),
-      /** Days a copy is kept. Absent: 90. */
-      days: z.int().min(1).max(3650).optional(),
-    })
-    .refine((offsite) => offsite.provider === "r2" || offsite.region !== undefined, {
-      message:
-        "needs the bucket's region for Hetzner and DigitalOcean, for example fsn1 or fra1; run `opscrew snapshot offsite on --to <provider> --region <region>` again",
-      path: ["region"],
-    })
+    .discriminatedUnion("provider", [
+      z
+        .strictObject({
+          provider: z.enum(["r2", "hetzner", "digitalocean"]),
+          bucket: StorageSchema.shape.objectStorage.unwrap().shape.bucket,
+          /**
+           * The bucket's region or location, for example `fsn1` (Hetzner) or `fra1`
+           * (DigitalOcean). Absent for R2, whose region is `auto`.
+           */
+          region: StorageSchema.shape.objectStorage.unwrap().shape.region.optional(),
+          /** Days a copy is kept. Absent: 90. */
+          days: z.int().min(1).max(3650).optional(),
+        })
+        .refine((offsite) => offsite.provider === "r2" || offsite.region !== undefined, {
+          message:
+            "needs the bucket's region for Hetzner and DigitalOcean, for example fsn1 or fra1; run `opscrew snapshot offsite on --to <provider> --region <region>` again",
+          path: ["region"],
+        }),
+      z.strictObject({
+        provider: z.literal("s3"),
+        /** The S3 API's address: `https://`, a host and maybe a port, no path. */
+        endpoint: z
+          .string()
+          .regex(/^https:\/\/[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::\d{1,5})?\/?$/, {
+            message:
+              "must be an https:// address with no path, such as https://s3.eu-central-1.wasabisys.com",
+          }),
+        /** The user's bucket, which exists: OpsCrew never creates, empties or deletes it. */
+        bucket: z.string().regex(/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/, {
+          message:
+            "must be the bucket's name: 3–63 lower-case letters, digits, dots or hyphens, starting and ending with a letter or digit",
+        }),
+        /** The bucket's region, as its provider names it. Absent: `us-east-1`. */
+        region: z
+          .string()
+          .regex(/^[A-Za-z0-9_-]{1,64}$/, {
+            message: "must be the bucket's region as its provider names it, such as eu-central-1",
+          })
+          .optional(),
+        /** Days a copy is kept. Absent: 90. */
+        days: z.int().min(1).max(3650).optional(),
+      }),
+      z.strictObject({
+        provider: z.literal("sftp"),
+        /** The machine's host name or IP address. */
+        host: z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9.:-]{0,251}[A-Za-z0-9])?$/, {
+          message: "must be a host name or an IP address, such as backup.example.com",
+        }),
+        /** Its SSH port. Absent: 22. */
+        port: z.int().min(1).max(65535).optional(),
+        /** The account the server logs in as, with only the server's key. */
+        user: z.string().regex(/^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$/, {
+          message:
+            "must be the account's user name: letters, digits, dots, hyphens or underscores, not starting with a hyphen or dot",
+        }),
+        /** The account's folder the copies go in, absolute: `<path>/<app>-<env>/backups/…`. */
+        path: z
+          .string()
+          .regex(/^\/(?:[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*)?$/, { message: SFTP_PATH_MESSAGE })
+          .refine((path) => path.split("/").every((part) => part !== "." && part !== ".."), {
+            message: SFTP_PATH_MESSAGE,
+          }),
+        /**
+         * The machine's SSH host key (`<type> <base64>`), confirmed by its SHA-256 fingerprint
+         * when the copy was turned on; the copies connect only to a machine that presents it.
+         */
+        hostKey: z
+          .string()
+          .regex(/^(?:ssh-ed25519|ecdsa-sha2-nistp(?:256|384|521)|ssh-rsa) [A-Za-z0-9+/]+={0,3}$/, {
+            message:
+              "must be the machine's SSH host key, such as ssh-ed25519 AAAA…; `opscrew snapshot offsite on --to sftp` reads it and asks you to confirm its fingerprint",
+          }),
+        /** Days a copy is kept. Absent: 90. */
+        days: z.int().min(1).max(3650).optional(),
+      }),
+    ])
     .optional(),
 });
 export type Snapshots = z.output<typeof SnapshotsSchema>;
@@ -1865,18 +1934,67 @@ export function snapshotScheduleOf(plan: {
   };
 }
 
-/** `snapshots.offsite` with its defaults (90 days, R2's region `auto`), or undefined when off. */
-export function snapshotOffsiteOf(plan: { snapshots?: Snapshots | undefined }):
+/** The providers of the bucket OpsCrew plans for the copies, in the `backups` root. */
+export type BackupsBucketProvider = "r2" | "hetzner" | "digitalocean";
+
+/** A bucket OpsCrew plans for the copies ({@link backupsBucketOf}), with its defaults. */
+export interface BackupsBucket {
+  provider: BackupsBucketProvider;
+  bucket: string;
+  /** R2's is `auto`. */
+  region: string;
+  days: number;
+}
+
+/**
+ * `snapshots.offsite` with its defaults, which every caller switches on by `provider`: a bucket
+ * OpsCrew plans, the user's own S3-compatible bucket, or a folder on the user's machine over SFTP.
+ */
+export type SnapshotOffsite =
+  | BackupsBucket
+  | { provider: "s3"; endpoint: string; bucket: string; region: string; days: number }
   | {
-      provider: "r2" | "hetzner" | "digitalocean";
-      bucket: string;
-      region: string;
+      provider: "sftp";
+      host: string;
+      port: number;
+      user: string;
+      path: string;
+      hostKey: string;
       days: number;
-    }
-  | undefined {
+    };
+
+/**
+ * `snapshots.offsite` with its defaults (90 days; R2's region `auto`, an own bucket's `us-east-1`,
+ * SFTP's port 22), or undefined when off.
+ */
+export function snapshotOffsiteOf(plan: {
+  snapshots?: Snapshots | undefined;
+}): SnapshotOffsite | undefined {
   const offsite = plan.snapshots?.offsite;
   if (offsite === undefined) return undefined;
-  return { ...offsite, region: offsite.region ?? "auto", days: offsite.days ?? 90 };
+  const days = offsite.days ?? 90;
+  switch (offsite.provider) {
+    case "sftp":
+      return { ...offsite, port: offsite.port ?? 22, days };
+    case "s3":
+      return { ...offsite, region: offsite.region ?? "us-east-1", days };
+    default:
+      return { ...offsite, region: offsite.region ?? "auto", days };
+  }
+}
+
+/**
+ * The copies' bucket OpsCrew plans and approves in the `backups` root (R2, Hetzner, DigitalOcean),
+ * with its defaults; undefined without the copy, or when it goes to the user's own bucket or
+ * machine, which OpsCrew never plans.
+ */
+export function backupsBucketOf(plan: {
+  snapshots?: Snapshots | undefined;
+}): BackupsBucket | undefined {
+  const offsite = snapshotOffsiteOf(plan);
+  return offsite === undefined || offsite.provider === "s3" || offsite.provider === "sftp"
+    ? undefined
+    : offsite;
 }
 
 /**

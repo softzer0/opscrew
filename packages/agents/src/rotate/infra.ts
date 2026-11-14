@@ -53,7 +53,7 @@ import {
   tunnelMode,
   usesTunnel,
 } from "@opscrew/iac-templates";
-import { type DeployPlan, isCloudProvider, snapshotOffsiteOf } from "@opscrew/plan-schema";
+import { backupsBucketOf, type DeployPlan, isCloudProvider } from "@opscrew/plan-schema";
 import { cloudProvider } from "@opscrew/providers";
 import { blockingPolicyFailures, evaluatePlanPolicies } from "@opscrew/secops";
 import { z } from "zod";
@@ -996,7 +996,8 @@ async function passphraseRoots(
   }
   const backups = backupsStateFile(deps.paths);
   if (await held(backups)) {
-    const offsite = snapshotOffsiteOf(plan);
+    // The bucket OpsCrew planned: the user's own bucket or SFTP machine has no state.
+    const offsite = backupsBucketOf(plan);
     if (offsite === undefined) throw without(backups, "off-server copy");
     const key =
       offsite.provider === "r2"

@@ -13,6 +13,7 @@ import { appVariables, enabledServices, renderContext, serviceSpec } from "../ca
 import type { ServiceSpec } from "../catalog/types";
 import { isClientExposedEnvName } from "../docker";
 import { CADDY_MEMORY_MB } from "../edge";
+import { offsiteVariables } from "../offsite";
 import { IMAGES } from "../pins";
 import { previousValueVariables } from "../previous-values";
 import { portainerTarget } from "../providers";
@@ -41,7 +42,6 @@ import type { RenderedFile } from "../types";
 import { DIGEST_REF_PATTERN, hasCronJobs, planFilePath } from "../workflow/shared";
 import type { ServiceInitStep } from "../workflow/switch";
 import {
-  PORTAINER_OFFSITE_VARIABLES,
   RUNNING_IMAGE_FILE,
   SNAPSHOTS_MOUNT,
   SNAPSHOTS_VOLUME,
@@ -477,8 +477,9 @@ export function portainerStackEnvKeys(
   }
   if (web.mode === "tunnel") opscrew.add(PORTAINER_STACK_VARIABLES.tunnelToken);
   if (stackOriginTls(plan, ctx) !== undefined) opscrew.add(PORTAINER_STACK_VARIABLES.originTls);
-  if (snapshotOffsiteOf(plan) !== undefined) {
-    for (const variable of Object.values(PORTAINER_OFFSITE_VARIABLES)) opscrew.add(variable);
+  const offsite = snapshotOffsiteOf(plan);
+  if (offsite !== undefined) {
+    for (const variable of offsiteVariables(offsite)) opscrew.add(variable);
   }
   const held = previousValueVariables(plan).filter((name) => ctx.previousValues?.includes(name));
   return { app: [...appEnvKeys(plan), ...held].sort(), opscrew: [...opscrew].sort() };

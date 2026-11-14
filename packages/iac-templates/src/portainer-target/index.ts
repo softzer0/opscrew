@@ -1,7 +1,6 @@
 export { PORTAINER_VERSION_PATH } from "../runtime/services";
 export { renderPortainerDeployment } from "./deployment";
 export {
-  PORTAINER_OFFSITE_VARIABLES,
   type PortainerSnapshotPart,
   portainerSnapshotParts,
   RESTORED_IMAGE_FILE,

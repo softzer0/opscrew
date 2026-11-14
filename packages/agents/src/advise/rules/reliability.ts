@@ -157,7 +157,7 @@ function snapshotProposals({ plan, requirements, flags }: Readings): Proposal[] 
         : {
             apply: {
               kind: "manual" as const,
-              text: `Run \`opscrew snapshot offsite on --to hetzner --region <region>${flags}\` (or \`--to digitalocean\`) with the region the copies should be in`,
+              text: `Run \`opscrew snapshot offsite on --to hetzner --region <region>${flags}\` (or \`--to digitalocean\`) with the region the copies should be in, or keep them in your own S3-compatible bucket or on your own machine over SFTP (\`--to s3\`, \`--to sftp\`)`,
             },
           }),
     });

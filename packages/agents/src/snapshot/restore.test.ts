@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { FakeDocker } from "@opscrew/connector-docker/testing";
 import { generateAgeIdentity, OpsCrewError } from "@opscrew/core";
+import { fakeSecret } from "@opscrew/core/testing";
 import {
   IMAGES,
   RESTORE_APPROVAL_FILE,
@@ -538,19 +539,28 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore across the app's servers (D8, D1
 });
 
 /** `plan` with the off-server copy at Hetzner. */
-function withOffsite(base: DeployPlan): DeployPlan {
-  return DeployPlanSchema.parse({
-    ...base,
-    snapshots: { offsite: { provider: "hetzner", bucket: "shop-backups", region: "fsn1" } },
-  });
+function withOffsite(
+  base: DeployPlan,
+  offsite: object = { provider: "hetzner", bucket: "shop-backups", region: "fsn1" },
+): DeployPlan {
+  return DeployPlanSchema.parse({ ...base, snapshots: { offsite } });
 }
+
+/** The user's own machine over SFTP, whose folder for staging's copies is /backups/shop-staging. */
+const MACHINE = {
+  provider: "sftp",
+  host: "backup.example.com",
+  user: "shop-backups",
+  path: "/backups",
+  hostKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl",
+};
 
 describe.skipIf(!SH_AVAILABLE)("opscrew restore --from offsite", () => {
   /** The copy {@link ID} of `plan`'s app's server in a fake bucket, encrypted to a new key. */
-  async function offsiteWorld() {
-    const world = await snapshotWorld(withOffsite(plan()));
+  async function offsiteWorld(offsite?: object, name = "shop-backups") {
+    const world = await snapshotWorld(withOffsite(plan(), offsite));
     const key = generateAgeIdentity();
-    const bucket = new FakeBucket("shop-backups");
+    const bucket = new FakeBucket(name);
     const dump = Buffer.from(`pg_dump of rows ${"x".repeat(70_000)}`);
     const record = about([{ ...DB, size: dump.length }]);
     bucket.put(`${ID}/db.dump.age`, dump, key.recipient);
@@ -614,6 +624,35 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore --from offsite", () => {
       expect(shown).not.toContain(secret);
     }
     expect(shown).not.toContain(SERVER_IPV4);
+  });
+
+  it("restores the copy from the user's SFTP machine with the key OPSCREW_OFFSITE_SFTP_KEY names, its host key pinned (T2756)", async () => {
+    const { world, key, bucket, dump, docker, folder, services } = await offsiteWorld(
+      MACHINE,
+      "/backups/shop-staging",
+    );
+    const pem = fakeSecret("private-key-pem", "restore-sftp");
+    const keyFile = join(world.deps.paths.root, "sftp-key");
+    writeFileSync(keyFile, `${pem}\n`);
+    world.deps.env = { ...world.deps.env, OPSCREW_OFFSITE_SFTP_KEY: keyFile };
+    await restoreSnapshot(world.deps, ID, { services, from: "offsite", identity: key.identity });
+
+    expect(docker.folders.get(folder)?.files.get(`${ID}/db.dump`)?.data?.equals(dump)).toBe(true);
+    expect(world.handler.requests[0]?.details).toContain("from its copy in the off-server folder");
+    expect(bucket.calls.length).toBeGreaterThan(0);
+    for (const call of bucket.calls) {
+      expect(call.env).toMatchObject({
+        RCLONE_CONFIG_OFFSITE_TYPE: "sftp",
+        RCLONE_CONFIG_OFFSITE_HOST: "backup.example.com",
+        RCLONE_CONFIG_OFFSITE_USER: "shop-backups",
+        RCLONE_CONFIG_OFFSITE_HOST_KEYS: MACHINE.hostKey,
+        RCLONE_CONFIG_OFFSITE_KEY_PEM: pem.split("\n").join("\\n"),
+      });
+      // The private key reaches rclone only through its environment, never its command line.
+      expect(call.line.join(" ")).not.toContain(pem.split("\n")[1]);
+      expect(call.line).toContain("RCLONE_CONFIG_OFFSITE_KEY_PEM");
+    }
+    expect(everythingShown(world)).not.toContain(pem.split("\n")[1]);
   });
 
   it("refuses another key before any change, and uses the copy a server still holds", async () => {

@@ -1,6 +1,8 @@
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FakeZone } from "@opscrew/connector-cloudflare/testing";
+import { type FakeContainer, FakeDocker } from "@opscrew/connector-docker/testing";
 import {
   PortainerCertificateError,
   type PortainerClientDeps,
@@ -1290,6 +1292,77 @@ describe.skipIf(!findExecutable("git"))("the off-server copy in the user's Porta
     expect(result.backupsPlanHash).toBeUndefined();
     expect(result.stackFollowsRecoveryKey).toBeUndefined();
     await expect(readFile(join(s.root, "opscrew/infra/backups/main.tf"), "utf8")).rejects.toThrow();
+  });
+
+  /** The Portainer host's Docker, its rclone one-offs ending as `run` says, each kept as it started. */
+  const hostDocker = (s: Setup, run: () => { exitCode: number; stderr?: string }) => {
+    const docker = Object.assign(new FakeDocker(), { ran: [] as FakeContainer[] });
+    docker.onStart = (container) => {
+      docker.ran.push(container);
+      return run();
+    };
+    s.services.docker = () => docker;
+    return docker;
+  };
+  const ownStorage = (offsite: object) =>
+    DeployPlanSchema.parse({
+      ...portainerPlan({ web: { mode: "proxy", port: 8080 } }),
+      snapshots: { offsite },
+    });
+
+  it("fills the user's own bucket's variables once a one-off in the Portainer host wrote and deleted a test file there, with no bucket to plan", async () => {
+    const endpoint = "https://s3.eu-central-1.wasabisys.com";
+    const s = await setup({
+      plan: ownStorage({ provider: "s3", endpoint, bucket: "shop-own-backups" }),
+      env: OFFSITE_KEY_ENV,
+    });
+    const docker = hostDocker(s, () => ({ exitCode: 0 }));
+    const { recipient } = generateAgeIdentity();
+    await sopsYaml(s, recipient);
+    const result = await s.run();
+    expect(docker.ran.map((container) => container.cmd)).toEqual([
+      ["touch", "offsite:shop-own-backups/backups/.opscrew-write-check"],
+      ["deletefile", "offsite:shop-own-backups/backups/.opscrew-write-check"],
+    ]);
+    expect(env(s)).toMatchObject({
+      OPSCREW_OFFSITE_ENDPOINT: endpoint,
+      OPSCREW_OFFSITE_ACCESS_KEY_ID: OFFSITE_KEY.accessKeyId,
+      OPSCREW_OFFSITE_SECRET_ACCESS_KEY: OFFSITE_KEY.secretAccessKey,
+      OPSCREW_OFFSITE_RECIPIENT: recipient,
+    });
+    expect(env(s)).not.toHaveProperty("OPSCREW_OFFSITE_SSH_KEY");
+    expect(result.backupsPlanHash).toBeUndefined();
+    await expect(readFile(join(s.root, "opscrew/infra/backups/main.tf"), "utf8")).rejects.toThrow();
+    expect(await everythingPublished(s)).not.toContain(OFFSITE_KEY.secretAccessKey);
+  });
+
+  it("changes no stack when the Portainer host can't write to the SFTP machine, naming what to fix", async () => {
+    const keyFile = join(await mkdtemp(join(tmpdir(), "opscrew-sftp-key-")), "id");
+    await writeFile(keyFile, `${fakeSecret("private-key-pem", "portainer-sftp")}\n`);
+    const s = await setup({
+      plan: ownStorage({
+        provider: "sftp",
+        host: "backup.example.com",
+        user: "shop-backups",
+        path: "/backups",
+        hostKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl",
+      }),
+      env: { OPSCREW_OFFSITE_SFTP_KEY: keyFile },
+    });
+    hostDocker(s, () => ({
+      exitCode: 1,
+      stderr:
+        '2026/11/14 03:28:55 NOTICE: Failed to touch: failed to touch (create): Put mkParentDir failed: mkdir "/backups/shop-prod" failed: permission denied',
+    }));
+    await sopsYaml(s, generateAgeIdentity().recipient);
+    await expect(s.run()).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: expect.stringContaining(
+        "Your Portainer could not write a test file in the folder /backups/shop-prod/backups on backup.example.com",
+      ),
+      hint: expect.stringContaining("give it write permission on /backups"),
+    });
+    expect(s.fake.stacks.find((stack) => stack.Name === "opscrew-shop")).toBeUndefined();
   });
 });
 

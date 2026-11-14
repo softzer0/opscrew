@@ -875,28 +875,97 @@
           "additionalProperties": false
         },
         "offsite": {
-          "type": "object",
-          "properties": {
-            "provider": {
-              "type": "string",
-              "enum": ["r2", "hetzner", "digitalocean"]
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "provider": {
+                  "type": "string",
+                  "enum": ["r2", "hetzner", "digitalocean"]
+                },
+                "bucket": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$"
+                },
+                "region": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "days": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 3650
+                }
+              },
+              "required": ["provider", "bucket"],
+              "additionalProperties": false
             },
-            "bucket": {
-              "type": "string",
-              "pattern": "^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$"
+            {
+              "type": "object",
+              "properties": {
+                "provider": {
+                  "type": "string",
+                  "const": "s3"
+                },
+                "endpoint": {
+                  "type": "string",
+                  "pattern": "^https:\\/\\/[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::\\d{1,5})?\\/?$"
+                },
+                "bucket": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$"
+                },
+                "region": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{1,64}$"
+                },
+                "days": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 3650
+                }
+              },
+              "required": ["provider", "endpoint", "bucket"],
+              "additionalProperties": false
             },
-            "region": {
-              "type": "string",
-              "minLength": 1
-            },
-            "days": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 3650
+            {
+              "type": "object",
+              "properties": {
+                "provider": {
+                  "type": "string",
+                  "const": "sftp"
+                },
+                "host": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9.:-]{0,251}[A-Za-z0-9])?$"
+                },
+                "port": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                },
+                "user": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$"
+                },
+                "path": {
+                  "type": "string",
+                  "pattern": "^\\/(?:[A-Za-z0-9._-]+(?:\\/[A-Za-z0-9._-]+)*)?$"
+                },
+                "hostKey": {
+                  "type": "string",
+                  "pattern": "^(?:ssh-ed25519|ecdsa-sha2-nistp(?:256|384|521)|ssh-rsa) [A-Za-z0-9+/]+={0,3}$"
+                },
+                "days": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 3650
+                }
+              },
+              "required": ["provider", "host", "user", "path", "hostKey"],
+              "additionalProperties": false
             }
-          },
-          "required": ["provider", "bucket"],
-          "additionalProperties": false
+          ]
         }
       },
       "additionalProperties": false

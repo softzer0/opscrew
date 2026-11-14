@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import type { SharedPlan } from "@opscrew/connector-cloudflare";
+import { dockerClient } from "@opscrew/connector-docker";
 import type { GitClient } from "@opscrew/connector-github";
 import {
   type ApplySecrets,
@@ -28,7 +29,13 @@ import {
   renderStorage,
   siteHosts,
 } from "@opscrew/iac-templates";
-import { type DeployPlan, type Requirements, snapshotOffsiteOf } from "@opscrew/plan-schema";
+import {
+  APP_SERVER,
+  backupsBucketOf,
+  type DeployPlan,
+  type Requirements,
+  snapshotOffsiteOf,
+} from "@opscrew/plan-schema";
 import { deploySetupCheck, provisionCheck, resumeCheck } from "../check/provision";
 import type { PhaseDeps } from "../context";
 import { portainerNotes } from "../design/portainer";
@@ -70,6 +77,7 @@ import {
 } from "./credentials";
 import { deploySetupDependabot } from "./dependabot";
 import { deployBranchState, startDeployBranch } from "./deploy-branch";
+import { checkOffsiteWrite, ownOffsite } from "./offsite-check";
 import {
   keepCertificateRequest,
   originTlsApply,
@@ -130,6 +138,7 @@ import {
 import {
   applyBackups,
   applyStorage,
+  bucketKeyOf,
   offsitePreflight,
   offsiteSetup,
   providerBucket,
@@ -993,8 +1002,20 @@ export async function provisionPortainer(
       cloudflare: account,
       command,
       already: "Nothing in your Portainer was changed.",
-    }).then((setup) => {
+    }).then(async (setup) => {
       recoveryCopy = setup.recoveryCopy;
+      // On the user's own bucket or SFTP machine, a one-off in the Portainer host writes and
+      // deletes a test file there first, as the stack's copies will.
+      if (ownOffsite(plan)) {
+        const docker = dockerClient(
+          services.docker?.(APP_SERVER) ?? client.dockerProxyTransport(target.environmentId),
+        );
+        await checkOffsiteWrite(deps, plan, docker, setup.values, {
+          who: "Your Portainer",
+          already: "Nothing in your Portainer was changed.",
+          command,
+        });
+      }
       return setup.values;
     });
     return offsiteStackValues;
@@ -1124,9 +1145,10 @@ export async function provisionPortainer(
             ...(services.sleep !== undefined ? { sleep: services.sleep } : {}),
           }),
         );
-  // 3d. The off-server copies' bucket (the `backups` root, D9) the same way, with its own state.
+  // 3d. The off-server copies' bucket (the `backups` root, D9) the same way, with its own state,
+  // when OpsCrew plans it: the user's own bucket or SFTP machine has no plan.
   const backups =
-    offsite === undefined
+    backupsBucketOf(plan) === undefined
       ? undefined
       : await engineSetup().then(({ engine, env }) =>
           applyBackups(deps, {
@@ -1134,7 +1156,7 @@ export async function provisionPortainer(
             env,
             plan,
             files: renderBackups(plan, ctx),
-            key: offsiteKey,
+            key: bucketKeyOf(offsiteKey),
             ...(saved.backups !== undefined ? { approvePlanHash: saved.backups } : {}),
             ...(options.planOnly ? { planOnly: true } : {}),
             command,

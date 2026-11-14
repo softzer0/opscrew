@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { previewPlanOf } from "./__fixtures__/preview-plan";
 import {
+  backupsBucketOf,
   type DeployPlan,
   DeployPlanSchema,
   parseArtifact,
@@ -216,7 +217,8 @@ describe("snapshots.offsite", () => {
     }
     const refused: [Loose, string][] = [
       [{ ...offsite, provider: "garage" }, "snapshots.offsite.provider"],
-      [{ ...offsite, provider: "s3" }, "snapshots.offsite.provider"],
+      [{ bucket: "shop-prod-backups" }, "snapshots.offsite.provider"],
+      [{ ...offsite, endpoint: "https://s3.example.com" }, "snapshots.offsite"],
       [{ ...offsite, bucket: "Shop_Backups" }, "snapshots.offsite.bucket"],
       [{ ...offsite, bucket: "ab" }, "snapshots.offsite.bucket"],
       [{ ...offsite, days: 0 }, "snapshots.offsite.days"],
@@ -232,6 +234,151 @@ describe("snapshots.offsite", () => {
         found.map((issue) => issue.path),
         JSON.stringify(value),
       ).toEqual([path]);
+    }
+  });
+
+  it("names the bucket OpsCrew plans in the backups root only for R2, Hetzner and DigitalOcean", async () => {
+    const plan = await prodPlan();
+    const r2 = parse({ ...plan, snapshots: { offsite } });
+    expect(backupsBucketOf(r2)).toEqual({ ...offsite, region: "auto", days: 90 });
+    const own = parse({ ...plan, snapshots: { offsite: S3 } });
+    expect(backupsBucketOf(own)).toBeUndefined();
+    expect(backupsBucketOf(parse({ ...plan, snapshots: { offsite: SFTP } }))).toBeUndefined();
+    expect(backupsBucketOf(parse(plan))).toBeUndefined();
+  });
+});
+
+const S3 = {
+  provider: "s3",
+  endpoint: "https://s3.eu-central-1.wasabisys.com",
+  bucket: "shop-backups",
+};
+const SFTP = {
+  provider: "sftp",
+  host: "backup.example.com",
+  user: "shop-backups",
+  path: "/backups",
+  hostKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl",
+};
+
+describe("snapshots.offsite on the user's own S3-compatible bucket", () => {
+  it("takes its endpoint and bucket, with us-east-1 and 90 days by default, without writing them", async () => {
+    const parsed = parse({ ...(await prodPlan()), snapshots: { offsite: S3 } });
+    expect(parsed.snapshots).toEqual({ offsite: S3 });
+    expect(snapshotOffsiteOf(parsed)).toEqual({ ...S3, region: "us-east-1", days: 90 });
+    const given = { ...S3, endpoint: "https://minio.example.com:9000/", region: "eu-west-2" };
+    const kept = parse({ ...(await prodPlan()), snapshots: { offsite: { ...given, days: 7 } } });
+    expect(snapshotOffsiteOf(kept)).toEqual({ ...given, days: 7 });
+  });
+
+  it("takes S3's bucket names, dots included", async () => {
+    const plan = await prodPlan();
+    for (const bucket of ["abc", "shop.backups-2026", `a${"b".repeat(61)}c`]) {
+      expect(
+        parse({ ...plan, snapshots: { offsite: { ...S3, bucket } } }).snapshots,
+        bucket,
+      ).toEqual({ offsite: { ...S3, bucket } });
+    }
+  });
+
+  it("refuses an http endpoint, one with a path or a login, a missing field and another provider's fields", async () => {
+    const plan = await prodPlan();
+    const refused: [Loose, string][] = [
+      [{ ...S3, endpoint: "http://s3.example.com" }, "snapshots.offsite.endpoint"],
+      [{ ...S3, endpoint: "https://s3.example.com/shop" }, "snapshots.offsite.endpoint"],
+      [{ ...S3, endpoint: "https://user:pass@s3.example.com" }, "snapshots.offsite.endpoint"],
+      [{ ...S3, endpoint: "s3.example.com" }, "snapshots.offsite.endpoint"],
+      [{ provider: "s3", bucket: "shop-backups" }, "snapshots.offsite.endpoint"],
+      [{ provider: "s3", endpoint: S3.endpoint }, "snapshots.offsite.bucket"],
+      [{ ...S3, bucket: "Shop_Backups" }, "snapshots.offsite.bucket"],
+      [{ ...S3, bucket: "-shop" }, "snapshots.offsite.bucket"],
+      [{ ...S3, region: "eu west" }, "snapshots.offsite.region"],
+      [{ ...S3, days: 0 }, "snapshots.offsite.days"],
+      [{ ...S3, host: "backup.example.com" }, "snapshots.offsite"],
+    ];
+    for (const [value, path] of refused) {
+      const found = issues({ ...plan, snapshots: { offsite: value } });
+      expect(
+        found.map((issue) => issue.path),
+        JSON.stringify(value),
+      ).toEqual([path]);
+    }
+    expect(
+      issues({ ...plan, snapshots: { offsite: { ...S3, endpoint: "http://s3.example.com" } } })[0]
+        ?.message,
+    ).toBe(
+      "must be an https:// address with no path, such as https://s3.eu-central-1.wasabisys.com",
+    );
+  });
+});
+
+describe("snapshots.offsite on the user's own machine over SFTP", () => {
+  it("takes its host, user, folder and host key, with port 22 and 90 days by default, without writing them", async () => {
+    const parsed = parse({ ...(await prodPlan()), snapshots: { offsite: SFTP } });
+    expect(parsed.snapshots).toEqual({ offsite: SFTP });
+    expect(snapshotOffsiteOf(parsed)).toEqual({ ...SFTP, port: 22, days: 90 });
+    const given = { ...SFTP, host: "203.0.113.7", port: 23, path: "/", days: 30 };
+    const kept = parse({ ...(await prodPlan()), snapshots: { offsite: given } });
+    expect(snapshotOffsiteOf(kept)).toEqual(given);
+  });
+
+  it("takes the host key types ssh-keyscan reads", async () => {
+    const plan = await prodPlan();
+    for (const type of ["ssh-ed25519", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp521", "ssh-rsa"]) {
+      const hostKey = `${type} AAAAB3NzaC1yc2EAAAADAQABAAABAQ==`;
+      expect(
+        DeployPlanSchema.safeParse({ ...plan, snapshots: { offsite: { ...SFTP, hostKey } } })
+          .success,
+        type,
+      ).toBe(true);
+    }
+  });
+
+  it("refuses a relative folder, one with . or .., a fingerprint for the key and another provider's fields", async () => {
+    const plan = await prodPlan();
+    const refused: [Loose, string][] = [
+      [{ ...SFTP, path: "backups" }, "snapshots.offsite.path"],
+      [{ ...SFTP, path: "~/backups" }, "snapshots.offsite.path"],
+      [{ ...SFTP, path: "/backups/../etc" }, "snapshots.offsite.path"],
+      [{ ...SFTP, path: "/backups/./shop" }, "snapshots.offsite.path"],
+      [{ ...SFTP, path: "/backups/" }, "snapshots.offsite.path"],
+      [{ ...SFTP, path: "/my backups" }, "snapshots.offsite.path"],
+      [{ ...SFTP, host: "backup.example.com; rm -rf /" }, "snapshots.offsite.host"],
+      [{ ...SFTP, host: "-oProxyCommand=x" }, "snapshots.offsite.host"],
+      [{ ...SFTP, user: "-shop" }, "snapshots.offsite.user"],
+      [{ ...SFTP, user: "shop backups" }, "snapshots.offsite.user"],
+      [{ ...SFTP, port: 0 }, "snapshots.offsite.port"],
+      [{ ...SFTP, port: 65536 }, "snapshots.offsite.port"],
+      [
+        { ...SFTP, hostKey: "SHA256:B8/U+nAjyhpmJINWrx+HI5/3+Hg8el/yoDL9IPskP5c" },
+        "snapshots.offsite.hostKey",
+      ],
+      [{ ...SFTP, hostKey: "ssh-dss AAAAB3NzaC1kc3M=" }, "snapshots.offsite.hostKey"],
+      [
+        { provider: "sftp", host: SFTP.host, user: SFTP.user, path: SFTP.path },
+        "snapshots.offsite.hostKey",
+      ],
+      [{ ...SFTP, bucket: "shop-backups" }, "snapshots.offsite"],
+    ];
+    for (const [value, path] of refused) {
+      const found = issues({ ...plan, snapshots: { offsite: value } });
+      expect(
+        found.map((issue) => issue.path),
+        JSON.stringify(value),
+      ).toEqual([path]);
+    }
+    const relative = issues({ ...plan, snapshots: { offsite: { ...SFTP, path: "backups" } } });
+    expect(relative[0]?.message).toBe(
+      "must be an absolute folder such as /backups, of letters, digits, dots, hyphens and underscores, without a trailing slash or . and .. parts",
+    );
+  });
+
+  it("is refused on this computer, as the other copies are", async () => {
+    const plan = await targetPlan("localhost");
+    for (const value of [S3, SFTP]) {
+      expect(issues({ ...plan, snapshots: { offsite: value } }).map((i) => i.path)).toEqual([
+        "snapshots.offsite",
+      ]);
     }
   });
 });

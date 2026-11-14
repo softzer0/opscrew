@@ -23,7 +23,7 @@ their approval. Never run them through a tool, never type a confirmation for the
   version that ran, size, its services (copied, left out or failed), where it is, and whether its
   encrypted copy off the server exists. On the user's own server it reads only once the server's
   SSH host key was confirmed in a terminal.
-- Copies only the off-server bucket still holds (their server was lost) are encrypted, so without
+- Copies only the off-server bucket or folder still holds (their server was lost) are encrypted, so without
   the user's key OpsCrew names only their ids. In the terminal,
   `npx opscrew snapshot list --key-file <age key file>` lists them with their details.
 - `opscrew_status` names the last snapshot with its time and result, and a scheduled snapshot that
@@ -65,7 +65,7 @@ The user runs `npx opscrew restore <id>` with the id `opscrew_snapshots` shows.
 ## Deleting one
 
 `npx opscrew snapshot delete <id>` removes it for good after the user types its id, with its
-encrypted copy in the off-server bucket. A whole-server snapshot is deleted at its provider.
+encrypted copy off the server. A whole-server snapshot is deleted at its provider.
 
 ## A snapshot of the whole server
 
@@ -106,22 +106,36 @@ deleted.
 ## An encrypted copy off the server
 
 A snapshot stays on the machine that holds the data, so it is lost with that machine. The real
-backup is the copy off it: `npx opscrew snapshot offsite on --to r2|hetzner|digitalocean` (with
-`--region` at Hetzner or DigitalOcean, and `--days <n>` to keep each copy other than 90 days). It
-writes the plan; `npx opscrew provision` then shows the bucket of its own with its expected monthly
-cost for the user's approval by its hash. From then on every snapshot taken by hand or on the
-schedule is encrypted on the server to the recovery copy's age key and uploaded.
+backup is the copy off it, with `--days <n>` to keep each copy other than 90 days:
+- `npx opscrew snapshot offsite on --to r2|hetzner|digitalocean` (with `--region` at Hetzner or
+  DigitalOcean): a bucket of its own. `npx opscrew provision` then shows it with its expected
+  monthly cost for the user's approval by its hash.
+- `--to s3 --endpoint https://… --bucket <name> [--region <r>]`: the user's own S3-compatible
+  bucket (Wasabi, Backblaze B2, MinIO, AWS S3, Contabo). OpsCrew prices nothing and never creates
+  or deletes it; provision asks for its key in the terminal (or `OPSCREW_OFFSITE_ACCESS_KEY_ID` and
+  `OPSCREW_OFFSITE_SECRET_ACCESS_KEY`).
+- `--to sftp --host <h> [--port <p>] --user <u> --path /<folder>`: a folder on the user's own
+  machine. The user makes an account of its own and a key without a passphrase, puts its public
+  half in that account's `authorized_keys`, and sets `OPSCREW_OFFSITE_SFTP_KEY` to the private key
+  file. `offsite on` shows the machine's host key fingerprint to confirm in the terminal (in a
+  script, `--host-key SHA256:…`). Copies go to `<path>/<app>-<env>/backups/`.
+
+Each writes the plan. On the user's own storage, provision checks that the server can write and
+delete a test file there before it stores the deploy secrets, and says what to fix when it can't.
+From then on every snapshot taken by hand or on the schedule is encrypted on the server to the
+recovery copy's age key and uploaded.
 
 - The server holds only the public key; the user's age key file opens the copies. They must keep
   it, and keep the old one after `npx opscrew rotate recovery-key`: copies made before stay
   readable only with it. Never ask for the key or its file's contents in the chat.
-- The bucket's access key can also delete. Only at Hetzner is versioning on, keeping what was
-  deleted or overwritten for `--days` more.
+- The login can also delete: a bucket's access key, or an SFTP account that can write. Only at
+  Hetzner is versioning on, keeping what was deleted or overwritten for `--days` more.
 - At Hetzner and R2 the bucket's lifecycle rule expires each copy after `--days`. On DigitalOcean
-  Spaces only the server deletes old copies, after each upload.
-- `npx opscrew snapshot offsite off` stops new uploads. The bucket stays, and its copies until
-  they expire at Hetzner and R2; on Spaces they stay until the user deletes them. OpsCrew never
-  deletes the bucket.
+  Spaces and the user's own bucket or machine only the server deletes old copies, after each upload.
+- `npx opscrew snapshot offsite off` stops new uploads. The bucket or folder stays, and its copies
+  until they expire at Hetzner and R2; elsewhere they stay until the user deletes them. OpsCrew
+  never deletes them, not even with `destroy --delete-data`.
+- Never ask for a bucket's key or the SFTP private key in the chat.
 
 ## Their own server or Portainer
 

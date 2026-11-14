@@ -12,6 +12,8 @@ npx opscrew snapshot list                     # every snapshot, newest first
 npx opscrew restore <id>                      # put a snapshot's data back
 npx opscrew snapshot schedule on --every daily   # snapshots on a schedule, from the next provision
 npx opscrew snapshot offsite on --to r2       # an encrypted copy of each in a bucket of its own
+npx opscrew snapshot offsite on --to sftp --host backup.example.com --user shop-backups --path /backups
+                                              # or on your own machine (or --to s3: your own bucket)
 npx opscrew snapshot --server                 # the provider's snapshot of the whole server
 ```
 
@@ -91,15 +93,15 @@ Each snapshot is listed once, newest first, with its kind (`by hand`, `before a 
 `scheduled`, `whole server`), its time, the version that ran, its size, the services it holds, the
 ones left out, and where it is. `--json` gives the same. The list changes nothing.
 
-The list also reads the [off-server bucket](#an-encrypted-copy-off-the-server) and names the
-copies that only the bucket still holds, for example after the server was replaced. Their records
+The list also reads the [off-server copies](#an-encrypted-copy-off-the-server), in their bucket or
+folder, and names the copies that only it still holds, for example after the server was replaced. Their records
 are encrypted: add `--key-file <path>` with your age key to list what they hold.
 
 ```bash
 npx opscrew snapshot delete 20261106T190000Z
 ```
 
-`delete` removes the snapshot for good: where it is, its copy in the off-server bucket, and a
+`delete` removes the snapshot for good: where it is, its copy off the server, and a
 whole-server snapshot at its provider. You type its id to approve it (in a script, see
 [In a script](#in-a-script)).
 
@@ -227,25 +229,36 @@ data, unless you add `--delete-data`.
 npx opscrew snapshot offsite on --to r2
 npx opscrew snapshot offsite on --to hetzner --region fsn1 --days 30
 npx opscrew snapshot offsite on --to digitalocean --region fra1
+npx opscrew snapshot offsite on --to s3 --endpoint https://s3.eu-central-1.wasabisys.com --bucket shop-backups --region eu-central-1
+npx opscrew snapshot offsite on --to sftp --host backup.example.com --user shop-backups --path /backups
 npx opscrew snapshot offsite off
 ```
 
 Each snapshot taken by hand or on the schedule is encrypted on the machine that holds the data,
-then uploaded to a bucket of its own. The server holds only your age key's public half, never the
-key itself, so only your key opens the copies.
+then uploaded: to a bucket of its own that OpsCrew creates, to
+[your own S3-compatible bucket](#your-own-s3-compatible-bucket), or to
+[a folder on your own machine](#your-own-machine-over-sftp) over SFTP. The server holds only your
+age key's public half, never the key itself, so only your key opens the copies.
 
-### The bucket
+### Where the copies go
 
 | `--to` | Where | Retention |
 |---|---|---|
 | `r2` | [Cloudflare R2](https://developers.cloudflare.com/r2/); needs the app's domain on Cloudflare | Cloudflare's lifecycle rule deletes each copy after `--days` |
 | `hetzner` | [Hetzner Object Storage](https://www.hetzner.com/storage/object-storage/), in `--region` (default: the server's location, where it has object storage) | A lifecycle rule deletes each copy after `--days`, with versioning on |
 | `digitalocean` | [DigitalOcean Spaces](https://www.digitalocean.com/products/spaces), in `--region` | The server deletes the copies older than `--days` after each upload |
+| `s3` | [Your own S3-compatible bucket](#your-own-s3-compatible-bucket), at `--endpoint`, named `--bucket`, in `--region` (default `us-east-1`) | The server deletes the copies older than `--days` after each upload |
+| `sftp` | [A folder on your own machine](#your-own-machine-over-sftp), `--path` on `--host` as `--user` (`--port`, default 22) | The server deletes the copies older than `--days` after each upload, and the folders that leaves empty |
 
-`--days` is 90 by default (1 to 3650). The bucket is named `<app>-<env>-backups`, for example
-`shop-staging-backups` for staging and `shop-prod-backups` for prod. `offsite on` shows the
-expected monthly cost from the same price data provision uses; the providers' price pages have the
-details. OpsCrew never moves the bucket to another provider or region.
+`--days` is 90 by default (1 to 3650).
+
+### A bucket of its own
+
+With `--to r2`, `hetzner` or `digitalocean`, OpsCrew creates the bucket. It is named
+`<app>-<env>-backups`, for example `shop-staging-backups` for staging and `shop-prod-backups` for
+prod. `offsite on` shows the expected monthly cost from the same price data provision uses; the
+providers' price pages have the details. OpsCrew never moves the bucket to another provider or
+region.
 
 `offsite on` changes only the plan (`snapshots.offsite`). `npx opscrew provision` then plans the
 bucket, which you approve by its hash, and asks for the bucket's access key, which you create: it
@@ -259,6 +272,71 @@ the server's key can delete or overwrite the copies. At Hetzner, versioning keep
 or overwritten for `--days` more. R2 offers no versioning, and Spaces gets none either. An R2 token
 can be limited to the bucket; a Hetzner key covers its whole project, and a Spaces key needs full
 access to create the bucket.
+
+### Your own S3-compatible bucket
+
+`--to s3` keeps the copies in a bucket you already have, at any provider that speaks the S3 API.
+OpsCrew never creates, empties or deletes that bucket, and prices nothing for it: your provider
+bills what the copies store. The copies go under `backups/` in it, one folder per snapshot.
+
+| Provider | `--endpoint` | `--region` |
+|---|---|---|
+| [Wasabi](https://wasabi.com) | `https://s3.<region>.wasabisys.com`, for example `https://s3.eu-central-1.wasabisys.com` | the bucket's region, `eu-central-1` |
+| [Backblaze B2](https://www.backblaze.com/cloud-storage) | the bucket's S3 endpoint, for example `https://s3.us-west-004.backblazeb2.com` | the part after `s3.`, `us-west-004` |
+| [MinIO](https://min.io) | your server's address, for example `https://minio.example.com:9000` | `us-east-1`, unless you set another |
+| [AWS S3](https://aws.amazon.com/s3/) | `https://s3.<region>.amazonaws.com`, for example `https://s3.eu-west-1.amazonaws.com` | the bucket's region, `eu-west-1` |
+| [Contabo Object Storage](contabo.md) | the storage's S3 URL, from the Customer Control Panel | the storage's region |
+
+The endpoint must be `https://`: the server sends the bucket's key there. `npx opscrew provision`
+asks for the key, which you create in your provider's console: one of its own, named
+`opscrew-<app>-backups`, that can list, read, write and delete objects in that bucket and, where
+your provider allows it, nowhere else. In a script, set `OPSCREW_OFFSITE_ACCESS_KEY_ID` and
+`OPSCREW_OFFSITE_SECRET_ACCESS_KEY`. The key goes to the server as a bucket's does, and is kept on
+this computer for restores.
+
+### Your own machine over SFTP
+
+`--to sftp` keeps the copies in a folder on a machine you already have and reach over SSH: a NAS,
+a server of yours, or a storage box at a hosting provider. OpsCrew never logs in there to change
+anything, and prices nothing for it. Set it up once:
+
+1. On the machine, make an account of its own for the copies, with a folder it can write, for
+   example `/backups`. Where you can, limit it to SFTP and that folder (OpenSSH's `ChrootDirectory`
+   and `ForceCommand internal-sftp`).
+2. On this computer, make a key of its own, without a passphrase (the server uses it unattended):
+   `ssh-keygen -t ed25519 -N "" -f ~/.ssh/opscrew-backups`.
+3. Add its public half, `~/.ssh/opscrew-backups.pub`, to that account's `~/.ssh/authorized_keys`
+   on the machine.
+4. Set `OPSCREW_OFFSITE_SFTP_KEY` to the private key's path, for example
+   `export OPSCREW_OFFSITE_SFTP_KEY=~/.ssh/opscrew-backups`. Provision and restores read it there.
+5. Run `npx opscrew snapshot offsite on --to sftp --host <host> --user <user> --path /backups`
+   (with `--port` when SSH isn't on 22).
+
+`offsite on` reads the machine's host key with `ssh-keyscan` and shows its SHA-256 fingerprint for
+you to confirm in the terminal: compare it with `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`
+on the machine. In a script, give it with `--host-key SHA256:…`. The plan keeps the key
+(`snapshots.offsite.hostKey`), and the server and this computer connect only to a machine that
+presents it. When the machine's key changes, the uploads fail and `offsite on` stops until you
+confirm the new one.
+
+Each environment's copies go in a folder of their own, `<path>/<app>-<env>/backups/`, for example
+`/backups/shop-prod/backups/20261106T190000Z/`, so several apps and environments can share one
+machine and one account. `npx opscrew provision` puts the private key in the server's
+`offsite.env`, which only the deploy user can read (in your Portainer, the stack's environment).
+The rclone that uploads runs no command on the machine: only SFTP.
+
+### Before provision ends
+
+On your own bucket or machine, provision checks that the copies can get there before it stores
+the deploy secrets: each server with data (or your Portainer) writes and deletes a test file,
+`.opscrew-write-check`, with the same rclone and login the copies use. When that fails, nothing
+is stored, and the message names what to fix: the key, the folder's permissions, the bucket's name
+or region, or the address.
+
+**The login can delete.** Whoever holds the server's login can delete or overwrite the copies:
+no S3 provider offers a key that can only upload, and an SFTP account that can write a file can
+delete it. Where your storage offers it, keep older versions of what is deleted or overwritten
+(a bucket's versioning, a NAS's snapshots of the folder).
 
 ### When copies are uploaded
 
@@ -293,8 +371,10 @@ npx opscrew restore 20261106T190000Z --from offsite --key-file ~/opscrew-shop-ag
 This computer downloads the copy, decrypts it with your key file, and sends it to the server (or
 your Portainer), then restores it as above. The key never leaves this computer. It needs
 [Docker](https://www.docker.com/) (which runs OpsCrew's pinned rclone image) or
-[rclone](https://rclone.org/install/) on this computer, and the bucket's key. When the server
-still holds the complete snapshot, OpsCrew restores it from there instead.
+[rclone](https://rclone.org/install/) on this computer, and the bucket's key, or for an SFTP
+machine the key `OPSCREW_OFFSITE_SFTP_KEY` names (the machine's host key is checked as on the
+server). When the server still holds the complete snapshot, OpsCrew restores it from there
+instead.
 
 This is how the data comes back after a server is lost: provision the environment again, then
 restore the copy.
@@ -315,6 +395,11 @@ OpsCrew never deletes the bucket or its copies: not `offsite off`, not `destroy`
 
 Then revoke the bucket's key in the same console.
 
+On your own bucket or machine, OpsCrew never deletes the copies either. After `offsite off` and
+`npx opscrew provision`, nothing deletes them any more: delete the `backups/` folder in your bucket,
+or the `<path>/<app>-<env>` folder on your machine, when you no longer need them, then revoke the
+key (or remove its line from `authorized_keys`).
+
 ## The snapshot before each release
 
 With `deploy.snapshots` on (every environment but previews, prod included, by default), each
@@ -333,7 +418,10 @@ restores one in your Portainer is in [In your Portainer](rollback.md#in-your-por
 
 ```text
 Last snapshot: 20261107T000000Z, scheduled, 2026-11-07 00:00 UTC, every part copied, on the app's server, copied off the server.
+Copies off the server: the folder /backups/shop-prod/backups on backup.example.com, each copy kept 90 days.
 ```
+
+With the copy off the server on, the second line says where the copies go, without any key.
 
 With the schedule on, it also names each server whose last scheduled snapshot, or its copy off the
 server, failed, and where its output is (`.snapshots/scheduled.log` in the app's folder).
@@ -351,7 +439,8 @@ commands.
 On [your own server](own-server.md) or [your Portainer](portainer-target.md), no provider backs up
 the data. So when the interview says the data matters, `npx opscrew design` proposes weekly
 snapshots with the last 4 kept, and a copy off the server on Cloudflare R2 when the domain is
-there. Otherwise it says how to add one at Hetzner or DigitalOcean. `npx opscrew advise` proposes
+there. Otherwise it says how to add one at Hetzner or DigitalOcean, or on your own bucket or
+machine (`--to s3`, `--to sftp`), which OpsCrew prices nothing for. `npx opscrew advise` proposes
 them when they are off.
 
 ## What isn't in a snapshot

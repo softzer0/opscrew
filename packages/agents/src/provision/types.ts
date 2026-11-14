@@ -12,6 +12,7 @@ import type {
 import type { HostFacts } from "@opscrew/connector-ssh-host";
 import type {
   CredentialCheck,
+  DockerTransport,
   IacEngine,
   ObjectStorageApi,
   PolicyResult,
@@ -144,6 +145,12 @@ export interface ProvisionServices {
   tcpConnect?: TcpConnect;
   /** Remote shell on the new server (default: `SshRemoteExec` with the deploy key). */
   remote?: (host: string) => RemoteExec;
+  /**
+   * The Docker API of the server `server` (default: `docker system dial-stdio` over its login; in the
+   * user's Portainer, `app`'s is Portainer's Docker proxy), where the off-server copy's write check
+   * runs the pinned rclone.
+   */
+  docker?: (server: string) => DockerTransport;
   sleep?: (ms: number) => Promise<void>;
   /** Monotonic milliseconds for wait loops. */
   now?: () => number;

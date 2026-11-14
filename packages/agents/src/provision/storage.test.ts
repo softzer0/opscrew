@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { devNull, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { FakeZone } from "@opscrew/connector-cloudflare/testing";
+import { type FakeContainer, FakeDocker } from "@opscrew/connector-docker/testing";
 import type {
   CommandRunner,
   FetchLike,
@@ -60,12 +61,14 @@ import {
   forgetStorageKey,
   NEW_STORAGE_KEY_VARS,
   OFFSITE_KEY_VARS,
+  OFFSITE_SFTP_KEY_VAR,
   offsiteEnvFile,
   offsiteValues,
   orderedStorageFile,
   previousBucketKeyFile,
   providerBucket,
   requireOffsiteKey,
+  requireOffsiteSftpKey,
   requireR2Cloudflare,
   requireStorageKey,
   STORAGE_KEY_VARS,
@@ -1061,6 +1064,115 @@ describe("the off-server copies' bucket: its key, engine environment and values"
     );
   });
 
+  it("asks for the user's own bucket's key with its endpoint's host and steps, and keeps it", async () => {
+    const own = withOffsite(testPlan(), {
+      provider: "s3",
+      endpoint: "https://s3.eu-central-1.wasabisys.com",
+      bucket: "shop-own-backups",
+    });
+    const stop = requireOffsiteKey(
+      await createTestPhaseDeps({ env: {} }),
+      own,
+      {},
+      {
+        command: "opscrew provision",
+      },
+    );
+    await expect(stop).rejects.toMatchObject({
+      code: "CREDENTIALS_MISSING",
+      message:
+        "Your bucket of the off-server copies shop-own-backups on s3.eu-central-1.wasabisys.com needs a key you create in the provider's console; OpsCrew never creates one. Nothing was changed.",
+      hint: expect.stringContaining(
+        "1. In your storage provider's console, create an access key named opscrew-shop-backups that can list, read, write and delete objects in the bucket shop-own-backups",
+      ),
+    });
+    const d = await createTestPhaseDeps({ env: {}, interactive: true });
+    const asked: StorageKeyQuestion[] = [];
+    const services = {
+      askStorageKey: async (question: StorageKeyQuestion) => {
+        asked.push(question);
+        return OFFSITE_KEY;
+      },
+    };
+    await expect(requireOffsiteKey(d, own, services, { command: "x" })).resolves.toEqual(
+      OFFSITE_KEY,
+    );
+    await expect(requireOffsiteKey(d, own, services, { command: "x" })).resolves.toEqual(
+      OFFSITE_KEY,
+    );
+    expect(asked.map((q) => q.provider)).toEqual(["s3.eu-central-1.wasabisys.com"]);
+    const kept = (await readTextIfExists(storageKeyFile(d.paths)))?.trim() ?? "";
+    expect(JSON.parse(kept)).toMatchObject({ provider: "s3", bucket: "shop-own-backups" });
+  });
+
+  it("reads the SFTP machine's private key from the file the variable names, on one line, redacted, and refuses one with a passphrase", async () => {
+    const machine = withOffsite(testPlan(), {
+      provider: "sftp",
+      host: "backup.example.com",
+      user: "shop-backups",
+      path: "/backups",
+      hostKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl",
+    });
+    const dir = await mkdtemp(join(tmpdir(), "opscrew-sftp-key-"));
+    const pem = fakeSecret("private-key-pem", "sftp-key");
+    const plain = join(dir, "plain");
+    await writeFile(plain, `${pem}\r\n`);
+    const d = await createTestPhaseDeps({ env: { [OFFSITE_SFTP_KEY_VAR]: plain } });
+    const { sshKey } = await requireOffsiteSftpKey(d, machine, { command: "opscrew provision" });
+    expect(sshKey).toBe(pem.split("\n").join("\\n"));
+    expect(d.redactor.redact(`key: ${sshKey}`)).not.toContain(pem.split("\n")[1]);
+    expect(d.redactor.redact(pem.split("\n")[1] ?? "")).not.toContain(pem.split("\n")[1]);
+    expect(
+      offsiteValues(machine, { login: { sshKey }, recipient: "age1x", cloudflare: undefined }),
+    ).toEqual({ OPSCREW_OFFSITE_SSH_KEY: sshKey, OPSCREW_OFFSITE_RECIPIENT: "age1x" });
+
+    // An OpenSSH key whose cipher is not "none" has a passphrase.
+    const name = (text: string) => {
+      const length = Buffer.alloc(4);
+      length.writeUInt32BE(text.length);
+      return Buffer.concat([length, Buffer.from(text, "latin1")]);
+    };
+    const body = Buffer.concat([Buffer.from("openssh-key-v1\0", "latin1"), name("aes256-ctr")]);
+    const encrypted = join(dir, "encrypted");
+    await writeFile(
+      encrypted,
+      `-----BEGIN OPENSSH PRIVATE KEY-----\n${body.toString("base64")}\n-----END OPENSSH PRIVATE KEY-----\n`,
+    );
+    const refused = (file: string) =>
+      createTestPhaseDeps({ env: { [OFFSITE_SFTP_KEY_VAR]: file } }).then((e) =>
+        requireOffsiteSftpKey(e, machine, { command: "opscrew provision" }),
+      );
+    await expect(refused(encrypted)).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+      message: `The file OPSCREW_OFFSITE_SFTP_KEY names (${encrypted}) is protected by a passphrase, and the server uses the key unattended. Nothing was changed.`,
+    });
+    const notKey = join(dir, "id.pub");
+    await writeFile(notKey, "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA user@host\n");
+    await expect(refused(notKey)).rejects.toMatchObject({
+      message: `The file OPSCREW_OFFSITE_SFTP_KEY names (${notKey}) holds no SSH private key. Nothing was changed.`,
+    });
+    await expect(refused(join(dir, "missing"))).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+      message: expect.stringContaining("OpsCrew could not read the private key file"),
+    });
+  });
+
+  it("gives the user's own bucket's endpoint from the plan", () => {
+    const own = withOffsite(testPlan(), {
+      provider: "s3",
+      endpoint: "https://minio.example.com:9000",
+      bucket: "shop-own-backups",
+    });
+    expect(
+      offsiteValues(own, { login: OFFSITE_KEY, recipient: "age1x", cloudflare: undefined }),
+    ).toEqual({
+      OPSCREW_OFFSITE_ENDPOINT: "https://minio.example.com:9000",
+      OPSCREW_OFFSITE_ACCESS_KEY_ID: OFFSITE_KEY.accessKeyId,
+      OPSCREW_OFFSITE_SECRET_ACCESS_KEY: OFFSITE_KEY.secretAccessKey,
+      OPSCREW_OFFSITE_RECIPIENT: "age1x",
+    });
+  });
+
   it("gives the backups root only its own key at Hetzner and Spaces, and Cloudflare's token for R2", () => {
     const env = { PATH: "/usr/bin", AWS_PROFILE: "work", CLOUDFLARE_API_TOKEN: "cf" };
     expect(backupsEngineEnv(env, plan(), OFFSITE_KEY)).toEqual({
@@ -1077,7 +1189,7 @@ describe("the off-server copies' bucket: its key, engine environment and values"
 
   it("gives the off-server copy its endpoint, its key and the recipient, as the env file's lines", () => {
     const recipient = generateAgeIdentity().recipient;
-    const values = offsiteValues(plan(), { key: OFFSITE_KEY, recipient, cloudflare: undefined });
+    const values = offsiteValues(plan(), { login: OFFSITE_KEY, recipient, cloudflare: undefined });
     expect(values).toEqual({
       OPSCREW_OFFSITE_ENDPOINT: "https://nbg1.your-objectstorage.com",
       OPSCREW_OFFSITE_ACCESS_KEY_ID: OFFSITE_KEY.accessKeyId,
@@ -1095,11 +1207,11 @@ describe("the off-server copies' bucket: its key, engine environment and values"
       region: "ams3",
     });
     expect(
-      offsiteValues(spaces, { key: OFFSITE_KEY, recipient, cloudflare: undefined }),
+      offsiteValues(spaces, { login: OFFSITE_KEY, recipient, cloudflare: undefined }),
     ).toMatchObject({ OPSCREW_OFFSITE_ENDPOINT: "https://ams3.digitaloceanspaces.com" });
     const r2 = withOffsite(testPlan(), { provider: "r2", bucket: "shop-backups" });
     const r2Values = offsiteValues(r2, {
-      key: OFFSITE_KEY,
+      login: OFFSITE_KEY,
       recipient,
       cloudflare: { accountId: "0123abcd" },
     });
@@ -1357,6 +1469,133 @@ describe.skipIf(!findExecutable("git"))("provision with the off-server copy (024
     );
   });
 });
+
+describe.skipIf(!findExecutable("git"))(
+  "provision with the off-server copy on the user's own storage (T2756)",
+  () => {
+    const OWN_BUCKET = {
+      provider: "s3",
+      endpoint: "https://s3.eu-central-1.wasabisys.com",
+      bucket: "shop-own-backups",
+      region: "eu-central-1",
+    } as const;
+    const MACHINE = {
+      provider: "sftp",
+      host: "backup.example.com",
+      user: "shop-backups",
+      path: "/backups",
+      hostKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl",
+    } as const;
+    const PEM = fakeSecret("private-key-pem", "own-machine");
+
+    /** {@link offsiteFlow} with the servers' Docker a fake whose rclone one-offs end as `run` says. */
+    async function ownFlow(
+      plan: DeployPlan,
+      run: (cmd: string[]) => { exitCode: number; stderr?: string } = () => ({ exitCode: 0 }),
+    ) {
+      const o = await offsiteFlow(plan);
+      const docker = Object.assign(new FakeDocker(), { ran: [] as FakeContainer[] });
+      docker.onStart = (container) => {
+        docker.ran.push(container);
+        return run(container.cmd);
+      };
+      o.f.services.docker = () => docker;
+      const keyFile = join(await mkdtemp(join(tmpdir(), "opscrew-sftp-key-")), "id");
+      await writeFile(keyFile, `${PEM}\n`, { mode: 0o600 });
+      o.f.deps.env[OFFSITE_SFTP_KEY_VAR] = keyFile;
+      return { ...o, docker };
+    }
+
+    it("plans no bucket for the user's own bucket, checks the server can write there, then stores its key", async () => {
+      const o = await ownFlow(withOffsite(testPlan(), OWN_BUCKET));
+      const result = await o.run();
+      expect(o.f.handler.requests.map((r) => r.title)).not.toContainEqual(
+        expect.stringContaining("off-server copies' bucket"),
+      );
+      expect(result.backupsPlanHash).toBeUndefined();
+      expect(o.backups.calls).toEqual([]);
+      expect(await readTextIfExists(join(o.f.root, "opscrew/infra/backups/main.tf"))).toBe(
+        undefined,
+      );
+      expect(o.docker.ran.map((c) => c.cmd[0])).toEqual(["touch", "deletefile"]);
+      const recipient = (await readRecord(o.f.deps.paths)).recipients?.[0];
+      expect(o.f.github.secrets.get("OPSCREW_OFFSITE_ENV")).toBe(
+        [
+          `OPSCREW_OFFSITE_ENDPOINT=${OWN_BUCKET.endpoint}`,
+          `OPSCREW_OFFSITE_ACCESS_KEY_ID=${OFFSITE_KEY.accessKeyId}`,
+          `OPSCREW_OFFSITE_SECRET_ACCESS_KEY=${OFFSITE_KEY.secretAccessKey}`,
+          `OPSCREW_OFFSITE_RECIPIENT=${recipient}`,
+          "",
+        ].join("\n"),
+      );
+      const printed = await leaks(o.f);
+      expect(printed).not.toContain(OFFSITE_KEY.secretAccessKey);
+      expect(printed).toContain(
+        "The app's server can write to your bucket shop-own-backups at https://s3.eu-central-1.wasabisys.com (eu-central-1).",
+      );
+    });
+
+    it("puts the SFTP machine's private key in the server's env file on one line, never in a file of the repository or the output", async () => {
+      const o = await ownFlow(withOffsite(testPlan(), MACHINE));
+      await o.run();
+      const recipient = (await readRecord(o.f.deps.paths)).recipients?.[0];
+      expect(o.f.github.secrets.get("OPSCREW_OFFSITE_ENV")).toBe(
+        `OPSCREW_OFFSITE_SSH_KEY=${PEM.split("\n").join("\\n")}\nOPSCREW_OFFSITE_RECIPIENT=${recipient}\n`,
+      );
+      expect(o.docker.ran.map((c) => c.cmd)).toEqual([
+        ["touch", "offsite:/backups/shop-prod/backups/.opscrew-write-check"],
+        ["deletefile", "offsite:/backups/shop-prod/backups/.opscrew-write-check"],
+      ]);
+      const printed = await leaks(o.f);
+      for (const line of PEM.split("\n").slice(1, -1)) expect(printed).not.toContain(line);
+      expect(o.backups.calls).toEqual([]);
+    });
+
+    it("stops before the deploy secrets when the server can't write there, naming what to fix", async () => {
+      const o = await ownFlow(withOffsite(testPlan(), MACHINE), () => ({
+        exitCode: 1,
+        stderr:
+          "2026/11/14 03:28:57 CRITICAL: Failed to create file system: NewFs: couldn't connect SSH: ssh: handshake failed: ssh: unable to authenticate, attempted methods [none publickey], no supported methods remain",
+      }));
+      await expect(o.run()).rejects.toMatchObject({
+        code: "CREDENTIALS_INVALID",
+        message: expect.stringContaining(
+          "The app's server could not write a test file in the folder /backups/shop-prod/backups on backup.example.com",
+        ),
+        hint: expect.stringContaining(
+          "to ~/.ssh/authorized_keys of shop-backups on backup.example.com",
+        ),
+      });
+      expect(o.f.handler.requests.filter((r) => r.kind === "github-secrets")).toEqual([]);
+      expect(o.f.github.secrets.has("OPSCREW_OFFSITE_ENV")).toBe(false);
+    });
+
+    it("stops before any change without the SFTP machine's key, or with one that has a passphrase", async () => {
+      const o = await ownFlow(withOffsite(testPlan(), MACHINE));
+      delete o.f.deps.env[OFFSITE_SFTP_KEY_VAR];
+      await expect(o.run()).rejects.toMatchObject({
+        code: "CREDENTIALS_MISSING",
+        message:
+          "The off-server copies go to shop-backups on backup.example.com over SFTP, and the server needs a private key to log in there: OPSCREW_OFFSITE_SFTP_KEY names none. Nothing was changed.",
+        hint: expect.stringContaining(
+          "add its public half (the .pub file) to ~/.ssh/authorized_keys of shop-backups",
+        ),
+      });
+      expect(o.f.handler.requests).toEqual([]);
+      const keyFile = join(await mkdtemp(join(tmpdir(), "opscrew-sftp-key-")), "id");
+      await writeFile(
+        keyFile,
+        `-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,00\n\n${PEM.split("\n")[1]}\n-----END RSA PRIVATE KEY-----\n`,
+      );
+      o.f.deps.env[OFFSITE_SFTP_KEY_VAR] = keyFile;
+      await expect(o.run()).rejects.toMatchObject({
+        code: "INVALID_INPUT",
+        message: `The file OPSCREW_OFFSITE_SFTP_KEY names (${keyFile}) is protected by a passphrase, and the server uses the key unattended. Nothing was changed.`,
+      });
+      expect(o.f.handler.requests).toEqual([]);
+    });
+  },
+);
 
 describe.skipIf(!findExecutable("git"))(
   "provision with a bucket in Contabo's storage (R15)",

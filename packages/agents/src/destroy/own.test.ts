@@ -281,6 +281,37 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
     expect(s.host.facts.snapshotDirs).toEqual([]);
   });
 
+  it("leaves the copies on the user's own SFTP machine with --delete-data, saying where (T2756)", async () => {
+    const s = await deployed();
+    s.host.facts = HostFactsSchema.parse({ ...s.host.facts, snapshotDirs: ["shop"] });
+    const plan = await readArtifact("plan", s.deps.paths.files.plan);
+    await writeArtifact("plan", s.deps.paths.files.plan, {
+      ...plan,
+      snapshots: {
+        offsite: {
+          provider: "sftp",
+          host: "backup.example.com",
+          user: "shop-backups",
+          path: "/backups",
+          hostKey:
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl",
+        },
+      },
+    });
+    const previews: DestroyPreview[] = [];
+    await runDestroy(s.deps, {
+      services: services(s),
+      deleteData: true,
+      confirm: async (preview) => {
+        previews.push(preview);
+        return true;
+      },
+    });
+    expect(previews[0]?.dataWarning).toContain(
+      "The off-server copies of the snapshots stay in the folder /backups/shop-prod/backups on backup.example.com: OpsCrew never deletes them, and with no more uploads nothing deletes the old ones.",
+    );
+  });
+
   it("deletes the app's data only with deleteData, the destroy approval and the typed app name", async () => {
     const s = await deployed();
     // The host approval is answered with the wrong name: nothing on the server changes.

@@ -104,7 +104,7 @@ describe("opscrew snapshot: the flags, checked before any work", () => {
     [["schedule", "on", "--keep", "two"], "Give a whole number from 1 up."],
     [["schedule", "sometimes"], "Allowed choices are on, off."],
     [["offsite", "on"], "`opscrew snapshot offsite on` needs --to"],
-    [["offsite", "on", "--to", "s3"], "Allowed choices are r2, hetzner, digitalocean."],
+    [["offsite", "on", "--to", "ftp"], "Allowed choices are r2, hetzner, digitalocean, s3, sftp."],
     [["offsite", "off", "--to", "r2", "--days", "30"], "takes no --to, --days"],
     [["offsite", "on", "--to", "r2", "--days", "1.5"], "Give a whole number from 1 up."],
     [
@@ -488,6 +488,83 @@ describe("opscrew snapshot schedule and offsite", () => {
     expect(ctx.output).toContain(
       "The copies go to shop-staging-backups.\nNo new copy is uploaded.\n",
     );
+  });
+
+  it("passes --to s3 and --to sftp with their flags, trimmed, and refuses a port out of range (T2756)", async () => {
+    const ctx = await setup();
+    fake.answers.snapshotOffsiteOn = async () => change(["The copies go to your bucket."]);
+    expect(
+      await run(
+        ctx,
+        "snapshot",
+        "offsite",
+        "on",
+        "--env",
+        "staging",
+        "--to",
+        "s3",
+        "--endpoint",
+        " https://s3.eu-central-1.wasabisys.com ",
+        "--bucket",
+        "shop-backups",
+        "--region",
+        "eu-central-1",
+      ),
+      ctx.errors,
+    ).toBe(0);
+    expect(lastCall(fake.calls, "snapshotOffsiteOn").args).toEqual([
+      {
+        to: "s3",
+        endpoint: "https://s3.eu-central-1.wasabisys.com",
+        bucket: "shop-backups",
+        region: "eu-central-1",
+      },
+    ]);
+    const fingerprint = "SHA256:B8/U+nAjyhpmJINWrx+HI5/3+Hg8el/yoDL9IPskP5c";
+    expect(
+      await run(
+        ctx,
+        "snapshot",
+        "offsite",
+        "on",
+        "--env",
+        "staging",
+        "--to",
+        "sftp",
+        "--host",
+        "backup.example.com",
+        "--port",
+        "23",
+        "--user",
+        "shop-backups",
+        "--path",
+        "/backups",
+        "--host-key",
+        fingerprint,
+        "--days",
+        "30",
+      ),
+      ctx.errors,
+    ).toBe(0);
+    expect(lastCall(fake.calls, "snapshotOffsiteOn").args).toEqual([
+      {
+        to: "sftp",
+        host: "backup.example.com",
+        port: 23,
+        user: "shop-backups",
+        path: "/backups",
+        hostKey: fingerprint,
+        days: 30,
+      },
+    ]);
+    const calls = fake.calls.length;
+    expect(await run(ctx, "snapshot", "offsite", "on", "--to", "sftp", "--port", "70000")).not.toBe(
+      0,
+    );
+    expect(ctx.errors).toContain("Give a port from 1 to 65535.");
+    expect(await run(ctx, "snapshot", "offsite", "off", "--host", "x")).toBe(2);
+    expect(ctx.errors).toContain("`opscrew snapshot offsite off` takes no --host");
+    expect(fake.calls).toHaveLength(calls);
   });
 
   it("writes the real plan's schedule through the agent", async () => {

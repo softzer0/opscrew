@@ -15,6 +15,7 @@ import {
 } from "@opscrew/iac-templates";
 import {
   APP_SERVER,
+  backupsBucketOf,
   type DeployPlan,
   ghcrImageFor,
   isHostingTarget,
@@ -128,6 +129,7 @@ import { deploySetupDependabot } from "./dependabot";
 import { requireNoSmallerDisk } from "./disk-guard";
 import { requireNoMoveInProgress } from "./guard";
 import { monitoringHostPlans } from "./monitoring";
+import { checkOffsiteWriteOnServers } from "./offsite-check";
 import {
   deployRenewedCertificate,
   edgeSwitch,
@@ -222,6 +224,7 @@ import {
   applyBackups,
   applyStorage,
   BACKUPS_PLAN_SUFFIX,
+  bucketKeyOf,
   offsiteEnvFile,
   offsitePreflight,
   offsiteSetup,
@@ -1082,16 +1085,18 @@ async function provisionFlow(
           ...(services.sleep !== undefined ? { sleep: services.sleep } : {}),
         });
   if (storage?.approval) approvals.push(approvalEntry(storage.approval));
-  // 4c. The off-server copies' bucket (the `backups` root, D9) the same way, with its own state.
+  // 4c. The off-server copies' bucket (the `backups` root, D9) the same way, with its own state,
+  // when OpsCrew plans it: the user's own bucket or SFTP machine has no plan.
+  const backupsBucket = backupsBucketOf(plan);
   const backups =
-    offsite === undefined
+    backupsBucket === undefined
       ? undefined
       : await applyBackups(deps, {
           engine,
           env: engineEnv,
           plan,
           files: renderBackups(plan, ctx),
-          key: offsiteKey,
+          key: bucketKeyOf(offsiteKey),
           ...(saved.backups !== undefined ? { approvePlanHash: saved.backups } : {}),
           ...(options.planOnly ? { planOnly: true } : {}),
           command,
@@ -1585,6 +1590,10 @@ async function provisionFlow(
       );
       // The off-server copy's env file, naming the recovery copy's age recipient, whose key this
       // makes first when there is none yet (D11).
+      const offsiteAlready =
+        backupsBucket === undefined
+          ? "The deploy secrets are not stored yet."
+          : `The bucket ${backupsBucket.bucket} exists; the deploy secrets are not stored yet.`;
       const copy =
         offsite === undefined
           ? undefined
@@ -1594,8 +1603,16 @@ async function provisionFlow(
               key: offsiteKey,
               cloudflare,
               command,
-              already: `The bucket ${offsite.bucket} exists; the deploy secrets are not stored yet.`,
+              already: offsiteAlready,
             });
+      // On the user's own bucket or SFTP machine, each server with data writes and deletes a test
+      // file there first, as its copies will: a refusal stops before the deploy secrets.
+      if (copy !== undefined) {
+        await checkOffsiteWriteOnServers(deps, plan, services, copy.values, {
+          already: offsiteAlready,
+          command,
+        });
+      }
       recoveryCopy = copy?.recoveryCopy;
       await setDeploySecrets(
         deps,

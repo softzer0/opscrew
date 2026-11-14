@@ -29,8 +29,8 @@ import type { DeletedSnapshot, SnapshotCommandOptions, SnapshotEntry } from "./t
 const GONE = 5;
 
 /**
- * What the approval says is deleted for good; `bucket` names the off-server bucket that holds a
- * copy of it.
+ * What the approval says is deleted for good; `bucket` names the off-server bucket (or folder) that
+ * holds a copy of it: `bucket shop-backups`.
  */
 function deletionLines(entry: SnapshotEntry, provider: boolean, bucket?: string): string[] {
   const copied = entry.services.filter((service) => service.state === "copied");
@@ -39,17 +39,15 @@ function deletionLines(entry: SnapshotEntry, provider: boolean, bucket?: string)
     provider && entry.server !== undefined
       ? `It is deleted at the provider for good: a rebuild can no longer use it.`
       : `Its copies of ${listText(copied.map((service) => service.name))} are deleted for good: \`opscrew restore\` can no longer put them back.`,
-    ...(bucket === undefined
-      ? []
-      : [`Its copy off the server, in the bucket ${bucket}, is deleted too.`]),
+    ...(bucket === undefined ? [] : [`Its copy off the server, in the ${bucket}, is deleted too.`]),
     `Typing ${entry.id} approves it.`,
   ];
 }
 
-/** What the approval says of a copy only the off-server bucket still holds. */
+/** What the approval says of a copy only the off-server `bucket` (`bucket shop-backups`) still holds. */
 function bucketOnlyLines(id: string, bucket: string): string[] {
   return [
-    `The copy of the snapshot ${id} in the off-server bucket ${bucket}, which no server holds any more.`,
+    `The copy of the snapshot ${id} in the off-server ${bucket}, which no server holds any more.`,
     `It is deleted for good: \`opscrew restore --from offsite\` can no longer put it back.`,
     `Typing ${id} approves it.`,
   ];
@@ -135,8 +133,9 @@ export async function deleteSnapshot(
       { hint: `\`opscrew snapshot list${flags}\` shows its snapshots.` },
     );
   }
-  const offBucket = inBucket ? bucket?.name : undefined;
-  const where = entry?.where ?? `only in the off-server bucket ${offBucket}`;
+  const offBucket = inBucket && bucket !== undefined ? `${bucket.noun} ${bucket.name}` : undefined;
+  // The title is audited: an SFTP machine's address stays out of it.
+  const where = entry?.where ?? `only in the off-server ${bucket?.audit}`;
   const approval = await deps.approvals.request({
     kind: "remote-exec",
     title: `Delete the snapshot ${id} of ${environment} ${where}`,
@@ -187,13 +186,13 @@ export async function deleteSnapshot(
     });
   }
   if (inBucket && bucket !== undefined) {
-    deps.reporter.step(`Deleting the copy of the snapshot ${id} in the off-server bucket`);
+    deps.reporter.step(`Deleting the copy of the snapshot ${id} in the off-server ${bucket.noun}`);
     outcomes.push(await bucketDelete(run, bucket, id));
     await deps.audit.append({
       kind: "provider-call",
       actor: "opscrew",
       action: "delete a snapshot's off-server copy",
-      target: `bucket ${bucket.name}`,
+      target: bucket.audit,
       decision: "approved",
       detail: `${id}: ${outcomes.at(-1)}`,
     });

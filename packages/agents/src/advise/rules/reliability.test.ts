@@ -189,7 +189,7 @@ describe("reliabilityRules: snapshots on an own server or Portainer (024)", () =
         ],
         apply: {
           kind: "manual",
-          text: "Run `opscrew snapshot offsite on --to hetzner --region <region>` (or `--to digitalocean`) with the region the copies should be in",
+          text: "Run `opscrew snapshot offsite on --to hetzner --region <region>` (or `--to digitalocean`) with the region the copies should be in, or keep them in your own S3-compatible bucket or on your own machine over SFTP (`--to s3`, `--to sftp`)",
         },
       }),
     ]);

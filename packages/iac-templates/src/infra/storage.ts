@@ -1,7 +1,7 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are HCL interpolation, not JavaScript templates.
 import type { ProviderRequirement } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
-import { type DeployPlan, snapshotOffsiteOf } from "@opscrew/plan-schema";
+import { backupsBucketOf, type DeployPlan, type SnapshotOffsite } from "@opscrew/plan-schema";
 import { OFFSITE_PREFIX } from "../offsite";
 import { wrongTarget } from "../providers";
 import type { RenderContext, RenderedFile } from "../types";
@@ -498,13 +498,14 @@ function rootFiles(
 }
 
 /**
- * Whether the off-server copy's bucket at `provider` expires old copies itself, through the
+ * Whether the off-server copy's storage at `provider` expires old copies itself, through the
  * `backups` root's lifecycle rule (Hetzner, with versioning; R2, which has none). Where it does
- * not (DigitalOcean Spaces, untested live: neither), `snapshot.sh` deletes the copies older than
- * the retention after each upload (024 plan.md 7.).
+ * not (DigitalOcean Spaces, untested live: neither; the user's own bucket or SFTP machine, which
+ * OpsCrew never configures), `snapshot.sh` deletes the copies older than the retention after each
+ * upload (024 plan.md 7.).
  */
-export function offsiteExpires(provider: BucketProvider): boolean {
-  return provider !== "digitalocean";
+export function offsiteExpires(provider: SnapshotOffsite["provider"]): boolean {
+  return provider === "r2" || provider === "hetzner";
 }
 
 /**
@@ -621,7 +622,8 @@ function s3Backups(provider: "hetzner" | "digitalocean"): string[] {
 }
 
 /**
- * The `backups` root ({@link backupsRootDir}, D9) when `snapshots.offsite` is on: the bucket of the
+ * The `backups` root ({@link backupsRootDir}, D9) when `snapshots.offsite` is a bucket OpsCrew
+ * plans (`backupsBucketOf`; none for the user's own bucket or SFTP machine): the bucket of the
  * off-server copies, with its own state, plan and approval, apart from the app's `storage` root,
  * so moves, data deletion and drift never handle its key. It holds only that bucket, with
  * `prevent_destroy` always: OpsCrew never deletes the copies.
@@ -634,7 +636,7 @@ function s3Backups(provider: "hetzner" | "digitalocean"): string[] {
  * Deterministic; contains no secrets.
  */
 export function renderBackups(plan: DeployPlan, ctx: RenderContext): RenderedFile[] {
-  const offsite = snapshotOffsiteOf(plan);
+  const offsite = backupsBucketOf(plan);
   if (offsite === undefined) return [];
   const { provider } = offsite;
   const variables: VariableSpec[] = [

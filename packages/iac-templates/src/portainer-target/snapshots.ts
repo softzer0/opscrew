@@ -9,7 +9,15 @@ import {
   snapshotsOn,
 } from "@opscrew/plan-schema";
 import { dataDirs, serviceSpec } from "../catalog";
-import { AGE_BINARY, ageFunctions, OFFSITE_PREFIX, rcloneSettings } from "../offsite";
+import {
+  AGE_BINARY,
+  ageFunctions,
+  offsiteLogin,
+  offsiteRetention,
+  offsiteRoot,
+  PORTAINER_OFFSITE_VARIABLES,
+  rcloneSettings,
+} from "../offsite";
 import { IMAGES } from "../pins";
 import { portainerTarget } from "../providers";
 import {
@@ -452,40 +460,34 @@ function beforeRelease(
 }
 
 /**
- * The stack variables of the off-server copy (`snapshots.offsite`), set like the services'
- * secrets: its bucket's S3 endpoint, the key, and the recovery copy's age recipient. The region
- * is the plan's (`snapshots.offsite.region`).
- */
-export const PORTAINER_OFFSITE_VARIABLES = {
-  endpoint: "OPSCREW_OFFSITE_ENDPOINT",
-  accessKeyId: "OPSCREW_OFFSITE_ACCESS_KEY_ID",
-  secretAccessKey: "OPSCREW_OFFSITE_SECRET_ACCESS_KEY",
-  recipient: "OPSCREW_OFFSITE_RECIPIENT",
-} as const;
-
-/**
  * The off-server copy (`snapshots.offsite`, plan.md 7., R7 S2) on the pinned rclone image: it
  * fetches the pinned age's release archive with `rclone copyurl` and keeps it in its tools volume,
  * checking its SHA-256 and unpacking the binary before each use ({@link ageFunctions}). Every minute, each
  * finished snapshot without `offsite.done` streams file by file through `age -r <recipient>` into
- * `rclone rcat` (`backups/<id>/<file>.age`), `about.json` last, then gets `offsite.done`; the
- * snapshots before a release (named by their digest) stay here for the rollback (D16). The
- * bucket's endpoint, key and the recipient are stack variables.
+ * `rclone rcat` (`backups/<id>/<file>.age` under {@link offsiteRoot}), `about.json` last, then gets
+ * `offsite.done`; the snapshots before a release (named by their digest) stay here for the
+ * rollback (D16). The login ({@link offsiteLogin}) and the recipient are stack variables. On the
+ * user's own bucket or SFTP machine, which expire nothing, a pass that copied a snapshot then
+ * deletes the copies older than `snapshots.offsite.days` (and on SFTP the folders that leaves
+ * empty); a failed deletion only warns, and the next copy tries again.
  */
 function offsite(plan: DeployPlan): Record<string, object> {
   const copy = snapshotOffsiteOf(plan);
   if (copy === undefined) return {};
   const { arch } = portainerTarget(plan.target);
   const v = PORTAINER_OFFSITE_VARIABLES;
+  const root = offsiteRoot(plan, copy);
+  const own = copy.provider === "s3" || copy.provider === "sftp";
   const script = [
     "set -o pipefail",
     ...ageFunctions(arch),
     "put() {",
     "  age_ready || return 1",
-    `  ${AGE_BINARY} -r "$${v.recipient}" < "$1" | rclone rcat ${shellQuote(`offsite:${copy.bucket}/${OFFSITE_PREFIX}/`)}"$2"`,
+    `  ${AGE_BINARY} -r "$${v.recipient}" < "$1" | rclone rcat ${shellQuote(`${root}/`)}"$2"`,
     "}",
     "umask 077",
     "while :; do",
+    ...(own ? ["  copied=0"] : []),
     `  for d in ${DIR}/*; do`,
     // A snapshot being written: the schedule's and a release's `.partial`, one by hand `.taking`.
     '    case "$d" in *.partial|*.taking) continue ;; esac',
@@ -499,10 +501,18 @@ function offsite(plan: DeployPlan): Record<string, object> {
     "    done",
     '    if [ "$ok" = 1 ] && put "$d"/about.json "$id"/about.json.age; then',
     '      touch "$d"/offsite.done',
+    ...(own ? ["      copied=1"] : []),
     "    else",
     '      echo "OpsCrew: the off-server copy of the snapshot $id failed; trying again in a minute." >&2',
     "    fi",
     "  done",
+    ...(own
+      ? [
+          `  if [ "$copied" = 1 ] && ! ${offsiteRetention(copy, root)}; then`,
+          `    echo "OpsCrew: the off-server copies older than ${copy.days} days could not be deleted; the next copy tries again." >&2`,
+          "  fi",
+        ]
+      : []),
     "  sleep 60",
     "done",
   ];
@@ -518,9 +528,9 @@ function offsite(plan: DeployPlan): Record<string, object> {
             composeLiteral(value),
           ]),
         ),
-        RCLONE_CONFIG_OFFSITE_ENDPOINT: `\${${v.endpoint}}`,
-        RCLONE_CONFIG_OFFSITE_ACCESS_KEY_ID: `\${${v.accessKeyId}}`,
-        RCLONE_CONFIG_OFFSITE_SECRET_ACCESS_KEY: `\${${v.secretAccessKey}}`,
+        ...Object.fromEntries(
+          Object.entries(offsiteLogin(copy)).map(([name, variable]) => [name, `\${${variable}}`]),
+        ),
         [v.recipient]: `\${${v.recipient}}`,
       },
       entrypoint: ["/bin/sh", "-c", composeLiteral(script.join("\n"))],

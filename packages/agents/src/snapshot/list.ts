@@ -23,6 +23,7 @@ import {
   hideIdentity,
   type OffsiteBucket,
   offsiteBucket,
+  offsiteNoun,
   type RestoreServices,
 } from "./restore-offsite";
 import { type SnapshotRun, snapshotRun, snapshotTarget } from "./run";
@@ -177,7 +178,7 @@ async function bucketEntries(
   if (copies.length === 0) return [];
   if (identity === undefined) {
     run.deps.reporter.warn(
-      `The off-server bucket ${bucket.name} also holds ${copies.length === 1 ? "the copy" : "the copies"} ${listText(copies.map(([id]) => id))}, which no server holds any more. Their records are encrypted: run \`opscrew snapshot list${run.flags} --key-file <path>\` with the recovery copy's age key file to list what they hold.`,
+      `The off-server ${bucket.noun} ${bucket.name} also holds ${copies.length === 1 ? "the copy" : "the copies"} ${listText(copies.map(([id]) => id))}, which no server holds any more. Their records are encrypted: run \`opscrew snapshot list${run.flags} --key-file <path>\` with the recovery copy's age key file to list what they hold.`,
     );
     return undefined;
   }
@@ -194,7 +195,7 @@ async function bucketEntries(
   }
   return mergeListings(listings).map((entry) => ({
     ...entry,
-    where: `only in the off-server bucket ${bucket.name}`,
+    where: `only in the off-server ${bucket.noun} ${bucket.name}`,
     offsite: true,
   }));
 }
@@ -214,7 +215,7 @@ async function readableBucket(
     if (!(error instanceof OpsCrewError)) throw error;
     if (error.code !== "CREDENTIALS_MISSING" && error.code !== "PHASE_PRECONDITION") throw error;
     run.deps.reporter.warn(
-      `The off-server bucket is not read: ${error.message}${error.hint === undefined ? "" : ` ${error.hint}`}`,
+      `The off-server ${offsiteNoun(run.plan)} is not read: ${error.message}${error.hint === undefined ? "" : ` ${error.hint}`}`,
     );
     return undefined;
   }

@@ -44,12 +44,7 @@ import {
   OpsCrewError,
   resolveProjectPaths,
 } from "@opscrew/core";
-import {
-  type DeployPlan,
-  onOneServer,
-  readArtifact,
-  snapshotOffsiteOf,
-} from "@opscrew/plan-schema";
+import { backupsBucketOf, type DeployPlan, onOneServer, readArtifact } from "@opscrew/plan-schema";
 import { CLOUD_CREDENTIALS } from "@opscrew/providers";
 import { DEEP_TOOL_NAME, type DeepToolResult } from "@opscrew/secops";
 import { z } from "zod";
@@ -136,7 +131,8 @@ function planData(saved: SavedPlan) {
  */
 function bucketPlanText(saved: SavedPlan, plan: DeployPlan, root: "storage" | "backups"): string {
   const storage = root === "storage" ? plan.storage?.objectStorage : undefined;
-  const bucket = root === "storage" ? storage?.bucket : snapshotOffsiteOf(plan)?.bucket;
+  // The backups root holds only a bucket OpsCrew plans: never the user's own bucket or machine.
+  const bucket = root === "storage" ? storage?.bucket : backupsBucketOf(plan)?.bucket;
   const vars = root === "storage" ? STORAGE_KEY_VARS : OFFSITE_KEY_VARS;
   const failed = saved.policy.filter((result) => !result.passed);
   return [

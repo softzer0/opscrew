@@ -787,6 +787,25 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
     expect(result.destroyed).toEqual(deployedResources());
   });
 
+  it("says the off-server copies stay in the user's own bucket, which it never deletes (T2756)", async () => {
+    const plan = DeployPlanSchema.parse({
+      ...deployedPlan(),
+      snapshots: {
+        offsite: {
+          provider: "s3",
+          endpoint: "https://s3.eu-central-1.wasabisys.com",
+          bucket: "shop-backups",
+          region: "eu-central-1",
+        },
+      },
+    });
+    const s = await setup({ plan });
+    await runDestroy(s.deps, { services: s.services, snapshot: false });
+    expect(s.handler.requests[1]?.details).toContain(
+      "The off-server copies of the snapshots stay in your bucket shop-backups at https://s3.eu-central-1.wasabisys.com (eu-central-1): OpsCrew never deletes them, and with no more uploads nothing deletes the old ones.",
+    );
+  });
+
   it("auto takes no snapshot when no data lives only on the server", async () => {
     const base = deployedPlan({ postgres: false });
     const s = await setup({

@@ -400,7 +400,7 @@ describe("runDesign's snapshots in an existing Portainer (024 FR-2410)", () => {
     const again = await runDesign(deps);
     expect(again.plan.snapshots).toEqual({ schedule: { every: "daily", keep: 2 } });
     expect(again.lines).toContain(
-      "The snapshots stay on the Portainer host, so losing it loses them too: `opscrew snapshot offsite on --to hetzner --region <region>` (or `--to digitalocean`) keeps an encrypted copy elsewhere.",
+      "The snapshots stay on the Portainer host, so losing it loses them too: `opscrew snapshot offsite on --to hetzner --region <region>` (or `--to digitalocean`) keeps an encrypted copy elsewhere, and `--to s3` or `--to sftp` keeps it in your own S3-compatible bucket or on your own machine, which OpsCrew prices nothing for.",
     );
   });
 

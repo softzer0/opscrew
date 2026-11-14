@@ -11,7 +11,7 @@ import { NOTHING_CHANGED } from "../promote/shared";
 import { APPROVAL_SECONDS } from "../rollback/database";
 import { shortDigest } from "../rollback/versions";
 import { type Relogin, reloginLines } from "./generations";
-import type { RestoreServices } from "./restore-offsite";
+import { offsiteNoun, type RestoreServices } from "./restore-offsite";
 import type { SnapshotRun } from "./run";
 import { type About, KIND_WORDS } from "./store";
 
@@ -258,7 +258,7 @@ export async function approveRestore(run: SnapshotRun, input: RestoreApproval): 
   const hash = restoreHash(run, input);
   const name = plan.app.name;
   const lines = [
-    `The snapshot ${id} ${KIND_WORDS[about.kind]}, ${formatUtc(about.taken)}${options.from === "offsite" ? ", from its copy in the off-server bucket" : ""}.`,
+    `The snapshot ${id} ${KIND_WORDS[about.kind]}, ${formatUtc(about.taken)}${options.from === "offsite" ? `, from its copy in the off-server ${offsiteNoun(plan)}` : ""}.`,
     `It puts back exactly as they were then: ${listText(parts)}.`,
     `What is lost: everything written to ${listText(names)} since ${formatUtc(about.taken)}.`,
     ...(options.from === "offsite"

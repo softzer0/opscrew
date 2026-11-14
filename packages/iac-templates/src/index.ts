@@ -39,7 +39,16 @@ export * from "./hosting";
 export * from "./infra";
 export { CAA_ISSUERS } from "./infra/cloudflare";
 export * from "./monitoring";
-export { OFFSITE_PREFIX, RCLONE_PROVIDERS, rcloneSettings } from "./offsite";
+export {
+  OFFSITE_PREFIX,
+  offsiteFolder,
+  offsiteLogin,
+  offsitePlace,
+  offsiteRoot,
+  PORTAINER_OFFSITE_VARIABLES,
+  RCLONE_PROVIDERS,
+  rcloneSettings,
+} from "./offsite";
 export * from "./pins";
 export { keepNewerPins } from "./pins-carry";
 export * from "./portainer-host";

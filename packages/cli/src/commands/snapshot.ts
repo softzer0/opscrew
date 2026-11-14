@@ -47,6 +47,15 @@ interface OffsiteFlags extends AppEnvFlags {
   to?: OffsiteProvider;
   region?: string;
   days?: number;
+  /** `--endpoint`, `--bucket`: the user's own S3-compatible bucket (`--to s3`). */
+  endpoint?: string;
+  bucket?: string;
+  /** `--host`, `--port`, `--user`, `--path`, `--host-key`: the user's own machine (`--to sftp`). */
+  host?: string;
+  port?: number;
+  user?: string;
+  path?: string;
+  hostKey?: string;
 }
 
 /** Commander's parser of a whole number from 1 up (`--keep`, `--days`). */
@@ -55,6 +64,13 @@ function wholeNumber(value: string): number {
   if (!Number.isInteger(number) || number < 1) {
     throw new InvalidArgumentError("Give a whole number from 1 up.");
   }
+  return number;
+}
+
+/** Commander's parser of a TCP port (`--port`). */
+function portNumber(value: string): number {
+  const number = wholeNumber(value);
+  if (number > 65_535) throw new InvalidArgumentError("Give a port from 1 to 65535.");
   return number;
 }
 
@@ -144,6 +160,10 @@ function checkOff(setting: string, given: string, flags: readonly [boolean, stri
   );
 }
 
+/** The stop of `snapshot offsite on` without `--to`: the buckets of their own it names first. */
+const NEEDS_TO =
+  "`opscrew snapshot offsite on` needs --to: r2 (Cloudflare R2), hetzner or digitalocean, where the copies' bucket is.";
+
 /** The command's line in `opscrew --help`, and the first line of its own help. */
 const SUMMARY =
   "Take a snapshot of an environment's data (or with --server of its whole server), list or delete snapshots, and turn scheduled snapshots and their encrypted copy off the server on or off";
@@ -173,7 +193,8 @@ export function register(program: Command, ctx: CliContext): void {
         "PostgreSQL, MySQL, MariaDB, MongoDB, SQLite, Valkey, Redis and Dragonfly are copied while",
         "they run. Every other service with data stops alone for its copy and starts again, after",
         "you approve it (in a script: --allow-downtime). Snapshots stay on the machine that holds",
-        "the data; `snapshot offsite on` also keeps an encrypted copy in a bucket of its own.",
+        "the data; `snapshot offsite on` also keeps an encrypted copy off it: in a bucket of its own,",
+        "your own S3-compatible bucket, or a folder on your own machine over SFTP.",
       ].join("\n"),
     )
     // Options after a subcommand's name are the subcommand's (`snapshot schedule on --stop kafka`).
@@ -215,12 +236,12 @@ export function register(program: Command, ctx: CliContext): void {
     snapshot
       .command("list")
       .description(
-        "List the environment's snapshots, newest first: on its servers, this computer or your Portainer, whole-server ones at the provider, and the copies only the off-server bucket still holds (changes nothing)",
+        "List the environment's snapshots, newest first: on its servers, this computer or your Portainer, whole-server ones at the provider, and the copies only the off-server bucket or folder still holds (changes nothing)",
       )
       .option("--json", "Print the snapshots as JSON")
       .option(
         "--key-file <path>",
-        "The file with your age key: the copies only the off-server bucket holds are then listed with their details",
+        "The file with your age key: the copies only the off-server bucket or folder holds are then listed with their details",
       ),
   ).action(async (flags: AppEnvFlags & { json?: boolean; keyFile?: string }) => {
     const json = flags.json === true;
@@ -252,7 +273,7 @@ export function register(program: Command, ctx: CliContext): void {
     snapshot
       .command("delete")
       .description(
-        "Delete a snapshot for good, where it is (a whole-server one at its provider) and its copy in the off-server bucket, after you type its id",
+        "Delete a snapshot for good, where it is (a whole-server one at its provider) and its copy off the server, after you type its id",
       )
       .argument("<id>", "The snapshot's id, as `opscrew snapshot list` shows it")
       .option("--confirm <id>", "In a script: the snapshot's id, typed to approve its deletion"),
@@ -328,23 +349,32 @@ export function register(program: Command, ctx: CliContext): void {
   const offsite = snapshot
     .command("offsite")
     .description(
-      "Turn the encrypted copy of each snapshot in a bucket of its own on or off in the plan; `opscrew provision` then plans the bucket and the uploads",
+      "Turn the encrypted copy of each snapshot off the server on or off in the plan: in a bucket of its own, your own S3-compatible bucket or a folder on your own machine over SFTP; `opscrew provision` then sets up the uploads",
     );
   addEnvOption(
     offsite
       .addArgument(new Argument("<on|off>", "Turn it on or off").choices(["on", "off"]))
       .addOption(
-        new Option("--to <provider>", "With on: where the bucket is").choices([
-          "r2",
-          "hetzner",
-          "digitalocean",
-        ]),
+        new Option(
+          "--to <provider>",
+          "With on: where the copies go: a bucket of its own at Cloudflare R2, Hetzner or DigitalOcean, your own S3-compatible bucket (s3), or your own machine over SFTP (sftp)",
+        ).choices(["r2", "hetzner", "digitalocean", "s3", "sftp"]),
       )
       .option(
         "--region <region>",
-        "With --to hetzner or digitalocean: the bucket's region (default: the server's location, where it has object storage)",
+        "With --to hetzner or digitalocean: the bucket's region (default: the server's location, where it has object storage); with --to s3: your bucket's region (default us-east-1)",
       )
-      .option("--days <n>", "How long each copy is kept, in days (default 90)", wholeNumber),
+      .option("--days <n>", "How long each copy is kept, in days (default 90)", wholeNumber)
+      .option("--endpoint <url>", "With --to s3: your bucket's S3 endpoint, https://…")
+      .option("--bucket <name>", "With --to s3: your bucket, which exists")
+      .option("--host <host>", "With --to sftp: your machine's host name or address")
+      .option("--port <port>", "With --to sftp: its SSH port (default 22)", portNumber)
+      .option("--user <user>", "With --to sftp: the account the server logs in as")
+      .option("--path <folder>", "With --to sftp: the account's folder for the copies, absolute")
+      .option(
+        "--host-key <fingerprint>",
+        "With --to sftp, in a script: the machine's host key fingerprint, SHA256:…, which confirms the key it presents",
+      ),
   ).action(async (state: "on" | "off", flags: OffsiteFlags) => {
     const given = givenFlags(flags);
     if (state === "off") {
@@ -352,12 +382,19 @@ export function register(program: Command, ctx: CliContext): void {
         [flags.to !== undefined, "--to"],
         [flags.region !== undefined, "--region"],
         [flags.days !== undefined, "--days"],
+        [flags.endpoint !== undefined, "--endpoint"],
+        [flags.bucket !== undefined, "--bucket"],
+        [flags.host !== undefined, "--host"],
+        [flags.port !== undefined, "--port"],
+        [flags.user !== undefined, "--user"],
+        [flags.path !== undefined, "--path"],
+        [flags.hostKey !== undefined, "--host-key"],
       ]);
     }
     if (state === "on" && flags.to === undefined) {
       throw new OpsCrewError(
         "INVALID_INPUT",
-        "`opscrew snapshot offsite on` needs --to: r2 (Cloudflare R2), hetzner or digitalocean, where the copies' bucket is.",
+        `${NEEDS_TO} Or s3 for your own S3-compatible bucket, or sftp for your own machine.`,
         {
           hint: `Run \`opscrew snapshot offsite on --to r2${given}\`, or with hetzner or digitalocean.`,
         },
@@ -365,14 +402,22 @@ export function register(program: Command, ctx: CliContext): void {
     }
     const { app, name } = await chooseEnvironment(ctx, flags, "snapshot offsite");
     const deps = createPhaseDeps(ctx, { ai: false, app, environment: name });
-    const region = flags.region?.trim();
+    // The text flags given, trimmed; the agent says which go with which --to.
+    const { region, endpoint, bucket, host, user, path, hostKey } = flags;
+    const texts = { region, endpoint, bucket, host, user, path, hostKey };
+    const options: Partial<Record<keyof typeof texts, string>> = Object.fromEntries(
+      Object.entries(texts).flatMap(([flag, value]) =>
+        value === undefined ? [] : [[flag, value.trim()]],
+      ),
+    );
     printChange(
       ctx,
       flags.to === undefined
         ? await snapshotOffsiteOff(deps)
         : await snapshotOffsiteOn(deps, {
             to: flags.to,
-            ...(region === undefined ? {} : { region }),
+            ...options,
+            ...(flags.port === undefined ? {} : { port: flags.port }),
             ...(flags.days === undefined ? {} : { days: flags.days }),
           }),
     );

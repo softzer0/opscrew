@@ -1,5 +1,8 @@
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { FAKE_ACCOUNT_ID } from "@opscrew/connector-cloudflare/testing";
 import { generateAgeIdentity, OpsCrewError } from "@opscrew/core";
+import { fakeSecret } from "@opscrew/core/testing";
 import { IMAGES } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
@@ -152,6 +155,63 @@ describe.skipIf(!SH_AVAILABLE)("the off-server bucket from this computer", () =>
       expect(shown).not.toContain(secret);
     }
     expect(shown).not.toContain(SERVER_IPV4);
+  });
+
+  it("lists the copies only the user's own bucket or SFTP folder holds, reached as the servers reach them (T2756)", async () => {
+    const own = (offsite: object) =>
+      snapshotWorld(DeployPlanSchema.parse({ ...plan(), snapshots: { offsite } }));
+    const s3 = await own({
+      provider: "s3",
+      endpoint: "https://s3.eu-central-1.wasabisys.com",
+      bucket: "shop-backups",
+    });
+    const fromBucket = await bucketWorld(s3);
+    const entries = await listSnapshots(s3.deps, {
+      services: s3.services,
+      identity: fromBucket.key.identity,
+    });
+    expect(entries.map((entry) => entry.where)).toContain(
+      "only in the off-server bucket shop-backups",
+    );
+    expect(fromBucket.bucket.calls[0]?.env).toMatchObject({
+      RCLONE_CONFIG_OFFSITE_PROVIDER: "Other",
+      RCLONE_CONFIG_OFFSITE_REGION: "us-east-1",
+      RCLONE_CONFIG_OFFSITE_ENDPOINT: "https://s3.eu-central-1.wasabisys.com",
+    });
+
+    const sftp = await own({
+      provider: "sftp",
+      host: "backup.example.com",
+      user: "shop-backups",
+      path: "/backups",
+      hostKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl",
+    });
+    // FakeBucket's root `offsite:<name>/backups` is the SFTP folder's `<path>/<app>-<env>/backups`.
+    const folder = new FakeBucket("/backups/shop-staging");
+    const { recipient } = generateAgeIdentity();
+    folder.put(`${ONLY_IN_BUCKET}/db.dump.age`, "rows\n..", recipient);
+    folder.put(
+      `${ONLY_IN_BUCKET}/about.json.age`,
+      JSON.stringify(about(ONLY_IN_BUCKET)),
+      recipient,
+    );
+    sftp.deps.runner = folder.runner(sftp.deps.runner);
+    sftp.deps.streams = folder.streams();
+    const pem = fakeSecret("private-key-pem", "list-sftp");
+    const keyFile = join(sftp.deps.paths.root, "sftp-key");
+    await writeFile(keyFile, `${pem}\n`);
+    sftp.deps.env = { ...sftp.deps.env, OPSCREW_OFFSITE_SFTP_KEY: keyFile };
+    const listed = await listSnapshots(sftp.deps, { services: sftp.services });
+    expect(listed.map((entry) => entry.id)).not.toContain(ONLY_IN_BUCKET);
+    expect(sftp.deps.reporter.text()).toContain(
+      `The off-server folder /backups/shop-staging/backups on backup.example.com also holds the copy ${ONLY_IN_BUCKET}, which no server holds any more.`,
+    );
+    expect(folder.calls[0]?.env).toMatchObject({
+      RCLONE_CONFIG_OFFSITE_TYPE: "sftp",
+      RCLONE_CONFIG_OFFSITE_SHELL_TYPE: "none",
+      RCLONE_CONFIG_OFFSITE_KEY_PEM: pem.split("\n").join("\\n"),
+    });
+    expect(everythingShown(sftp)).not.toContain(pem.split("\n")[1]);
   });
 
   it("lists the machines with a warning when this computer has no key for the bucket", async () => {

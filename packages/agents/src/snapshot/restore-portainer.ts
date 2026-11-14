@@ -390,7 +390,7 @@ export async function restoreInPortainer(
   if (record === undefined) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `${environment} has no snapshot ${id}${bucket === undefined ? " in your Portainer" : " in its off-server bucket"}. ${NOTHING_CHANGED}`,
+      `${environment} has no snapshot ${id}${bucket === undefined ? " in your Portainer" : ` in its off-server ${bucket.noun}`}. ${NOTHING_CHANGED}`,
       { hint: `\`opscrew snapshot list${flags}\` shows its snapshots.` },
     );
   }
@@ -417,7 +417,9 @@ export async function restoreInPortainer(
   });
   // 3. The copy from the bucket; then the app stops, the data is copied first, and restored.
   if (bucket !== undefined) {
-    deps.reporter.step(`Copying the snapshot ${id} from the off-server bucket to your Portainer`);
+    deps.reporter.step(
+      `Copying the snapshot ${id} from the off-server ${bucket.noun} to your Portainer`,
+    );
     await copyToPortainer(run, bucket, options.identity as string, place, {
       id,
       server: APP_SERVER,

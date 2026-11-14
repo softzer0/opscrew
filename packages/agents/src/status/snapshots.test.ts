@@ -1,6 +1,7 @@
 import { utimes } from "node:fs/promises";
 import { join } from "node:path";
 import { fakeSecret } from "@opscrew/core/testing";
+import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { portainerWorld } from "../snapshot/__fixtures__/portainer";
 import { SH_AVAILABLE } from "../snapshot/__fixtures__/server";
@@ -70,6 +71,30 @@ describe.skipIf(!SH_AVAILABLE)("status's snapshots on servers", () => {
     expect(report.snapshot?.last?.services.map((service) => service.name)).toEqual(["cache", "db"]);
     expect(report.snapshot?.scheduledFailures).toEqual([]);
     expect(everythingShown(world)).not.toContain(SERVER_IPV4);
+  });
+
+  it("says where the copies off the server go, with no secret (T2756)", async () => {
+    const machine = {
+      provider: "sftp",
+      host: "backup.example.com",
+      user: "shop-backups",
+      path: "/backups",
+      hostKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl",
+      days: 30,
+    };
+    const plan = DeployPlanSchema.parse({
+      ...stagingPlan([{ kind: "postgres", name: "db" }]),
+      snapshots: { offsite: machine },
+    });
+    const world = await snapshotWorld(plan);
+    const report = await snapshotStatusReport(world.deps, world.plan, world.services);
+    expect(report.lines).toEqual([
+      "Snapshots: none yet; `opscrew snapshot` takes one.",
+      "Copies off the server: the folder /backups/shop-staging/backups on backup.example.com, each copy kept 30 days.",
+    ]);
+    expect(report.snapshot?.offsite).toBe(
+      "the folder /backups/shop-staging/backups on backup.example.com, each copy kept 30 days",
+    );
   });
 
   it("names a part left out, and says none yet before the first snapshot", async () => {
