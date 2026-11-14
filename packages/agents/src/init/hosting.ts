@@ -1,9 +1,9 @@
 /**
  * `opscrew init` for an app on a hosting account (feature 027, ADR 0030 D1): the variables that
  * reach its panel (`OPSCREW_HOSTING_*`) or an SFTP-only host (`OPSCREW_SFTP_*`), and where OpsCrew
- * reaches the account's files over SFTP (an SFTP host, a Plesk account) the `sftp` and
- * `ssh-keyscan` binaries. Nothing is called over the network: `opscrew interview` finds the panel
- * and reads the account.
+ * reaches the account's files over SFTP (an SFTP host, a Plesk account) the SFTP variables and
+ * the `sftp` and `ssh-keyscan` binaries. Nothing is called over the network: `opscrew interview`
+ * finds the panel and reads the account.
  */
 import { isUserFacingError, listText } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
@@ -45,13 +45,15 @@ export function hostingReachOf(plan: DeployPlan | undefined, env: Env): HostingR
 
 /**
  * The provider check for a hosting account: the panel's three variables (its address an
- * `https://` one), or the SFTP host's three with its key file on this computer. Before design,
- * with neither set complete, it fails naming both.
+ * `https://` one), or the SFTP host's three with its key file on this computer; a Plesk plan's
+ * account needs both, as OpsCrew writes its files over SFTP. Before design, with neither set
+ * complete, it fails naming both.
  */
 export async function checkHostingAccount(
   env: Env,
   reach: HostingReach,
   deploysTo: string,
+  plan: DeployPlan | undefined,
 ): Promise<CheckResult> {
   if (reach === undefined) {
     return {
@@ -60,31 +62,54 @@ export async function checkHostingAccount(
       fix: HOSTING_VARS_HINT,
     };
   }
-  if (reach === "panel") {
-    const missing = unsetVars(env, PANEL_VARS);
-    if (missing.length > 0) {
-      return {
-        status: "fail",
-        message: `${deploysTo} to a hosting account with a panel, but ${listText(missing)} ${missing.length === 1 ? "isn't" : "aren't"} set.`,
-        fix: PANEL_FIX,
-      };
-    }
-    try {
-      panelHost((env[HOSTING_URL_VAR] ?? "").trim());
-    } catch (error) {
-      if (!isUserFacingError(error)) throw error;
-      return failFrom(error);
-    }
+  if (reach === "sftp") {
+    return (
+      (await sftpLoginProblem(env, `${deploysTo} to a host you reach over SFTP`)) ?? {
+        status: "pass",
+        message: `${listText(SFTP_VARS)} are set and the key file is on this computer. \`opscrew interview\` reads the host's key for you to confirm.`,
+      }
+    );
+  }
+  const missing = unsetVars(env, PANEL_VARS);
+  if (missing.length > 0) {
     return {
-      status: "pass",
-      message: `${listText(PANEL_VARS)} are set. \`opscrew interview\` finds the panel (cPanel, Plesk or DirectAdmin) and reads the account; nothing on it changes before your approval.`,
+      status: "fail",
+      message: `${deploysTo} to a hosting account with a panel, but ${listText(missing)} ${missing.length === 1 ? "isn't" : "aren't"} set.`,
+      fix: PANEL_FIX,
     };
   }
+  try {
+    panelHost((env[HOSTING_URL_VAR] ?? "").trim());
+  } catch (error) {
+    if (!isUserFacingError(error)) throw error;
+    return failFrom(error);
+  }
+  const plesk = plan?.target.provider === "hosting" && plan.target.panel === "plesk";
+  const problem = plesk
+    ? await sftpLoginProblem(
+        env,
+        `${deploysTo} to a Plesk account, whose files OpsCrew writes over SFTP`,
+      )
+    : undefined;
+  if (problem !== undefined) return problem;
+  return {
+    status: "pass",
+    message: plesk
+      ? `${listText(PANEL_VARS)} are set, and ${listText(SFTP_VARS)} with the key file on this computer: OpsCrew writes a Plesk account's files over SFTP. \`opscrew interview\` reads the account and the SFTP host's key for you to confirm; nothing on the account changes before your approval.`
+      : `${listText(PANEL_VARS)} are set. \`opscrew interview\` finds the panel (cPanel, Plesk or DirectAdmin) and reads the account; nothing on it changes before your approval.`,
+  };
+}
+
+/**
+ * What stops the SFTP login (`OPSCREW_SFTP_*`, checked as `sftpLogin` checks them, the key file on
+ * this computer), or `undefined`; `needs` says who needs it (`<plan> deploys to …`).
+ */
+async function sftpLoginProblem(env: Env, needs: string): Promise<CheckResult | undefined> {
   const missing = unsetVars(env, SFTP_VARS);
   if (missing.length > 0) {
     return {
       status: "fail",
-      message: `${deploysTo} to a host you reach over SFTP, but ${listText(missing)} ${missing.length === 1 ? "isn't" : "aren't"} set.`,
+      message: `${needs}, but ${listText(missing)} ${missing.length === 1 ? "isn't" : "aren't"} set.`,
       fix: SFTP_FIX,
     };
   }
@@ -102,10 +127,7 @@ export async function checkHostingAccount(
     if (!isUserFacingError(error)) throw error;
     return failFrom(error);
   }
-  return {
-    status: "pass",
-    message: `${listText(SFTP_VARS)} are set and the key file is on this computer. \`opscrew interview\` reads the host's key for you to confirm.`,
-  };
+  return undefined;
 }
 
 /**

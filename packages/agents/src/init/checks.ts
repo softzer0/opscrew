@@ -323,7 +323,7 @@ export async function runInitChecks(
         isServerlessProvider(provider)
           ? checkServerlessTarget(deps, offline, provider, artifacts, cloudflare, github)
           : provider === "hosting"
-            ? checkHostingAccount(env, reach, deploysTo(source))
+            ? checkHostingAccount(env, reach, deploysTo(source), artifacts.plan)
             : checkProviderToken(
                 deps,
                 offline,

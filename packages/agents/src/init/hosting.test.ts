@@ -150,6 +150,49 @@ describe("opscrew init for an app on a hosting account", () => {
     });
   });
 
+  it("checks a Plesk account's SFTP variables and key file too, as its files go over SFTP", async () => {
+    const deps = await createTestPhaseDeps({});
+    const key = join(deps.paths.root, "id_ed25519");
+    await writeFile(key, "not a real key\n");
+    const sftp = {
+      OPSCREW_SFTP_HOST: "sftp.example.com",
+      OPSCREW_SFTP_USER: "acct",
+      OPSCREW_SFTP_KEY: key,
+    };
+    const { checks: list } = await checks({ plan: "plesk", env: { ...PANEL, ...sftp } });
+    expect(find(list, "provider").status).toBe("pass");
+    expect(find(list, "provider").message).toContain(
+      "OpsCrew writes a Plesk account's files over SFTP",
+    );
+
+    const { checks: missing } = await checks({
+      plan: "plesk",
+      env: { ...PANEL, OPSCREW_SFTP_HOST: sftp.OPSCREW_SFTP_HOST },
+    });
+    expect(find(missing, "provider")).toMatchObject({
+      status: "fail",
+      message:
+        "The plan deploys to a Plesk account, whose files OpsCrew writes over SFTP, but OPSCREW_SFTP_USER and OPSCREW_SFTP_KEY aren't set.",
+    });
+    expect(find(missing, "provider").fix).toContain("OPSCREW_SFTP_HOST");
+
+    const { checks: noKey } = await checks({
+      plan: "plesk",
+      env: { ...PANEL, ...sftp, OPSCREW_SFTP_KEY: join(deps.paths.root, "missing") },
+    });
+    expect(find(noKey, "provider").status).toBe("fail");
+    expect(find(noKey, "provider").message).toContain("is not on this computer");
+
+    const { checks: badHost } = await checks({
+      plan: "plesk",
+      env: { ...PANEL, ...sftp, OPSCREW_SFTP_HOST: "-oProxyCommand=evil" },
+    });
+    expect(find(badHost, "provider")).toMatchObject({
+      status: "fail",
+      message: "OPSCREW_SFTP_HOST isn't a host's address.",
+    });
+  });
+
   it("needs sftp and ssh-keyscan for Plesk, whose files go over SFTP", async () => {
     const { checks: list } = await checks({ plan: "plesk" });
     expect(find(list, "ssh")).toMatchObject({
