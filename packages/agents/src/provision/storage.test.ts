@@ -2009,6 +2009,25 @@ describe("R2 bucket keys by Cloudflare account, during a move to another account
       .split("\n")
       .map((line) => JSON.parse(line) as Record<string, string>);
 
+  it("never takes or replaces B's kept key in a lookup that names no account during the move", async () => {
+    const deps = await createTestPhaseDeps({ env: {}, interactive: true });
+    const file = storageKeyFile(deps.paths);
+    const keptB = { provider: "r2", bucket: "shop-uploads", account: B, ...KEY_B };
+    await mkdir(dirname(file), { recursive: true });
+    await writeFile(file, `${JSON.stringify(keptB)}\n`);
+    const asked: string[] = [];
+    const answer = async (question: StorageKeyQuestion) => {
+      asked.push(question.bucket);
+      return KEY;
+    };
+    await expect(
+      requireStorageKey(deps, moving(), { askStorageKey: answer }, options),
+    ).resolves.toEqual(KEY);
+    expect(asked).toEqual(["shop-uploads"]);
+    // The key asked for is kept beside B's, which stays.
+    expect(await lines(deps)).toEqual([keptB, { provider: "r2", bucket: "shop-uploads", ...KEY }]);
+  });
+
   it("reads B's buckets' keys from the new variables, A's from the plain ones", async () => {
     const deps = await createTestPhaseDeps({
       env: {

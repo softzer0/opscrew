@@ -422,7 +422,7 @@ export async function setupCloudflare(
       );
     }
 
-    const accountId = await zoneAccount(api, zone, tunnels);
+    const accountId = options.accountId ?? (await zoneAccount(api, zone, tunnels));
     const setup: CloudflareSetup = {
       zoneId: zone.id,
       zoneName: zone.name,

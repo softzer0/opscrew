@@ -808,6 +808,8 @@ describe("the shared plan in another Cloudflare account, with its client and rec
   it("plans and applies in B's pending zone without waiting, writing B's record only", async () => {
     const s = await moving();
     const plan = testPlan({ domain: "shop.example.com" });
+    // The app's client certificate, as its provision made and kept it on this computer.
+    await planOriginTls(s.deps, { plan, record: undefined, served: undefined });
     const { planned, tls } = await planB(s, plan);
     expect(planned?.client).toBe(s.clientB);
     expect(planned?.main?.recordPath).toBe(s.recordPath);

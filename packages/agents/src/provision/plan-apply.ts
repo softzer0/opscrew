@@ -722,6 +722,7 @@ export async function planAndApply(
 ): Promise<PlanAndApplyResult> {
   const { engine, dir, env, deployPlan } = options;
   const command = options.command ?? "opscrew provision";
+  const move = options.move === true;
   let saved: SavedPlan;
   if (options.approvePlanHash !== undefined) {
     const found = await findSavedPlan(deps.paths.files.plansDir, options.approvePlanHash, {
@@ -744,7 +745,7 @@ export async function planAndApply(
       );
     }
     // A move's plan holds another Cloudflare account's pieces: only that move applies it.
-    if (found.planFile.endsWith(MOVE_PLAN_SUFFIX) && options.move !== true) {
+    if (found.planFile.endsWith(MOVE_PLAN_SUFFIX) && !move) {
       throw new OpsCrewError(
         "PLAN_HASH_MISMATCH",
         `The saved plan with the hash ${options.approvePlanHash} belongs to a move to another Cloudflare account, and only that move applies it. Nothing was changed.`,
@@ -806,7 +807,7 @@ export async function planAndApply(
     // A run after a failed firewall sync plans nothing new and sets the firewalls again; it sends
     // again only the backups orders an earlier approved plan recorded as wanted. A move changes no
     // server.
-    if (options.planOnly !== true && options.move !== true) {
+    if (options.planOnly !== true && !move) {
       await syncFirewalls(connectorRun, outputs);
       await syncProviderBackups(connectorRun, outputs);
     }
@@ -920,7 +921,6 @@ export async function planAndApply(
   // The automated backups this approved plan turned on, recorded before anything else can fail, so
   // a later run orders them when this one doesn't get to (Contabo's Auto Backup). A move changes no
   // server.
-  const move = options.move === true;
   const backupsTurnedOn = move
     ? []
     : await markWantedBackups(connectorRun, saved.planJson, result.outputs);

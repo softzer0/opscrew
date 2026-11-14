@@ -722,6 +722,28 @@ describe("originTlsNext: the origin certificate issued under a move's other acco
     expect(await generated(deps)).toEqual(before);
   });
 
+  it("never makes a new client certificate for the other account: it stops, nothing changed", async () => {
+    const refused = {
+      code: "PHASE_PRECONDITION",
+      message:
+        "Run the move on the computer that set the app up, which keeps the app's client certificate. Nothing was changed.",
+    };
+    const next = { record: undefined, served: undefined, slot: "originTlsNext" as const };
+    // This computer holds no client certificate of the app.
+    const empty = await createTestPhaseDeps();
+    await expect(planOriginTls(empty, { plan, ...next })).rejects.toMatchObject(refused);
+    await expect(readFile(generatedValuesFile(empty), "utf8")).rejects.toThrow();
+    // OpenLiteSpeed would need one with keyCertSign, which B has not got yet.
+    const { deps } = await deployed();
+    const before = await generated(deps);
+    const ols = DeployPlanSchema.parse({
+      ...plan,
+      target: { ...plan.target, edge: "openlitespeed" },
+    });
+    await expect(planOriginTls(deps, { plan: ols, ...next })).rejects.toMatchObject(refused);
+    expect(await generated(deps)).toEqual(before);
+  });
+
   it("registers every key it reads with the redactor, and forgets originTlsNext alone", async () => {
     const { deps, own } = await deployed();
     const b = certificate("b");

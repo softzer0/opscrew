@@ -297,6 +297,9 @@ export async function planOriginTls(
         clientCertificate = undefined;
       }
       if (clientKey === undefined || clientCertificate === undefined) {
+        // The other account of a move gets the app's own client certificate, which the origin
+        // trusts already: a new one would not be.
+        if (slot === "originTlsNext") throw clientCertificateMissing();
         clientKey = newKey(deps);
         clientCertificate = selfSignedClientCertificate({
           key: clientKey,
@@ -740,6 +743,17 @@ export function clientCertificateWarning(
 function replaceClientCertificate(plan: DeployPlan, certificate: string): string {
   const pullPem = originPullPem(plan);
   return `add ${certificate} after the old one in ${pullPem} and deploy; upload the new one and turn it on for each hostname with Cloudflare's API (POST /zones/<zone id>/origin_tls_client_auth/hostnames/certificates, then PUT /zones/<zone id>/origin_tls_client_auth/hostnames); remove the old one from ${pullPem} and deploy; delete the old one at Cloudflare; then put the new certificate's id, expiry and SHA-256 in the client entry of .opscrew/cloudflare.json, and its key in generated_values.json`;
+}
+
+/**
+ * Said when a move to another Cloudflare account runs on a computer that does not hold the app's
+ * client certificate and its key, which the other account must get as they are.
+ */
+function clientCertificateMissing(): OpsCrewError {
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    "Run the move on the computer that set the app up, which keeps the app's client certificate. Nothing was changed.",
+  );
 }
 
 /**

@@ -218,6 +218,33 @@ describe("setupCloudflare with two Cloudflare accounts", () => {
     });
   });
 
+  it("takes the account it is given when Cloudflare names none with the zone", async () => {
+    const { fake, api } = accounts();
+    const deps = await createTestPhaseDeps();
+    const b = fake.account("New");
+    const zone = fake.zone("example.com", "New");
+    const unnamed = {
+      ...api(TOKEN_B),
+      findZone: async () => ({
+        id: zone.id,
+        name: zone.name,
+        status: "pending",
+        nameServers: zone.nameServers,
+      }),
+      listAccounts: async () => [
+        { id: b.id, name: "New" },
+        { id: fake.account("Old").id, name: "Old" },
+      ],
+    };
+    const setup = await setupCloudflare(
+      deps,
+      testPlan({ domain: "shop.example.com" }),
+      { cloudflare: unnamed },
+      { accountId: b.id },
+    );
+    expect(setup).toMatchObject({ zoneId: zone.id, accountId: b.id });
+  });
+
   it("refuses a zone that moved to another account before any change", async () => {
     const { fake, api } = accounts();
     fake.activate(fake.zone("example.com", "New"));

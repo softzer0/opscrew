@@ -274,14 +274,16 @@ interface KeyedBucket {
 /**
  * True when `kept` is the key of `at`'s bucket: the same bucket, and the same account when both
  * name one. A key kept without an account is of the account the app used before a move, so it
- * never stands for the bucket of the account the move goes to.
+ * never stands for the bucket of the account the move goes to; and during a move, a lookup that
+ * names no account never takes (or replaces) the key of the account the move goes to.
  */
 function keyOf(
   kept: StoredKey,
   at: Omit<KeyedBucket, "bucket"> & { bucket: { provider: string; bucket: string } },
 ): boolean {
   if (!sameBucket(kept, at.bucket)) return false;
-  if (at.account === undefined || kept.account === at.account) return true;
+  if (at.account === undefined) return at.moveTo === undefined || kept.account !== at.moveTo;
+  if (kept.account === at.account) return true;
   return kept.account === undefined && at.account !== at.moveTo;
 }
 
