@@ -158,7 +158,7 @@ describe("fakeCloudflareAccounts: tokens and accounts", () => {
   });
 
   it("lists the zones a token sees by name and account, page by page", async () => {
-    const { fake, a, b, clientB } = setup();
+    const { fake, a, b, clientA, clientB } = setup();
     const both = fakeSecret("cloudflare-token", "both");
     fake.tokens.set(both, { accounts: [a.id, b.id], denied: new Set() });
     const clientBoth = clientOf(fake, both);
@@ -180,7 +180,12 @@ describe("fakeCloudflareAccounts: tokens and accounts", () => {
       total_count: 2,
       total_pages: 2,
     });
-    expect(ids(await call(fake, TOKEN_B, "GET", `/zones?account.id=${a.id}`))).toEqual([]);
+    // An account the token does not reach is refused, not listed as empty.
+    const other = await call(fake, TOKEN_B, "GET", `/zones?account.id=${a.id}`);
+    expect([other.status, ...codes(other)]).toEqual([403, 9109]);
+    expect(await rejection(clientA.findZone(ZONE, { accountId: b.id }))).toBeInstanceOf(
+      CloudflareError,
+    );
     expect(result(await call(fake, both, "GET", `/zones/${zoneB.id}`))).toMatchObject({
       account: { id: b.id, name: "New" },
       plan: { legacy_id: "free" },
@@ -515,6 +520,9 @@ describe("fakeCloudflareAccounts: rules and origin TLS", () => {
     expect((await rejection(clientA.revokeOriginCertificate(origin?.id ?? ""))).message).toContain(
       "certificate not found",
     );
+    const unknownZone = await call(fake, TOKEN_B, "GET", `/certificates?zone_id=${"f".repeat(32)}`);
+    expect([unknownZone.status, ...codes(unknownZone)]).toEqual([404, 7003]);
+    await unanswered(fake, TOKEN_B, "GET", `/certificates?zone_id=${created.id}&status=all`);
     // Ids are unique across both zones.
     const ids = fake.zones.flatMap((z) => [
       z.id,
@@ -637,8 +645,7 @@ describe("fakeCloudflareAccounts: account pieces", () => {
       enabled: false,
       previews_enabled: false,
     });
-    await call(fake, TOKEN_B, "POST", subdomain, { enabled: true });
-    expect(b.workers.get("docs")?.subdomain).toEqual({ enabled: true, previews_enabled: false });
+    await unanswered(fake, TOKEN_B, "POST", subdomain);
     const missing = await call(fake, TOKEN_B, "GET", `${scripts}/api/subdomain`);
     expect([missing.status, ...codes(missing)]).toEqual([404, 10007]);
     await unanswered(fake, TOKEN_B, "GET", `${scripts}?per_page=1`);

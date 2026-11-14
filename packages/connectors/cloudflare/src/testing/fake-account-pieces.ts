@@ -14,7 +14,7 @@ import { ok, only, paged, refuse } from "./replies";
  * Access, R2 buckets and Workers. OpsCrew makes most of them through the IaC engine, so a test
  * seeds them as plain data; the fake answers the reads OpsCrew's client and its permission probes
  * make, and the client's own writes (the Zero Trust organization and login method, a tunnel's
- * secret, a Worker's subdomain, custom domains). Any other request throws.
+ * secret, custom domains). Any other request throws.
  */
 
 /** A connection of a tunnel's connector, as Cloudflare lists it (it names the server's address). */
@@ -144,7 +144,7 @@ export function accountReply(
     ["/access/organizations", "access-organization", (...a) => organization(ctx, ...a)],
     ["/access/identity_providers", "access-organization", (...a) => identityProviders(ctx, ...a)],
     ["/r2/buckets", "r2", (m, r, u) => buckets(ctx, m, r, u)],
-    ["/workers/scripts", "workers", (...a) => scripts(ctx, ...a)],
+    ["/workers/scripts", "workers", (m, r, u) => scripts(ctx, m, r, u)],
     ["/workers/domains", "workers", (...a) => workerDomains(ctx, ...a)],
   ];
   for (const [prefix, permission, route] of routes) {
@@ -309,13 +309,7 @@ function buckets(ctx: PieceContext, method: string, rest: string, url: URL): Fak
 // --- Workers -------------------------------------------------------------------------------------
 
 /** The scripts, and a script's `workers.dev` subdomain. */
-function scripts(
-  ctx: PieceContext,
-  method: string,
-  rest: string,
-  url: URL,
-  body: unknown,
-): FakeReply {
+function scripts(ctx: PieceContext, method: string, rest: string, url: URL): FakeReply {
   const { workers } = ctx.account;
   if (rest === "" && method === "GET") {
     only(url, []);
@@ -324,18 +318,11 @@ function scripts(
     );
   }
   const match = /^\/([^/]+)\/subdomain$/.exec(rest);
-  if (!match?.[1] || (method !== "GET" && method !== "POST")) {
+  if (!match?.[1] || method !== "GET") {
     return unanswered(ctx, method, `/workers/scripts${rest}`);
   }
   const script = workers.get(decodeURIComponent(match[1]));
   if (!script) return NO_WORKER;
-  if (method === "POST") {
-    const sent = body as { enabled?: unknown; previews_enabled?: unknown };
-    script.subdomain = {
-      enabled: sent.enabled === true,
-      previews_enabled: sent.previews_enabled === true,
-    };
-  }
   return ok(script.subdomain ?? { enabled: false, previews_enabled: false });
 }
 

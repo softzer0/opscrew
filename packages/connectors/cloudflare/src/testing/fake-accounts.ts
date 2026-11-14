@@ -451,6 +451,9 @@ class FakeCloudflareAccounts {
 
   #listZones(reach: FakeCloudflareToken, url: URL): FakeReply {
     only(url, ["name", "account.id", "page", "per_page"]);
+    const accountId = url.searchParams.get("account.id");
+    // Refused, not an empty list (the fake's own answer until research R10 shows Cloudflare's).
+    if (accountId !== null && !reach.accounts.includes(accountId)) return UNAUTHORIZED;
     const filter = (key: string, value: string) => {
       const wanted = url.searchParams.get(key);
       return wanted === null || wanted === value;
@@ -688,7 +691,8 @@ class FakeCloudflareAccounts {
     let zone: FakeCloudflareZone | undefined;
     if (route === "/certificates" && call.method === "GET") {
       zone = this.zones.find((z) => z.id === url.searchParams.get("zone_id"));
-      if (zone && !mine.includes(zone)) {
+      if (!zone) return noRoute(route);
+      if (!mine.includes(zone)) {
         call.accountId = zone.accountId;
         return UNAUTHORIZED;
       }
@@ -707,10 +711,9 @@ class FakeCloudflareAccounts {
     } else {
       const id = route.slice("/certificates/".length);
       zone = mine.find((z) => z.data.originCertificates.some((c) => c.id === id));
-      // The words of this refusal and the next are the fake's own, as FakeZone's.
+      // The words of this refusal are the fake's own, as FakeZone's.
       if (!zone) return refuse(404, 1004, "certificate not found");
     }
-    if (!zone) return refuse(400, 1001, "zone_id is required");
     call.accountId = zone.accountId;
     return zone.data;
   }

@@ -9,7 +9,7 @@ import {
   tailMessage,
   telemetryEvents,
 } from "./fake-observability";
-import { answer, type FakeFault, ok, refuse, takeFault } from "./replies";
+import { answer, type FakeFault, ok, only, refuse, takeFault } from "./replies";
 
 /**
  * A fake Cloudflare zone and account behind core's `fakeFetch`, with the Rulesets behaviour the
@@ -397,6 +397,7 @@ export class FakeZone {
   #originCa(method: string, route: string, url: URL, body: unknown): FakeReply {
     if (this.denied.has("ssl")) return refuse(403, 10000, "Authentication error");
     if (method === "GET" && route === "/certificates") {
+      only(url, ["zone_id", "page", "per_page"]);
       if (url.searchParams.get("zone_id") !== this.zoneId) {
         return refuse(400, 1001, "zone_id is required");
       }
