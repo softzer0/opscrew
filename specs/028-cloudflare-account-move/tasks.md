@@ -38,7 +38,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
 
 ## Phase 1: Foundation (lead)
 
-- [ ] T2801 The contract, ADR 0032 and the scaffold (lead)
+- [x] T2801 The contract, ADR 0032 and the scaffold (lead)
   - Owns: `packages/contracts/src/runtime.ts`, `docs/adr/0032-*.md`, `packages/agents/src/cloudflare-move/{index,prepare,switch,finish,abort}.ts`, the export line in `packages/agents/src/index.ts`
   - Accept:
     - `PHASES` gains `cloudflare-move` after `retarget`.
