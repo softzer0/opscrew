@@ -12,7 +12,7 @@ the few things Contabo needs that the other two never did: removal by cancellati
 and minimum term, snapshots included up to a count, no resizing, taking over a server the state
 lost, and credentials that come as a set of four. Contabo is then written as the third
 definition, with its own connector (OAuth2, typed client) and HCL module (`contabo/contabo`).
-Installing provider packages is 028's.
+Installing provider packages is 029's.
 
 ## Technical Context
 
@@ -245,7 +245,7 @@ the provider lists in README, `docs/guide/index.md`, `object-storage.md`, `snaps
 
 ## Decisions (lead, 2026-11-11)
 
-1. **Providers live in `packages/providers/<id>`**, named `@opscrew/provider-<id>`, as 028's AWS
+1. **Providers live in `packages/providers/<id>`**, named `@opscrew/provider-<id>`, as 029's AWS
    package will be.
 2. **plan-schema keeps literal provider enums**, with a test against the registry. A derived enum
    would make plan-schema import the providers, a cycle.

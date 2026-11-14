@@ -305,9 +305,9 @@ references, MCP and skills.
    Terraform module, firewall checks, token rules, interview option and docs. Hetzner and
    DigitalOcean move into it, and Contabo is the first provider written for it. Own server and
    Portainer stay as they are: they are kinds of target with flows of their own (R1), not
-   providers. Installing packages comes with AWS in 028, designed around its first real user:
+   providers. Installing packages comes with AWS in 029, designed around its first real user:
    `opscrew plugin add`, the provenance check (R3) and one Claude Code plugin per provider (R4).
-   AWS is not a VPS (R1, the roadmap's 028), so the contract for packages installed separately
+   AWS is not a VPS (R1, the roadmap's 029), so the contract for packages installed separately
    is shaped there.
 2. **Live tests on Contabo:** one live pass at the end of the feature on one Cloud VPS 4 (a
    month's price and the setup fee, R2). The founder is asked before any rerun that needs another

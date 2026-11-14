@@ -5,10 +5,10 @@ feature gets its own `specs/NNN-name/` folder when it starts, and its section he
 there. The lead keeps this file current. Research for a feature goes in that feature's
 `research.md`, never only in an agent's memory, so every session on every machine has it.
 
-Done: 000–025. Plain PHP apps (013's US8) and
-[025 credential rotation](025-credential-rotation/) shipped together as 0.2.6 on 2026-11-09.
-Being built: [026 Contabo, opening with the provider plugin system](026-contabo-provider-plugins/)
-(the founder's go-ahead, 2026-11-11).
+Done: 000–027. [026 Contabo](026-contabo-provider-plugins/) shipped as 0.2.7 on 2026-11-12, and
+[027 shared hosting](027-shared-hosting/) as 0.2.8 on 2026-11-14. Now: [028 moving an app to
+another Cloudflare account](028-cloudflare-account-move/), for 0.2.9. Then 029 AWS, once the
+founder gives the go-ahead.
 
 ## 019 Rollback
 
@@ -106,7 +106,7 @@ it runs on 018's private network and extra servers. On 2026-10-31 rollback went 
   large log volumes (OpenSearch with OpenSearch Dashboards on the monitoring server) is a later
   opt-in, only if users ask.
 - **Not here:** dashboards across several projects, team notifications and spend alerts belong to
-  the hosted control plane. On AWS (028), the light checks map to CloudWatch alarms.
+  the hosted control plane. On AWS (029), the light checks map to CloudWatch alarms.
 
 ## 021 Advise
 
@@ -126,7 +126,7 @@ figures and priced:
 - **Reliability:** backups off; restart loops; a flapping health check; no uptime alert.
 - **Upkeep and security:** waiting Dependabot updates; pending OS security updates; `secure`
   findings; tokens about to expire.
-- **Moving:** `retarget` to a cheaper provider (023), or to AWS (028) when an app outgrows one
+- **Moving:** `retarget` to a cheaper provider (023), or to AWS (029) when an app outgrows one
   server.
 
 It changes nothing itself: each proposal is applied through the existing flows (a plan and a
@@ -273,6 +273,11 @@ Research first: each service's way to change its password while clients are conn
 
 ## 026 Contabo, opening with the provider plugin system
 
+Done (2026-11-12, released in 0.2.7): [research](026-contabo-provider-plugins/research.md),
+[spec](026-contabo-provider-plugins/spec.md), [plan](026-contabo-provider-plugins/plan.md),
+[tasks](026-contabo-provider-plugins/tasks.md), ADR 0029 and `docs/guide/contabo.md`. The sketch
+below is the roadmap's, kept as the founder's input.
+
 The founder placed Contabo before AWS and the other hyperscalers on 2026-11-06. It is a cheap
 VPS provider, so it joins as another server target like Hetzner and DigitalOcean: its connector,
 profile, prices and IaC module, through `vpsConnector` and `providerProfile`.
@@ -292,7 +297,7 @@ AWS on 2026-11-06; its scope set from the research on 2026-11-11,
   like them.
 - Own server and Portainer stay as they are: they are kinds of target with flows of their own,
   not providers.
-- Installing provider packages comes with AWS (028), designed around its first real user.
+- Installing provider packages comes with AWS (029), designed around its first real user.
 - **Other areas get their own contract when a second implementation arrives** (founder,
   2026-11-11), not before, since a contract with one user tends to take the wrong shape:
   - DNS and the edge when Fastly is placed, with Cloudflare moved behind it;
@@ -306,6 +311,14 @@ destroy only cancels a Contabo server at the end of its term (at least a month),
 is asked before any rerun that needs another server.
 
 ## 027 Shared hosting (cPanel, Plesk, DirectAdmin, SFTP) and LiteSpeed
+
+Done (2026-11-14, released in 0.2.8): [research](027-shared-hosting/research.md),
+[spec](027-shared-hosting/spec.md), [plan](027-shared-hosting/plan.md),
+[tasks](027-shared-hosting/tasks.md), ADRs 0030 and 0031, and the guide pages
+`docs/guide/hosting-accounts.md`, `cpanel.md`, `plesk.md`, `directadmin.md` and `sftp.md`. In the
+same release, at the founder's request: Contabo's Object Storage and Auto Backup, the provider's
+backups on by default only in prod, and the guide pages `hetzner.md` and `digitalocean.md`. The
+sketch below is the roadmap's, kept as the founder's input.
 
 The founder placed cPanel, Plesk, DirectAdmin and SFTP before AWS, as one feature, on 2026-11-07,
 because most shared hosting providers run one of these three panels. Many apps live on hosting the
@@ -389,9 +402,25 @@ servers.
     without dropping connections, turning its admin console off, its own certificates (ACME),
     whether its cache keeps pages from any app behind it or only from apps that send LiteSpeed's
     cache headers, and the image's versions and licence.
-- **Built in**, like the other targets: installing provider packages comes with AWS (028).
+- **Built in**, like the other targets: installing provider packages comes with AWS (029).
 
-## 028 AWS
+## 028 Moving an app to another Cloudflare account
+
+`opscrew` moves an app's whole Cloudflare setup to another Cloudflare account the user owns
+(founder, 2026-11-14, for 0.2.9). Cloudflare moves nothing between accounts by itself: the domain
+is added to the new account, its records and OpsCrew's rules copied, the app's Tunnels, Access,
+Workers and R2 buckets created there, the nameservers switched, and the old account's pieces
+removed after an approved plan. Research and the founder's decisions:
+[research.md](028-cloudflare-account-move/research.md).
+
+**The founder's decisions (2026-11-14):**
+- It ships as 0.2.9; 0.2.8 went out without it.
+- A zone serving several OpsCrew apps moves with all of them: each app prepares its side from its
+  own repository, one run switches the zone, each repository then finishes.
+- The R2 buckets are copied to the new account and the app switched to them in a short
+  maintenance window, so the old account can be closed afterwards.
+
+## 029 AWS
 
 The first hyperscaler. **Direction (founder, 2026-10-13):** the most suitable setup using AWS's
 managed services for each app, not just the backend on Fargate or EC2, while the user keeps

@@ -2,7 +2,7 @@
 
 **Status**: Accepted (2026-11-11, feature 026). It supersedes ADR 0006's seam. On 2026-11-11 the
 founder chose the scope (026's research R5): the contract for cloud server providers now, and
-installing provider packages with AWS in 028. The rest of the design is the lead's.
+installing provider packages with AWS in 029. The rest of the design is the lead's.
 
 ## Context
 
@@ -14,7 +14,7 @@ research R1):
 - its firewall checks and token formats in `secops`;
 - its wording, coordinates and error patterns in a dozen phases.
 
-Adding Contabo that way would touch all of them again. AWS (028) is to ship as a package installed
+Adding Contabo that way would touch all of them again. AWS (029) is to ship as a package installed
 when first needed, which needs everything about one provider in one place behind a contract that
 does not share code with the core.
 
@@ -53,9 +53,9 @@ kinds, not on which cloud.
   `cloud-init.yaml.tftpl`; iac-templates adds the shared one to every server module it writes.
   `scripts/gen-provider-modules.ts` embeds each provider's `module/` folder into its
   `src/generated/module.ts`.
-- **D6: providers live in `packages/providers/<id>` as `@opscrew/provider-<id>`**, the name 028's
+- **D6: providers live in `packages/providers/<id>` as `@opscrew/provider-<id>`**, the name 029's
   AWS package will have. The connector packages of Hetzner and DigitalOcean moved there.
-- **D7: what 028 adds.** Installing a package with npm, pinned to an exact version and with no
+- **D7: what 029 adds.** Installing a package with npm, pinned to an exact version and with no
   install scripts, into OpsCrew's own folder, as the Claude Agent SDK is installed. A check of its
   npm provenance against OpsCrew's repository and release workflow. Loading it with `import()`
   behind a version check. A contract shaped by AWS's managed services, which are not a VPS.

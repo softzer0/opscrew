@@ -2,7 +2,7 @@
  * The contract for a cloud server provider (ADR 0029): everything OpsCrew knows about one provider
  * it creates servers on, in one definition a provider package exports. Only plain data, regular
  * expressions and functions cross it, never a zod schema or a class instance, so a separately
- * installed package (028) can implement it with its own copies of its dependencies. OpsCrew
+ * installed package (029) can implement it with its own copies of its dependencies. OpsCrew
  * validates every definition it loads (`@opscrew/providers`) and everything it reads from one.
  *
  * A server the user owns (`own`), a Portainer, this computer and the server-less hosts are kinds of

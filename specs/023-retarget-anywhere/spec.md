@@ -255,4 +255,4 @@ The new app server joins the private network, Postgres stays where it is, and th
 - A site to a server, or a server to a site.
 - A Cloudflare Tunnel on either side.
 - Keeping a component on the old server as a special mode. Place it on an extra server first.
-- AWS (028), which joins as another target.
+- AWS (029), which joins as another target.

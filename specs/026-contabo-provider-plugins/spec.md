@@ -7,7 +7,7 @@
 2026-11-06: Contabo before AWS, its research reading the official CLI `cntb`; 2026-10-16: the
 plugin system). Research: [research.md](research.md). R5 holds the founder's two decisions this
 spec builds on: 026 builds the contract for cloud server providers (installing packages comes
-with AWS in 028), and one live pass on one Contabo Cloud VPS 4.
+with AWS in 029), and one live pass on one Contabo Cloud VPS 4.
 
 ## Why
 
@@ -16,7 +16,7 @@ platforms already have an account there. OpsCrew can't create a server there tod
 way Hetzner and DigitalOcean were added would spread a third provider across some 60 files
 (research R1). Instead, everything about one cloud server provider moves into one place, behind a
 versioned contract. Hetzner and DigitalOcean move first, and Contabo is the first provider written
-for it. That makes Contabo smaller to add and AWS's package possible later (028).
+for it. That makes Contabo smaller to add and AWS's package possible later (029).
 
 Contabo differs from the other two in ways the user must see before paying (R2):
 - a destroy only cancels the server at the end of its term, at least a month;
@@ -146,7 +146,7 @@ after.
 
 ### User Story 5 - The next provider is one package (Priority: P2)
 
-**Why this priority**: it is what the contract is for. AWS's package (028) and any later cloud
+**Why this priority**: it is what the contract is for. AWS's package (029) and any later cloud
 server provider build on it.
 
 **Independent Test**: Contabo's own tasks change only its provider package, the list of built-in
@@ -288,4 +288,4 @@ providers, the provider id lists the schemas generate from, and the docs.
   - Contabo's Object Storage, Auto Backup, private networks and rDNS;
   - its regions outside OpsCrew's five (UK, Australia, Japan, India, US-central);
   - terms longer than a month;
-  - installing provider packages, which comes in 028.
+  - installing provider packages, which comes in 029.
