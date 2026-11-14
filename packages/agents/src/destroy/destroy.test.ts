@@ -801,9 +801,11 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
     });
     const s = await setup({ plan });
     await runDestroy(s.deps, { services: s.services, snapshot: false });
-    expect(s.handler.requests[1]?.details).toContain(
-      "The off-server copies of the snapshots stay in your bucket shop-backups at https://s3.eu-central-1.wasabisys.com (eu-central-1): OpsCrew never deletes them, and with no more uploads nothing deletes the old ones.",
-    );
+    const stay =
+      "The off-server copies of the snapshots stay in your bucket shop-backups at https://s3.eu-central-1.wasabisys.com (eu-central-1): OpsCrew never deletes them, and with no more uploads nothing deletes the old ones.";
+    expect(s.handler.requests[1]?.details).toContain(stay);
+    // A script sees no approval's details: the preview says it too.
+    expect(s.deps.reporter.text()).toContain(stay);
   });
 
   it("auto takes no snapshot when no data lives only on the server", async () => {

@@ -759,6 +759,9 @@ async function destroyDeployment(
   if (cloudflarePlan !== undefined) deps.reporter.info(cloudflarePlan);
   const warning = dataWarning(plan, serverInState);
   if (warning) deps.reporter.warn(warning);
+  // Said here too, so a script (which sees no approval's details) learns where the copies stay.
+  const copies = offsiteCopiesStay(plan).trim();
+  if (copies !== "") deps.reporter.info(copies);
   const kept = options.deleteData === true ? undefined : providerBucket(plan);
   if (bucket !== undefined) deps.reporter.warn(bucketDeletionWarning(bucket));
   else if (kept !== undefined) deps.reporter.info(bucketStays(kept));
