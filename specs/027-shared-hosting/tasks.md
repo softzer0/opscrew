@@ -699,7 +699,7 @@ names the change.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/provision && pnpm lint`
   - Effort: medium
 
-- [ ] T2757 A request's answer is never read before it is final, and a selector app is recorded before it is asked for (the cPanel pass, runs 30–32)
+- [x] T2757 A request's answer is never read before it is final, and a selector app is recorded before it is asked for (the cPanel pass, runs 30–32)
   - Owns: `packages/iac-templates/src/hosting/agent/**`, `packages/iac-templates/src/hosting/agent-*.test.ts`, `packages/iac-templates/src/hosting/__snapshots__/**`, `packages/agents/src/hosting/{requests,apps,apply,destroy,record,provision-plans,plan}.ts` and their tests, `packages/iac-templates/src/hosting/__fixtures__/shims/**`, `docs/guide/hosting-accounts.md` (only if a sentence there describes the request's answer)
   - Why: in run 31 the agent made the Node.js app in CloudLinux's selector and wrote `done`, yet provision read the agent's placeholder answer (`failed`, "the agent stopped while carrying it out"), written before a request starts, as final. The app wasn't recorded, so the cleanup's `opscrew destroy` neither removed it from the selector nor ended its `lsnode` process, which stayed on the account (the lead ended it). Run 32 passed the same leg. How the CLI saw the placeholder while the request file was gone isn't known; the fix doesn't depend on it.
   - Accept:
