@@ -323,12 +323,16 @@ async function zoneAccount(
  *
  * A preview environment (`environment.previews`, its zone and no domain) checks its wildcard
  * `*.<zone>` in its preview zone.
+ *
+ * With `accountId` the zone is looked up in that account only (a move's other account, through
+ * its client in `services.cloudflare`). A zone Cloudflare shows as moved to another account stops
+ * before any change.
  */
 export async function setupCloudflare(
   deps: PhaseDeps,
   plan: DeployPlan,
   services: ProvisionServices,
-  options: { foreignRecords?: "stop" | "report" } = {},
+  options: { foreignRecords?: "stop" | "report"; accountId?: string } = {},
 ): Promise<CloudflareSetup | undefined> {
   const previews = plan.environment?.previews;
   const domain = previews?.domain ?? plan.dns.domain;
@@ -360,7 +364,16 @@ export async function setupCloudflare(
   const check = await api.verifyToken();
   if (!check.ok) throw invalid("Cloudflare", check.message, requirement);
   try {
-    const zone = await api.findZone(domain);
+    const zone =
+      options.accountId === undefined
+        ? await api.findZone(domain)
+        : await api.findZone(domain, { accountId: options.accountId });
+    if (zone?.status === "moved") {
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        `${zone.name} moved to another Cloudflare account: set CLOUDFLARE_API_TOKEN to that account's token, then run the command again. Nothing was changed.`,
+      );
+    }
     if (!zone) {
       throw new OpsCrewError(
         "CREDENTIALS_INVALID",

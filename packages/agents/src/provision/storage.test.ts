@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { devNull, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { FakeZone } from "@opscrew/connector-cloudflare/testing";
+import { FakeZone, fakeCloudflareAccounts } from "@opscrew/connector-cloudflare/testing";
 import { type FakeContainer, FakeDocker } from "@opscrew/connector-docker/testing";
 import type {
   CommandRunner,
@@ -59,6 +59,7 @@ import {
   backupsEngineEnv,
   backupsStateFile,
   forgetStorageKey,
+  NEW_OFFSITE_KEY_VARS,
   NEW_STORAGE_KEY_VARS,
   OFFSITE_KEY_VARS,
   OFFSITE_SFTP_KEY_VAR,
@@ -1961,5 +1962,159 @@ describe("the key of a bucket in Contabo's storage", () => {
       code: "PHASE_PRECONDITION",
       message: expect.stringContaining("needs Contabo Object Storage in EU, and there is none yet"),
     });
+  });
+});
+
+describe("R2 bucket keys by Cloudflare account, during a move to another account", () => {
+  const fake = fakeCloudflareAccounts({
+    accounts: [
+      { name: "Old", token: fakeSecret("cloudflare-token", "account-a") },
+      { name: "New", token: fakeSecret("cloudflare-token", "account-b") },
+    ],
+    zones: [{ name: "example.com", account: "Old" }],
+  });
+  const A = fake.account("Old").id;
+  const B = fake.account("New").id;
+  const KEY_B = {
+    accessKeyId: fakeSecret("aws-access-key-id", "account-b"),
+    secretAccessKey: fakeSecret("aws-secret-access-key", "account-b"),
+  };
+  const OFFSITE_B = {
+    accessKeyId: fakeSecret("aws-access-key-id", "offsite-b"),
+    secretAccessKey: fakeSecret("aws-secret-access-key", "offsite-b"),
+  };
+  const options = { command: "opscrew cloudflare move" };
+
+  /** The app with its bucket and its off-server copies on R2, moving from A to B. */
+  function moving(): DeployPlan {
+    const plan = withOffsite(withBucket(testPlan({ domain: "shop.example.com" }), "r2"), {
+      provider: "r2",
+      bucket: "shop-backups",
+    });
+    return DeployPlanSchema.parse({
+      ...plan,
+      cloudflareMove: {
+        zone: "example.com",
+        from: { accountId: A, zoneId: fake.zone("example.com", "Old").id },
+        to: { accountId: B },
+        dsAtStart: false,
+        step: "started",
+        startedAt: "2026-11-20T10:00:00.000Z",
+      },
+    });
+  }
+  const lines = async (deps: Awaited<ReturnType<typeof createTestPhaseDeps>>) =>
+    ((await readTextIfExists(storageKeyFile(deps.paths))) ?? "")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, string>);
+
+  it("reads B's buckets' keys from the new variables, A's from the plain ones", async () => {
+    const deps = await createTestPhaseDeps({
+      env: {
+        ...KEY_ENV,
+        ...OFFSITE_ENV,
+        [NEW_STORAGE_KEY_VARS.accessKeyId]: KEY_B.accessKeyId,
+        [NEW_STORAGE_KEY_VARS.secretAccessKey]: KEY_B.secretAccessKey,
+        [NEW_OFFSITE_KEY_VARS.accessKeyId]: OFFSITE_B.accessKeyId,
+        [NEW_OFFSITE_KEY_VARS.secretAccessKey]: OFFSITE_B.secretAccessKey,
+      },
+    });
+    const plan = moving();
+    await expect(requireStorageKey(deps, plan, {}, { ...options, account: A })).resolves.toEqual(
+      KEY,
+    );
+    await expect(requireStorageKey(deps, plan, {}, { ...options, account: B })).resolves.toEqual(
+      KEY_B,
+    );
+    await expect(requireOffsiteKey(deps, plan, {}, { ...options, account: A })).resolves.toEqual(
+      OFFSITE_KEY,
+    );
+    await expect(requireOffsiteKey(deps, plan, {}, { ...options, account: B })).resolves.toEqual(
+      OFFSITE_B,
+    );
+    // From the variables: never kept, and registered with the redactor.
+    await expect(readTextIfExists(storageKeyFile(deps.paths))).resolves.toBeUndefined();
+    const text = deps.redactor.redact(`${KEY_B.secretAccessKey} ${OFFSITE_B.secretAccessKey}`);
+    expect(text).not.toContain(KEY_B.secretAccessKey);
+    expect(text).not.toContain(OFFSITE_B.secretAccessKey);
+  });
+
+  it("names the new variables when B's backups bucket has no key, and the plain ones for A's", async () => {
+    const deps = await createTestPhaseDeps({ env: {} });
+    const plan = moving();
+    const stop = await requireOffsiteKey(deps, plan, {}, { ...options, account: B }).catch(
+      (e: unknown) => e,
+    );
+    expect(stop).toMatchObject({
+      code: "CREDENTIALS_MISSING",
+      hint: expect.stringContaining(
+        `or set ${NEW_OFFSITE_KEY_VARS.accessKeyId} and ${NEW_OFFSITE_KEY_VARS.secretAccessKey} to it and run \`opscrew cloudflare move\` again. While a move takes the bucket along, ${OFFSITE_KEY_VARS.accessKeyId} and ${OFFSITE_KEY_VARS.secretAccessKey} hold the key of the bucket being left.`,
+      ),
+    });
+    const left = await requireOffsiteKey(deps, plan, {}, { ...options, account: A }).catch(
+      (e: unknown) => e,
+    );
+    expect((left as OpsCrewError).hint).toContain(`or set ${OFFSITE_KEY_VARS.accessKeyId} and`);
+    expect((left as OpsCrewError).hint).not.toContain("NEW_");
+  });
+
+  it("keeps each account's key of the same-named bucket apart; a key kept without one is A's", async () => {
+    // A's key, kept before the move, without an account.
+    const before = await createTestPhaseDeps({ env: {}, interactive: true });
+    const plain = withBucket(testPlan({ domain: "shop.example.com" }), "r2");
+    await requireStorageKey(before, plain, { askStorageKey: async () => KEY }, options);
+    expect(await lines(before)).toEqual([{ provider: "r2", bucket: "shop-uploads", ...KEY }]);
+
+    const deps = await createTestPhaseDeps({
+      root: before.paths.root,
+      env: before.env,
+      interactive: true,
+    });
+    const plan = moving();
+    const asked: string[] = [];
+    const ask = (key: typeof KEY) => async (question: StorageKeyQuestion) => {
+      asked.push(question.bucket);
+      return key;
+    };
+    // A's bucket: the key kept without an account still matches; B's is asked once and kept with B.
+    await expect(
+      requireStorageKey(deps, plan, { askStorageKey: ask(KEY_B) }, { ...options, account: A }),
+    ).resolves.toEqual(KEY);
+    expect(asked).toEqual([]);
+    await expect(
+      requireStorageKey(deps, plan, { askStorageKey: ask(KEY_B) }, { ...options, account: B }),
+    ).resolves.toEqual(KEY_B);
+    await expect(
+      requireStorageKey(deps, plan, { askStorageKey: ask(KEY_B) }, { ...options, account: B }),
+    ).resolves.toEqual(KEY_B);
+    expect(asked).toEqual(["shop-uploads"]);
+    expect(await lines(deps)).toEqual([
+      { provider: "r2", bucket: "shop-uploads", ...KEY },
+      { provider: "r2", bucket: "shop-uploads", account: B, ...KEY_B },
+    ]);
+    // B's off-server copies' bucket too, beside the others.
+    await requireOffsiteKey(
+      deps,
+      plan,
+      { askStorageKey: ask(OFFSITE_B) },
+      { ...options, account: B },
+    );
+    expect((await lines(deps)).at(-1)).toEqual({
+      provider: "r2",
+      bucket: "shop-backups",
+      account: B,
+      ...OFFSITE_B,
+    });
+    // Once the move is over, B's kept key is the bucket's.
+    const after = DeployPlanSchema.parse({ ...plan, cloudflareMove: undefined });
+    await expect(
+      requireStorageKey(deps, after, { askStorageKey: ask(KEY) }, { ...options, account: B }),
+    ).resolves.toEqual(KEY_B);
+    // Nothing said holds a key.
+    const said = JSON.stringify([deps.reporter.text(), deps.audit.entries]);
+    for (const secret of [KEY.secretAccessKey, KEY_B.secretAccessKey, OFFSITE_B.secretAccessKey]) {
+      expect(said).not.toContain(secret);
+    }
   });
 });

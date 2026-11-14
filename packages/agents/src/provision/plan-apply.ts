@@ -66,6 +66,11 @@ export interface PlanAndApplyOptions {
   dir: string;
   /** Engine environment: provider tokens and `TF_ENCRYPTION`. Never logged. */
   env: Record<string, string | undefined>;
+  /**
+   * Input variables passed to `plan` (`-var`), also when a plan is made again; never a secret (a
+   * move's ids of the account it goes to).
+   */
+  vars?: Record<string, string>;
   deployPlan: DeployPlan;
   /** Rendered files, checked for engine-specific constructs before planning. */
   files: readonly RenderedFile[];
@@ -101,7 +106,10 @@ export interface PlanAndApplyOptions {
   applyFailed?: (log: string, plan: SavedPlan) => void;
   /** The state file (default: the deployment's, `stateFile`); the `storage` root has its own. */
   statePath?: string;
-  /** The saved plan file's name ending (default `.tfplan`; `-removal.tfplan` with `destroy`). */
+  /**
+   * The saved plan file's name ending (default `.tfplan`; `-removal.tfplan` with `destroy`; always
+   * {@link MOVE_PLAN_SUFFIX} with `move`).
+   */
   planSuffix?: string;
   /** What a refusal calls the plan (default `infrastructure plan`). */
   planNoun?: string;
@@ -158,11 +166,30 @@ export interface PlanAndApplyOptions {
    * a server the plan removes there is cancelled through it before the apply (ADR 0029, D10).
    */
   servers?: ((provider: CloudProvider) => ServerSnapshotApi | undefined) | undefined;
+  /**
+   * A plan of a move to another Cloudflare account (its shadow states): saved under
+   * {@link MOVE_PLAN_SUFFIX}, which only such a run applies; no firewall or provider-backup
+   * follow-ups (it changes no server); hints name `OPSCREW_NEW_CLOUDFLARE_API_TOKEN`, the token of
+   * the account it goes to. Callers pass `costDelta: null`.
+   */
+  move?: boolean;
 }
 
-/** How a plan is made: `plan -destroy` with `destroy`. The same for a plan made again. */
-function planRunOptions(options: Pick<PlanAndApplyOptions, "env" | "destroy">) {
-  return { env: options.env, ...(options.destroy === true ? { destroy: true } : {}) };
+/**
+ * How a plan is made: `plan -destroy` with `destroy`, `-var`s with `vars`. The same for a plan
+ * made again.
+ */
+function planRunOptions(options: Pick<PlanAndApplyOptions, "env" | "vars" | "destroy">) {
+  return {
+    env: options.env,
+    ...(options.vars !== undefined ? { vars: options.vars } : {}),
+    ...(options.destroy === true ? { destroy: true } : {}),
+  };
+}
+
+/** The variable that holds the Cloudflare token the plan's Cloudflare resources are made with. */
+function cloudflareTokenVar(options: Pick<PlanAndApplyOptions, "move">): string {
+  return options.move === true ? "OPSCREW_NEW_CLOUDFLARE_API_TOKEN" : "CLOUDFLARE_API_TOKEN";
 }
 
 /** Engine log text meaning an API refused the token's permissions (HTTP 403, read-only token). */
@@ -208,19 +235,20 @@ function blockOwner(block: string, provider: VpsProviderId): "cloudflare" | "pro
 function applyFailureHint(
   deps: PhaseDeps,
   log: string,
-  options: Pick<PlanAndApplyOptions, "deployPlan" | "redesignHint">,
+  options: Pick<PlanAndApplyOptions, "deployPlan" | "redesignHint" | "move">,
   command: string,
 ): string {
   const { deployPlan } = options;
+  const tokenVar = cloudflareTokenVar(options);
   switch (deployPlan.target.provider) {
     case "portainer":
-      return cloudflareFailureHint(log, tunnelTokenPermissions(), command);
+      return cloudflareFailureHint(log, tunnelTokenPermissions(), command, tokenVar);
     case "cloudflare-workers": {
       const permissions = [...CLOUDFLARE_TOKEN_PERMISSIONS, ...CLOUDFLARE_HOSTING_PERMISSIONS];
-      return cloudflareFailureHint(log, permissions.join(", "), command);
+      return cloudflareFailureHint(log, permissions.join(", "), command, tokenVar);
     }
     case "github-pages":
-      return cloudflareFailureHint(log, CLOUDFLARE_TOKEN_PERMISSIONS.join(", "), command);
+      return cloudflareFailureHint(log, CLOUDFLARE_TOKEN_PERMISSIONS.join(", "), command, tokenVar);
   }
   const provider = planProvider(deployPlan);
   const profile = providerProfile(provider);
@@ -238,6 +266,7 @@ function applyFailureHint(
     return cloudflareRefusedHint(
       usesTunnel(deployPlan) ? tunnelTokenPermissions() : CLOUDFLARE_TOKEN_PERMISSIONS.join(", "),
       command,
+      tokenVar,
     );
   }
   if (refused.has("provider")) {
@@ -267,11 +296,16 @@ function applyFailureHint(
  * (tunnels, their routes and Access) and the server-less targets (a Worker and its custom domains,
  * or GitHub Pages' DNS records). A refused request is the Cloudflare token's, which needs
  * `permissions`; anything else is "fix and re-run". OpsCrew creates no server there, so no
- * provider limit or size applies.
+ * provider limit or size applies. `tokenVar` holds the Cloudflare token.
  */
-function cloudflareFailureHint(log: string, permissions: string, command: string): string {
+function cloudflareFailureHint(
+  log: string,
+  permissions: string,
+  command: string,
+  tokenVar: string,
+): string {
   if (errorBlocks(log).some((block) => FORBIDDEN.test(block))) {
-    return cloudflareRefusedHint(permissions, command);
+    return cloudflareRefusedHint(permissions, command, tokenVar);
   }
   return plansRemainingHint(command);
 }
@@ -281,9 +315,12 @@ function plansRemainingHint(command: string): string {
   return `Fix the cause shown above, then run \`${command}\` again; it plans the remaining changes.`;
 }
 
-/** Next step when Cloudflare refused a request of the apply: a token with `permissions`. */
-function cloudflareRefusedHint(permissions: string, command: string): string {
-  return `Cloudflare refused the request, so the Cloudflare API token is probably missing a permission OpsCrew needs. Create a token at ${CLOUDFLARE_TOKEN_PAGE} with ${permissions} for the app's zone, set CLOUDFLARE_API_TOKEN to it, then run \`${command}\` again. Nothing that was already created is removed.`;
+/**
+ * Next step when Cloudflare refused a request of the apply: a token with `permissions`, set in
+ * `tokenVar`.
+ */
+function cloudflareRefusedHint(permissions: string, command: string, tokenVar: string): string {
+  return `Cloudflare refused the request, so the Cloudflare API token is probably missing a permission OpsCrew needs. Create a token at ${CLOUDFLARE_TOKEN_PAGE} with ${permissions} for the app's zone, set ${tokenVar} to it, then run \`${command}\` again. Nothing that was already created is removed.`;
 }
 
 /** File name ending of a saved plan that removes everything in the state (`destroy: true`). */
@@ -294,6 +331,12 @@ export const REMOVAL_PLAN_SUFFIX = "-removal.tfplan";
  * applies it, never provision, retarget or a Portainer change.
  */
 export const ROTATION_PLAN_SUFFIX = "-rotation.tfplan";
+
+/**
+ * File name ending of a saved plan of a move to another Cloudflare account (`move`): only that
+ * move applies it; {@link planAndApply} refuses it in any other run.
+ */
+export const MOVE_PLAN_SUFFIX = "-move.tfplan";
 
 export interface PlanAndApplyResult {
   planHash?: string;
@@ -602,7 +645,10 @@ async function freshPlan(deps: PhaseDeps, options: PlanAndApplyOptions): Promise
   }
 
   const stamp = deps.clock.now().toISOString().replace(/[:.]/g, "-");
-  const suffix = options.planSuffix ?? (options.destroy === true ? REMOVAL_PLAN_SUFFIX : ".tfplan");
+  const suffix =
+    options.move === true
+      ? MOVE_PLAN_SUFFIX
+      : (options.planSuffix ?? (options.destroy === true ? REMOVAL_PLAN_SUFFIX : ".tfplan"));
   const planFile = join(deps.paths.files.plansDir, `${stamp}${suffix}`);
   deps.reporter.step(
     options.destroy === true
@@ -697,6 +743,16 @@ export async function planAndApply(
         { hint: `Run \`${command} --plan-only\` again and approve the new hash.` },
       );
     }
+    // A move's plan holds another Cloudflare account's pieces: only that move applies it.
+    if (found.planFile.endsWith(MOVE_PLAN_SUFFIX) && options.move !== true) {
+      throw new OpsCrewError(
+        "PLAN_HASH_MISMATCH",
+        `The saved plan with the hash ${options.approvePlanHash} belongs to a move to another Cloudflare account, and only that move applies it. Nothing was changed.`,
+        {
+          hint: `Run \`${command}\` without that hash to plan again, or continue the move with \`opscrew cloudflare move\`.`,
+        },
+      );
+    }
     if (found.engine.name !== engine.info.name) {
       throw new OpsCrewError(
         "PLAN_HASH_MISMATCH",
@@ -748,8 +804,9 @@ export async function planAndApply(
     deps.reporter.success("The infrastructure is already up to date.");
     const outputs = await engine.output(dir, { env }).catch(() => ({}));
     // A run after a failed firewall sync plans nothing new and sets the firewalls again; it sends
-    // again only the backups orders an earlier approved plan recorded as wanted.
-    if (options.planOnly !== true) {
+    // again only the backups orders an earlier approved plan recorded as wanted. A move changes no
+    // server.
+    if (options.planOnly !== true && options.move !== true) {
       await syncFirewalls(connectorRun, outputs);
       await syncProviderBackups(connectorRun, outputs);
     }
@@ -861,8 +918,12 @@ export async function planAndApply(
     });
   }
   // The automated backups this approved plan turned on, recorded before anything else can fail, so
-  // a later run orders them when this one doesn't get to (Contabo's Auto Backup).
-  const backupsTurnedOn = await markWantedBackups(connectorRun, saved.planJson, result.outputs);
+  // a later run orders them when this one doesn't get to (Contabo's Auto Backup). A move changes no
+  // server.
+  const move = options.move === true;
+  const backupsTurnedOn = move
+    ? []
+    : await markWantedBackups(connectorRun, saved.planJson, result.outputs);
   // Its sidecar records the apply, so a script that names the hash again plans afresh.
   await writePlanSidecar(deps.redactor, { ...saved, appliedAt: deps.clock.now().toISOString() });
   deps.reporter.success(
@@ -871,12 +932,14 @@ export async function planAndApply(
       : "Infrastructure applied.",
   );
   await options.afterApply?.(saved);
-  // The firewalls the providers' Terraform cannot manage (ADR 0029, D8): those of the servers the
-  // apply removed go, the others become exactly what the state wants.
-  await removeFirewalls(connectorRun, saved.planJson, result.outputs);
-  await syncFirewalls(connectorRun, result.outputs);
-  // The automated backups the providers' Terraform cannot turn on (Contabo's Auto Backup).
-  await syncProviderBackups(connectorRun, result.outputs, backupsTurnedOn);
+  if (!move) {
+    // The firewalls the providers' Terraform cannot manage (ADR 0029, D8): those of the servers
+    // the apply removed go, the others become exactly what the state wants.
+    await removeFirewalls(connectorRun, saved.planJson, result.outputs);
+    await syncFirewalls(connectorRun, result.outputs);
+    // The automated backups the providers' Terraform cannot turn on (Contabo's Auto Backup).
+    await syncProviderBackups(connectorRun, result.outputs, backupsTurnedOn);
+  }
   return {
     planHash: saved.planHash,
     applied: true,

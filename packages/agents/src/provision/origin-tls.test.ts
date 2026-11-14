@@ -1,6 +1,6 @@
 import { X509Certificate } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
-import type { SharedRecord } from "@opscrew/connector-cloudflare";
+import type { SharedPlan, SharedRecord } from "@opscrew/connector-cloudflare";
 import {
   fingerprintSha256,
   generateP256,
@@ -23,12 +23,15 @@ import { APP_HOST, splitWorld } from "../status/__fixtures__/split";
 import { createTestPhaseDeps, HOST_KEY, ownPlan, portainerPlan, testPlan } from "../testing";
 import type { GitHubSetup } from "./credentials";
 import {
+  type CertificateRequest,
   clientCertificateWarning,
   deployRenewedCertificate,
   edgeReadCommand,
   edgeSwitch,
+  forgetNextOriginTls,
   keepCertificateRequest,
   keepOriginCertificate,
+  originTlsApply,
   originTlsFor,
   originTlsHostnames,
   originTlsNotes,
@@ -36,6 +39,7 @@ import {
   parseServerEdge,
   planOriginTls,
   portainerOriginTls,
+  promoteNextOriginTls,
   readOriginTlsValues,
   readServerEdge,
   requiringHostnames,
@@ -640,5 +644,108 @@ describe("readServerEdge with public SSH closed (FR-1816)", () => {
       hint: TUNNEL_DOWN_HINT,
     });
     expect(w.deps.audit.entries.at(-1)).toMatchObject({ detail: "not read" });
+  });
+});
+
+describe("originTlsNext: the origin certificate issued under a move's other account", () => {
+  const plan = testPlan({ domain: "example.com", www: true });
+  const generated = async (deps: Awaited<ReturnType<typeof createTestPhaseDeps>>) =>
+    JSON.parse(await readFile(generatedValuesFile(deps), "utf8")) as Record<string, unknown>;
+
+  /** The app's origin TLS as provision leaves it: the client certificate and A's certificate. */
+  async function deployed() {
+    const deps = await createTestPhaseDeps();
+    const step = await planOriginTls(deps, { plan, record: undefined, served: undefined });
+    const a = certificate("a");
+    await keepOriginCertificate(deps, step?.request as CertificateRequest, a.certificate);
+    return { deps, a, own: await readOriginTlsValues(deps) };
+  }
+
+  it("keeps a new request and certificate apart, with the app's client certificate, and promotes them", async () => {
+    const { deps, a, own } = await deployed();
+    const step = await planOriginTls(deps, {
+      plan,
+      record: undefined,
+      served: undefined,
+      slot: "originTlsNext",
+    });
+    // The same client certificate; a request of its own, kept in originTlsNext.
+    expect(step?.slot).toBe("originTlsNext");
+    expect(step?.keys).toEqual({
+      clientCertificate: own.ORIGIN_PULL_CERT,
+      clientKey: own.ORIGIN_PULL_KEY,
+    });
+    const request = step?.request as CertificateRequest;
+    expect(request.key).not.toBe(own.ORIGIN_TLS_KEY);
+    const creates: Pick<SharedPlan, "changes"> = {
+      changes: [
+        {
+          kind: "create-origin-certificate",
+          hostnames: request.hostnames,
+          csrSha256: "c".repeat(64),
+        },
+      ],
+    };
+    await keepCertificateRequest(deps, step as NonNullable<typeof step>, creates);
+    expect((await readOriginTlsValues(deps, "originTlsNext")).ORIGIN_TLS_REQUEST).toEqual(request);
+    // A plan made again keeps that request, so its hash stays.
+    const again = await planOriginTls(deps, {
+      plan,
+      record: undefined,
+      served: undefined,
+      slot: "originTlsNext",
+    });
+    expect(again?.request).toEqual(request);
+
+    const b = certificate("b");
+    const apply = originTlsApply(deps, again, {});
+    await apply.keepOriginCertificate?.(b.certificate);
+    expect(await readOriginTlsValues(deps, "originTlsNext")).toEqual({
+      ORIGIN_TLS_KEY: request.key,
+      ORIGIN_TLS_CERT: b.certificate,
+    });
+    // The app's own values are as they were.
+    expect(await readOriginTlsValues(deps)).toEqual(own);
+    expect(own.ORIGIN_TLS_CERT).toBe(a.certificate);
+
+    await promoteNextOriginTls(deps);
+    expect(await readOriginTlsValues(deps)).toEqual({
+      ORIGIN_PULL_KEY: own.ORIGIN_PULL_KEY,
+      ORIGIN_PULL_CERT: own.ORIGIN_PULL_CERT,
+      ORIGIN_TLS_KEY: request.key,
+      ORIGIN_TLS_CERT: b.certificate,
+    });
+    expect(Object.keys(await generated(deps))).not.toContain("originTlsNext");
+    // Nothing left to promote: nothing changes.
+    const before = await generated(deps);
+    await promoteNextOriginTls(deps);
+    expect(await generated(deps)).toEqual(before);
+  });
+
+  it("registers every key it reads with the redactor, and forgets originTlsNext alone", async () => {
+    const { deps, own } = await deployed();
+    const b = certificate("b");
+    const pending = certificate("pending");
+    const file = await generated(deps);
+    const next = {
+      ORIGIN_TLS_KEY: b.key,
+      ORIGIN_TLS_CERT: b.certificate,
+      ORIGIN_TLS_REQUEST: { key: pending.key, csr: "csr", hostnames: ["example.com"] },
+    };
+    await writeFile(
+      generatedValuesFile(deps),
+      `${JSON.stringify({ ...file, APP_SECRET: "kept", originTlsNext: next })}\n`,
+    );
+    const fresh = await createTestPhaseDeps({ root: deps.paths.root, env: deps.env });
+    expect(await readOriginTlsValues(fresh, "originTlsNext")).toEqual(next);
+    const text = fresh.redactor.redact(`${b.key}\n${pending.key}`);
+    expect(text).not.toContain(b.key);
+    expect(text).not.toContain(pending.key);
+
+    await forgetNextOriginTls(deps);
+    const left = await generated(deps);
+    expect(left.originTlsNext).toBeUndefined();
+    expect(left.APP_SECRET).toBe("kept");
+    expect(await readOriginTlsValues(deps)).toEqual(own);
   });
 });

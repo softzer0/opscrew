@@ -99,23 +99,27 @@ export type CertificateRequest = NonNullable<OriginTlsValues["ORIGIN_TLS_REQUEST
 /** What the origin serves now, read from the server or the stack (`SharedDesired.tls.served`). */
 export type ServedOrigin = NonNullable<NonNullable<SharedDesired["tls"]>["served"]>;
 
+/**
+ * Where origin TLS values are kept in `generated_values.json`: the app's (`originTls`), or, during
+ * a move to another Cloudflare account, those of the origin certificate issued under that account
+ * (`originTlsNext`: its key, certificate and request; the client certificate is shared, so it stays
+ * in `originTls`).
+ */
+export type OriginTlsSlot = "originTls" | "originTlsNext";
+
 /** The generated values file, as provision's other values keep it: `originTls` among them. */
-const GeneratedFileSchema = z.looseObject({ originTls: z.unknown().optional() });
+const GeneratedFileSchema = z.looseObject({
+  originTls: z.unknown().optional(),
+  originTlsNext: z.unknown().optional(),
+});
 
 /** The generated values file as an object; `{}` when it is missing or not a JSON object. */
 async function generatedObject(deps: Pick<PhaseDeps, "paths">): Promise<Record<string, unknown>> {
   return (await readValidJson(generatedValuesFile(deps), GeneratedFileSchema)) ?? {};
 }
 
-/**
- * The app's origin TLS values from `generated_values.json` (none when missing or damaged), with
- * every private key registered with the redactor.
- */
-export async function readOriginTlsValues(
-  deps: Pick<PhaseDeps, "paths" | "redactor">,
-): Promise<OriginTlsValues> {
-  const parsed = OriginTlsValuesSchema.safeParse((await generatedObject(deps)).originTls);
-  const values = parsed.success ? parsed.data : {};
+/** Registers every private key of `values` with the redactor. */
+function registerKeys(deps: Pick<PhaseDeps, "redactor">, values: OriginTlsValues): void {
   for (const key of [
     values.ORIGIN_TLS_KEY,
     values.ORIGIN_PULL_KEY,
@@ -123,17 +127,68 @@ export async function readOriginTlsValues(
   ]) {
     if (key !== undefined) deps.redactor.addLiteral(key, "origin-tls");
   }
+}
+
+/** The values of `slot` in the generated values file `file`; none when missing or damaged. */
+function slotValues(file: Record<string, unknown>, slot: OriginTlsSlot): OriginTlsValues {
+  const parsed = OriginTlsValuesSchema.safeParse(file[slot]);
+  return parsed.success ? parsed.data : {};
+}
+
+/**
+ * The app's origin TLS values from `generated_values.json` (or those of `slot`; none when missing
+ * or damaged), with every private key registered with the redactor.
+ */
+export async function readOriginTlsValues(
+  deps: Pick<PhaseDeps, "paths" | "redactor">,
+  slot: OriginTlsSlot = "originTls",
+): Promise<OriginTlsValues> {
+  const values = slotValues(await generatedObject(deps), slot);
+  registerKeys(deps, values);
   return values;
 }
 
-/** Writes the app's origin TLS values into `generated_values.json` (0600), keeping the rest. */
+/**
+ * Writes the origin TLS values of `slot` into `generated_values.json` (0600), keeping the rest;
+ * no values remove the slot.
+ */
 async function writeOriginTlsValues(
   deps: Pick<PhaseDeps, "paths">,
   values: OriginTlsValues,
+  slot: OriginTlsSlot = "originTls",
 ): Promise<void> {
-  const { originTls: _old, ...rest } = await generatedObject(deps);
-  const next = Object.keys(values).length > 0 ? { ...rest, originTls: values } : rest;
+  const { [slot]: _old, ...rest } = await generatedObject(deps);
+  const next = Object.keys(values).length > 0 ? { ...rest, [slot]: values } : rest;
   await writeFileAtomic(generatedValuesFile(deps), `${JSON.stringify(next)}\n`);
+}
+
+/**
+ * The finish of a move to another Cloudflare account: the origin certificate issued under that
+ * account (`originTlsNext`) becomes the app's (`originTls`, whose client certificate stays), and
+ * `originTlsNext` goes, in one write. Nothing changes when there is none (an app without origin
+ * TLS).
+ */
+export async function promoteNextOriginTls(
+  deps: Pick<PhaseDeps, "paths" | "redactor">,
+): Promise<void> {
+  const file = await generatedObject(deps);
+  const next = slotValues(file, "originTlsNext");
+  if (Object.keys(next).length === 0) return;
+  registerKeys(deps, next);
+  const {
+    ORIGIN_TLS_KEY: _key,
+    ORIGIN_TLS_CERT: _cert,
+    ORIGIN_TLS_REQUEST: _request,
+    ...client
+  } = slotValues(file, "originTls");
+  const { originTls: _old, originTlsNext: _next, ...rest } = file;
+  const promoted = { ...rest, originTls: { ...client, ...next } };
+  await writeFileAtomic(generatedValuesFile(deps), `${JSON.stringify(promoted)}\n`);
+}
+
+/** An abort of a move to another Cloudflare account: `originTlsNext` is forgotten. */
+export async function forgetNextOriginTls(deps: Pick<PhaseDeps, "paths">): Promise<void> {
+  await writeOriginTlsValues(deps, {}, "originTlsNext");
 }
 
 /**
@@ -180,8 +235,10 @@ export interface OriginTlsStep {
    * proxied for this run, while the deploy gives the origin a public certificate (R3).
    */
   holdsProxy: boolean;
-  /** The origin TLS values this step read or made. */
+  /** The origin TLS values this step read or made (of `slot`). */
   values: OriginTlsValues;
+  /** Where the step's certificate request and created certificate are kept (default `originTls`). */
+  slot?: "originTlsNext";
 }
 
 /**
@@ -194,7 +251,8 @@ export interface OriginTlsStep {
  * while the hostnames are the same. `undefined` when the app has no origin TLS and wants none.
  * A preview environment's origin certificate covers its zone's names ({@link previewZoneNames},
  * research R6), with no client certificate: the preview server installs it with the previews'
- * host plan.
+ * host plan. With `slot: "originTlsNext"` (a move's other account) the request is kept there,
+ * while the client certificate is the app's.
  */
 export async function planOriginTls(
   deps: Pick<PhaseDeps, "paths" | "redactor" | "clock">,
@@ -202,9 +260,11 @@ export async function planOriginTls(
     plan: DeployPlan;
     record: SharedRecord | undefined;
     served: ServedOrigin | undefined;
+    slot?: OriginTlsSlot;
   },
 ): Promise<OriginTlsStep | undefined> {
   const { plan, record, served } = input;
+  const slot = input.slot ?? "originTls";
   const previews = plan.environment?.previews !== undefined;
   const wanted = previews ? previewZoneNames(plan) : originTlsHostnames(plan);
   const client = record?.tls?.client;
@@ -221,13 +281,14 @@ export async function planOriginTls(
   if (proxied.length === 0 && record?.tls?.origin === undefined && client === undefined) {
     return undefined;
   }
-  let values = await readOriginTlsValues(deps);
+  let own = await readOriginTlsValues(deps);
+  let values = slot === "originTls" ? own : await readOriginTlsValues(deps, slot);
   let keys: OriginTlsStep["keys"];
   let request: CertificateRequest | undefined;
   if (proxied.length > 0) {
     if (!previews) {
-      let clientKey = values.ORIGIN_PULL_KEY;
-      let clientCertificate = values.ORIGIN_PULL_CERT;
+      let clientKey = own.ORIGIN_PULL_KEY;
+      let clientCertificate = own.ORIGIN_PULL_CERT;
       // OpenLiteSpeed trusts it only with keyCertSign (ADR 0031): one Cloudflare already has is
       // refused, one it has not received yet is made again.
       const openlitespeed = "edge" in plan.target && plan.target.edge === "openlitespeed";
@@ -245,8 +306,9 @@ export async function planOriginTls(
           // Caddy and nginx get RFC 5280's CA:false without keyCertSign.
           keyCertSign: openlitespeed,
         });
-        values = { ...values, ORIGIN_PULL_KEY: clientKey, ORIGIN_PULL_CERT: clientCertificate };
-        await writeOriginTlsValues(deps, values);
+        own = { ...own, ORIGIN_PULL_KEY: clientKey, ORIGIN_PULL_CERT: clientCertificate };
+        await writeOriginTlsValues(deps, own);
+        if (slot === "originTls") values = own;
       }
       keys = { clientCertificate, clientKey };
     }
@@ -272,6 +334,7 @@ export async function planOriginTls(
     leaving,
     holdsProxy: plan.target.provider !== "portainer" && !plan.dns.proxied && leaving.length > 0,
     values,
+    ...(slot === "originTlsNext" ? { slot } : {}),
   };
 }
 
@@ -329,28 +392,29 @@ export async function keepCertificateRequest(
   const { ORIGIN_TLS_REQUEST: kept, ...rest } = step.values;
   if (creates && step.request !== undefined && kept !== step.request) {
     step.values = { ...rest, ORIGIN_TLS_REQUEST: step.request };
-    await writeOriginTlsValues(deps, step.values);
+    await writeOriginTlsValues(deps, step.values, step.slot);
   } else if (!creates && kept !== undefined) {
     step.values = rest;
-    await writeOriginTlsValues(deps, rest);
+    await writeOriginTlsValues(deps, rest, step.slot);
   }
 }
 
 /**
  * Keeps the origin certificate a Cloudflare apply created with the key of its request
- * (`ORIGIN_TLS_KEY`, `ORIGIN_TLS_CERT`); the request is done.
+ * (`ORIGIN_TLS_KEY`, `ORIGIN_TLS_CERT`, in `slot`); the request is done.
  */
 export async function keepOriginCertificate(
   deps: Pick<PhaseDeps, "paths" | "redactor">,
   request: CertificateRequest,
   certificate: string,
+  slot: OriginTlsSlot = "originTls",
 ): Promise<void> {
-  const { ORIGIN_TLS_REQUEST: _done, ...rest } = await readOriginTlsValues(deps);
-  await writeOriginTlsValues(deps, {
-    ...rest,
-    ORIGIN_TLS_KEY: request.key,
-    ORIGIN_TLS_CERT: certificate,
-  });
+  const { ORIGIN_TLS_REQUEST: _done, ...rest } = await readOriginTlsValues(deps, slot);
+  await writeOriginTlsValues(
+    deps,
+    { ...rest, ORIGIN_TLS_KEY: request.key, ORIGIN_TLS_CERT: certificate },
+    slot,
+  );
 }
 
 /**
@@ -755,7 +819,7 @@ export function originTlsApply(
     ...(request !== undefined
       ? {
           keepOriginCertificate: (certificate: string) =>
-            keepOriginCertificate(deps, request, certificate),
+            keepOriginCertificate(deps, request, certificate, step?.slot),
         }
       : {}),
   };

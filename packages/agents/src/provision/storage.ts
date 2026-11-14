@@ -82,7 +82,26 @@ export const OFFSITE_KEY_VARS = {
   secretAccessKey: "OPSCREW_OFFSITE_SECRET_ACCESS_KEY",
 } as const;
 
-type KeyVars = typeof STORAGE_KEY_VARS | typeof NEW_STORAGE_KEY_VARS | typeof OFFSITE_KEY_VARS;
+/**
+ * The variables of the off-server copies' new bucket's key while a move to another Cloudflare
+ * account takes that R2 bucket along (read only then).
+ */
+export const NEW_OFFSITE_KEY_VARS = {
+  accessKeyId: "OPSCREW_NEW_OFFSITE_ACCESS_KEY_ID",
+  secretAccessKey: "OPSCREW_NEW_OFFSITE_SECRET_ACCESS_KEY",
+} as const;
+
+type KeyVars =
+  | typeof STORAGE_KEY_VARS
+  | typeof NEW_STORAGE_KEY_VARS
+  | typeof OFFSITE_KEY_VARS
+  | typeof NEW_OFFSITE_KEY_VARS;
+
+/** The variables of the bucket being left while a move reads the new bucket's from the others. */
+const LEFT_KEY_VARS = new Map<KeyVars, KeyVars>([
+  [NEW_STORAGE_KEY_VARS, STORAGE_KEY_VARS],
+  [NEW_OFFSITE_KEY_VARS, OFFSITE_KEY_VARS],
+]);
 
 /** A bucket as its key, its marker and its S3 endpoint need it. */
 type Bucket = Pick<ProviderBucket, "provider" | "bucket" | "region">;
@@ -133,6 +152,11 @@ const KEY_PART = /^[A-Za-z0-9+/=_.-]{16,256}$/;
 const StoredKeySchema = z.object({
   provider: z.enum(["r2", "digitalocean", "hetzner", "s3"]),
   bucket: z.string(),
+  /**
+   * An R2 bucket's Cloudflare account: the same-named buckets of two accounts keep their own keys
+   * during a move. A key kept without it is of the account the app used before the move.
+   */
+  account: z.string().optional(),
   accessKeyId: z.string().regex(KEY_PART),
   secretAccessKey: z.string().regex(KEY_PART),
 });
@@ -162,9 +186,10 @@ function keyHint(
     (step, i) => `${i + 1}. ${step}`,
   );
   const variables = `${how.vars.accessKeyId} and ${how.vars.secretAccessKey}`;
+  const left = LEFT_KEY_VARS.get(how.vars);
   const moving =
-    how.vars === NEW_STORAGE_KEY_VARS
-      ? ` While a move takes the bucket along, ${STORAGE_KEY_VARS.accessKeyId} and ${STORAGE_KEY_VARS.secretAccessKey} hold the key of the bucket being left.`
+    left !== undefined
+      ? ` While a move takes the bucket along, ${left.accessKeyId} and ${left.secretAccessKey} hold the key of the bucket being left.`
       : "";
   return how.asks
     ? `${steps.join(" ")} Then run \`${command}\` in a terminal to paste it once, or set ${variables} to it and run \`${command}\` again.${moving}`
@@ -236,12 +261,34 @@ async function keepKeys(deps: Pick<PhaseDeps, "paths">, keys: readonly StoredKey
   await writeFileAtomic(file, `${lines.join("\n")}\n`, { mode: 0o600 });
 }
 
-/** The kept key for this bucket, or undefined (none kept for it). */
-async function storedKey(
-  deps: PhaseDeps,
-  bucket: UserKeyedBucket,
-): Promise<StorageLogin | undefined> {
-  const kept = (await keptKeys(deps)).find((key) => sameBucket(key, bucket));
+/**
+ * Where a key is asked for: the bucket, and for an R2 bucket its Cloudflare `account` and the
+ * account a move goes to (`moveTo`, from `cloudflareMove`).
+ */
+interface KeyedBucket {
+  bucket: UserKeyedBucket;
+  account?: string | undefined;
+  moveTo?: string | undefined;
+}
+
+/**
+ * True when `kept` is the key of `at`'s bucket: the same bucket, and the same account when both
+ * name one. A key kept without an account is of the account the app used before a move, so it
+ * never stands for the bucket of the account the move goes to.
+ */
+function keyOf(kept: StoredKey, at: KeyedBucket): boolean {
+  if (!sameBucket(kept, at.bucket)) return false;
+  if (at.account === undefined || kept.account === at.account) return true;
+  return kept.account === undefined && at.account !== at.moveTo;
+}
+
+/**
+ * The kept key for this bucket, or undefined (none kept for it): the one kept with its account
+ * before one kept without.
+ */
+async function storedKey(deps: PhaseDeps, at: KeyedBucket): Promise<StorageLogin | undefined> {
+  const keys = (await keptKeys(deps)).filter((key) => keyOf(key, at));
+  const kept = keys.find((key) => key.account === at.account) ?? keys[0];
   if (kept === undefined) return undefined;
   return { accessKeyId: kept.accessKeyId, secretAccessKey: kept.secretAccessKey };
 }
@@ -264,7 +311,9 @@ export async function forgetStorageKey(
  * beside the other buckets' keys). While a move takes the bucket along
  * (`plan.retarget.from.objectStorage`), those variables hold only the key of the bucket being left,
  * and the new bucket's is read from {@link NEW_STORAGE_KEY_VARS} instead. Hetzner's and Spaces' key is needed before the bucket, R2's (a
- * token limited to the bucket) after it. A bucket in Contabo's storage has the key Contabo made
+ * token limited to the bucket) after it. An R2 bucket names its Cloudflare `account`: its key is
+ * kept with it, and while a move to another Cloudflare account (`plan.cloudflareMove`) takes the
+ * bucket along, the bucket in the account it goes to reads {@link NEW_STORAGE_KEY_VARS}. A bucket in Contabo's storage has the key Contabo made
  * with the storage, read through its API ({@link orderedStorageKey}), never asked, kept or
  * taken from the variables. Registered with the redactor.
  * @throws OpsCrewError `CREDENTIALS_MISSING` with the steps when no key is known and nobody can be
@@ -275,16 +324,29 @@ export async function requireStorageKey(
   deps: PhaseDeps,
   plan: DeployPlan,
   services: Pick<ProvisionServices, "askStorageKey" | "objectStorage">,
-  options: { command: string; already?: string; asks?: boolean; bucket?: ProviderBucket },
+  options: {
+    command: string;
+    already?: string;
+    asks?: boolean;
+    bucket?: ProviderBucket;
+    /** An R2 bucket's Cloudflare account. */
+    account?: string;
+  },
 ): Promise<StorageLogin> {
   const bucket = options.bucket ?? providerBucket(plan);
   if (bucket === undefined) throw new Error("The plan has no bucket at a provider.");
   if (bucket.provider === "contabo") return orderedStorageKey(deps, bucket, services, options);
   const leaving = plan.retarget?.from.objectStorage;
+  const moveTo = plan.cloudflareMove?.to.accountId;
   const vars =
-    leaving !== undefined && !sameBucket(bucket, leaving) ? NEW_STORAGE_KEY_VARS : STORAGE_KEY_VARS;
+    (leaving !== undefined && !sameBucket(bucket, leaving)) ||
+    (moveTo !== undefined && options.account === moveTo)
+      ? NEW_STORAGE_KEY_VARS
+      : STORAGE_KEY_VARS;
   return bucketKey(deps, services, options, {
     bucket: bucket as UserKeyedBucket,
+    account: options.account,
+    moveTo,
     vars,
     noun: "The app's bucket",
     keyName: plan.app.name,
@@ -296,7 +358,9 @@ export async function requireStorageKey(
  * {@link requireStorageKey} gets the app's: from {@link OFFSITE_KEY_VARS}, else the key kept for
  * that bucket beside the others, else asked once (interactive runs only) and kept. Hetzner's,
  * Spaces' and the user's own bucket's (`s3`) key is needed before any change, R2's (a token
- * limited to the bucket) after its bucket. Registered with the redactor.
+ * limited to the bucket) after its bucket. An R2 bucket names its Cloudflare `account`, as with
+ * {@link requireStorageKey}; the bucket in the account a move goes to reads
+ * {@link NEW_OFFSITE_KEY_VARS}. Registered with the redactor.
  * @throws OpsCrewError `CREDENTIALS_MISSING` with the steps when no key is known and nobody can be
  * asked.
  */
@@ -304,18 +368,27 @@ export async function requireOffsiteKey(
   deps: PhaseDeps,
   plan: DeployPlan,
   services: Pick<ProvisionServices, "askStorageKey">,
-  options: { command: string; already?: string },
+  options: {
+    command: string;
+    already?: string;
+    /** An R2 bucket's Cloudflare account. */
+    account?: string;
+  },
 ): Promise<StorageLogin> {
   const offsite = snapshotOffsiteOf(plan);
   if (offsite === undefined || offsite.provider === "sftp") {
     throw new Error("The plan has no off-server copy in a bucket.");
   }
+  const moveTo = plan.cloudflareMove?.to.accountId;
   return bucketKey(deps, services, options, {
     bucket:
       offsite.provider === "s3"
         ? { provider: "s3", bucket: offsite.bucket, endpoint: offsite.endpoint }
         : offsite,
-    vars: OFFSITE_KEY_VARS,
+    account: options.account,
+    moveTo,
+    vars:
+      moveTo !== undefined && options.account === moveTo ? NEW_OFFSITE_KEY_VARS : OFFSITE_KEY_VARS,
     noun:
       offsite.provider === "s3"
         ? "Your bucket of the off-server copies"
@@ -437,17 +510,17 @@ export function requireOffsiteLogin(
 
 /**
  * The key of `bucket`: from `vars` when they are set (never saved), else the kept one, else asked
- * once with the console steps for a key named `opscrew-<keyName>` and kept.
+ * once with the console steps for a key named `opscrew-<keyName>` and kept (with its `account`).
  */
 async function bucketKey(
   deps: PhaseDeps,
   services: Pick<ProvisionServices, "askStorageKey">,
   options: { command: string; already?: string; asks?: boolean },
-  what: { bucket: UserKeyedBucket; vars: KeyVars; noun: string; keyName: string },
+  what: KeyedBucket & { vars: KeyVars; noun: string; keyName: string },
 ): Promise<StorageLogin> {
-  const { bucket, vars, noun } = what;
+  const { bucket, vars, noun, account } = what;
   const name = keyedStorageName(bucket);
-  let key = keyFromEnv(deps.env, vars) ?? (await storedKey(deps, bucket));
+  let key = keyFromEnv(deps.env, vars) ?? (await storedKey(deps, what));
   if (key === undefined && deps.interactive && services.askStorageKey !== undefined) {
     deps.reporter.info(
       `${noun} ${bucket.bucket} on ${name} needs a key that you create, so OpsCrew never holds one in infrastructure state.`,
@@ -461,8 +534,14 @@ async function bucketKey(
       { accessKeyId: answer.accessKeyId.trim(), secretAccessKey: answer.secretAccessKey.trim() },
       "The key you entered",
     );
-    const others = (await keptKeys(deps)).filter((kept) => !sameBucket(kept, bucket));
-    await keepKeys(deps, [...others, { provider: bucket.provider, bucket: bucket.bucket, ...key }]);
+    const others = (await keptKeys(deps)).filter((kept) => !keyOf(kept, what));
+    const kept = {
+      provider: bucket.provider,
+      bucket: bucket.bucket,
+      ...(account !== undefined ? { account } : {}),
+      ...key,
+    };
+    await keepKeys(deps, [...others, kept]);
   }
   if (key === undefined) {
     throw new OpsCrewError(

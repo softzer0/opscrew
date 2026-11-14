@@ -9,9 +9,14 @@ import {
   type SharedPlan,
   type SharedRecord,
 } from "@opscrew/connector-cloudflare";
-import { FAKE_ACCOUNT_ID, FAKE_ZONE_ID, FakeZone } from "@opscrew/connector-cloudflare/testing";
+import {
+  FAKE_ACCOUNT_ID,
+  FAKE_ZONE_ID,
+  FakeZone,
+  fakeCloudflareAccounts,
+} from "@opscrew/connector-cloudflare/testing";
 import type { ApprovalRequest, FetchLike } from "@opscrew/contracts";
-import { findExecutable, type OpsCrewError } from "@opscrew/core";
+import { findExecutable, fingerprintSha256, type OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import {
   type DeployPlan,
@@ -35,9 +40,17 @@ import {
   ScriptedApprovalHandler,
   testPlan,
 } from "../testing";
+import { originTlsApply, planOriginTls, readOriginTlsValues } from "./origin-tls";
 import { DEPLOY_SETUP_BRANCH } from "./publish";
 import { runProvision } from "./run";
-import { describeCloudflarePlan, sharedDesired, zeroTrustAuthDomain } from "./shared-cloudflare";
+import {
+  applySharedCloudflare,
+  describeCloudflarePlan,
+  planSharedCloudflare,
+  readCloudflareRecord,
+  sharedDesired,
+  zeroTrustAuthDomain,
+} from "./shared-cloudflare";
 import type { ProvisionServices } from "./types";
 
 const WAF = "http_request_firewall_custom";
@@ -737,3 +750,145 @@ describe.skipIf(!findExecutable("git"))(
     });
   },
 );
+
+describe("the shared plan in another Cloudflare account, with its client and record", () => {
+  const TOKEN_A = fakeSecret("cloudflare-token", "account-a");
+  const TOKEN_B = fakeSecret("cloudflare-token", "account-b");
+
+  /** example.com active in Old (A) and pending in New (B); one token per account. */
+  async function moving() {
+    const fake = fakeCloudflareAccounts({
+      accounts: [
+        { name: "Old", token: TOKEN_A },
+        { name: "New", token: TOKEN_B },
+      ],
+      zones: [
+        { name: "example.com", account: "Old" },
+        { name: "example.com", account: "New", status: "pending" },
+      ],
+    });
+    const clientB = new CloudflareClient({
+      token: TOKEN_B,
+      fetch: fake.fetch,
+      sleep: async () => {},
+    });
+    const handler = new ScriptedApprovalHandler(() => true);
+    const deps = await createTestPhaseDeps({ approvalHandler: handler });
+    const zoneB = fake.zone("example.com", "New");
+    const cloudflare = { zoneId: zoneB.id, zoneName: zoneB.name, accountId: zoneB.accountId };
+    const recordPath = join(deps.paths.stateDir, "cloudflare-move", "cloudflare.json");
+    return { fake, clientB, handler, deps, zoneB, cloudflare, recordPath };
+  }
+
+  /**
+   * B's plan for a proxied app with origin TLS: the same steps provision takes, B's origin
+   * certificate kept apart (`originTlsNext`).
+   */
+  async function planB(s: Awaited<ReturnType<typeof moving>>, plan: DeployPlan) {
+    const record = await readCloudflareRecord(s.deps.paths, s.recordPath);
+    const tls = await planOriginTls(s.deps, {
+      plan,
+      record,
+      served: undefined,
+      slot: "originTlsNext",
+    });
+    const planned = await planSharedCloudflare(s.deps, {
+      services: {},
+      plan,
+      cloudflare: s.cloudflare,
+      command: "opscrew cloudflare move",
+      ...(tls !== undefined ? { tls: { tls: tls.desired } } : {}),
+      client: s.clientB,
+      recordPath: s.recordPath,
+      pendingZone: true,
+    });
+    return { planned, tls };
+  }
+
+  it("plans and applies in B's pending zone without waiting, writing B's record only", async () => {
+    const s = await moving();
+    const plan = testPlan({ domain: "shop.example.com" });
+    const { planned, tls } = await planB(s, plan);
+    expect(planned?.client).toBe(s.clientB);
+    expect(planned?.main?.recordPath).toBe(s.recordPath);
+    expect(planned?.main?.pendingZone).toBe(true);
+    const changes = planned?.main?.plan.changes.map((c) => c.kind) ?? [];
+    expect(changes).toContain("upload-client-certificate");
+    expect(changes).toContain("enable-client-certificate");
+
+    const result = await applySharedCloudflare(s.deps, planned as NonNullable<typeof planned>, {
+      app: plan.app.name,
+      planOnly: false,
+      command: "opscrew cloudflare move",
+      phase: "cloudflare-move",
+      ...originTlsApply(s.deps, tls, { sleep: async () => undefined }),
+    });
+    expect(result.applied).toBe(true);
+    expect(s.handler.requests.map((r) => r.kind)).toEqual(["cloudflare-apply"]);
+    // The client certificate is still deploying in the pending zone: the apply did not wait.
+    expect(s.zoneB.status).toBe("pending");
+    const written = JSON.parse(await readFile(s.recordPath, "utf8")) as SharedRecord;
+    expect(written.zoneId).toBe(s.zoneB.id);
+    expect(written.hostnames[TLS]).toEqual(["shop.example.com"]);
+    await expect(readFile(s.deps.paths.files.cloudflareRecord, "utf8")).rejects.toThrow();
+    // Only B was called, and no call was refused; A's zone and pieces were never named.
+    const a = s.fake.account("Old");
+    expect(s.fake.calls.every((call) => call.accountId !== a.id)).toBe(true);
+    const refused = (status: number | undefined) =>
+      status === undefined || [401, 403].includes(status);
+    expect(s.fake.calls.filter((call) => refused(call.status))).toEqual([]);
+
+    // B's plan settles after its first apply, while the zone is still pending.
+    const again = await planB(s, plan);
+    expect(again.planned?.main?.plan.changes).toEqual([]);
+
+    // B's origin certificate is kept apart from the app's, beside the shared client certificate.
+    const values = await readOriginTlsValues(s.deps);
+    const next = await readOriginTlsValues(s.deps, "originTlsNext");
+    expect(values.ORIGIN_TLS_CERT).toBeUndefined();
+    expect(next.ORIGIN_TLS_CERT).toContain("BEGIN CERTIFICATE");
+    expect(fingerprintSha256(next.ORIGIN_TLS_CERT as string)).toBe(written.tls?.origin?.sha256);
+
+    // No token or private key in what was asked, said, audited, recorded or sent.
+    const secrets = [TOKEN_A, TOKEN_B, values.ORIGIN_PULL_KEY, next.ORIGIN_TLS_KEY].filter(
+      (value): value is string => value !== undefined,
+    );
+    expect(secrets.length).toBe(4);
+    const seen = JSON.stringify([
+      s.handler.requests,
+      s.deps.reporter.text(),
+      s.deps.audit.entries,
+      written,
+      s.fake.calls.filter((call) => !call.path.includes("origin_tls_client_auth")),
+      planned?.main?.plan,
+    ]);
+    for (const secret of secrets) expect(seen).not.toContain(secret);
+  });
+
+  it("keeps provision's defaults: the app's record and the shared client", async () => {
+    const s = await moving();
+    const plan = testPlan({ domain: "shop.example.com" });
+    const zone = new FakeZone();
+    const shared = fakeSharedCloudflare(zone);
+    const planned = await planSharedCloudflare(s.deps, {
+      services: { sharedCloudflare: shared },
+      plan,
+      cloudflare: { zoneId: FAKE_ZONE_ID, zoneName: "example.com", accountId: FAKE_ACCOUNT_ID },
+      command: "opscrew provision",
+    });
+    expect(planned?.client).toBe(shared);
+    expect(planned?.main?.recordPath).toBeUndefined();
+    expect(planned?.main?.pendingZone).toBeUndefined();
+    await applySharedCloudflare(s.deps, planned as NonNullable<typeof planned>, {
+      app: plan.app.name,
+      planOnly: false,
+      command: "opscrew provision",
+      phase: "provision",
+    });
+    const written = JSON.parse(
+      await readFile(s.deps.paths.files.cloudflareRecord, "utf8"),
+    ) as SharedRecord;
+    expect(written.zoneId).toBe(FAKE_ZONE_ID);
+    expect(s.fake.calls).toEqual([]);
+  });
+});

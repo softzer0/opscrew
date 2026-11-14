@@ -1,4 +1,10 @@
-import { FAKE_ACCOUNT_ID, FAKE_ZONE_ID } from "@opscrew/connector-cloudflare/testing";
+import { CloudflareClient } from "@opscrew/connector-cloudflare";
+import {
+  FAKE_ACCOUNT_ID,
+  FAKE_ZONE_ID,
+  fakeCloudflareAccounts,
+} from "@opscrew/connector-cloudflare/testing";
+import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { createTestPhaseDeps, fakeCloudflare, portainerPlan, testPlan } from "../testing";
@@ -140,5 +146,105 @@ describe("setupCloudflare for the user's Portainer", () => {
     );
     expect(error).toMatchObject({ code: "CREDENTIALS_INVALID" });
     expect(error?.hint).toContain("Cloudflare Tunnel");
+  });
+});
+
+describe("setupCloudflare with two Cloudflare accounts", () => {
+  const TOKEN_A = fakeSecret("cloudflare-token", "account-a");
+  const TOKEN_B = fakeSecret("cloudflare-token", "account-b");
+  const IP_RANGES = { ipv4: ["173.245.48.0/20"], ipv6: ["2400:cb00::/32"] };
+
+  /** example.com active in Old and pending in New; one token per account. */
+  function accounts() {
+    const fake = fakeCloudflareAccounts({
+      accounts: [
+        { name: "Old", token: TOKEN_A },
+        { name: "New", token: TOKEN_B },
+      ],
+      zones: [
+        { name: "example.com", account: "Old" },
+        { name: "example.com", account: "New", status: "pending" },
+      ],
+    });
+    /** The calls setupCloudflare makes, through `token`'s client (the edge ranges need no token). */
+    const api = (token: string) => {
+      const client = new CloudflareClient({ token, fetch: fake.fetch, sleep: async () => {} });
+      return {
+        verifyToken: () => client.verifyToken(),
+        findZone: (name: string, options?: { accountId?: string }) =>
+          client.findZone(name, options),
+        listDnsRecords: (zoneId: string, filter?: { name?: string }) =>
+          client.listDnsRecords(zoneId, filter),
+        listAccounts: () => client.listAccounts(),
+        getIpRanges: async () => IP_RANGES,
+      };
+    };
+    return { fake, api };
+  }
+
+  it("looks the zone up in the account it is given, with that account's token", async () => {
+    const { fake, api } = accounts();
+    const deps = await createTestPhaseDeps();
+    const plan = testPlan({ domain: "shop.example.com" });
+    const b = fake.account("New");
+    const setup = await setupCloudflare(
+      deps,
+      plan,
+      { cloudflare: api(TOKEN_B) },
+      { accountId: b.id },
+    );
+    expect(setup).toMatchObject({
+      zoneId: fake.zone("example.com", "New").id,
+      zoneName: "example.com",
+      accountId: b.id,
+    });
+    // Every zone read named B's account; nothing was written.
+    const zoneCalls = fake.calls.filter((call) => call.path.startsWith("/zones"));
+    expect(zoneCalls.length).toBeGreaterThan(0);
+    for (const call of zoneCalls) {
+      expect(call.path.includes(`account.id=${b.id}`) || call.accountId === b.id).toBe(true);
+    }
+    expect(fake.calls.filter((call) => call.method !== "GET")).toEqual([]);
+    expect(fake.calls.every((call) => call.status === 200)).toBe(true);
+    const seen = JSON.stringify([setup, fake.calls, deps.reporter.text(), deps.audit.entries]);
+    expect(seen).not.toContain(TOKEN_A);
+    expect(seen).not.toContain(TOKEN_B);
+
+    // Without the account, the old account's token finds its own zone, as before.
+    const old = await setupCloudflare(deps, plan, { cloudflare: api(TOKEN_A) });
+    expect(old).toMatchObject({
+      zoneId: fake.zone("example.com", "Old").id,
+      accountId: fake.account("Old").id,
+    });
+  });
+
+  it("refuses a zone that moved to another account before any change", async () => {
+    const { fake, api } = accounts();
+    fake.activate(fake.zone("example.com", "New"));
+    const deps = await createTestPhaseDeps();
+    const error = await setupCloudflare(deps, testPlan({ domain: "shop.example.com" }), {
+      cloudflare: api(TOKEN_A),
+    }).catch((e: unknown) => e);
+    expect(error).toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message:
+        "example.com moved to another Cloudflare account: set CLOUDFLARE_API_TOKEN to that account's token, then run the command again. Nothing was changed.",
+    });
+    // Only the token check and the zone lookups (the hostname, then its parent) were made.
+    expect(fake.calls.map((call) => call.path.split("?")[0])).toEqual([
+      "/user/tokens/verify",
+      "/zones",
+      "/zones",
+    ]);
+    expect(JSON.stringify([error, fake.calls, deps.reporter.text()])).not.toContain(TOKEN_A);
+
+    // The new account's token finds the zone active there.
+    const setup = await setupCloudflare(
+      deps,
+      testPlan({ domain: "shop.example.com" }),
+      { cloudflare: api(TOKEN_B) },
+      { accountId: fake.account("New").id },
+    );
+    expect(setup?.zoneId).toBe(fake.zone("example.com", "New").id);
   });
 });

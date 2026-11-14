@@ -76,13 +76,15 @@ const RECORD_FILE = ".opscrew/cloudflare.json";
 
 /**
  * This app's record of its hostnames in OpsCrew's shared Cloudflare rules
- * (`.opscrew/cloudflare.json`), or `undefined` before its first Cloudflare plan. A damaged file
- * stops: without it OpsCrew cannot tell which hostnames there are this app's.
+ * (`.opscrew/cloudflare.json`, or `file`: a move's record of the account it goes to), or
+ * `undefined` before its first Cloudflare plan. A damaged file stops: without it OpsCrew cannot
+ * tell which hostnames there are this app's.
  */
 export async function readCloudflareRecord(
   paths: Pick<ProjectPaths, "files">,
+  file = paths.files.cloudflareRecord,
 ): Promise<SharedRecord | undefined> {
-  const text = await readTextIfExists(paths.files.cloudflareRecord);
+  const text = await readTextIfExists(file);
   if (text === undefined) return undefined;
   let json: unknown;
   try {
@@ -92,26 +94,29 @@ export async function readCloudflareRecord(
   }
   const parsed = SharedRecordSchema.safeParse(json);
   if (parsed.success) return parsed.data;
+  const name = file === paths.files.cloudflareRecord ? RECORD_FILE : file;
   throw new OpsCrewError(
     "PHASE_PRECONDITION",
-    `${RECORD_FILE}, OpsCrew's record of this app's hostnames in its shared Cloudflare rules, is damaged, so OpsCrew cannot tell which hostnames there are this app's. Nothing was changed.`,
+    `${name}, OpsCrew's record of this app's hostnames in its shared Cloudflare rules, is damaged, so OpsCrew cannot tell which hostnames there are this app's. Nothing was changed.`,
     {
-      hint: `Copy ${RECORD_FILE} back from the computer that deployed this app, then run the command again. If it is lost, delete it: OpsCrew then plans as for a new app and stops if the app's hostnames are already in OpsCrew's rules (remove them there in the Cloudflare dashboard first).`,
+      hint: `Copy ${name} back from the computer that deployed this app, then run the command again. If it is lost, delete it: OpsCrew then plans as for a new app and stops if the app's hostnames are already in OpsCrew's rules (remove them there in the Cloudflare dashboard first).`,
     },
   );
 }
 
 /**
- * Writes this app's record of its hostnames in OpsCrew's shared Cloudflare rules, its keys in the
- * schema's order: the same record gives the same bytes, whether a plan or an apply made it. A
- * record the schema refuses is written as it is, so what reached Cloudflare is still recorded.
+ * Writes this app's record of its hostnames in OpsCrew's shared Cloudflare rules (to `file`, as
+ * {@link readCloudflareRecord} reads it), its keys in the schema's order: the same record gives
+ * the same bytes, whether a plan or an apply made it. A record the schema refuses is written as it
+ * is, so what reached Cloudflare is still recorded.
  */
 export async function writeCloudflareRecord(
   paths: Pick<ProjectPaths, "files">,
   record: SharedRecord,
+  file = paths.files.cloudflareRecord,
 ): Promise<void> {
   const normalized = SharedRecordSchema.safeParse(record).data ?? record;
-  await writeFileAtomic(paths.files.cloudflareRecord, `${JSON.stringify(normalized, null, 2)}\n`);
+  await writeFileAtomic(file, `${JSON.stringify(normalized, null, 2)}\n`);
 }
 
 /**
@@ -369,6 +374,10 @@ export interface ZonePlan {
   plan: SharedPlan;
   desired: SharedDesired;
   details: string;
+  /** The record file the plan was made against, written by its apply (default: the app's). */
+  recordPath?: string;
+  /** The zone is pending: its apply does not wait for Cloudflare to deploy origin pulls. */
+  pendingZone?: true;
 }
 
 /**
@@ -394,7 +403,8 @@ export function cloudflarePlanHashes(planned: PlannedCloudflare | undefined): st
  * One zone's plan, reading the app's origin TLS and the zone's minimum TLS when `desired` asks
  * for them, and the `www` redirect rule's phase with `redirect` (a site on Cloudflare's hosting);
  * stops (`PHASE_PRECONDITION`, nothing changed) on its findings. `notes` adds lines to the plan's
- * text.
+ * text. `recordPath` is kept for the apply; `pendingZone` reads a pending zone's origin pulls as
+ * Cloudflare deploys them only once it is active.
  */
 export async function zonePlan(
   deps: Pick<PhaseDeps, "reporter" | "clock">,
@@ -408,6 +418,8 @@ export async function zonePlan(
     command: string;
     redirect?: boolean;
     notes?: (plan: SharedPlan) => string[];
+    recordPath?: string;
+    pendingZone?: boolean;
   },
 ): Promise<ZonePlan> {
   const { desired } = input;
@@ -420,6 +432,7 @@ export async function zonePlan(
       ? { tls: { proxied: desired.tls.proxied, record: input.record } }
       : {}),
     ...(desired.minTls === true ? { minTls: true } : {}),
+    ...(input.pendingZone === true ? { pendingZone: true } : {}),
     clock: deps.clock,
   });
   const plan = planShared(facts, desired, input.record);
@@ -433,7 +446,13 @@ export async function zonePlan(
       fallbackHint: `Fix what blocks the Cloudflare plan, then run \`${input.command}\` again.`,
     });
   }
-  return { plan, desired: input.desired, details };
+  return {
+    plan,
+    desired: input.desired,
+    details,
+    ...(input.recordPath !== undefined ? { recordPath: input.recordPath } : {}),
+    ...(input.pendingZone === true ? { pendingZone: true as const } : {}),
+  };
 }
 
 /**
@@ -444,6 +463,10 @@ export async function zonePlan(
  * planned too. The `www` redirect rule's phase is read in a zone where the plan or the record
  * lists hostnames there (a site on Cloudflare's hosting). `undefined` when there is nothing to
  * plan. Stops on the plans' findings before anything changes.
+ *
+ * A move to another Cloudflare account plans in that account with its `client` and its own record
+ * (`recordPath`), on a zone that may still be pending (`pendingZone`: the apply then does not wait
+ * for origin pulls to deploy). Defaults: the app's record and {@link sharedCloudflareClient}.
  */
 export async function planSharedCloudflare(
   deps: Pick<PhaseDeps, "reporter" | "paths" | "env" | "fetch" | "redactor" | "version" | "clock">,
@@ -456,16 +479,23 @@ export async function planSharedCloudflare(
     tls?: Pick<SharedDesired, "tls" | "minTls">;
     /** Lines added to the text of the plan's zone plan. */
     notes?: (plan: SharedPlan) => string[];
+    /** The client of the account the plans are made in. */
+    client?: CloudflareClient;
+    /** The record file planned against and written by the apply. */
+    recordPath?: string;
+    /** The plan's zone is pending. */
+    pendingZone?: boolean;
   },
 ): Promise<PlannedCloudflare | undefined> {
-  const { cloudflare, command } = input;
-  const record = await readCloudflareRecord(deps.paths);
+  const { cloudflare, command, recordPath } = input;
+  const record = await readCloudflareRecord(deps.paths, recordPath);
   const left =
     record !== undefined && record.zoneId !== cloudflare?.zoneId && listsHostnames(record)
       ? record
       : undefined;
   if (cloudflare === undefined && left === undefined) return undefined;
-  const client = sharedCloudflareClient(deps, input.services);
+  const client = input.client ?? sharedCloudflareClient(deps, input.services);
+  const path = recordPath !== undefined ? { recordPath } : {};
   const leave =
     left === undefined
       ? undefined
@@ -479,6 +509,7 @@ export async function planSharedCloudflare(
           record: left,
           command,
           redirect: listsRedirect(left),
+          ...path,
         });
   let main: ZonePlan | undefined;
   if (cloudflare !== undefined) {
@@ -494,6 +525,8 @@ export async function planSharedCloudflare(
       command,
       redirect: listsRedirect(desired) || listsRedirect(mine),
       ...(input.notes !== undefined ? { notes: input.notes } : {}),
+      ...path,
+      ...(input.pendingZone === true ? { pendingZone: true } : {}),
     });
   }
   return {
@@ -574,7 +607,7 @@ export async function applyZonePlan(
     );
     // Hostnames removed from OpsCrew's rules by hand and no longer wanted leave the record; a
     // `--plan-only` run writes nothing.
-    if (!input.planOnly) await writeCloudflareRecord(deps.paths, plan.record);
+    if (!input.planOnly) await writeCloudflareRecord(deps.paths, plan.record, zone.recordPath);
     return { deletes: false };
   }
   if (input.planOnly) {
@@ -626,6 +659,8 @@ export async function applyZonePlan(
       ...(plan.csr !== undefined ? { csr: plan.csr } : {}),
       clock: deps.clock,
       ...(input.sleep !== undefined ? { sleep: input.sleep } : {}),
+      // A pending zone deploys origin pulls only once it is active.
+      ...(zone.pendingZone === true ? { waitForActive: false } : {}),
     });
   } catch (error) {
     // What reached Cloudflare before the failure is this app's: recorded before the error shows.
@@ -634,7 +669,7 @@ export async function applyZonePlan(
       if (error.originCertificate !== undefined) {
         await input.keepOriginCertificate?.(error.originCertificate);
       }
-      await writeCloudflareRecord(deps.paths, error.record);
+      await writeCloudflareRecord(deps.paths, error.record, zone.recordPath);
     }
     await audit(
       "cloudflare apply failed",
@@ -646,7 +681,7 @@ export async function applyZonePlan(
   if (applied.originCertificate !== undefined) {
     await input.keepOriginCertificate?.(applied.originCertificate);
   }
-  await writeCloudflareRecord(deps.paths, applied.record);
+  await writeCloudflareRecord(deps.paths, applied.record, zone.recordPath);
   for (const id of applied.applied) await audit(`cloudflare change ${id}`, "approved", id);
   deps.reporter.success(
     `Changed OpsCrew's shared Cloudflare resources (${plural(applied.applied.length, "change")} applied).`,

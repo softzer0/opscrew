@@ -1,7 +1,8 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ResourceChange, ResourceMove } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
+import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
 import { hidePortainerAddress, PlanRefusedError } from "../shared";
 import {
@@ -9,6 +10,7 @@ import {
   FakeEngine,
   type FakeEngineScenario,
   FakeFirewalls,
+  FakeProviderBackups,
   FakeServers,
   fakeWantedFirewall,
   portainerPlan,
@@ -20,6 +22,7 @@ import {
   describePlan,
   findSavedPlan,
   isMovesOnly,
+  MOVE_PLAN_SUFFIX,
   planAndApply,
   REMOVAL_PLAN_SUFFIX,
 } from "./plan-apply";
@@ -621,6 +624,20 @@ describe("planAndApply and the firewalls a provider's connector applies (ADR 002
     });
     expect(s.engine.applied).toEqual([]);
   });
+
+  it("passes the vars to every plan, also the one made again after a server is cancelled", async () => {
+    const s = await setup({
+      changes: REMOVAL,
+      planJson: removalPlanJson,
+      outputs: { wanted_firewalls: { server: APP } },
+    });
+    const vars = { cloudflare_account_id: "fedcba9876543210fedcba9876543210" };
+    s.contabo.seed(DB);
+    await planAndApply(s.deps, { ...s.options, vars });
+    expect(s.events[0]).toBe("cancel:202611002");
+    expect(s.engine.planOptions.length).toBeGreaterThan(1);
+    expect(s.engine.planOptions).toEqual(s.engine.planOptions.map(() => ({ env: {}, vars })));
+  });
 });
 
 describe("planAndApply for the user's Portainer", () => {
@@ -868,5 +885,127 @@ describe("saved plan sidecars pass through the redactor", () => {
     }).catch((e: unknown) => e);
     expect(error).toMatchObject({ code: "PLAN_HASH_MISMATCH" });
     expect(engine.calls).not.toContain("apply");
+  });
+});
+
+describe("planAndApply for a move to another Cloudflare account", () => {
+  const CLOUDFLARE_CREATE: ResourceChange[] = [
+    ["module.tunnel", "cloudflare_zero_trust_tunnel_cloudflared", "this"],
+    ["module.dns", "cloudflare_dns_record", "root_a"],
+  ].map(([module, type, name]) => ({
+    address: `${module}.${type}.${name}`,
+    type: type as string,
+    name: name as string,
+    provider: "registry.opentofu.org/cloudflare/cloudflare",
+    action: "create" as const,
+  }));
+  const APP = fakeWantedFirewall("contabo", "202611001");
+  const TOKEN_B = fakeSecret("cloudflare-token", "account-b");
+  const VARS = {
+    cloudflare_zone_id: "00000000000000000000000000000b01",
+    cloudflare_account_id: "00000000000000000000000000000b02",
+  };
+
+  /** A Contabo server's main root, whose firewall and Auto Backup a plain apply would follow up. */
+  async function moveSetup(scenario: FakeEngineScenario = {}) {
+    const events: string[] = [];
+    const handler = new ScriptedApprovalHandler(() => true);
+    const deps = await createTestPhaseDeps({ approvalHandler: handler });
+    deps.redactor.addLiteral(TOKEN_B, "cloudflare-token");
+    const engine = new FakeEngine({
+      changes: CLOUDFLARE_CREATE,
+      outputs: {
+        wanted_firewalls: { server: APP },
+        wanted_backups: {
+          server: { provider: "contabo", backup: { server_id: "202611001", on: true } },
+        },
+      },
+      ...scenario,
+    });
+    const options = {
+      engine,
+      dir: join(deps.paths.root, "opscrew", "infra", "prod"),
+      env: { CLOUDFLARE_API_TOKEN: TOKEN_B, TF_DATA_DIR: join(deps.paths.root, "shadow") },
+      vars: VARS,
+      deployPlan: testPlan({ provider: "contabo", deployed: true, domain: "shop.example.com" }),
+      files: [],
+      costDelta: null,
+      firewalls: { contabo: new FakeFirewalls((call) => events.push(call)) },
+      providerBackups: { contabo: new FakeProviderBackups((call) => events.push(call)) },
+      move: true,
+    };
+    return { deps, engine, handler, events, options };
+  }
+
+  /** Every text the run left: what it said, audited, asked and saved. */
+  async function everything(s: Awaited<ReturnType<typeof moveSetup>>): Promise<string> {
+    const plansDir = s.deps.paths.files.plansDir;
+    const sidecars = await Promise.all(
+      (await readdir(plansDir))
+        .filter((name) => name.endsWith(".json"))
+        .map((name) => readFile(join(plansDir, name), "utf8")),
+    );
+    return JSON.stringify([
+      s.deps.reporter.text(),
+      s.deps.audit.entries,
+      s.handler.requests,
+      sidecars,
+    ]);
+  }
+
+  it("plans with the vars under its own suffix, claims no cost and follows up no server", async () => {
+    const s = await moveSetup();
+    const result = await planAndApply(s.deps, { ...s.options, planSuffix: "-storage.tfplan" });
+    expect(result.applied).toBe(true);
+    expect(result.plan?.planFile.endsWith(MOVE_PLAN_SUFFIX)).toBe(true);
+    expect(s.engine.planOptions).toEqual([{ env: s.options.env, vars: VARS }]);
+    expect(s.handler.requests[0]?.costDelta).toBeUndefined();
+    expect(s.handler.requests[0]?.details).toContain("Cost: unchanged");
+    // No firewall, no Auto Backup: a move changes no server.
+    expect(s.events).toEqual([]);
+    expect(await everything(s)).not.toContain(TOKEN_B);
+
+    // Nothing new to plan: still no follow-up.
+    s.engine.scenario.changes = [];
+    await planAndApply(s.deps, s.options);
+    expect(s.events).toEqual([]);
+  });
+
+  it("is applied only by the move: any other run refuses its saved plan before any change", async () => {
+    const s = await moveSetup();
+    const planned = await planAndApply(s.deps, { ...s.options, planOnly: true });
+    const hash = planned.planHash as string;
+    const { move: _move, ...other } = s.options;
+    const refused = await planAndApply(s.deps, { ...other, approvePlanHash: hash }).catch(
+      (e: unknown) => e,
+    );
+    expect(refused).toMatchObject({
+      code: "PLAN_HASH_MISMATCH",
+      message: `The saved plan with the hash ${hash} belongs to a move to another Cloudflare account, and only that move applies it. Nothing was changed.`,
+    });
+    expect(s.engine.calls).not.toContain("apply");
+    expect(s.handler.requests).toEqual([]);
+
+    const applied = await planAndApply(s.deps, { ...s.options, approvePlanHash: hash });
+    expect(applied).toMatchObject({ applied: true, planHash: hash });
+    expect(s.events).toEqual([]);
+    expect(await everything(s)).not.toContain(TOKEN_B);
+  });
+
+  it("names the new account's token variable when Cloudflare refuses a request", async () => {
+    const s = await moveSetup({
+      applyOk: false,
+      applyLog: [
+        "Error: failed to create tunnel",
+        "  with module.tunnel.cloudflare_zero_trust_tunnel_cloudflared.this,",
+        `  403 Forbidden (token ${TOKEN_B})`,
+      ].join("\n"),
+    });
+    const error = (await planAndApply(s.deps, s.options).catch((e: unknown) => e)) as OpsCrewError;
+    expect(error.code).toBe("ENGINE_FAILED");
+    expect(error.hint).toContain("set OPSCREW_NEW_CLOUDFLARE_API_TOKEN to it");
+    expect(error.hint).not.toContain("set CLOUDFLARE_API_TOKEN");
+    expect(JSON.stringify([error.message, error.hint])).not.toContain(TOKEN_B);
+    expect(await everything(s)).not.toContain(TOKEN_B);
   });
 });
