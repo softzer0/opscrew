@@ -1845,6 +1845,26 @@ async function requireChosenApp(
 }
 
 /**
+ * While the app's zone moves to another Cloudflare account (`cloudflareMove`), the new answers
+ * keep the app's domain in that zone on Cloudflare: otherwise design stops before plan.yaml changes.
+ */
+function requireMovingZoneKept(fresh: DeployPlan, previous: DeployPlan): void {
+  const zone = previous.cloudflareMove?.zone;
+  if (zone === undefined) return;
+  const domain = fresh.dns.zone ?? fresh.dns.domain ?? "";
+  const inZone =
+    fresh.dns.zone === undefined ? domain === zone || domain.endsWith(`.${zone}`) : domain === zone;
+  if (fresh.dns.provider === "cloudflare" && inZone) return;
+  throw new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `${zone} is moving to another Cloudflare account; change the app's domain after the move ends. plan.yaml was not changed.`,
+    {
+      hint: "Keep the domain in that zone when you run `opscrew interview`, or finish or abort the move with `opscrew cloudflare move --finish` or `--abort` first, then run `opscrew design` again.",
+    },
+  );
+}
+
+/**
  * Carries what the user and later phases put into the previous plan over to the new one, every
  * field design does not derive from the requirements or the facts: `deployment`, `approvals`,
  * `security`, `infra`, `environment`, `cicd.branch`, `cicd.workflowPath`, `app.name`,
@@ -1907,6 +1927,7 @@ function keepPlanSettings(
   const proxied = userProxy ? previous.dns.proxied : fresh.dns.proxied;
   const keptSecurity = previous.dns.proxied === proxied ? previous.security : security;
   const { registration } = previous.dns;
+  requireMovingZoneKept(fresh, previous);
   const kept = DeployPlanSchema.safeParse({
     ...fresh,
     // The names the user may set by hand (the app's, its Worker's, its workflow's) are kept, so

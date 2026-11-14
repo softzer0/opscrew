@@ -92,10 +92,31 @@ export async function readMoveRecords(
   return found;
 }
 
+const STEPS: readonly CloudflareMove["step"][] = ["started", "prepared", "adopted"];
+const ABORT_STEPS = ["started", "removed"] as const;
+
+/**
+ * Stops (`INTERNAL`) unless `next` follows `current`, the record on disk: the same zone and A's
+ * pieces, no earlier step, an abort neither dropped nor moved back, and B's zone id kept.
+ */
+function requireFollows(current: CloudflareMove, next: CloudflareMove): void {
+  const abortAt = (move: CloudflareMove) =>
+    move.abort === undefined ? -1 : ABORT_STEPS.indexOf(move.abort.step);
+  const follows =
+    next.zone === current.zone &&
+    isDeepStrictEqual(next.from, current.from) &&
+    STEPS.indexOf(next.step) >= STEPS.indexOf(current.step) &&
+    abortAt(next) >= abortAt(current) &&
+    (current.to.zoneId === undefined || next.to.zoneId === current.to.zoneId);
+  if (!follows) throw outOfOrder(current, `replaced by one at ${next.step}`);
+}
+
 /**
  * Writes `move` as the record of the environment `paths` belong to (removes it when `undefined`),
  * into its plan as it is on disk now, atomically and validated (`ARTIFACT_INVALID` leaves the plan
- * as it was); a plan that holds that record already stays as it is. Returns the plan.
+ * as it was); a plan that holds that record already stays as it is. Over a record there, `move`
+ * must follow it (`INTERNAL` otherwise, nothing written); `undefined`, the end, always goes.
+ * Returns the plan.
  */
 export async function writeMoveRecord(
   deps: Pick<PhaseDeps, "clock">,
@@ -104,6 +125,9 @@ export async function writeMoveRecord(
 ): Promise<DeployPlan> {
   const onDisk = await readArtifact("plan", paths.files.plan);
   if (isDeepStrictEqual(onDisk.cloudflareMove, move)) return onDisk;
+  if (onDisk.cloudflareMove !== undefined && move !== undefined) {
+    requireFollows(onDisk.cloudflareMove, move);
+  }
   const { cloudflareMove: _old, ...rest } = onDisk;
   const plan: DeployPlan = {
     ...rest,

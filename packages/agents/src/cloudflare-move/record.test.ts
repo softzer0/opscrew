@@ -144,4 +144,46 @@ describe("the record in each covered plan", () => {
     });
     expect(await readFile(deps.paths.files.plan, "utf8")).toBe(before);
   });
+
+  it("never writes a record that goes back or names another move, but ends at any step", async () => {
+    const deps = await createTestPhaseDeps();
+    await writeArtifact("plan", deps.paths.files.plan, testPlan());
+    const { accounts, move } = start();
+    const b = accounts.cloudflare.zone("example.com", "B");
+    const prepared = advancedMove(withTargetZone(move, b.id), "prepared", LATER);
+    const adopted = advancedMove(prepared, "adopted", LATER);
+    await writeMoveRecord(deps, deps.paths, adopted);
+    const before = await readFile(deps.paths.files.plan, "utf8");
+    const refused = [
+      prepared,
+      { ...adopted, zone: "example.org" },
+      { ...adopted, from: { accountId: adopted.from.accountId, zoneId: b.id } },
+      { ...adopted, to: { accountId: adopted.to.accountId, zoneId: "f".repeat(32) } },
+      { ...adopted, to: { accountId: adopted.to.accountId } },
+    ];
+    for (const record of refused) {
+      await expect(writeMoveRecord(deps, deps.paths, record)).rejects.toMatchObject({
+        code: "INTERNAL",
+      });
+      expect(await readFile(deps.paths.files.plan, "utf8")).toBe(before);
+    }
+    // The same step again (a later time kept as written) and the end are fine.
+    const again = { ...adopted, adoptedAt: "2026-11-21T10:00:00.000Z" };
+    expect((await writeMoveRecord(deps, deps.paths, again)).cloudflareMove).toEqual(again);
+    expect((await writeMoveRecord(deps, deps.paths, undefined)).cloudflareMove).toBeUndefined();
+  });
+
+  it("never drops an abort or moves it back", async () => {
+    const deps = await createTestPhaseDeps();
+    await writeArtifact("plan", deps.paths.files.plan, testPlan());
+    const { move } = start();
+    const removed = abortingMove(abortingMove(move, "started"), "removed");
+    await writeMoveRecord(deps, deps.paths, removed);
+    for (const record of [move, abortingMove(move, "started")]) {
+      await expect(writeMoveRecord(deps, deps.paths, record)).rejects.toMatchObject({
+        code: "INTERNAL",
+      });
+    }
+    expect((await writeMoveRecord(deps, deps.paths, removed)).cloudflareMove).toEqual(removed);
+  });
 });
