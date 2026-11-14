@@ -4,8 +4,9 @@ import { STORAGE_NAMES } from "./prices";
 import { shellQuote } from "./runtime/services";
 
 /**
- * The prefix of every object of the off-server copy (`backups/<id>/<file>.age`, 024 plan.md 1.),
- * which the `backups` root's lifecycle rule expires. Servers and Portainer upload under it.
+ * The folder every object of the off-server copy is under (`backups/<id>/<file>.age`, 024 plan.md
+ * 1.), which the `backups` root's lifecycle rule expires; in the user's own bucket or SFTP folder,
+ * under the environment's own folder ({@link offsiteRoot}). Servers and Portainer upload under it.
  */
 export const OFFSITE_PREFIX = "backups";
 
@@ -91,29 +92,37 @@ export function offsiteVariables(copy: Pick<SnapshotOffsite, "provider">): strin
 }
 
 /**
- * The environment's folder on an SFTP machine, inside its `path`: `<app>-<env>`, as the backups
- * bucket is named (`shop-prod` for prod, `shop-staging` for staging), so two apps or environments
- * sharing one machine never mix their copies.
+ * The environment's name for its off-server copies, `<app>-<env>` (`shop-prod` for prod,
+ * `shop-staging` for staging: another environment's app is already named `<app>-<env>`): the folder
+ * of its copies in the user's own bucket or SFTP folder, so two apps or environments sharing one
+ * never mix their copies, and the start of the backups bucket's name.
  */
-function offsiteFolderName(plan: Pick<DeployPlan, "app" | "environment">): string {
+export function offsiteFolderName(plan: Pick<DeployPlan, "app" | "environment">): string {
   return `${plan.app.name}${plan.environment === undefined ? "-prod" : ""}`;
 }
 
 /**
- * Where the copies are, as rclone names it: `offsite:<bucket>/backups`, or on an SFTP machine
- * `offsite:<path>/<app>-<env>/backups` ({@link offsiteFolderName}). Each copy is `<id>/<file>.age`
- * under it.
+ * Where the copies are, as rclone names it: `offsite:<bucket>/backups` in the bucket OpsCrew plans
+ * (one per environment), `offsite:<bucket>/<app>-<env>/backups` in the user's own bucket, and
+ * `offsite:<path>/<app>-<env>/backups` on an SFTP machine ({@link offsiteFolderName}). Each copy is
+ * `<id>/<file>.age` under it.
  */
 export function offsiteRoot(
   plan: Pick<DeployPlan, "app" | "environment">,
   copy: SnapshotOffsite,
 ): string {
-  if (copy.provider !== "sftp") return `offsite:${copy.bucket}/${OFFSITE_PREFIX}`;
-  const base = copy.path === "/" ? "" : copy.path;
-  return `offsite:${base}/${offsiteFolderName(plan)}/${OFFSITE_PREFIX}`;
+  const folder = `${offsiteFolderName(plan)}/${OFFSITE_PREFIX}`;
+  switch (copy.provider) {
+    case "sftp":
+      return `offsite:${copy.path === "/" ? "" : copy.path}/${folder}`;
+    case "s3":
+      return `offsite:${copy.bucket}/${folder}`;
+    default:
+      return `offsite:${copy.bucket}/${OFFSITE_PREFIX}`;
+  }
 }
 
-/** The folder of the copies on an SFTP machine: `<path>/<app>-<env>/backups`. */
+/** The folder of the copies in rclone's path, as {@link offsiteRoot} without `offsite:`. */
 export function offsiteFolder(
   plan: Pick<DeployPlan, "app" | "environment">,
   copy: SnapshotOffsite,

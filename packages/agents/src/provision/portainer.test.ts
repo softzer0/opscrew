@@ -1321,8 +1321,8 @@ describe.skipIf(!findExecutable("git"))("the off-server copy in the user's Porta
     await sopsYaml(s, recipient);
     const result = await s.run();
     expect(docker.ran.map((container) => container.cmd)).toEqual([
-      ["touch", "offsite:shop-own-backups/backups/.opscrew-write-check"],
-      ["deletefile", "offsite:shop-own-backups/backups/.opscrew-write-check"],
+      ["touch", "offsite:shop-own-backups/shop-prod/backups/.opscrew-write-check"],
+      ["deletefile", "offsite:shop-own-backups/shop-prod/backups/.opscrew-write-check"],
     ]);
     expect(env(s)).toMatchObject({
       OPSCREW_OFFSITE_ENDPOINT: endpoint,

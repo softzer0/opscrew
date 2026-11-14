@@ -68,9 +68,9 @@ function about(id: string) {
  * `world` with the snapshot {@link ON_SERVER} on its server, copied off it, and the bucket's copy
  * {@link ONLY_IN_BUCKET} whose server no longer holds it, encrypted to a new key.
  */
-async function bucketWorld(world: SnapshotWorld) {
+async function bucketWorld(world: SnapshotWorld, name = "shop-backups") {
   const key = generateAgeIdentity();
-  const bucket = new FakeBucket("shop-backups");
+  const bucket = new FakeBucket(name);
   await world.servers.app?.write(
     `.snapshots/${ON_SERVER}/about.json`,
     `${JSON.stringify(about(ON_SERVER))}\n`,
@@ -120,6 +120,46 @@ describe("rclone on this computer", () => {
     const neither = await failure(bucket([]));
     expect(neither.hint).toContain("install rclone");
   });
+
+  it("reaches an SFTP machine only with the pinned image, which checks its host key, never this computer's rclone (T2756)", async () => {
+    const world = await snapshotWorld(
+      DeployPlanSchema.parse({
+        ...plan(),
+        snapshots: {
+          offsite: {
+            provider: "sftp",
+            host: "backup.example.com",
+            user: "shop-backups",
+            path: "/backups",
+            hostKey:
+              "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl",
+          },
+        },
+      }),
+    );
+    const keyFile = join(world.deps.paths.root, "sftp-key");
+    await writeFile(keyFile, `${fakeSecret("private-key-pem", "rclone-here")}\n`);
+    world.deps.env = { ...world.deps.env, OPSCREW_OFFSITE_SFTP_KEY: keyFile };
+    const ran: string[] = [];
+    const machine = async (tools: string[]) => {
+      world.deps.runner = new ScriptedRunner((command) => {
+        ran.push(command);
+        return { exitCode: tools.includes(command) ? 0 : 1, stdout: "", stderr: "" };
+      });
+      return offsiteBucket(await snapshotRun(world.deps), {}, "opscrew snapshot list");
+    };
+
+    expect((await machine(["docker", "rclone"]))?.command).toBe("docker");
+    ran.length = 0;
+    const local = await failure(machine(["rclone"]));
+    expect(local).toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message:
+        "OpsCrew reaches your SFTP machine from this computer only with its pinned rclone image, which checks the machine's host key, and Docker doesn't answer here. Nothing was changed.",
+      hint: "Start Docker, then try again: Docker must run here to reach your SFTP machine with its host key checked.",
+    });
+    expect(ran).not.toContain("rclone");
+  });
 });
 
 describe.skipIf(!SH_AVAILABLE)("the off-server bucket from this computer", () => {
@@ -165,7 +205,8 @@ describe.skipIf(!SH_AVAILABLE)("the off-server bucket from this computer", () =>
       endpoint: "https://s3.eu-central-1.wasabisys.com",
       bucket: "shop-backups",
     });
-    const fromBucket = await bucketWorld(s3);
+    // The environment's own folder in the user's bucket: FakeBucket's root `offsite:<name>/backups`.
+    const fromBucket = await bucketWorld(s3, "shop-backups/shop-staging");
     const entries = await listSnapshots(s3.deps, {
       services: s3.services,
       identity: fromBucket.key.identity,

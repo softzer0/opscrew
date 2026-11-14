@@ -1,7 +1,8 @@
 /**
- * The off-server copies' bucket from this computer (024 plan.md 6.–7., D4, FR-2403, FR-2407):
+ * The off-server copies' bucket, or folder on the user's SFTP machine, from this computer (024
+ * plan.md 6.–7., D4, FR-2403, FR-2407; T2756):
  * - its objects are listed, read and deleted by rclone run here (the pinned image in local Docker,
- *   or this computer's rclone), the bucket's key only in rclone's environment;
+ *   or for a bucket this computer's rclone), the login only in rclone's environment;
  * - each object is decrypted here with the recovery copy's age key ({@link ageDecryptStream}), as
  *   it streams: no server ever holds the key;
  * - a copy goes back as the snapshot's folder: into the app's snapshots folder on a server through
@@ -110,10 +111,17 @@ export function offsiteNoun(plan: Pick<DeployPlan, "snapshots">): "bucket" | "fo
   return snapshotOffsiteOf(plan)?.provider === "sftp" ? "folder" : "bucket";
 }
 
-/** rclone here: the pinned image in local Docker (`docker`'s arguments), else this computer's rclone. */
+/**
+ * rclone here: the pinned image in local Docker (`docker`'s arguments), else this computer's rclone.
+ * An SFTP machine (`sftp`) is reached only with the pinned image, whose rclone checks its host key
+ * (`host_keys`): another rclone may ignore that setting and check none.
+ * @throws OpsCrewError `PHASE_PRECONDITION` without Docker for an SFTP machine, and with neither
+ * otherwise.
+ */
 async function rcloneHere(
   run: SnapshotRun,
   docker: string[],
+  options: { sftp?: boolean } = {},
 ): Promise<{ command: string; prefix: string[] }> {
   const { runner } = run.deps;
   const answered = (result: CommandResult | undefined) => result?.exitCode === 0;
@@ -121,6 +129,15 @@ async function rcloneHere(
     .run("docker", ["version", "--format", "{{.Server.Version}}"], { timeoutMs: 30_000 })
     .catch(() => undefined);
   if (answered(version)) return { command: "docker", prefix: docker };
+  if (options.sftp === true) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      "OpsCrew reaches your SFTP machine from this computer only with its pinned rclone image, which checks the machine's host key, and Docker doesn't answer here. Nothing was changed.",
+      {
+        hint: "Start Docker, then try again: Docker must run here to reach your SFTP machine with its host key checked.",
+      },
+    );
+  }
   const local = await runner
     .run("rclone", ["version"], { timeoutMs: 30_000 })
     .catch(() => undefined);
@@ -159,7 +176,7 @@ export async function offsiteBucket(
       name: `${folder} on ${offsite.host}`,
       audit: `folder ${folder}`,
       root: offsiteRoot(plan, offsite),
-      ...(await rcloneHere(run, dockerRclone(settings))),
+      ...(await rcloneHere(run, dockerRclone(settings), { sftp: true })),
       env: { ...Object.fromEntries(own), ...settings },
     };
   }

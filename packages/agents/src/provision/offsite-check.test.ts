@@ -7,7 +7,12 @@ import { IMAGES, PORTAINER_OFFSITE_VARIABLES } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { createTestPhaseDeps, testPlan } from "../testing";
-import { checkOffsiteWrite, checkOffsiteWriteOnServers, OFFSITE_CHECK_FILE } from "./offsite-check";
+import {
+  checkOffsiteWrite,
+  checkOffsiteWriteOnServers,
+  OFFSITE_CHECK_FILE,
+  ownOffsiteOf,
+} from "./offsite-check";
 
 const HOST_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
 const SFTP = {
@@ -65,6 +70,18 @@ const envOf = (container: FakeContainer) =>
     ]),
   );
 
+/** {@link checkOffsiteWrite} of `plan`'s own storage on `fake`'s Docker, with `values`. */
+async function check(
+  d: Awaited<ReturnType<typeof deps>>,
+  plan: DeployPlan,
+  fake: FakeDocker,
+  values: Record<string, string>,
+) {
+  const own = ownOffsiteOf(plan);
+  if (own === undefined) throw new Error("The test plan's copy is not on the user's own storage.");
+  return checkOffsiteWrite(d, plan, own, dockerClient(fake), values, WORDS);
+}
+
 async function deps() {
   const d = await createTestPhaseDeps({});
   for (const secret of [ACCESS, SECRET, SSH_KEY]) d.redactor.addLiteral(secret, "test");
@@ -76,7 +93,7 @@ describe("the off-server copy's write check", () => {
     const plan = withOffsite(SFTP);
     const fake = docker(() => ({ exitCode: 0 }));
     const d = await deps();
-    await checkOffsiteWrite(d, plan, dockerClient(fake), SFTP_VALUES, WORDS);
+    await check(d, plan, fake, SFTP_VALUES);
     const ran = fake.ran;
     const file = `offsite:/backups/shop-prod/backups/${OFFSITE_CHECK_FILE}`;
     expect(ran.map((c) => c.cmd)).toEqual([
@@ -103,9 +120,12 @@ describe("the off-server copy's write check", () => {
 
   it("writes and deletes a test file in the user's own bucket, its endpoint and key from the copies' values", async () => {
     const fake = docker(() => ({ exitCode: 0 }));
-    await checkOffsiteWrite(await deps(), withOffsite(S3), dockerClient(fake), S3_VALUES, WORDS);
+    await check(await deps(), withOffsite(S3), fake, S3_VALUES);
     const [touch] = fake.ran;
-    expect(touch?.cmd).toEqual(["touch", `offsite:shop-backups/backups/${OFFSITE_CHECK_FILE}`]);
+    expect(touch?.cmd).toEqual([
+      "touch",
+      `offsite:shop-backups/shop-prod/backups/${OFFSITE_CHECK_FILE}`,
+    ]);
     expect(envOf(touch as FakeContainer)).toEqual({
       RCLONE_CONFIG_OFFSITE_TYPE: "s3",
       RCLONE_CONFIG_OFFSITE_PROVIDER: "Other",
@@ -123,7 +143,7 @@ describe("the off-server copy's write check", () => {
       const fake = docker((c) =>
         c.cmd[0] === command ? { exitCode: 1, stderr: `${stderr}\n${SSH_KEY}\n` } : { exitCode: 0 },
       );
-      return checkOffsiteWrite(await deps(), plan, dockerClient(fake), SFTP_VALUES, WORDS).then(
+      return check(await deps(), plan, fake, SFTP_VALUES).then(
         () => undefined,
         (error: Error & { code: string; hint?: string }) => error,
       );
@@ -151,6 +171,9 @@ describe("the off-server copy's write check", () => {
       "2026/11/14 03:28:56 CRITICAL: Failed to create file system: ssh: handshake failed: sftp: host key mismatch for backup.example.com:22: server offered ssh-ed25519 key with fingerprint SHA256:B8/U+nAjyhpmJINWrx+HI5/3+Hg8el/yoDL9IPskP5c",
     );
     expect(changed?.hint).toContain("another host key than the one the plan pins");
+    expect(changed?.hint).toContain(
+      "run `opscrew snapshot offsite on --to sftp --host backup.example.com --user shop-backups --path /backups --host-key <the new fingerprint>` again",
+    );
     const deleted = await refusal(
       "2026/11/14 03:28:55 ERROR : Failed to deletefile: permission denied",
       "deletefile",
@@ -165,7 +188,7 @@ describe("the off-server copy's write check", () => {
     const plan = withOffsite(S3);
     const refusal = async (stderr: string) => {
       const fake = docker(() => ({ exitCode: 1, stderr }));
-      return checkOffsiteWrite(await deps(), plan, dockerClient(fake), S3_VALUES, WORDS).catch(
+      return check(await deps(), plan, fake, S3_VALUES).catch(
         (error: Error & { code: string; hint?: string }) => error,
       );
     };

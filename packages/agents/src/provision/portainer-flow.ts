@@ -77,7 +77,7 @@ import {
 } from "./credentials";
 import { deploySetupDependabot } from "./dependabot";
 import { deployBranchState, startDeployBranch } from "./deploy-branch";
-import { checkOffsiteWrite, ownOffsite } from "./offsite-check";
+import { checkOffsiteWrite, ownOffsiteOf } from "./offsite-check";
 import {
   keepCertificateRequest,
   originTlsApply,
@@ -1006,11 +1006,12 @@ export async function provisionPortainer(
       recoveryCopy = setup.recoveryCopy;
       // On the user's own bucket or SFTP machine, a one-off in the Portainer host writes and
       // deletes a test file there first, as the stack's copies will.
-      if (ownOffsite(plan)) {
+      const own = ownOffsiteOf(plan);
+      if (own !== undefined) {
         const docker = dockerClient(
           services.docker?.(APP_SERVER) ?? client.dockerProxyTransport(target.environmentId),
         );
-        await checkOffsiteWrite(deps, plan, docker, setup.values, {
+        await checkOffsiteWrite(deps, plan, own, docker, setup.values, {
           who: "Your Portainer",
           already: "Nothing in your Portainer was changed.",
           command,

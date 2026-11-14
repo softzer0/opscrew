@@ -277,7 +277,9 @@ access to create the bucket.
 
 `--to s3` keeps the copies in a bucket you already have, at any provider that speaks the S3 API.
 OpsCrew never creates, empties or deletes that bucket, and prices nothing for it: your provider
-bills what the copies store. The copies go under `backups/` in it, one folder per snapshot.
+bills what the copies store. Each environment's copies go in a folder of their own in it,
+`<app>-<env>/backups/`, for example `shop-prod/backups/20261106T190000Z/`, so several apps and
+environments can share one bucket.
 
 | Provider | `--endpoint` | `--region` |
 |---|---|---|
@@ -371,10 +373,10 @@ npx opscrew restore 20261106T190000Z --from offsite --key-file ~/opscrew-shop-ag
 This computer downloads the copy, decrypts it with your key file, and sends it to the server (or
 your Portainer), then restores it as above. The key never leaves this computer. It needs
 [Docker](https://www.docker.com/) (which runs OpsCrew's pinned rclone image) or
-[rclone](https://rclone.org/install/) on this computer, and the bucket's key, or for an SFTP
-machine the key `OPSCREW_OFFSITE_SFTP_KEY` names (the machine's host key is checked as on the
-server). When the server still holds the complete snapshot, OpsCrew restores it from there
-instead.
+[rclone](https://rclone.org/install/) on this computer, and the bucket's key. From an SFTP machine
+it needs Docker, since only OpsCrew's pinned rclone image checks the machine's host key, and the
+key `OPSCREW_OFFSITE_SFTP_KEY` names. When the server still holds the complete snapshot, OpsCrew
+restores it from there instead.
 
 This is how the data comes back after a server is lost: provision the environment again, then
 restore the copy.
@@ -396,9 +398,9 @@ OpsCrew never deletes the bucket or its copies: not `offsite off`, not `destroy`
 Then revoke the bucket's key in the same console.
 
 On your own bucket or machine, OpsCrew never deletes the copies either. After `offsite off` and
-`npx opscrew provision`, nothing deletes them any more: delete the `backups/` folder in your bucket,
-or the `<path>/<app>-<env>` folder on your machine, when you no longer need them, then revoke the
-key (or remove its line from `authorized_keys`).
+`npx opscrew provision`, nothing deletes them any more: delete the `<app>-<env>` folder in your
+bucket, or the `<path>/<app>-<env>` folder on your machine, when you no longer need them, then
+revoke the key (or remove its line from `authorized_keys`).
 
 ## The snapshot before each release
 

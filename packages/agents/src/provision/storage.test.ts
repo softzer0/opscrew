@@ -1151,6 +1151,27 @@ describe("the off-server copies' bucket: its key, engine environment and values"
     await expect(refused(notKey)).rejects.toMatchObject({
       message: `The file OPSCREW_OFFSITE_SFTP_KEY names (${notKey}) holds no SSH private key. Nothing was changed.`,
     });
+    // An OpenSSH key too short to name its cipher, or whose cipher runs past its end.
+    for (const [label, bytes] of [
+      ["short", Buffer.from("openssh-key-v1\0", "latin1")],
+      [
+        "truncated",
+        Buffer.concat([
+          Buffer.from("openssh-key-v1\0", "latin1"),
+          name("aes256-ctr").subarray(0, 6),
+        ]),
+      ],
+    ] as const) {
+      const file = join(dir, label);
+      await writeFile(
+        file,
+        `-----BEGIN OPENSSH PRIVATE KEY-----\n${bytes.toString("base64")}\n-----END OPENSSH PRIVATE KEY-----\n`,
+      );
+      await expect(refused(file), label).rejects.toMatchObject({
+        code: "INVALID_INPUT",
+        message: `The file OPSCREW_OFFSITE_SFTP_KEY names (${file}) holds no SSH private key. Nothing was changed.`,
+      });
+    }
     await expect(refused(join(dir, "missing"))).rejects.toMatchObject({
       code: "INVALID_INPUT",
       message: expect.stringContaining("OpsCrew could not read the private key file"),

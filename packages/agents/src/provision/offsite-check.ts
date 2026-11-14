@@ -36,10 +36,16 @@ import { serverShell } from "../status/servers";
 import { OFFSITE_KEY_VARS, OFFSITE_SFTP_KEY_VAR, storageKeyFile } from "./storage";
 import type { ProvisionServices } from "./types";
 
-/** True when `plan`'s copies go to the user's own bucket or SFTP machine, which provision checks. */
-export function ownOffsite(plan: Pick<DeployPlan, "snapshots">): boolean {
-  const provider = snapshotOffsiteOf(plan)?.provider;
-  return provider === "s3" || provider === "sftp";
+/** The copies on the user's own bucket or SFTP machine, which provision checks. */
+export type OwnStorage = Extract<SnapshotOffsite, { provider: "s3" | "sftp" }>;
+
+/**
+ * `plan`'s copy off the server when it goes to the user's own bucket or SFTP machine, which
+ * provision checks; undefined otherwise (a bucket OpsCrew plans is checked by its plan's apply).
+ */
+export function ownOffsiteOf(plan: Pick<DeployPlan, "snapshots">): OwnStorage | undefined {
+  const copy = snapshotOffsiteOf(plan);
+  return copy?.provider === "s3" || copy?.provider === "sftp" ? copy : undefined;
 }
 
 /** The test file the check writes and deletes, under the copies' root (never a copy's id). */
@@ -110,9 +116,6 @@ function lastError(deps: Pick<PhaseDeps, "redactor">, result: OneOffResult): str
 const UNREACHABLE =
   /connection refused|no route to host|i\/o timeout|no such host|network is unreachable|connection timed out|x509:|certificate/i;
 
-/** The copies on the user's own storage, which provision checks. */
-type OwnStorage = Extract<SnapshotOffsite, { provider: "s3" | "sftp" }>;
-
 /**
  * What to fix for the refusal rclone `said` at the user's own bucket or SFTP machine, by what it
  * says, and whether the storage refused the key; undefined when it says nothing known.
@@ -127,7 +130,7 @@ function whatToFix(
     const again = `opscrew snapshot offsite on --to sftp --host ${copy.host}${copy.port === 22 ? "" : ` --port ${copy.port}`} --user ${copy.user}`;
     if (/host key mismatch/i.test(said)) {
       return {
-        fix: `The machine presented another host key than the one the plan pins (snapshots.offsite.hostKey). If its key really changed, run \`${again} --path ${copy.path}\` again to confirm the new one; otherwise someone may be intercepting the connection.`,
+        fix: `The machine presented another host key than the one the plan pins (snapshots.offsite.hostKey). If its key really changed, run \`${again} --path ${copy.path} --host-key <the new fingerprint>\` again to confirm the new one; otherwise someone may be intercepting the connection.`,
       };
     }
     if (/unable to authenticate|no supported methods remain/i.test(said)) {
@@ -180,9 +183,9 @@ function whatToFix(
 }
 
 /**
- * Writes a test file ({@link OFFSITE_CHECK_FILE}) where `plan`'s copies go and deletes it, with the
- * pinned rclone in one-offs of `docker` (only on the user's own bucket or SFTP machine: a bucket
- * OpsCrew plans is checked by its plan's apply), its settings the copies' ({@link rcloneSettings})
+ * Writes a test file ({@link OFFSITE_CHECK_FILE}) where `plan`'s copies go (`copy`, the user's own
+ * bucket or SFTP machine: {@link ownOffsiteOf}) and deletes it, with the pinned rclone in one-offs
+ * of `docker`, its settings the copies' ({@link rcloneSettings})
  * and its login from `values` (the copies' variables, `offsiteValues`), as the uploads run it.
  * @throws OpsCrewError `CREDENTIALS_INVALID` when the storage refused the key, `PHASE_PRECONDITION`
  * for any other refusal, naming what to fix and what is done (`words.already`).
@@ -190,12 +193,11 @@ function whatToFix(
 export async function checkOffsiteWrite(
   deps: PhaseDeps,
   plan: DeployPlan,
+  copy: OwnStorage,
   docker: DockerClient,
   values: Record<string, string>,
   words: CheckWords,
 ): Promise<void> {
-  const copy = snapshotOffsiteOf(plan);
-  if (copy?.provider !== "s3" && copy?.provider !== "sftp") return;
   const file = `${offsiteRoot(plan, copy)}/${OFFSITE_CHECK_FILE}`;
   const env = {
     ...rcloneSettings(copy),
@@ -225,7 +227,7 @@ export async function checkOffsiteWrite(
 /**
  * {@link checkOffsiteWrite} on each server whose snapshots the copies upload (the servers with
  * data, which get `offsite.env`), through its Docker API ({@link serverDocker}), the app's first.
- * Only for the user's own bucket or SFTP machine: a bucket OpsCrew plans was checked by its apply.
+ * Only for the user's own bucket or SFTP machine ({@link ownOffsiteOf}).
  */
 export async function checkOffsiteWriteOnServers(
   deps: PhaseDeps,
@@ -234,14 +236,15 @@ export async function checkOffsiteWriteOnServers(
   values: Record<string, string>,
   words: Omit<CheckWords, "who">,
 ): Promise<void> {
-  if (!ownOffsite(plan)) return;
+  const copy = ownOffsiteOf(plan);
+  if (copy === undefined) return;
   const servers = [APP_SERVER, ...(plan.servers ?? []).map((server) => server.name)].filter(
     (server) => snapshotParts(plan, server).length > 0,
   );
   for (const server of servers) {
     const docker = await serverDocker(deps, plan, server, services);
     try {
-      await checkOffsiteWrite(deps, plan, docker.client, values, {
+      await checkOffsiteWrite(deps, plan, copy, docker.client, values, {
         ...words,
         who: upperFirst(serverWords(server)),
       });

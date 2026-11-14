@@ -113,12 +113,13 @@ backup is the copy off it, with `--days <n>` to keep each copy other than 90 day
 - `--to s3 --endpoint https://… --bucket <name> [--region <r>]`: the user's own S3-compatible
   bucket (Wasabi, Backblaze B2, MinIO, AWS S3, Contabo). OpsCrew prices nothing and never creates
   or deletes it; provision asks for its key in the terminal (or `OPSCREW_OFFSITE_ACCESS_KEY_ID` and
-  `OPSCREW_OFFSITE_SECRET_ACCESS_KEY`).
+  `OPSCREW_OFFSITE_SECRET_ACCESS_KEY`). Copies go to `<app>-<env>/backups/` in the bucket.
 - `--to sftp --host <h> [--port <p>] --user <u> --path /<folder>`: a folder on the user's own
   machine. The user makes an account of its own and a key without a passphrase, puts its public
   half in that account's `authorized_keys`, and sets `OPSCREW_OFFSITE_SFTP_KEY` to the private key
   file. `offsite on` shows the machine's host key fingerprint to confirm in the terminal (in a
-  script, `--host-key SHA256:…`). Copies go to `<path>/<app>-<env>/backups/`.
+  script, `--host-key SHA256:…`). Copies go to `<path>/<app>-<env>/backups/`. Restoring or listing
+  them on this computer needs Docker, whose pinned rclone checks the machine's host key.
 
 Each writes the plan. On the user's own storage, provision checks that the server can write and
 delete a test file there before it stores the deploy secrets, and says what to fix when it can't.

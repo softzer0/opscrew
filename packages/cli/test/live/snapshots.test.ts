@@ -30,7 +30,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join, posix } from "node:path";
 import { backupsBucketName } from "@opscrew/agents";
 import { appDir, OFFSITE_LOG, portainerDeployBranch } from "@opscrew/iac-templates";
-import { snapshotOffsiteOf, snapshotsOn, writeArtifact } from "@opscrew/plan-schema";
+import { backupsBucketOf, snapshotsOn, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect } from "vitest";
 import { underLoad } from "./builder-checks";
 import { httpRequest, minutes, waitFor } from "./cloud";
@@ -571,7 +571,7 @@ for (const provider of ["r2", "hetzner"] as const satisfies readonly OffsiteProv
             `snapshot offsite on shows the bucket's expected cost:\n${run.tail(on.output)}`,
           ).toBe(true);
           const plan = await run.readPlan();
-          const offsite = snapshotOffsiteOf(plan);
+          const offsite = backupsBucketOf(plan);
           expect(offsite?.provider, "the plan's off-server copy").toBe(provider);
           expect(offsite?.bucket, "the copies' bucket").toBe(backupsBucketName(plan));
           const zone = run.zone;

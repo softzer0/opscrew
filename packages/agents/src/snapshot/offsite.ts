@@ -6,7 +6,12 @@
  * upload to it. Only the plan changes here.
  */
 import { formatMoney, listText, OpsCrewError } from "@opscrew/core";
-import { OFFSITE_PREFIX, offsiteFolder, offsitePlace, STORAGE_NAMES } from "@opscrew/iac-templates";
+import {
+  offsiteFolder,
+  offsiteFolderName,
+  offsitePlace,
+  STORAGE_NAMES,
+} from "@opscrew/iac-templates";
 import {
   type BackupsBucketProvider,
   backupsBucketOf,
@@ -142,11 +147,11 @@ function checkFlags(run: SnapshotRun, options: OffsiteOnOptions): void {
 }
 
 /**
- * The off-server copies' bucket of `plan`'s environment, `<app>-<env>-backups`: another
- * environment's app is already named `<app>-<env>` (design's `environmentNames`), prod's is not.
+ * The off-server copies' bucket of `plan`'s environment, `<app>-<env>-backups`
+ * (`offsiteFolderName`, then `-backups`).
  */
 export function backupsBucketName(plan: Pick<DeployPlan, "app" | "environment">): string {
-  return `${plan.app.name}${plan.environment === undefined ? "-prod" : ""}-backups`;
+  return `${offsiteFolderName(plan)}-backups`;
 }
 
 /**
@@ -570,7 +575,7 @@ async function requireSameBucket(run: SnapshotRun, wanted: KnownBucket): Promise
 function copiesStayText(plan: Pick<DeployPlan, "app" | "environment">, offsite: SnapshotOffsite) {
   switch (offsite.provider) {
     case "s3":
-      return `Your bucket ${offsite.bucket} and the copies in it stay: OpsCrew never deletes them, and with no more uploads nothing deletes the old ones. To delete them, delete the folder ${OFFSITE_PREFIX}/ in the bucket with your provider's console.`;
+      return `Your bucket ${offsite.bucket} and the copies in it stay: OpsCrew never deletes them, and with no more uploads nothing deletes the old ones. To delete them, delete the folder ${offsiteFolderName(plan)}/ in the bucket with your provider's console.`;
     case "sftp":
       return `The folder ${offsiteFolder(plan, offsite)} on ${offsite.host} and the copies in it stay: OpsCrew never deletes them, and with no more uploads nothing deletes the old ones. To delete them, delete that folder on the machine.`;
     default:

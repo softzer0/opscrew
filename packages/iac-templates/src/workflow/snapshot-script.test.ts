@@ -1414,9 +1414,11 @@ describe.skipIf(!shWorks())("snapshot.sh", { timeout: 300_000 }, () => {
       expect(text).toContain(
         `export HOME=/tmp RCLONE_CONFIG_OFFSITE_ENDPOINT="$OPSCREW_OFFSITE_ENDPOINT" RCLONE_CONFIG_OFFSITE_ACCESS_KEY_ID="$OPSCREW_OFFSITE_ACCESS_KEY_ID" RCLONE_CONFIG_OFFSITE_SECRET_ACCESS_KEY="$OPSCREW_OFFSITE_SECRET_ACCESS_KEY"`,
       );
-      expect(text).toContain(`rclone rcat 'offsite:shop-backups/backups/'"$to/$1.age"`);
       expect(text).toContain(
-        "rclone delete --min-age 14d 'offsite:shop-backups/backups' || exit 4",
+        `rclone rcat 'offsite:shop-backups/shop-staging/backups/'"$to/$1.age"`,
+      );
+      expect(text).toContain(
+        "rclone delete --min-age 14d 'offsite:shop-backups/shop-staging/backups' || exit 4",
       );
       expectNoSecret(result.output);
     });

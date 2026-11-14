@@ -160,10 +160,6 @@ function checkOff(setting: string, given: string, flags: readonly [boolean, stri
   );
 }
 
-/** The stop of `snapshot offsite on` without `--to`: the buckets of their own it names first. */
-const NEEDS_TO =
-  "`opscrew snapshot offsite on` needs --to: r2 (Cloudflare R2), hetzner or digitalocean, where the copies' bucket is.";
-
 /** The command's line in `opscrew --help`, and the first line of its own help. */
 const SUMMARY =
   "Take a snapshot of an environment's data (or with --server of its whole server), list or delete snapshots, and turn scheduled snapshots and their encrypted copy off the server on or off";
@@ -394,7 +390,7 @@ export function register(program: Command, ctx: CliContext): void {
     if (state === "on" && flags.to === undefined) {
       throw new OpsCrewError(
         "INVALID_INPUT",
-        `${NEEDS_TO} Or s3 for your own S3-compatible bucket, or sftp for your own machine.`,
+        "`opscrew snapshot offsite on` needs --to: r2 (Cloudflare R2), hetzner or digitalocean, where the copies' bucket is. Or s3 for your own S3-compatible bucket, or sftp for your own machine.",
         {
           hint: `Run \`opscrew snapshot offsite on --to r2${given}\`, or with hetzner or digitalocean.`,
         },

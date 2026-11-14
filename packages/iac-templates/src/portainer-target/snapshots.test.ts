@@ -504,7 +504,7 @@ describe("the off-server copy in a stack, to the user's own storage", () => {
       OPSCREW_OFFSITE_RECIPIENT: "${OPSCREW_OFFSITE_RECIPIENT}",
     });
     const text = script(stack.services.offsite);
-    expect(text).toContain(`rclone rcat 'offsite:shop-backups/backups/'"$2"`);
+    expect(text).toContain(`rclone rcat 'offsite:shop-backups/shop-prod/backups/'"$2"`);
   });
 
   it("reaches an SFTP machine with its pinned host key, no shell, and the private key from a stack variable", () => {
@@ -533,7 +533,7 @@ describe("the off-server copy in a stack, to the user's own storage", () => {
   it("deletes the copies older than the plan's days after a pass that copied one, and only warns when that fails", () => {
     const s3 = script(of(S3).stack.services.offsite);
     expect(s3).toContain(
-      `  if [ "$copied" = 1 ] && ! rclone delete --min-age 30d 'offsite:shop-backups/backups'; then`,
+      `  if [ "$copied" = 1 ] && ! rclone delete --min-age 30d 'offsite:shop-backups/shop-prod/backups'; then`,
     );
     const sftp = script(of(SFTP).stack.services.offsite);
     expect(sftp).toContain(

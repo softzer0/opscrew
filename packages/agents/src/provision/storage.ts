@@ -331,14 +331,19 @@ export const OFFSITE_SFTP_KEY_VAR = "OPSCREW_OFFSITE_SFTP_KEY";
 const PRIVATE_KEY =
   /^-----BEGIN ([A-Z0-9 ]*)PRIVATE KEY-----\r?\n[\s\S]+\r?\n-----END \1PRIVATE KEY-----\s*$/;
 
-/** True when an OpenSSH private key (`openssh-key-v1`) is encrypted with a passphrase. */
-function opensshEncrypted(text: string): boolean {
+/**
+ * The cipher an OpenSSH private key (`openssh-key-v1`) is encrypted with, `none` without a
+ * passphrase; undefined when its body holds no such key, or ends before its cipher's name does.
+ */
+function opensshCipher(text: string): string | undefined {
   const body = Buffer.from(text.replace(/-----[A-Z ]+-----/g, "").replace(/\s+/g, ""), "base64");
   const magic = "openssh-key-v1\0";
-  if (body.subarray(0, magic.length).toString("latin1") !== magic) return false;
-  const length = body.readUInt32BE(magic.length);
-  const cipher = body.subarray(magic.length + 4, magic.length + 4 + length).toString("latin1");
-  return cipher !== "none";
+  const start = magic.length + 4;
+  if (body.length < start || body.subarray(0, magic.length).toString("latin1") !== magic) {
+    return undefined;
+  }
+  const end = start + body.readUInt32BE(magic.length);
+  return end > body.length ? undefined : body.subarray(start, end).toString("latin1");
 }
 
 /**
@@ -389,14 +394,16 @@ export async function requireOffsiteSftpKey(
         hint: `Make a key of its own without a passphrase (\`ssh-keygen -t ed25519 -N "" -f ~/.ssh/opscrew-backups\`), add its .pub file to ~/.ssh/authorized_keys of ${offsite.user} on the machine, set ${OFFSITE_SFTP_KEY_VAR} to it, then run \`${options.command}\` again.`,
       },
     );
-  if (!PRIVATE_KEY.test(text)) throw refuse("holds no SSH private key");
+  // An OpenSSH key names its cipher (`none` without a passphrase); a PEM key says ENCRYPTED.
+  const cipher = text.includes("BEGIN OPENSSH PRIVATE KEY") ? opensshCipher(text) : "none";
+  if (!PRIVATE_KEY.test(text) || cipher === undefined) throw refuse("holds no SSH private key");
   const lines = text.trim().split(/\r?\n/);
   for (const line of lines) {
     if (line.length >= 16 && !line.startsWith("-----")) deps.redactor.addLiteral(line, "sftp-key");
   }
   const sshKey = lines.join("\\n");
   deps.redactor.addLiteral(sshKey, "sftp-key");
-  if (/ENCRYPTED/.test(text) || opensshEncrypted(text)) {
+  if (/ENCRYPTED/.test(text) || cipher !== "none") {
     throw refuse("is protected by a passphrase, and the server uses the key unattended");
   }
   return { sshKey };

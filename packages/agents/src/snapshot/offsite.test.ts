@@ -273,7 +273,7 @@ describe("opscrew snapshot offsite off", () => {
       snapshots: { offsite: own },
     } as DeployPlan);
     expect((await snapshotOffsiteOff(bucket.deps)).lines[1]).toBe(
-      "Your bucket shop-backups and the copies in it stay: OpsCrew never deletes them, and with no more uploads nothing deletes the old ones. To delete them, delete the folder backups/ in the bucket with your provider's console.",
+      "Your bucket shop-backups and the copies in it stay: OpsCrew never deletes them, and with no more uploads nothing deletes the old ones. To delete them, delete the folder shop-prod/ in the bucket with your provider's console.",
     );
   });
 });

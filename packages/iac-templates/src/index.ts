@@ -42,6 +42,7 @@ export * from "./monitoring";
 export {
   OFFSITE_PREFIX,
   offsiteFolder,
+  offsiteFolderName,
   offsiteLogin,
   offsitePlace,
   offsiteRoot,
