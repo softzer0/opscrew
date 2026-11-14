@@ -6,7 +6,11 @@
 **Input**: The founder, 2026-11-14: "is opscrew able to transfer from one cloudflare account to
 another setup?", then "can you please implement that too". His decisions the same day: it ships
 as 0.2.9; a zone serving several OpsCrew apps moves with all of them; the R2 buckets are copied to
-the new account. Research: [research.md](research.md).
+the new account; a site on Cloudflare's hosting runs in the new account before the switch, so only
+its custom domains wait for activation ("shorten the gap"); deploys through Cloudflare Access keep
+working during the move ("avoid the pause"); the live pass is the real move of opscrew.dev, with
+every OpsCrew app it serves, to a new account he is making. Research: [research.md](research.md);
+design: [plan.md](plan.md).
 
 ## Why
 
@@ -33,9 +37,9 @@ what is left in A.
 **Why this priority**: it is the whole feature for the most common case, one app in its zone.
 
 **Independent Test**: move one app on a cloud server with its records, rules and origin
-protection, and one app on an own server reached through a Tunnel, each in its own zone, from A to
-B; both answer from B, nothing of theirs is left in A, and visitors were never refused before the
-switch.
+protection, and one app on an own server reached through a Tunnel, from A to B; both answer from
+B, nothing of theirs is left in A but what A's moved zone holds until Cloudflare deletes it, and
+visitors were never refused before the switch.
 
 **Acceptance Scenarios**:
 
@@ -53,9 +57,13 @@ switch.
    how long visitors had no valid certificate.
 4. **Given** the switch done, **When** the user finishes the move, **Then** the app's deploy
    secrets in GitHub and the files on its server point at B, A's connector is removed, and A's
-   pieces of the app are removed after an approval with `allowDestroy` and the app's name typed.
-5. **Given** a move prepared but not switched, **When** the user aborts it, **Then** B's pieces of
-   the app and B's zone are removed and A serves as before.
+   account-scoped pieces of the app (Tunnels, Access, Workers, R2 buckets) are removed after an
+   approval with `allowDestroy` and the app's name typed; A's records and rules stay in A's moved
+   zone until Cloudflare deletes it.
+5. **Given** a move prepared and the switch not begun, **When** the user aborts it, **Then** B's
+   pieces of the app and B's zone are removed and A serves as before.
+6. **Given** a deploy between prepare and the finish, **When** it reaches the server or Portainer's
+   webhook through Cloudflare Access, **Then** it succeeds before and after the switch.
 
 ---
 
@@ -75,10 +83,11 @@ answer from B after it.
 **Acceptance Scenarios**:
 
 1. **Given** a zone serving apps P and Q, **When** the user starts the move in P's repository,
-   **Then** OpsCrew lists every OpsCrew app it finds in the zone (by OpsCrew's records and rules)
-   and says each needs its own prepare before the switch.
-2. **Given** P prepared and Q not, **When** the user asks for the switch, **Then** it stops and
-   names Q and the command to run in Q's repository.
+   **Then** OpsCrew lists the other OpsCrew apps it finds in the zone, by their hostnames (from
+   OpsCrew's records, rules and Workers custom domains), and says each needs its own prepare before
+   the switch.
+2. **Given** P prepared and Q not, **When** the user asks for the switch, **Then** it stops, names
+   Q's hostnames and the command to run in the repository that deploys them.
 3. **Given** P and Q prepared, **When** the switch runs from either repository, **Then** both apps
    are served from B after it, and the switch's output lists the finish to run in each.
 4. **Given** every environment of an app (prod, staging, others), **When** the app is prepared,
@@ -117,21 +126,24 @@ from an off-server copy works from B, and A's buckets are gone after the finish.
 ### User Story 4 - Sites, shared hosting and GitHub Pages (Priority: P2)
 
 A site on Cloudflare's hosting (Workers), a GitHub Pages site, or an app on a shared hosting
-account uses the zone too. Their pieces move like the others: a Worker is deployed again in B, and
-the records of the others are recreated in B's zone.
+account uses the zone too. A site's Worker runs in B, with its code, from prepare; its custom
+domains are attached in B right after activation; the records of the others are made in B's zone.
 
 **Why this priority**: the other deploy targets that use a Cloudflare zone; fewer users than
 servers.
 
-**Independent Test**: a site on Cloudflare's hosting and a GitHub Pages site in one zone move; both
-answer from B after the finish.
+**Independent Test**: a site on Cloudflare's hosting and a GitHub Pages site in one zone move; the
+site answers from B minutes after activation, and both after their finish.
 
 **Acceptance Scenarios**:
 
 1. **Given** a site on Cloudflare's hosting, **When** it is prepared, **Then** its Worker is
-   deployed in B, and its deploy workflow's account and token switch to B at the finish.
-2. **Given** the switch, **When** B's zone is active, **Then** the site's custom domains are attached
-   in B (Cloudflare allows them only on an active zone), and the gap is said before the switch.
+   deployed in B with its code, each deploy until the finish goes to both accounts, and its deploy
+   workflow's account and token are B's after the finish.
+2. **Given** the switch, **When** B's zone is active, **Then** the switch, from whichever repository
+   runs it, attaches every prepared site's custom domains in B right away (Cloudflare allows them
+   only on an active zone), and the site's finish adopts them; the remaining gap is said before the
+   switch.
 3. **Given** a GitHub Pages site or a shared hosting account, **When** it is prepared, **Then** its
    records are planned in B's zone and it keeps answering through the switch.
 
@@ -158,14 +170,22 @@ both end with B's zone active and the move continuing.
    five days) and waits for B's zone to become active, or stops and resumes when run again.
 3. **Given** any other registrar, **When** the switch runs, **Then** OpsCrew prints B's nameservers,
    waits for the user to set them, and resumes when run again.
-4. **Given** DNSSEC on, **When** the switch is prepared, **Then** OpsCrew turns it off and waits until
-   the registry no longer publishes the old DS record before switching, as `domain connect` does,
-   and turns DNSSEC on again in B after activation.
+4. **Given** DNSSEC on, **When** the switch runs, **Then** OpsCrew removes the DS record (an approval
+   of its own) and waits until the registry no longer publishes it, as `domain connect` does; the run
+   after the wait plans the switch again and asks a new approval; DNSSEC is turned on again in B after
+   activation.
 
 ### Edge Cases
 
-- **B's zone gets A's nameservers:** the switch would change nothing; OpsCrew stops before
-  preparing and says to remove the zone in B and add it again.
+- **B's zone gets A's nameservers:** the switch would change nothing; OpsCrew stops right after
+  making B's zone, before anything else, and says to abort and start again (Cloudflare may assign
+  another pair).
+- **The app's files come from an older OpsCrew** (a Workers root or a deploy workflow without what
+  the move needs): prepare stops before any change and says to run `opscrew provision` and commit.
+- **The abort after the switch began** (the nameservers or the DS record changed): refused, judged
+  from the registrar and the public DNS so any repository can tell; the move goes on.
+- **What OpsCrew didn't make** (the zone's plan, the user's own rules and settings, Email Routing,
+  other Workers, Pages projects or R2 buckets): not moved; the guide lists them to redo in B.
 - **The domain can't be added to B** (Cloudflare refuses it while active elsewhere, or a zone hold
   is on): OpsCrew stops with Cloudflare's reason and what to do.
 - **A zone hold in A**: the move says to release it first.
@@ -175,8 +195,9 @@ both end with B's zone active and the move continuing.
   after the move (their zone and certificate are set up again by turning them on).
 - **An app in the zone whose repository the user can't reach** (another team's): the switch names
   it; the user can't switch until it is prepared, or until it is removed from the zone.
-- **The token for B lacks a permission:** the move names the missing permission before anything is
-  created.
+- **The token for B lacks a permission:** the move names the missing account permission before
+  anything is created, and a missing zone permission right after B's pending zone is made, before
+  anything else.
 - **The switch interrupted:** running it again reads where it stopped (switched or not, active or
   not) and goes on; nothing is done twice.
 - **B's certificate takes hours:** the move keeps waiting up to its limit, then stops saying the
@@ -195,63 +216,82 @@ both end with B's zone active and the move continuing.
 - **FR-2801**: OpsCrew MUST offer a command that moves an app's Cloudflare setup from the account
   holding its zone (A) to another account the user names (B), in steps the user runs: prepare,
   switch, finish, and abort before the switch.
-- **FR-2802**: Before creating anything, the move MUST check that the token for B reaches B with
-  every permission the app's pieces need, and that the token for A still reaches A, and name what
-  is missing.
+- **FR-2802**: Before creating anything, the move MUST check that the token for A still reaches A
+  and that the token for B reaches B with every account permission the app's pieces need, and name
+  what is missing; B's zone permissions MUST be checked right after B's pending zone is made, before
+  anything else changes.
 - **FR-2803**: Prepare MUST add the domain to B as a new zone when it is not there yet, stop when B's
-  assigned nameservers equal A's, and copy the zone's records that belong to no OpsCrew app, keeping
-  their proxied state, comments and TTL, through a plan approved by its hash.
+  assigned nameservers equal A's, and copy the zone's records that belong to no OpsCrew app and are
+  missing from B, keeping their proxied state, comments and TTL, through a plan approved by its hash;
+  a record that differs in B, or exists only in B, is listed and never changed.
 - **FR-2804**: Prepare MUST plan each environment's pieces of the app in B (records, OpsCrew's rules
-  for the zone, Tunnels, Access, Workers, R2 buckets, origin certificate and origin pulls) with B's
-  zone and account, and apply them only after approval by hash, without changing A.
+  for the zone, Tunnels, Access, a site's Worker with its code, R2 buckets, origin certificate and
+  origin pulls) with B's zone and account, and apply them only after approval by hash, without
+  changing A.
 - **FR-2805**: For an app reached through a Tunnel, prepare MUST run B's connector beside A's on the
   server or in the Portainer stack, through a host or stack plan approved by hash.
 - **FR-2806**: Each prepared app MUST be marked as prepared where any other app's switch can read it,
   and the switch MUST refuse until every OpsCrew app found in A's zone is prepared, naming those that
-  are not and the command for each.
+  are not (by their hostnames, since A's zone doesn't say which repository serves them) and the
+  command for each. Each app's mark stays until that app's finish or abort.
 - **FR-2807**: Before the switch is approved, OpsCrew MUST say that visitors may get certificate
-  errors from B's activation until B's certificate is live (minutes, at worst 24 hours), and that a
-  site on Cloudflare's hosting is down until its custom domains are attached.
-- **FR-2808**: The switch MUST turn DNSSEC off and wait for the old DS record to be gone when DNSSEC
-  is on; set B's nameservers at Porkbun, Namecheap or GoDaddy when that registrar holds the domain;
-  otherwise print what the user must do (Cloudflare Registrar's move between accounts, or the
-  nameservers to set) and resume when run again.
+  errors from the nameserver change until B's certificate is live (minutes, at worst 24 hours), that
+  a site on Cloudflare's hosting answers once its custom domains are attached right after
+  activation, and, until it is known that B's zone accepts the origin certificate A issued, that an
+  origin-protected app may answer 526 until its finish.
+- **FR-2808**: The switch MUST remove the DS record and wait until the registry no longer publishes it
+  when DNSSEC is on, then plan and ask again; set B's nameservers at Porkbun, Namecheap or GoDaddy
+  when that registrar holds the domain; otherwise print what the user must do (Cloudflare Registrar's
+  move between accounts, or the nameservers to set) and resume when run again.
 - **FR-2809**: After the nameservers change, OpsCrew MUST ask Cloudflare to check them, wait until B's
-  zone is active and its certificate live, attach what needs an active zone, turn DNSSEC on in B
-  when it was on in A, and report the measured time without a valid certificate.
+  zone is active, attach every prepared site's custom domains in B right away, wait until B's
+  certificates are live, turn DNSSEC on in B when it was on in A, and report the measured time
+  without a valid certificate.
 - **FR-2810**: Finish MUST, per app: replace the deploy secrets and server files that hold
   Cloudflare-issued values (tunnel token, Access service token, Workers account and token, origin
-  certificate, R2 keys) with B's; remove A's connector; and make B's state the app's state, so the
-  next provision, drift, status, rotate and destroy work on B only.
+  certificate, R2 keys) with B's; remove A's connector; and make B's state the app's state, changing
+  only the account and zone ids in its committed files, so the next provision, drift, status, rotate
+  and destroy work on B only.
 - **FR-2811**: For each R2 bucket of the app, the move MUST create the new bucket in B, show its
   size, object count and the copy's expected time, copy every object, and switch the app to it in a
   maintenance window that holds only the final copy; the snapshots' existing off-server copies MUST
   be in B's bucket after the finish.
-- **FR-2812**: Finish MUST remove A's pieces of the app (Tunnels, Access, Workers, records, R2
-  buckets) only after an approval flagged `allowDestroy` with the app's name, and each R2 bucket's
-  name, typed; A's zone is left to Cloudflare (it shows "Moved Away" and is deleted after 7 days),
-  and the account's shared Zero Trust pieces stay.
-- **FR-2813**: Abort before the switch MUST remove B's pieces of the app (and B's zone when no other
-  app was prepared in it) after approval, leave A unchanged, and stop B's connector; after the switch
-  there is no abort: moving back is a move from B to A.
+- **FR-2812**: Finish MUST remove A's account-scoped pieces of the app (Tunnels, Access, Workers, R2
+  buckets) and revoke its origin certificate in A only after approvals flagged `allowDestroy` with
+  the app's name, and each R2 bucket's name, typed; A's zone, with its records, rules and origin-pull
+  settings, is left to Cloudflare (it shows "Moved" and is deleted after 7 days), and the account's
+  shared Zero Trust pieces stay.
+- **FR-2813**: Abort MUST remove B's pieces of the app (and B's zone, after its name is typed, when
+  no other app is prepared in it) after approval, leave A unchanged, and stop B's connector, only
+  while the switch has changed nothing; once the nameservers or the DS record changed, abort MUST
+  refuse (judged from the registrar and the public DNS, so any repository can tell): moving back is a
+  move from B to A.
 - **FR-2814**: Every step MUST be resumable: a run reads where the move stands from a record in the
   repository's `opscrew/` files and its local state, and repeats nothing already done.
-- **FR-2815**: `opscrew status` MUST show a move in progress (its step, and for the switch the apps
-  prepared), and `retarget`, `destroy` and a second move MUST refuse while one runs.
+- **FR-2815**: `opscrew status` MUST show a move in progress (its step, and the apps prepared when
+  the token for B is set), and `retarget`, `destroy`, `provision`, `drift`, `rotate`, adding previews
+  and a second move MUST refuse while one runs; snapshot, rollback, advise and design stay allowed.
 - **FR-2816**: No token, key, certificate, connector token or R2 key MAY appear in a prompt, output,
   log, audit entry, report, committed file or the move's record; each approval and each provider
   mutation MUST be in the audit log.
 - **FR-2817**: The guide MUST explain the move: when to use it, the token for B, the steps for each
-  registrar, the HTTPS gap, R2's maintenance window, several apps in one zone, previews, what stays
-  in A, and how to move back; the Claude Code plugin MUST guide it, with every approval in the
-  user's terminal.
+  registrar, the HTTPS gap, R2's maintenance window, several apps in one zone, previews, what
+  OpsCrew doesn't move, what stays in A, and how to move back; the Claude Code plugin MUST guide it,
+  with every approval in the user's terminal.
+- **FR-2818**: Deploys MUST keep working through the move without a pause beyond the R2 window:
+  prepare adds B's Access deploy credentials (and a site's account and deploy token) to GitHub beside
+  A's, the deploy workflow uses A's and, when Cloudflare Access refuses them, B's, a site's deploy
+  goes to both accounts, and the finish keeps only B's.
 
 ### Key Entities
 
 - **The move**: an app's move of its zone from account A to account B, with its step (prepared,
   switched, finished, or aborted), the accounts, the zone, the apps found in it, and per
   environment what was prepared in B.
-- **The prepared mark**: what tells the switching run that an app in the zone is ready in B.
+- **The prepared mark**: what tells the switching run that an app in the zone is ready in B, and
+  which custom domains a site's Worker in B gets after activation.
+- **The extra deploy credentials**: B's Access credentials and a site's account and deploy token,
+  beside A's in GitHub from prepare to the finish.
 - **The two sides**: A's pieces (removed at the finish) and B's pieces (the app's state after it),
   per environment.
 - **A bucket's copy**: an R2 bucket's size, object count, the copy's progress and its final copy in
@@ -263,7 +303,8 @@ both end with B's zone active and the move continuing.
 
 - **SC-2801**: Two apps from two repositories in one zone, one on a cloud server and one on an own
   server through a Tunnel, move from one account to another and both answer from the new account,
-  in a live pass.
+  in the live pass: the real move of opscrew.dev, where they move with every OpsCrew app the zone
+  serves.
 - **SC-2802**: Until the switch, no request to either app fails because of the move (measured
   under load during prepare).
 - **SC-2803**: The time without a valid certificate after the switch is measured and reported by
@@ -271,7 +312,8 @@ both end with B's zone active and the move continuing.
 - **SC-2804**: Every object of the app's R2 bucket and of the snapshots' copies is in the new
   account with the same content, and nothing written before the maintenance window is lost.
 - **SC-2805**: After the finish, nothing of the moved apps is left in the old account but the old
-  zone (moved away) and the account's shared Zero Trust pieces.
+  zone (moved, with its records and rules until Cloudflare deletes it) and the account's shared Zero
+  Trust pieces.
 - **SC-2806**: An abort before the switch leaves the old account serving exactly as before and the
   new account without the app's pieces.
 - **SC-2807**: No token, key or certificate of either account appears in any output, log, audit
@@ -284,8 +326,12 @@ both end with B's zone active and the move continuing.
 - Both accounts can be on Cloudflare's free plan; no paid certificate is used, hence the HTTPS gap.
 - Registrars OpsCrew drives are reached with the credentials `domain connect` already reads.
 - The new R2 buckets' keys are made by the user, as for any R2 bucket OpsCrew creates.
-- The live pass needs a second Cloudflare account (free) and a domain whose nameservers OpsCrew can
-  switch through a registrar's API, other than the domain the other live passes use.
+- The live pass is the real move of opscrew.dev to the founder's new account, after a spike and a
+  rehearsal (prepare, then abort) on the same zone. Its registrar is not known yet: the pass supports
+  a registrar OpsCrew drives and Cloudflare Registrar's dashboard move. After it, the live passes'
+  Cloudflare tokens for that zone are the new account's.
+- An app's files are brought up to date with `opscrew provision` before its move when they come from
+  an older OpsCrew.
 
 ## Out of scope
 
@@ -293,6 +339,10 @@ both end with B's zone active and the move continuing.
 - Paid certificates to avoid the gap (Advanced Certificate Manager, custom certificates); the guide
   names them.
 - Moving the previews' zone or certificate: previews are turned off for the move and on again after.
-- Moving buckets that are not R2 (they don't depend on the Cloudflare account).
+- Moving buckets that are not R2 (they don't depend on the Cloudflare account), and R2 buckets
+  OpsCrew didn't make, such as a user's own bucket used as `snapshots.offsite.provider: s3`.
+- What OpsCrew didn't make in the account or the zone (the zone's plan, the user's own rules and
+  settings, Email Routing, other Workers and Pages projects, Turnstile, analytics, tokens, members):
+  the guide lists them to redo in B.
 - Keeping DNSSEC on through the move (multi-signer between two Cloudflare accounts is not
   documented).
