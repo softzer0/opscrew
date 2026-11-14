@@ -20,6 +20,7 @@ import {
 import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
+import { requireNoCloudflareMove } from "../provision/guard";
 import {
   applyExtraOwnHostPlan,
   applyOwnHostPlan,
@@ -437,6 +438,7 @@ export async function rotateSshKey(
   which: SshKeyName,
   services: SshKeyServices,
 ): Promise<SshKeyRotation> {
+  requireNoCloudflareMove(plan);
   const { root, environment, app } = deps.paths;
   const again = `opscrew rotate ${which}${await commandFlags(root, environment, app)}`;
   requireKey(deps, plan, which, again);

@@ -36,6 +36,7 @@ import { recordPortainerAnswers } from "../interview/portainer";
 import type { NetworkHostFacts } from "../network";
 import { providerProfile, VPS_PROVIDERS, vpsConnector } from "../providers";
 import { readRequirements, requireStorageKey } from "../provision";
+import { requireNoCloudflareMove } from "../provision/guard";
 import {
   boundHostAdapter,
   designOptionLine,
@@ -756,6 +757,8 @@ export async function startMove(
   plan: DeployPlan,
   options: RetargetOptions,
 ): Promise<MoveSession> {
+  // Never while the app's zone moves to another Cloudflare account.
+  requireNoCloudflareMove(plan);
   const from = plan.target;
   if (from.provider === "localhost") throw thisComputerNoMove();
   if (isServerlessProvider(from.provider)) throw siteServerNoMove(plan);

@@ -19,6 +19,7 @@ import { commandFlags } from "../environments/choice";
 import { type InitCheckId, type InitServices, runInitChecks } from "../init";
 import { providerProfile, tokenNotSet } from "../providers";
 import { setupGitHub } from "../provision/credentials";
+import { requireNoCloudflareMove } from "../provision/guard";
 import { type RunProvisionOptions, runProvision } from "../provision/run";
 import {
   deploySecretPlaces,
@@ -341,6 +342,7 @@ export async function replaceToken(
   name: UserTokenName,
   options: ReplaceTokenOptions = {},
 ): Promise<ReplacedToken> {
+  requireNoCloudflareMove(plan);
   const token = userToken(name);
   const { title } = token;
   // A set of credentials (every one of its variables needed) is spoken of in the plural.

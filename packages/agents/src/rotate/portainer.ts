@@ -17,6 +17,7 @@ import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
 import { withDeploysPausedUntilDone } from "../move/deploys";
 import { setupGitHub } from "../provision/credentials";
+import { requireNoCloudflareMove } from "../provision/guard";
 import { requirePortainerConnection, requirePortainerToken } from "../provision/portainer";
 import {
   type PlannedStacks,
@@ -91,12 +92,13 @@ function withNewValues(
  * @throws OpsCrewError as `rotateThroughDocker` and provision's preconditions, before anything
  * changes when Portainer or GitHub can't be reached.
  */
-export function rotatePortainerServices(
+export async function rotatePortainerServices(
   deps: PhaseDeps,
   plan: DeployPlan,
   names: readonly string[],
   options: DockerRotationOptions & { services?: PortainerRotationServices } = {},
 ): Promise<DockerRotation | DockerUndo> {
+  requireNoCloudflareMove(plan);
   const { environmentId } = portainerTarget(plan.target);
   const stack = portainerStackName(plan);
   // The rotation never asks for the app's values: one missing shows as a change of the stack.

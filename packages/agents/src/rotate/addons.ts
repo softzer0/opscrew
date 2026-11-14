@@ -10,6 +10,7 @@ import { readTextIfExists, toPosixRelative, writeFileAtomic } from "@opscrew/cor
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import type { GitHubSetup } from "../provision/credentials";
+import { requireNoCloudflareMove } from "../provision/guard";
 import { chooseDeployBranch, commitAndPropose } from "../provision/publish";
 import { oldCommitsNote, rotateRecoveryKey } from "../secrets/copy";
 import { copyPath } from "../secrets/files";
@@ -91,6 +92,7 @@ export async function publishRotatedKey(
   },
 ): Promise<RotatedKeyResult> {
   const { git, github, plan } = input;
+  requireNoCloudflareMove(plan);
   const chosen = await chooseDeployBranch(deps, git, github, plan);
   const recordFile = credentialsRecordFile(deps.paths);
   // The copy must hold the generation the record names, so the rotation is recorded first, and

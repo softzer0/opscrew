@@ -44,6 +44,7 @@ import {
 } from "../previews/host";
 import { DEFAULT_CLOUD_PROVIDER, VPS_PROVIDERS } from "../providers";
 import { missing } from "../provision/credentials";
+import { requireNoCloudflareMove } from "../provision/guard";
 import { inspectOwnServerForDesign, sharedServerDesign } from "../shared/own-server-design";
 import {
   type AddContext,
@@ -328,6 +329,8 @@ export async function addPreviewEnvironment(
 ): Promise<AddEnvironmentResult> {
   const { paths, reporter } = deps;
   const { name, app, prodPlan, base, facts } = context;
+  // Previews don't move with the zone: none is added while it moves to another Cloudflare account.
+  requireNoCloudflareMove(prodPlan);
   const command = `opscrew env add ${name}${app} --previews`;
   if (isServerlessTarget(prodPlan.target)) {
     throw refusedBeforeChange(

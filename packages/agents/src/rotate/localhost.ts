@@ -31,6 +31,7 @@ import {
   type LocalhostServices,
   requireOwnLocalApp,
 } from "../localhost/services";
+import { requireNoCloudflareMove } from "../provision/guard";
 import { withAppEnv } from "./app-values";
 import {
   type DockerRotation,
@@ -74,12 +75,13 @@ const EXEC_TIMEOUT_MS = 2 * 60_000;
  * `options.undo`, the unfinished rotation's undo.
  * @throws OpsCrewError as `rotateThroughDocker`, and `PHASE_PRECONDITION` for those refusals.
  */
-export function rotateLocalServices(
+export async function rotateLocalServices(
   deps: PhaseDeps,
   plan: DeployPlan,
   names: readonly string[],
   options: DockerRotationOptions & { services?: LocalhostServices } = {},
 ): Promise<DockerRotation | DockerUndo> {
+  requireNoCloudflareMove(plan);
   const folder = appFolder(deps.paths, plan);
   const held = join(folder, RESTORE_HELD);
   const project = localComposeProject(plan);

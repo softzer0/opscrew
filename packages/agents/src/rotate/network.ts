@@ -27,6 +27,7 @@ import {
   publicEndpoints,
   x25519KeyPair,
 } from "../network";
+import { requireNoCloudflareMove } from "../provision/guard";
 import type { NetworkServer } from "../provision/network";
 import { type RefreshRecoveryResult, refreshRecoveryCopy } from "../secrets/copy";
 import { outcomeSummary, withApprovals, writePlanIfChanged } from "../shared";
@@ -330,6 +331,7 @@ export async function rotateNetwork(
   plan: DeployPlan,
   options: NetworkRotationOptions = {},
 ): Promise<NetworkRotation> {
+  requireNoCloudflareMove(plan);
   const { root, environment, app } = deps.paths;
   const flags = await commandFlags(root, environment, app);
   const again = `opscrew rotate network${flags}`;
@@ -456,6 +458,7 @@ export async function rotateDevice(
   device: string,
   options: NetworkRotationOptions = {},
 ): Promise<DeviceRotation> {
+  requireNoCloudflareMove(plan);
   const { root, environment, app } = deps.paths;
   const flags = await commandFlags(root, environment, app);
   const entry = plan.network?.devices.find((d) => d.name === device);

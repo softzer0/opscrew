@@ -14,7 +14,7 @@ import { type DeployPlan, monitoringOf, onOneServer } from "@opscrew/plan-schema
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
 import { monitoringOwner } from "../network";
-import { requireNoMoveInProgress } from "../provision/guard";
+import { requireNoCloudflareMove, requireNoMoveInProgress } from "../provision/guard";
 import { type MonitoringRotation, monitoringRotationHostPlans } from "../provision/monitoring";
 import { keepMonitoringValues, monitoringValues } from "../provision/secrets";
 import type { ProvisionServices } from "../provision/types";
@@ -144,6 +144,7 @@ export async function rotateMonitoring(
   plan: DeployPlan,
   options: AddonRotationOptions = {},
 ): Promise<AddonRotation> {
+  requireNoCloudflareMove(plan);
   const { root, environment, app } = deps.paths;
   const flags = await commandFlags(root, environment, app);
   const command = `opscrew rotate monitoring${flags}`;

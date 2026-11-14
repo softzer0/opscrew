@@ -8,6 +8,7 @@ import {
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
 import { requireNoSharedPreviews } from "../previews/host";
+import { requireNoCloudflareMove } from "../provision/guard";
 import { runPhase } from "../shared/phase-status";
 import { type MoveSession, moveBase, moveOf, openSession, warnUnusedApproval } from "./session";
 import { cloudProviders, placeWords } from "./sides";
@@ -134,6 +135,8 @@ export async function runRetarget(
   options: RetargetOptions = {},
 ): Promise<RetargetResult> {
   const plan = await readArtifact("plan", deps.paths.files.plan);
+  // Never while the app's zone moves to another Cloudflare account.
+  requireNoCloudflareMove(plan);
   const name = deps.paths.environment;
   if (plan.environment?.previews !== undefined) {
     throw new OpsCrewError(

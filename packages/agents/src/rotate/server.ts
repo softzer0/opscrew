@@ -28,6 +28,7 @@ import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
 import { requireNoOtherPause, withDeploysPausedUntilDone } from "../move/deploys";
 import type { GitHubSetup } from "../provision/credentials";
+import { requireNoCloudflareMove } from "../provision/guard";
 import { deploySecretPlace, setSecretAt } from "../provision/secrets";
 import type { ProvisionServices } from "../provision/types";
 import { type RefreshRecoveryResult, refreshRecoveryCopy } from "../secrets/copy";
@@ -663,6 +664,7 @@ export async function rotateServices(
   names: readonly string[],
   options: RotateServicesOptions,
 ): Promise<ServicesRotation> {
+  requireNoCloudflareMove(plan);
   const { root, environment, app } = deps.paths;
   const flags = await commandFlags(root, environment, app);
   const serviceNames = names.filter((name) => !isAppName(name));
@@ -697,6 +699,7 @@ export async function rotateDeviceLogin(
   grant: GrantLogin,
   options: RotateServicesOptions,
 ): Promise<DeviceLoginRotation> {
+  requireNoCloudflareMove(plan);
   const { root, environment, app } = deps.paths;
   const flags = await commandFlags(root, environment, app);
   const { values, ...rotation } = await runRotation(

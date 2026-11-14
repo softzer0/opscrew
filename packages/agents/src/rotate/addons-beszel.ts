@@ -14,6 +14,7 @@ import { newBeszelHubSecrets, readBeszelSecrets, writeBeszelSecrets } from "../a
 import { ADDON_PHASE } from "../addons/settings";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
+import { requireNoCloudflareMove } from "../provision/guard";
 import { serverForNetwork } from "../provision/servers";
 import { approveAndApplyHostPlan } from "../shared";
 import {
@@ -43,6 +44,7 @@ export async function rotateBeszel(
   plan: DeployPlan,
   options: AddonRotationOptions = {},
 ): Promise<AddonRotation> {
+  requireNoCloudflareMove(plan);
   const { root, environment, app } = deps.paths;
   const flags = await commandFlags(root, environment, app);
   const command = `opscrew rotate beszel${flags}`;

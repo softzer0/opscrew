@@ -1,9 +1,11 @@
 import { OpsCrewError } from "@opscrew/core";
 import { cloudTarget } from "@opscrew/iac-templates";
-import type { DeployPlan, Retarget } from "@opscrew/plan-schema";
+import { type DeployPlan, DeployPlanSchema, type Retarget } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { sitePlan, testPlan } from "../testing";
-import { moveInProgress, requireNoMoveInProgress } from "./guard";
+import { leaksToken, twoAccounts, withCloudflareMove } from "../cloudflare-move/record.fakes";
+import { requireNoDeployOrMove } from "../snapshot/run";
+import { createTestPhaseDeps, sitePlan, testPlan } from "../testing";
+import { moveInProgress, requireNoCloudflareMove, requireNoMoveInProgress } from "./guard";
 
 /** A plan moving from Hetzner Cloud to DigitalOcean, at `step`, optionally being aborted. */
 function moving(abort?: NonNullable<Retarget["abort"]>["step"]): DeployPlan {
@@ -84,5 +86,89 @@ describe("moveInProgress for a move to the user's own server or Portainer", () =
     expect(moveInProgress(plan)?.message).toBe(message);
     expect(() => requireNoMoveInProgress(plan)).toThrow(message);
     expect(JSON.stringify(moveInProgress(plan))).not.toContain("Your own server");
+  });
+});
+
+describe("requireNoCloudflareMove", () => {
+  const accounts = twoAccounts();
+  const refusal = (plan: DeployPlan, run = () => requireNoCloudflareMove(plan)) => {
+    try {
+      run();
+    } catch (e) {
+      return e as OpsCrewError;
+    }
+    return undefined;
+  };
+
+  it("lets a plan without a move through", () => {
+    expect(() => requireNoCloudflareMove(testPlan())).not.toThrow();
+  });
+
+  it.each([
+    ["started", undefined, ["`opscrew cloudflare move` to go on", "--abort"], ["--switch"]],
+    ["prepared", undefined, ["--switch", "--finish", "--abort"], ["go on preparing"]],
+    ["adopted", undefined, ["--finish"], ["--switch", "--abort"]],
+    ["started", "started", ["--abort` to finish the abort"], ["--switch", "--finish"]],
+    ["prepared", "removed", ["--abort` to finish the abort"], ["--switch", "--finish"]],
+  ] as const)("refuses at %s (abort %s) with that step's hint", (step, abort, has, hasNot) => {
+    const plan = withCloudflareMove(testPlan(), accounts, step, abort);
+    const error = refusal(plan);
+    expect(error).toBeInstanceOf(OpsCrewError);
+    expect(error).toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message:
+        "A move of example.com to another Cloudflare account is in progress. Nothing was changed.",
+    });
+    for (const text of has) expect(error?.hint).toContain(text);
+    for (const text of hasNot) expect(error?.hint).not.toContain(text);
+    expect(error?.hint).toContain("Then run this command again.");
+    expect(leaksToken(accounts, error?.message ?? "", error?.hint ?? "")).toBe(false);
+    expect(accounts.cloudflare.calls).toEqual([]);
+  });
+
+  it("names the plan's own zone", () => {
+    const shop = testPlan({ domain: "shop.example.org" });
+    const plan = withCloudflareMove(
+      { ...shop, dns: { ...shop.dns, zone: "example.org" } },
+      twoAccounts("example.org"),
+    );
+    expect(refusal(plan)?.message).toBe(
+      "A move of example.org to another Cloudflare account is in progress. Nothing was changed.",
+    );
+  });
+
+  it("is part of requireNoMoveInProgress, unless the caller allows a Cloudflare move", () => {
+    const plan = withCloudflareMove(testPlan(), accounts, "prepared");
+    expect(refusal(plan, () => requireNoMoveInProgress(plan))?.message).toContain(
+      "A move of example.com to another Cloudflare account is in progress.",
+    );
+    expect(() => requireNoMoveInProgress(plan, { allowCloudflareMove: true })).not.toThrow();
+    // moveInProgress stays retarget's: snapshot, rollback, advise and status read only it.
+    expect(moveInProgress(plan)).toBeUndefined();
+  });
+
+  it("still refuses a retarget when a Cloudflare move is allowed", () => {
+    expect(() => requireNoMoveInProgress(moving(), { allowCloudflareMove: true })).toThrow(
+      "A move to DigitalOcean is in progress.",
+    );
+  });
+});
+
+describe("snapshot during a move to another Cloudflare account", () => {
+  it("goes on: its own check stops only for a retarget or a service's move", async () => {
+    const deps = await createTestPhaseDeps();
+    const local = DeployPlanSchema.parse({
+      ...testPlan({ deployed: true }),
+      target: {
+        provider: "localhost",
+        mode: "local-compose",
+        arch: "amd64",
+        ports: { https: 443, http: 80 },
+        image: "registry",
+      },
+    });
+    const plan = withCloudflareMove(local, twoAccounts(), "prepared");
+    const run = { deps, plan, environment: "prod", flags: "", services: {} };
+    await expect(requireNoDeployOrMove(run, "take a snapshot")).resolves.toBeUndefined();
   });
 });

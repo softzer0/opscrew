@@ -19,6 +19,7 @@ import { PORTAINER_PORT } from "@opscrew/iac-templates";
 import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
+import { requireNoCloudflareMove } from "../provision/guard";
 import { portainerPasswordFile, portainerPasswordToSend } from "../provision/own";
 import type { ProvisionServices } from "../provision/types";
 import { type RefreshRecoveryResult, refreshRecoveryCopy } from "../secrets/copy";
@@ -112,6 +113,7 @@ export async function rotatePortainerPassword(
   plan: DeployPlan,
   options: PortainerPasswordOptions = {},
 ): Promise<PortainerPasswordRotation> {
+  requireNoCloudflareMove(plan);
   const { root, environment, app } = deps.paths;
   const flags = await commandFlags(root, environment, app);
   const again = `opscrew rotate portainer${flags}`;

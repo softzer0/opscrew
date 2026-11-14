@@ -306,9 +306,12 @@ export async function runDesign(
   options: RunDesignOptions = {},
 ): Promise<DesignResult> {
   // A move in progress stops before anything else, without recording a failed design phase, also
-  // when plan.yaml places a service on another server meanwhile.
+  // when plan.yaml places a service on another server meanwhile. A move of the app's zone to
+  // another Cloudflare account doesn't: design keeps its record.
   const onDisk = await readPlanWithEdits(deps.paths.files.plan).catch(() => undefined);
-  if (onDisk !== undefined) requireNoMoveInProgress(onDisk.plan);
+  if (onDisk !== undefined) {
+    requireNoMoveInProgress(onDisk.plan, { allowCloudflareMove: true });
+  }
   return runPhase(deps, "design", () => design(deps, options));
 }
 
@@ -1948,6 +1951,8 @@ function keepPlanSettings(
         : keptSecurity,
     approvals: previous.approvals,
     deployment: previous.deployment,
+    // A move of the app's zone to another Cloudflare account goes on through a design.
+    ...(previous.cloudflareMove === undefined ? {} : { cloudflareMove: previous.cloudflareMove }),
     ...(previous.portainer === undefined || serverless ? {} : { portainer: previous.portainer }),
     // The scheduled check and the add-ons are the user's; localhost has no check.
     ...(previous.observability === undefined

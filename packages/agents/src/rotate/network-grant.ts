@@ -14,6 +14,7 @@ import { serviceSpec } from "@opscrew/iac-templates";
 import { type DeployPlan, type PlanService, serverOfService } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
+import { requireNoCloudflareMove } from "../provision/guard";
 import { type RefreshRecoveryResult, refreshRecoveryCopy } from "../secrets/copy";
 import { randomPassword, readValidJson, withApprovals, writePlanIfChanged } from "../shared";
 import {
@@ -148,6 +149,7 @@ export async function rotateGrant(
   serviceName: string,
   options: GrantRotationOptions,
 ): Promise<GrantRotation> {
+  requireNoCloudflareMove(plan);
   const { root, environment, app } = deps.paths;
   const flags = await commandFlags(root, environment, app);
   const command = `opscrew rotate grant:${device}/${serviceName}${flags}`;

@@ -18,6 +18,7 @@ import { deploySecretName, deploySecretNamesFor, siteEnvSecret } from "@opscrew/
 import { type DeployPlan, isServerlessTarget } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
+import { requireNoCloudflareMove } from "../provision/guard";
 import { setSecretAt } from "../provision/secrets";
 import { type RefreshRecoveryResult, refreshRecoveryCopy } from "../secrets/copy";
 import { registerAppSecrets } from "../shared/app-secrets";
@@ -208,6 +209,7 @@ export async function rotateSiteAppSecrets(
   names: readonly string[],
   options: SiteRotationOptions,
 ): Promise<SiteRotation> {
+  requireNoCloudflareMove(plan);
   if (!isServerlessTarget(plan.target)) {
     throw new Error(
       `rotateSiteAppSecrets rotates a site's secrets, not on ${plan.target.provider}.`,

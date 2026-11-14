@@ -1,5 +1,5 @@
 import { OpsCrewError } from "@opscrew/core";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import type { CloudflareMove, DeployPlan } from "@opscrew/plan-schema";
 import { placeWords } from "../retarget/sides";
 
 /** What to say while `opscrew retarget` is moving the deployment. */
@@ -30,13 +30,49 @@ export function moveInProgress(
   };
 }
 
+/** The command a Cloudflare move's step needs next: preparing, the switch, the finish or the abort. */
+function cloudflareMoveHint(move: CloudflareMove): string {
+  const run = "opscrew cloudflare move";
+  const next =
+    move.abort !== undefined
+      ? `Run \`${run} --abort\` to finish the abort; it goes on where it stopped.`
+      : move.step === "started"
+        ? `Run \`${run}\` to go on preparing it, or \`${run} --abort\` to call it off.`
+        : move.step === "prepared"
+          ? `Run \`${run} --switch\` once every app in the zone is prepared and \`${run} --finish\` after it, or \`${run} --abort\` before the switch.`
+          : `Run \`${run} --finish\` to complete it.`;
+  return `${next} Then run this command again.`;
+}
+
+/**
+ * Stops with `PHASE_PRECONDITION` while the app's zone moves to another Cloudflare account
+ * (`plan.cloudflareMove` exists), naming the command its step needs next. `destroy`, `retarget`,
+ * every rotation, a new preview environment and {@link requireNoMoveInProgress}'s callers refuse
+ * with it; snapshot, rollback, advise and design go on during such a move.
+ */
+export function requireNoCloudflareMove(plan: Pick<DeployPlan, "cloudflareMove">): void {
+  const move = plan.cloudflareMove;
+  if (move === undefined) return;
+  throw new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `A move of ${move.zone} to another Cloudflare account is in progress. Nothing was changed.`,
+    { hint: cloudflareMoveHint(move) },
+  );
+}
+
 /**
  * Stops with `PHASE_PRECONDITION` while a move to another provider is in progress, so provision,
- * design, dns and drift never act on a half-moved deployment.
+ * dns, drift and the other phases never act on a half-moved deployment; also while the app's zone
+ * moves to another Cloudflare account ({@link requireNoCloudflareMove}) unless
+ * `allowCloudflareMove` (design's).
  */
-export function requireNoMoveInProgress(plan: Pick<DeployPlan, "target" | "retarget">): void {
+export function requireNoMoveInProgress(
+  plan: Pick<DeployPlan, "target" | "retarget" | "cloudflareMove">,
+  options: { allowCloudflareMove?: true } = {},
+): void {
   const move = moveInProgress(plan);
   if (move !== undefined) {
     throw new OpsCrewError("PHASE_PRECONDITION", move.message, { hint: move.hint });
   }
+  if (options.allowCloudflareMove !== true) requireNoCloudflareMove(plan);
 }

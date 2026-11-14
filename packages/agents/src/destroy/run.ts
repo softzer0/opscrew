@@ -10,6 +10,7 @@ import { acmStaysOn, appZoneDomain } from "../previews/app-zone";
 import { requireNoSharedPreviews } from "../previews/host";
 import { planProvider, providerProfile } from "../providers";
 import { checkProvider, providerBucket } from "../provision";
+import { requireNoCloudflareMove } from "../provision/guard";
 import { placeWords } from "../retarget/sides";
 import {
   deleteRegistrations,
@@ -605,8 +606,10 @@ async function destroyDeployment(
   options: DestroyOptions,
 ): Promise<DestroyResult> {
   const services = options.services ?? {};
-  // 0. Never during a move: it has its own deletions (`opscrew retarget --finish` / `--abort`).
+  // 0. Never during a move: it has its own deletions (`opscrew retarget --finish` / `--abort`,
+  // and `opscrew cloudflare move --finish` / `--abort` for a move to another Cloudflare account).
   if (plan.retarget !== undefined) throw moveInProgress(plan);
+  requireNoCloudflareMove(plan);
   // Nor while other environments send to this one's monitoring server.
   await requireNoMonitoringSenders(deps, plan);
   // Nor while another environment's previews run on this one's server (FR-2230).

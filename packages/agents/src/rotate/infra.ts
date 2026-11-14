@@ -62,6 +62,7 @@ import { commandFlags } from "../environments/choice";
 import { requireNoOtherPause, withDeploysPausedUntilDone } from "../move/deploys";
 import { VPS_PROVIDERS } from "../providers";
 import { cloudflareTokenMissing, type GitHubSetup } from "../provision/credentials";
+import { requireNoCloudflareMove } from "../provision/guard";
 import { ownEngineEnv, ownTarget } from "../provision/own";
 import {
   describePlan,
@@ -616,6 +617,7 @@ export async function rotateAccessToken(
   plan: DeployPlan,
   services: AccessTokenServices,
 ): Promise<InfraRotation> {
+  requireNoCloudflareMove(plan);
   const { root, environment, app } = deps.paths;
   const flags = await commandFlags(root, environment, app);
   const again = `opscrew rotate access-token${flags}`;
@@ -732,6 +734,7 @@ export async function rotateTunnelToken(
   plan: DeployPlan,
   services: TunnelTokenServices,
 ): Promise<InfraRotation> {
+  requireNoCloudflareMove(plan);
   const { root, environment, app } = deps.paths;
   const flags = await commandFlags(root, environment, app);
   const again = `opscrew rotate tunnel-token${flags}`;
@@ -1097,6 +1100,7 @@ export async function rotateStatePassphrase(
     undo?: true;
   } = {},
 ): Promise<InfraRotation> {
+  requireNoCloudflareMove(plan);
   const { root, environment, app } = deps.paths;
   const flags = await commandFlags(root, environment, app);
   const again = `opscrew rotate state-passphrase${flags}`;
