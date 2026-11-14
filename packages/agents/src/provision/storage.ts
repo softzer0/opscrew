@@ -276,7 +276,10 @@ interface KeyedBucket {
  * name one. A key kept without an account is of the account the app used before a move, so it
  * never stands for the bucket of the account the move goes to.
  */
-function keyOf(kept: StoredKey, at: KeyedBucket): boolean {
+function keyOf(
+  kept: StoredKey,
+  at: Omit<KeyedBucket, "bucket"> & { bucket: { provider: string; bucket: string } },
+): boolean {
   if (!sameBucket(kept, at.bucket)) return false;
   if (at.account === undefined || kept.account === at.account) return true;
   return kept.account === undefined && at.account !== at.moveTo;
@@ -293,13 +296,20 @@ async function storedKey(deps: PhaseDeps, at: KeyedBucket): Promise<StorageLogin
   return { accessKeyId: kept.accessKeyId, secretAccessKey: kept.secretAccessKey };
 }
 
-/** Drops the kept key of `bucket` (one a move deleted); the other buckets' keys stay. */
+/**
+ * Drops the kept key of `bucket` (one a move deleted); the other buckets' keys stay. With
+ * `account` (an R2 bucket's Cloudflare account) only that account's key goes, matched as when it
+ * is read: a key kept without an account is of the account the app used before a move, so it goes
+ * unless `account` is the one the move goes to (`moveTo`, `plan.cloudflareMove.to.accountId`).
+ * Without `account`, every kept key of the bucket goes.
+ */
 export async function forgetStorageKey(
   deps: Pick<PhaseDeps, "paths">,
   bucket: Pick<ProviderBucket, "provider" | "bucket">,
+  options: { account?: string; moveTo?: string } = {},
 ): Promise<void> {
   const keys = await keptKeys(deps);
-  const rest = keys.filter((key) => !sameBucket(key, bucket));
+  const rest = keys.filter((key) => !keyOf(key, { bucket, ...options }));
   if (rest.length !== keys.length) await keepKeys(deps, rest);
 }
 

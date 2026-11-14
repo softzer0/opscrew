@@ -2117,4 +2117,34 @@ describe("R2 bucket keys by Cloudflare account, during a move to another account
       expect(said).not.toContain(secret);
     }
   });
+
+  it("forgets one account's key of a bucket and leaves the other's; without an account, every one", async () => {
+    const seeded = async (keys: Record<string, string>[]) => {
+      const deps = await createTestPhaseDeps({ env: {} });
+      const file = storageKeyFile(deps.paths);
+      await mkdir(dirname(file), { recursive: true });
+      await writeFile(file, `${keys.map((key) => JSON.stringify(key)).join("\n")}\n`);
+      return deps;
+    };
+    const legacyA = { provider: "r2", bucket: "shop-uploads", ...KEY };
+    const keptA = { provider: "r2", bucket: "shop-uploads", account: A, ...KEY };
+    const keptB = { provider: "r2", bucket: "shop-uploads", account: B, ...KEY_B };
+    const other = { provider: "r2", bucket: "shop-backups", account: A, ...OFFSITE_KEY };
+    const bucket = { provider: "r2", bucket: "shop-uploads" } as const;
+
+    // The finish forgets A's key, kept with its account or before the move without one.
+    for (const a of [keptA, legacyA]) {
+      const deps = await seeded([a, keptB, other]);
+      await forgetStorageKey(deps, bucket, { account: A, moveTo: B });
+      expect(await lines(deps)).toEqual([keptB, other]);
+    }
+    // An abort forgets B's: the key kept before the move is A's and stays.
+    const abort = await seeded([legacyA, keptB]);
+    await forgetStorageKey(abort, bucket, { account: B, moveTo: B });
+    expect(await lines(abort)).toEqual([legacyA]);
+    // Without an account: every key of the bucket goes, as before.
+    const plain = await seeded([legacyA, keptB, other]);
+    await forgetStorageKey(plain, bucket);
+    expect(await lines(plain)).toEqual([other]);
+  });
 });
