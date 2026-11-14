@@ -7,6 +7,7 @@ import type { HostingFacts, HostingFiles, HostingPanel } from "@opscrew/contract
 import { OpsCrewError, sha256Hex } from "@opscrew/core";
 import {
   AGENT_SH,
+  healthPath,
   hostingKeptFolders,
   releaseBranch,
   renderAgentSettings,
@@ -105,7 +106,6 @@ export function agentSettingsText(
   input: { repository: string; php?: PhpChoice; database?: string; laravel: boolean },
 ): string {
   const target = hostingTarget(plan);
-  const path = plan.app.healthPath;
   return renderAgentSettings({
     app: appBase(plan),
     environment: environmentOf(plan),
@@ -113,7 +113,7 @@ export function agentSettingsText(
     repository: input.repository,
     releaseBranch: releaseBranch(plan),
     webRoot: target.webRoot,
-    healthPath: path.startsWith("/") ? path : `/${path}`,
+    healthPath: healthPath(plan),
     appKind: target.app,
     // None before the agent's report lets plan B choose it: the agent runs no PHP until then.
     ...(input.php !== undefined ? { phpCli: input.php.cli } : {}),

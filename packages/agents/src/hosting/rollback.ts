@@ -16,7 +16,7 @@ import {
   sha256Hex,
   toPosixRelative,
 } from "@opscrew/core";
-import { checkEnvironmentKey } from "@opscrew/iac-templates";
+import { checkEnvironmentKey, healthPath } from "@opscrew/iac-templates";
 import type { PhaseDeps } from "../context";
 import { NOTHING_CHANGED } from "../promote/shared";
 import { approve } from "../promote/site";
@@ -362,9 +362,7 @@ export async function rollbackHosting(
       decision: "approved",
     });
     if (php) {
-      const path = plan.app.healthPath.startsWith("/")
-        ? plan.app.healthPath
-        : `/${plan.app.healthPath}`;
+      const path = healthPath(plan);
       deps.reporter.step(`Checking that ${hostname}${path} answers with release ${target}`);
       deps.reporter.info(
         "Waiting for PHP's path cache: PHP may still run the release before for about 2 minutes after the switch, so an answer counts only after that, or at once behind LiteSpeed.",

@@ -12,6 +12,7 @@ import {
   listText,
   normalizeHostName,
   OpsCrewError,
+  parentDomain,
   readTextIfExists,
 } from "@opscrew/core";
 import {
@@ -379,14 +380,15 @@ function hostnameLine(
     return `Hostname: ${hostname}. Point its document root at ${currentRoot(sftp?.folder ?? "", target.webRoot)}, ${release}.`;
   }
   const name = normalizeHostName(hostname);
-  const parent = account.facts.domains
-    .filter((domain) => name.endsWith(`.${domain.name}`))
-    .sort((a, b) => b.name.length - a.name.length)[0];
+  const parent = parentDomain(
+    name,
+    account.facts.domains.map((domain) => domain.name),
+  );
   const what = account.facts.domains.some((domain) => domain.name === name)
     ? "which the account serves already"
     : parent === undefined
       ? "a domain the account doesn't serve yet, added as an addon domain"
-      : `a new subdomain of ${parent.name}`;
+      : `a new subdomain of ${parent}`;
   const root =
     target.docroot === "direct"
       ? `${release} itself, in a folder of its own under ~/opscrew`

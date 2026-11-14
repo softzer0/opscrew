@@ -14,6 +14,7 @@ import type {
   HostingPanel,
 } from "@opscrew/contracts";
 import { isUserFacingError, OpsCrewError, errorText as userErrorText } from "@opscrew/core";
+import { healthPath } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
@@ -123,10 +124,7 @@ interface HttpsAnswer {
 async function httpsCheck(ctx: SiteContext, plan: DeployPlan): Promise<HttpsAnswer> {
   const id = "hosting-https";
   const title = "The app answers over HTTPS with a release the agent deployed";
-  const path = plan.app.healthPath.startsWith("/")
-    ? plan.app.healthPath
-    : `/${plan.app.healthPath}`;
-  const target = `https://${ctx.hostname}${path}`;
+  const target = `https://${ctx.hostname}${healthPath(plan)}`;
   const status = `\`opscrew status${ctx.flag}\``;
   let response: Response;
   try {

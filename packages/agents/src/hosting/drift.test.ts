@@ -73,7 +73,7 @@ describe("drift on a hosting account", () => {
 
   it("reports a moved document root, a database gone, cron lines gone or changed, changed copies and a deploy key gone", async () => {
     const app = await hostedApp();
-    await commit(app, { agent: "#!/bin/bash\n", settings: "APP='notes'\nKEEP='3'\n" });
+    await commit(app, { agent: "#!/bin/bash\n", settings: "APP='notes'\nHEALTH_PATH='/old'\n" });
     const fake = app.account.cpanel;
     if (fake === undefined) throw new Error("a cPanel account");
     const hostname = fake.state.domains.find((d) => d.name === "notes.example.com");
