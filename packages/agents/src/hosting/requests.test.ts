@@ -116,10 +116,10 @@ describe("writeRequest and waitForResult", () => {
           const [request] = [...files.files.keys()].filter((path) => path.endsWith(".req"));
           const name = request?.replace(/^.*\//, "").replace(/\.req$/, "");
           if (ticks === 1) {
-            // The agent writes "failed" before it starts: not the answer yet.
+            // The agent writes "failed" before it starts, pending: not the answer yet.
             files.files.set(
               `${FOLDER}/state/${name}.result`,
-              "result=failed\nreason=the agent stopped while carrying it out\n",
+              "result=failed\nreason=the agent stopped while carrying it out\npending=1\n",
             );
           } else if (ticks === 2 && request !== undefined) {
             files.files.set(
@@ -133,6 +133,42 @@ describe("writeRequest and waitForResult", () => {
     );
     expect(result).toMatchObject({ result: "done", dump: "snapshot-20261112T120000Z.sql.gz" });
     expect(ticks).toBe(2);
+  });
+
+  it("never takes a pending answer, even with the request gone, and takes it once the agent's next run made it final", async () => {
+    const files = new MemoryFiles();
+    const name = "c".repeat(64);
+    const result = `${FOLDER}/state/${name}.result`;
+    const stopped = "result=failed\nreason=the agent stopped while carrying it out\n";
+    let ticks = 0;
+    const answer = await waitForResult(files, FOLDER, name, {
+      sleep: async () => {
+        ticks++;
+        // The placeholder of a run that stopped part-way, the request file already gone.
+        if (ticks === 1) files.files.set(result, `${stopped}pending=1\n`);
+        // The agent's next run, holding its lock, made it final.
+        if (ticks === 3) files.files.set(result, stopped);
+      },
+    });
+    expect(answer).toEqual({ result: "failed", reason: "the agent stopped while carrying it out" });
+    expect(ticks).toBe(3);
+  });
+
+  it("reads made=no, the agent's word that it made nothing, and no other value of it", async () => {
+    const files = new MemoryFiles();
+    const sleep = async () => undefined;
+    const refused =
+      "result=failed\nreason=CloudLinux's selector didn't make the app: no version 99";
+    files.files.set(`${FOLDER}/state/${"d".repeat(64)}.result`, `${refused}\nmade=no\n`);
+    expect(await waitForResult(files, FOLDER, "d".repeat(64), { sleep })).toEqual({
+      result: "failed",
+      reason: "CloudLinux's selector didn't make the app: no version 99",
+      made: "no",
+    });
+    files.files.set(`${FOLDER}/state/${"e".repeat(64)}.result`, `${refused}\nmade=yes\n`);
+    await expect(waitForResult(files, FOLDER, "e".repeat(64), { sleep })).rejects.toThrow(
+      "OpsCrew can't read the agent's answer",
+    );
   });
 
   it("says after 5 minutes that the agent's cron line may be missing", async () => {

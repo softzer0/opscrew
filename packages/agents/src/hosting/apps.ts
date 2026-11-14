@@ -28,25 +28,45 @@ export function appStep(
 /**
  * Asks the agent to make the app in the selector (`create`) or remove it (`destroy`), bound to the
  * approved plan's hash, and waits for its answer: its note, if any (what a removal left, or the
- * settings the selector refused when it made the app).
+ * settings the selector refused when it made the app). A create's caller records the app before
+ * (a stop or a wait without an answer may leave it made); `madeNothing` runs only on an answer that
+ * says the agent made nothing: it refused the request, or the selector refused to make the app
+ * (`made=no`).
  * @throws OpsCrewError `PROVIDER_ERROR` when the agent didn't carry it out.
  */
 export async function selectorApp(
   files: HostingFiles,
   folder: string,
   action: "create" | "destroy",
-  input: { hash: string; now: Date } & WaitOptions,
+  input: { hash: string; now: Date; madeNothing?: () => Promise<void> } & WaitOptions,
 ): Promise<string | undefined> {
   const answer = await sendRequest(files, folder, { kind: "app", action }, input);
   if (answer.result === "done") return answer.note;
+  const reason = answer.reason ?? answer.result;
+  if (action === "destroy") {
+    throw new OpsCrewError(
+      "PROVIDER_ERROR",
+      `The agent didn't remove the app in CloudLinux's selector: ${reason}.`,
+      {
+        hint: "`opscrew logs` shows the agent's lines; the panel's Setup Node.js App or Setup Python App page shows the app.",
+      },
+    );
+  }
+  if (answer.result === "refused" || answer.made === "no") {
+    await input.madeNothing?.();
+    throw new OpsCrewError(
+      "PROVIDER_ERROR",
+      `The agent didn't make the app in CloudLinux's selector: ${reason}.`,
+      {
+        hint: "Check the app's version and startup file in opscrew/plan.yaml (target.runtime) against the versions the panel's Setup Node.js App or Setup Python App page offers; `opscrew logs` shows the agent's lines. Then run `opscrew provision` again.",
+      },
+    );
+  }
   throw new OpsCrewError(
     "PROVIDER_ERROR",
-    `The agent didn't ${action === "create" ? "make" : "remove"} the app in CloudLinux's selector: ${answer.reason ?? answer.result}.`,
+    `The agent didn't say it made the app in CloudLinux's selector: ${reason}. OpsCrew keeps the app recorded in .opscrew/hosting.json, so \`opscrew destroy\` removes it if it is there.`,
     {
-      hint:
-        action === "create"
-          ? "Check the app's version and startup file in opscrew/plan.yaml (target.runtime) against the versions the panel's Setup Node.js App or Setup Python App page offers; `opscrew logs` shows the agent's lines. Then run `opscrew provision` again."
-          : "`opscrew logs` shows the agent's lines; the panel's Setup Node.js App or Setup Python App page shows the app.",
+      hint: "The panel's Setup Node.js App or Setup Python App page shows whether the app is there, and `opscrew logs` the agent's lines. If it is there, run `opscrew provision` again; if it isn't, remove the entry of kind \"app\" from .opscrew/hosting.json first.",
     },
   );
 }

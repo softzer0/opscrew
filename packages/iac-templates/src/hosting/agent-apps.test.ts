@@ -61,15 +61,40 @@ function account(settings: Partial<AgentSettings> = NODE): Account {
   return made;
 }
 
-/** An `app` request as the CLI writes it (or with `fields` instead), and its answer after a run. */
-function app(a: Account, action: string, fields: Record<string, string> = { action }) {
+/** Writes an `app` request as the CLI writes it (or with `fields` instead); its name. */
+function appRequest(a: Account, action: string, fields: Record<string, string> = { action }) {
   const expires = String(Math.floor(Date.now() / 1000) + 1800);
   const text = Object.entries({ kind: "app", hash: HASH, expires, ...fields })
     .map(([key, value]) => `${key}=${value}\n`)
     .join("");
-  const name = a.request(text);
+  return a.request(text);
+}
+
+/** An `app` request ({@link appRequest}), and its answer after a run. */
+function app(a: Account, action: string, fields: Record<string, string> = { action }) {
+  const name = appRequest(a, action, fields);
   a.run();
   return a.keyValues(`state/${name}.result`);
+}
+
+/** The answer of a request a run stopped in, before the next run makes it final. */
+const STOPPED = { result: "failed", reason: "the agent stopped while carrying it out" };
+
+/**
+ * Makes the agent's run stop in an app's create before the selector is asked: a folder stands
+ * where it lists the sections of htaccess_cache.
+ */
+function stopInCreate(a: Account): void {
+  mkdirSync(`${a.dir}/state/selector.before`);
+}
+
+/** Whether a stand-in process ends within 5 seconds. */
+function ends(child: ChildProcess): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    if (child.exitCode !== null || child.signalCode !== null) resolve(true);
+    child.once("exit", () => resolve(true));
+    setTimeout(() => resolve(false), 5000);
+  });
 }
 
 /** The selector's calls, one per line, without the package.json lines. */
@@ -265,12 +290,35 @@ describe.skipIf(reason !== undefined)(
       const a = account();
       a.run();
       writeFileSync(`${a.stub}/selector-fails`, "create\n");
+      // made=no: the selector's own refusal, so OpsCrew forgets the app it recorded.
       expect(app(a, "create")).toEqual({
         result: "failed",
         reason:
           'CloudLinux\'s selector didn\'t make the app: {"result": "Something went wrong in the fake selector"}',
+        made: "no",
       });
       expect(a.file("state/selector-section")).toBeUndefined();
+    });
+
+    it("answers a create its run stopped in at the next run, which holds the lock: failed, no longer pending", () => {
+      const a = account();
+      a.run();
+      stopInCreate(a);
+      const name = appRequest(a, "create");
+      expect(a.run().status).not.toBe(0);
+      // The placeholder, written before the create started: pending, which the CLI never takes.
+      expect(a.keyValues(`state/${name}.result`)).toEqual({ ...STOPPED, pending: "1" });
+      expect(existsSync(`${a.dir}/requests/${name}.req`)).toBe(true);
+
+      const next = a.run();
+      expect(next.status).toBe(0);
+      expect(next.output).toContain(
+        `Request ${name}: the run carrying it out stopped part-way, so its answer is final: failed.`,
+      );
+      expect(a.keyValues(`state/${name}.result`)).toEqual(STOPPED);
+      expect(existsSync(`${a.dir}/requests/${name}.req`)).toBe(false);
+      // Carried out at most once: the selector was never asked.
+      expect(calls(a)).toEqual([]);
     });
 
     it("refuses an app request for a PHP app, or with another action", () => {
@@ -332,7 +380,7 @@ describe.skipIf(reason !== undefined)(
       // A run that stopped right after the selector's destroy: only the selector forgot the app.
       const args = ["--json", "--interpreter", "nodejs", "--app-root", ROOT];
       expect(runSelector(a, "destroy", ...args).status).toBe(0);
-      const note = "CloudLinux's selector no longer had the app";
+      const note = "CloudLinux's selector had no such app";
       expect(app(a, "destroy")).toEqual({ result: "done", note });
       expect(existsSync(`${a.dir}/app`)).toBe(false);
       expect(existsSync(`${a.home}/nodevenv/opscrew`)).toBe(false);
@@ -346,6 +394,42 @@ describe.skipIf(reason !== undefined)(
         calls(a).filter((line) => line.startsWith("cloudlinux-selector destroy")),
       ).toHaveLength(3);
     });
+
+    switching(
+      "removes an app the selector doesn't list, as a stopped create leaves it: its processes end, app/ goes, the answer done with a note",
+      async () => {
+        const a = account();
+        a.run();
+        stopInCreate(a);
+        expect(app(a, "create")).toEqual({ ...STOPPED, pending: "1" });
+        rmSync(`${a.dir}/state/selector.before`, { recursive: true });
+        expect(readlinkSync(`${a.dir}/app/current`)).toBe("../current");
+        // A process of the app's, its command line naming the app's folder as lsnode's does.
+        const lsnode = spawn(
+          process.execPath,
+          ["-e", "setTimeout(() => {}, 300000)", `${a.dir}/app/current/index.js`],
+          { cwd: a.root, stdio: "ignore" },
+        );
+        try {
+          const logged = (a.file("state/agent.log") ?? "").length;
+          expect(app(a, "destroy")).toEqual({
+            result: "done",
+            note: "CloudLinux's selector had no such app",
+          });
+          expect(calls(a)).toEqual([
+            `cloudlinux-selector destroy --json --interpreter nodejs --app-root ${ROOT}`,
+          ]);
+          expect((a.file("state/agent.log") ?? "").slice(logged)).toContain(
+            "1 of the app's processes ended.",
+          );
+          expect(await ends(lsnode)).toBe(true);
+          expect(existsSync(`${a.dir}/app`)).toBe(false);
+          expect(existsSync(`${a.home}/nodevenv`)).toBe(false);
+        } finally {
+          lsnode.kill("SIGKILL");
+        }
+      },
+    );
 
     it("leaves htaccess_cache as it is when the selector added no section to it", () => {
       const a = account();
@@ -657,12 +741,6 @@ describe.skipIf(reason !== undefined)(
               stdio: "ignore",
             }),
           );
-        const ends = (child: ChildProcess) =>
-          new Promise<boolean>((resolve) => {
-            if (child.exitCode !== null || child.signalCode !== null) resolve(true);
-            child.once("exit", () => resolve(true));
-            setTimeout(() => resolve(false), 5000);
-          });
         const running = (child: ChildProcess) =>
           child.exitCode === null && child.signalCode === null;
         // Not the app's: another app's folder beside it (its name starting the same) and a folder

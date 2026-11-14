@@ -865,20 +865,24 @@ describe("provision on a cPanel account", () => {
     expect(s.requests.filter((request) => request.startsWith("kind=app\n"))).toHaveLength(1);
   });
 
-  it("stops with the agent's reason when the selector can't make the app (T2717)", async () => {
+  /** A cPanel account whose agent answers every request with `answer`. */
+  function answering(answer: string): Account {
     const fake = fakeCpanel({ user: "acct", token: TOKEN, mainDomain: "example.com" });
     const account = cpanelAccount(fake);
-    const failing: Account = {
+    return {
       ...account,
       write: (path, text) =>
-        account.write(
-          path,
-          /\/state\/[0-9a-f]{64}\.result$/.test(path)
-            ? "result=failed\nreason=CloudLinux's selector didn't make the app: no version 99\n"
-            : text,
-        ),
+        account.write(path, /\/state\/[0-9a-f]{64}\.result$/.test(path) ? answer : text),
     };
-    const s = await project(failing, { example: "hono-api" });
+  }
+
+  it("stops with the agent's reason when the selector can't make the app (T2717)", async () => {
+    const s = await project(
+      answering(
+        "result=failed\nreason=CloudLinux's selector didn't make the app: no version 99\nmade=no\n",
+      ),
+      { example: "hono-api" },
+    );
     const { error } = await s.run();
     expect(error).toBeInstanceOf(OpsCrewError);
     expect((error as OpsCrewError).message).toContain(
@@ -886,6 +890,21 @@ describe("provision on a cPanel account", () => {
     );
     expect((error as OpsCrewError).hint).toContain("target.runtime");
     expect((await record(s.root)).objects.some((object) => object.kind === "app")).toBe(false);
+  });
+
+  it("keeps the app recorded when the agent's run stopped while making it, so destroy removes it (T2757)", async () => {
+    const s = await project(
+      answering("result=failed\nreason=the agent stopped while carrying it out\n"),
+      { example: "hono-api" },
+    );
+    const { error } = await s.run();
+    expect(error).toBeInstanceOf(OpsCrewError);
+    expect((error as OpsCrewError).message).toContain(
+      "The agent didn't say it made the app in CloudLinux's selector: the agent stopped while carrying it out. OpsCrew keeps the app recorded in .opscrew/hosting.json, so `opscrew destroy` removes it if it is there.",
+    );
+    expect((await record(s.root)).objects).toContainEqual(
+      expect.objectContaining({ kind: "app", key: "nodejs" }),
+    );
   });
 
   it("records the app and shows the note when the selector refused its settings (T2717)", async () => {

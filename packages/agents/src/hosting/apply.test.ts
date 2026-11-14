@@ -181,6 +181,88 @@ describe("applyHostingPlan", () => {
   });
 });
 
+describe("the selector app's step", () => {
+  const plan = appPlan([
+    { kind: "app", interpreter: "nodejs", version: "22", startup: "index.js" },
+  ]);
+  const STOPPED = "result=failed\nreason=the agent stopped while carrying it out\n";
+
+  /**
+   * The step applied with the agent played by `answer` (none: it never answers): what it recorded,
+   * the requests on the account when it recorded each, and what it forgot.
+   */
+  async function applyApp(answer: string | undefined) {
+    const { fake, ctx, made } = context();
+    const requests = () =>
+      [...fake.state.files.keys()].flatMap(
+        (path) => new RegExp(`^${FOLDER}/requests/([0-9a-f]{64})\\.req$`).exec(path)?.[1] ?? [],
+      );
+    const asked: string[][] = [];
+    const forgotten: [string, string][] = [];
+    const error = await applyHostingPlan(plan, {
+      ...ctx,
+      made: async (object) => {
+        asked.push(requests());
+        made.push(object);
+      },
+      forget: async (kind, key) => {
+        forgotten.push([kind, key]);
+      },
+      sleep: async () => {
+        if (answer === undefined) return;
+        for (const name of requests()) {
+          fake.writeText(`${FOLDER}/state/${name}.result`, answer, 0o600);
+          fake.state.files.delete(`${FOLDER}/requests/${name}.req`);
+        }
+      },
+      approvedHash: hostingPlanHash(plan),
+    }).catch((e: unknown) => e);
+    const answered = [...fake.state.files.keys()].filter((path) => path.endsWith(".result"));
+    return { error: error as OpsCrewError, made, asked, forgotten, answered, requests };
+  }
+
+  const APP = { kind: "app", key: "nodejs", value: "22" };
+
+  it("records the app before it asks the agent for it, and keeps it when the run making it stopped", async () => {
+    const { error, made, asked, forgotten, answered } = await applyApp(STOPPED);
+    // Recorded while no request was on the account yet; then the one request was answered.
+    expect(asked).toEqual([[]]);
+    expect(answered).toHaveLength(1);
+    expect(error).toBeInstanceOf(HostingApplyError);
+    expect(error.message).toBe(
+      "The agent didn't say it made the app in CloudLinux's selector: the agent stopped while carrying it out. OpsCrew keeps the app recorded in .opscrew/hosting.json, so `opscrew destroy` removes it if it is there. Nothing was changed before it.",
+    );
+    expect(error.hint).toBe(
+      "The panel's Setup Node.js App or Setup Python App page shows whether the app is there, and `opscrew logs` the agent's lines. If it is there, run `opscrew provision` again; if it isn't, remove the entry of kind \"app\" from .opscrew/hosting.json first.",
+    );
+    expect(made).toEqual([APP]);
+    expect(forgotten).toEqual([]);
+  });
+
+  it("keeps it when no answer comes", async () => {
+    const { error, made, asked, forgotten, requests } = await applyApp(undefined);
+    expect(asked).toEqual([[]]);
+    expect(requests()).toHaveLength(1);
+    expect(error.message).toContain("didn't carry out OpsCrew's request within 5 minutes");
+    expect(made).toEqual([APP]);
+    expect(forgotten).toEqual([]);
+  });
+
+  it.each([
+    ["the agent refused the request", "result=refused\nreason=it expired (expires=1)\n"],
+    [
+      "the selector refused to make the app",
+      "result=failed\nreason=CloudLinux's selector didn't make the app: no version 22\nmade=no\n",
+    ],
+  ])("forgets it only when the answer says the agent made nothing: %s", async (_, answer) => {
+    const { error, asked, forgotten } = await applyApp(answer);
+    expect(asked).toEqual([[]]);
+    expect(error.message).toMatch(/^The agent didn't make the app in CloudLinux's selector: /);
+    expect(error.hint).toContain("target.runtime");
+    expect(forgotten).toEqual([["app", "nodejs"]]);
+  });
+});
+
 describe("requireEmptyPanelRoot", () => {
   const files = (names: string[] | undefined) =>
     ({ list: async () => names }) as unknown as HostingFiles;

@@ -34,7 +34,9 @@ import {
  * - `state/<sha256>.result` for each request: `result` (`done`, `refused` or `failed`), `reason`,
  *   then for a snapshot `dump=<file in dumps/>` and `shared=<file in dumps/>` (each when it has
  *   that part), for a restore `saved=<the id of the snapshot taken first>` (when there was anything
- *   to copy).
+ *   to copy), for an app's create the selector refused `made=no` (nothing was made), for an app's
+ *   removal `note=` (what it left, or that the selector had no such app). `pending=1` marks the
+ *   placeholder, never a final answer.
  * - A snapshot `<id>` (`snapshot-<UTC time>`), taken on a `snapshot` request and before a
  *   `restore`: the app's database, when it has one, dumped into `dumps/<id>.sql.gz` and, when
  *   `shared/` holds more than the settings files (`.env`, `.env.next`, `env.php`, `mysql.cnf`),
@@ -75,7 +77,7 @@ import {
  * in its folder) in `state/<id>.stderr.log` (0600, the newest 3 kept), which its reason names. A
  * run that finds another release's package files in `app/` (one before it stopped part-way)
  * installs the running release's again. `action=destroy` runs the selector's `destroy` (a
- * selector that no longer has the app is noted, not a failure), ends the app's processes, removes
+ * selector that doesn't list the app is noted, not a failure), ends the app's processes, removes
  * `app/`, the empty `~/nodevenv/<app root>` (`~/virtualenv/` for Python) and the section of
  * `htaccess_cache` whose header it kept, every other byte as it was; a `note=` in its answer says
  * what it left and why.
@@ -84,7 +86,8 @@ import {
  * id> <attempt> <env> <signature>`, the signature `openssl dgst -sha256 -sign`'s (ECDSA P-256, DER,
  * base64 on one line) over `<tree id> <run id> <attempt> <env>`, checked with `keys/release.pub`.
  * Its `.htaccess` sends `X-OpsCrew-Release: <run id>-<attempt>`. A request's answer is written
- * `failed` before it starts, so one a run stopped in is never carried out again.
+ * `failed` with `pending=1` before it starts, so one a run stopped in is never carried out again;
+ * the next run, once it holds the lock, drops `pending=1` from it before any request.
  */
 export const AGENT_SH = `#!/bin/bash
 # OpsCrew's agent on a hosting account (ADR 0030), the same for every app and environment. Cron
@@ -1101,8 +1104,9 @@ cache_headers() {
 # Makes the app in CloudLinux's selector, its root the folder app/ (made first, with app/current a
 # link to ../current, kept), started from current/<startup file> through that link and served at
 # the hostname's root; keeps the header of the section the selector added to htaccess_cache (empty
-# when it added none, or more than one). When the selector made the app but refused its settings,
-# the answer is done, its note saying so.
+# when it added none, or more than one). When the selector refuses to make it, the answer's made=no
+# says nothing was made, so the CLI forgets the app it recorded before asking. When the selector
+# made the app but refused its settings, the answer is done, its note saying so.
 app_create() {
   local name=$1 mode=() added
   if [ "$APP_KIND" = node ]; then mode=(--app-mode production); fi
@@ -1111,7 +1115,7 @@ app_create() {
   cache_headers > state/selector.before
   if ! selector create --version "$RUNTIME_VERSION" --app-root "$(app_root)" --app-uri / \${mode[@]+"\${mode[@]}"} --domain "$HOST_NAME" --startup-file "current/$STARTUP_FILE"; then
     rm -f state/selector.before
-    answer "$name" failed "CloudLinux's selector didn't make the app: \${SELECTOR_SAID:-no answer}"
+    answer "$name" failed "CloudLinux's selector didn't make the app: \${SELECTOR_SAID:-no answer}" made=no
     return 0
   fi
   cache_headers | grep -vxF -f state/selector.before > state/selector.added || true
@@ -1239,9 +1243,10 @@ forget_cache_section() {
 # Removes the app from CloudLinux's selector, then what the selector leaves of it: its processes
 # (end_app_processes, as the selector's destroy leaves them running), its root app/, its empty
 # environment folder (~/nodevenv/<app root>, ~/virtualenv/ for Python) with the empty folders
-# above it, and its section of htaccess_cache. A selector that no longer has the app (a
-# destroy run again after one that stopped part-way) is no failure: the rest is removed. The
-# answer's note says what stays, and why.
+# above it, and its section of htaccess_cache. A selector that doesn't list the app ("No such
+# application", research R14: a destroy run again after one that stopped part-way, or a create that
+# stopped before the selector made it) is no failure: the rest is removed, and the note says so.
+# The answer's note says what stays, and why.
 app_destroy() {
   local name=$1 venv=nodevenv note="" path
   if [ "$APP_KIND" = python ]; then venv=virtualenv; fi
@@ -1250,7 +1255,7 @@ app_destroy() {
       answer "$name" failed "CloudLinux's selector didn't remove the app: \${SELECTOR_SAID:-no answer}"
       return 0
     fi
-    note="CloudLinux's selector no longer had the app"
+    note="CloudLinux's selector had no such app"
   fi
   end_app_processes || true
   rm -rf app
@@ -1276,7 +1281,8 @@ do_app() {
 }
 
 # Request $1 (requests/$1.req), carried out at most once: its answer is written before it starts,
-# so a run that stops part-way never starts it again.
+# so a run that stops part-way never starts it again. That placeholder is pending=1, which the CLI
+# never takes: the request's own answer replaces it, or finish_pending at the next run.
 request() {
   local name=$1
   local -A R=()
@@ -1287,8 +1293,21 @@ request() {
     return 0
   fi
   say "Request $name: \${R[kind]}."
-  printf 'result=failed\\nreason=the agent stopped while carrying it out\\n' | put "state/$name.result"
+  printf 'result=failed\\nreason=the agent stopped while carrying it out\\npending=1\\n' | put "state/$name.result"
   "do_\${R[kind]}" "$name"
+}
+
+# Makes final each answer still pending=1: the placeholder of a run that stopped part-way through
+# its request, since the lock this run holds keeps any other run from writing one meanwhile. The
+# answer stays failed, without that line.
+finish_pending() {
+  local file name
+  for file in state/*.result; do
+    [ "$(value_of "$file" pending)" = 1 ] || continue
+    sed '/^pending=/d' "$file" | put "$file"
+    name=\${file#state/}
+    say "Request \${name%.result}: the run carrying it out stopped part-way, so its answer is final: failed."
+  done
 }
 
 # Step 2: each request named by the SHA-256 of its bytes, carried out once, then removed. Other
@@ -1341,7 +1360,9 @@ main() {
     mkdir -p "releases/0-0/$WEB_ROOT"
     ln -s releases/0-0 current
   fi
-  # What a run that stopped part-way through the selector's work left: another release's packages.
+  # What a run that stopped part-way left: a request's answer still pending, and, from the
+  # selector's work, another release's packages.
+  finish_pending
   running_packages
   GIT_SSH_COMMAND=$(printf '%q ' "\${SSH[@]}")
   export DIR PHP_CLI GIT_SSH_COMMAND GIT_TERMINAL_PROMPT=0

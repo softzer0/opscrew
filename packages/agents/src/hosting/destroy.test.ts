@@ -265,6 +265,21 @@ describe("destroy on a cPanel account", () => {
     expect((await readHostingRecord(deps.paths))?.objects).toEqual([]);
   });
 
+  it("removes an app a stopped create left recorded, though the selector never made it (T2757)", async () => {
+    // The agent's answer for an app the selector doesn't list: its processes ended, app/ removed.
+    const note = "CloudLinux's selector had no such app";
+    const w = await world({
+      answer: (request) => (request.kind === "app" ? `result=done\nnote=${note}\n` : undefined),
+    });
+    // As provision records it before it asks the agent to make it.
+    await recordObject((await w.app.deps()).paths, { kind: "app", key: "nodejs", value: "22" });
+    const { deps, result, error } = await w.run({ snapshot: false });
+    expect(error).toBeUndefined();
+    expect(w.agent.requests).toEqual([expect.objectContaining({ kind: "app", action: "destroy" })]);
+    expect(result?.remaining).toContain(`Of the app in CloudLinux's selector: ${note}.`);
+    expect((await readHostingRecord(deps.paths))?.objects).toEqual([]);
+  });
+
   it("stops before anything else when the selector can't remove the app (T2717)", async () => {
     const w = await world({
       answer: (request) =>

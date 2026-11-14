@@ -96,10 +96,19 @@ export function requestText(request: HostingRequest, hash: string, now: Date): s
   return fields.map(([key, value]) => `${key}=${value}\n`).join("");
 }
 
-/** The agent's answer to a request (`state/<name>.result`). */
+/**
+ * The agent's final answer to a request (`state/<name>.result`). The placeholder it writes before it
+ * starts has a `pending` line, which its run drops when it answers, or its next run when it
+ * stopped part-way (`failed`); an answer with it is never read.
+ */
 const RequestResultSchema = z.strictObject({
   result: z.enum(["done", "refused", "failed"]),
   reason: z.string().min(1).optional(),
+  /**
+   * `no` when the agent's `failed` says it made nothing: CloudLinux's selector refused to make an
+   * app. A `refused` answer made nothing either.
+   */
+  made: z.literal("no").optional(),
   /** A snapshot's dump of the database, in `dumps/`; none for an app without one. */
   dump: z.string().min(1).optional(),
   /** A snapshot's copy of the shared files but the settings, in `dumps/`; none when there are none. */
@@ -144,9 +153,9 @@ export async function writeRequest(
 }
 
 /**
- * The agent's answer to request `name`, waited for up to 5 minutes. The agent writes `failed`
- * before it starts and removes the request once it is carried out, so an answer counts once the
- * request is gone.
+ * The agent's answer to request `name`, waited for up to 5 minutes. The agent writes `failed` with
+ * `pending` before it starts and removes the request once it is carried out, so an answer counts
+ * once it has no `pending` and the request is gone.
  * @throws OpsCrewError `PROVIDER_ERROR` when no answer came, or one OpsCrew can't read.
  */
 export async function waitForResult(
@@ -159,8 +168,10 @@ export async function waitForResult(
     if (attempt > 0) await sleep(POLL_MS);
     const text = await files.readFile(`${folder}/state/${name}.result`);
     if (text === undefined) continue;
+    const answer = keyValues(text);
+    if (answer.pending !== undefined) continue;
     if ((await files.readFile(`${folder}/requests/${name}.req`)) !== undefined) continue;
-    const parsed = RequestResultSchema.safeParse(keyValues(text));
+    const parsed = RequestResultSchema.safeParse(answer);
     if (parsed.success) return parsed.data;
     throw new OpsCrewError(
       "PROVIDER_ERROR",

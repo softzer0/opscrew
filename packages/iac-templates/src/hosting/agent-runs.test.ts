@@ -669,14 +669,19 @@ describe.skipIf(reason !== undefined)("the hosting agent", { timeout: 180_000 },
     writeFileSync(`${a.dir}/releases/621-1/public/.well-known`, "");
     const name = a.request(requestText({ kind: "rollback", release: "621-1", restore: "yes" }));
     expect(a.run().status).not.toBe(0);
-    expect(a.keyValues(`state/${name}.result`)).toEqual({
-      result: "failed",
-      reason: "the agent stopped while carrying it out",
-    });
+    const stopped = { result: "failed", reason: "the agent stopped while carrying it out" };
+    // The placeholder written before the rollback started, pending: the CLI waits past it.
+    expect(a.keyValues(`state/${name}.result`)).toEqual({ ...stopped, pending: "1" });
     const dumps = a.stubFile("mysql.log").match(/^mysqldump /gm)?.length;
     expect(dumps).toBe(2);
 
-    expect(a.run().status).toBe(0);
+    const next = a.run();
+    expect(next.status).toBe(0);
+    // The next run, holding the lock, makes the answer final.
+    expect(a.keyValues(`state/${name}.result`)).toEqual(stopped);
+    expect(next.output).toContain(
+      `Request ${name}: the run carrying it out stopped part-way, so its answer is final: failed.`,
+    );
     expect(a.stubFile("mysql.log").match(/^mysqldump /gm)?.length).toBe(dumps);
     expect(existsSync(`${a.dir}/requests/${name}.req`)).toBe(false);
     expect(current(a)).toBe("releases/622-1");
@@ -892,18 +897,25 @@ describe.skipIf(reason !== undefined)("the hosting agent", { timeout: 180_000 },
     expect(a.stubFile("mysql.log")).toBe("");
   });
 
-  it.skipIf(!HAS_FLOCK)("stops at once while another run holds the lock", async () => {
-    const a = account();
-    const holder = await a.holdLock();
-    try {
-      const run = a.run();
-      expect(run.status).toBe(0);
-      expect(run.output).toContain("Another run of the agent holds the lock: this one stops.");
-      expect(a.file("state/report")).toBeUndefined();
-    } finally {
-      holder.kill();
-    }
-  });
+  it.skipIf(!HAS_FLOCK)(
+    "stops at once while another run holds the lock, its pending answers left to it",
+    async () => {
+      const a = account();
+      // The answer to a request the run holding the lock is carrying out.
+      const pending = "result=failed\nreason=the agent stopped while carrying it out\npending=1\n";
+      writeFileSync(`${a.dir}/state/${"f".repeat(64)}.result`, pending);
+      const holder = await a.holdLock();
+      try {
+        const run = a.run();
+        expect(run.status).toBe(0);
+        expect(run.output).toContain("Another run of the agent holds the lock: this one stops.");
+        expect(a.file("state/report")).toBeUndefined();
+        expect(a.file(`state/${"f".repeat(64)}.result`)).toBe(pending);
+      } finally {
+        holder.kill();
+      }
+    },
+  );
 
   it("keeps its log to the last 1,000 lines", () => {
     const a = account();

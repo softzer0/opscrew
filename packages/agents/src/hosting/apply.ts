@@ -425,13 +425,15 @@ async function applyStep(
       await panel.setPhpVersion(step.hostname, step.version);
       return ctx.made({ kind: "php", key: step.hostname, value: step.version });
     case "app": {
+      // Recorded before it is asked for, so destroy removes it after a stop or an unclear answer;
+      // forgotten only when the agent's answer says it made nothing.
+      await ctx.made({ kind: "app", key: step.interpreter, value: step.version });
       const note = await selectorApp(files, folder, "create", {
         hash: ctx.approvedHash,
         now: ctx.now(),
         sleep: ctx.sleep,
+        madeNothing: () => ctx.forget("app", step.interpreter),
       });
-      // Recorded even when the selector refused the settings: the app is there.
-      await ctx.made({ kind: "app", key: step.interpreter, value: step.version });
       if (note !== undefined) ctx.warn?.(`${note}.`);
       return;
     }
