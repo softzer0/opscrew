@@ -438,6 +438,35 @@ describe("the off-server copy in a stack", () => {
 
   it("leaves the expiry to the bucket's lifecycle rule", () => {
     expect(script(offsite)).not.toContain("rclone delete");
+    const r2 = render(
+      snapshotPlan({ snapshots: { offsite: { provider: "r2", bucket: "shop-prod-backups" } } }),
+    );
+    expect(script(r2.stack.services.offsite)).not.toContain("rclone delete");
+  });
+
+  it("deletes the Spaces copies older than the plan's days itself, after a pass that copied one", () => {
+    const spaces = render(
+      snapshotPlan({
+        snapshots: {
+          offsite: {
+            provider: "digitalocean",
+            bucket: "shop-prod-backups",
+            region: "fra1",
+            days: 30,
+          },
+        },
+      }),
+    );
+    const text = script(spaces.stack.services.offsite);
+    expect(text).toContain("  copied=0");
+    expect(text.indexOf("      copied=1")).toBeGreaterThan(text.indexOf('touch "$d"/offsite.done'));
+    expect(text).toContain(
+      `  if [ "$copied" = 1 ] && ! rclone delete --min-age 30d 'offsite:shop-prod-backups/backups'; then`,
+    );
+    expect(text).toContain(
+      'echo "OpsCrew: the off-server copies older than 30 days could not be deleted; the next copy tries again." >&2',
+    );
+    expect(shParses(text)).toBe(true);
   });
 });
 

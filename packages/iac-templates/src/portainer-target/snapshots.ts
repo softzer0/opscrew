@@ -9,6 +9,7 @@ import {
   snapshotsOn,
 } from "@opscrew/plan-schema";
 import { dataDirs, serviceSpec } from "../catalog";
+import { offsiteExpires } from "../infra/storage";
 import {
   AGE_BINARY,
   ageFunctions,
@@ -466,9 +467,9 @@ function beforeRelease(
  * finished snapshot without `offsite.done` streams file by file through `age -r <recipient>` into
  * `rclone rcat` (`backups/<id>/<file>.age` under {@link offsiteRoot}), `about.json` last, then gets
  * `offsite.done`; the snapshots before a release (named by their digest) stay here for the
- * rollback (D16). The login ({@link offsiteLogin}) and the recipient are stack variables. On the
- * user's own bucket or SFTP machine, which expire nothing, a pass that copied a snapshot then
- * deletes the copies older than `snapshots.offsite.days` (and on SFTP the folders that leaves
+ * rollback (D16). The login ({@link offsiteLogin}) and the recipient are stack variables. Where the
+ * storage expires nothing itself ({@link offsiteExpires}: Spaces, the user's own bucket or SFTP
+ * machine), a pass that copied a snapshot then deletes the copies older than `snapshots.offsite.days` (and on SFTP the folders that leaves
  * empty); a failed deletion only warns, and the next copy tries again.
  */
 function offsite(plan: DeployPlan): Record<string, object> {
@@ -477,7 +478,8 @@ function offsite(plan: DeployPlan): Record<string, object> {
   const { arch } = portainerTarget(plan.target);
   const v = PORTAINER_OFFSITE_VARIABLES;
   const root = offsiteRoot(plan, copy);
-  const own = copy.provider === "s3" || copy.provider === "sftp";
+  // Where the storage expires nothing itself: Spaces, the user's own bucket or SFTP machine.
+  const prunes = !offsiteExpires(copy.provider);
   const script = [
     "set -o pipefail",
     ...ageFunctions(arch),
@@ -487,7 +489,7 @@ function offsite(plan: DeployPlan): Record<string, object> {
     "}",
     "umask 077",
     "while :; do",
-    ...(own ? ["  copied=0"] : []),
+    ...(prunes ? ["  copied=0"] : []),
     `  for d in ${DIR}/*; do`,
     // A snapshot being written: the schedule's and a release's `.partial`, one by hand `.taking`.
     '    case "$d" in *.partial|*.taking) continue ;; esac',
@@ -501,12 +503,12 @@ function offsite(plan: DeployPlan): Record<string, object> {
     "    done",
     '    if [ "$ok" = 1 ] && put "$d"/about.json "$id"/about.json.age; then',
     '      touch "$d"/offsite.done',
-    ...(own ? ["      copied=1"] : []),
+    ...(prunes ? ["      copied=1"] : []),
     "    else",
     '      echo "OpsCrew: the off-server copy of the snapshot $id failed; trying again in a minute." >&2',
     "    fi",
     "  done",
-    ...(own
+    ...(prunes
       ? [
           `  if [ "$copied" = 1 ] && ! ${offsiteRetention(copy, root)}; then`,
           `    echo "OpsCrew: the off-server copies older than ${copy.days} days could not be deleted; the next copy tries again." >&2`,
