@@ -235,6 +235,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
 
 - [ ] T2810 [P] [US1] [US2] The move's types, its session, the checks and the summary
   - Owns: `packages/agents/src/cloudflare-move/{types,session,checks,summary,texts}*.ts`, the type export line in `packages/agents/src/cloudflare-move/index.ts`
+  - Lead note (after T2812): the checks refuse a recorded `plan.retarget` plainly before the move's record is written (today only the plan-schema rule stops it); the guard is `requireNoCloudflareMove` in `provision/guard.ts`, the record's steps in `cloudflare-move/record.ts`, the local files in `cloudflare-move/progress.ts`.
   - Reads: plan 4.1, 4.2, 11.; spec FR-2802 and the edge cases; `retarget/{session,start}.ts`, `domain/common.ts` (`resolveAccount`), `environments/{list,paths}.ts`, `serverless/cloudflare/checks.ts`
   - Depends: T2803, T2804, T2805, T2808, T2809
   - Decided by the lead: B's token is `OPSCREW_NEW_CLOUDFLARE_API_TOKEN`, A's `CLOUDFLARE_API_TOKEN`;
@@ -263,7 +264,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/cloudflare-move && pnpm lint`
   - Effort: high
 
-- [ ] T2811 [P] [US1] [US3] Provision's seams the move plans through
+- [x] T2811 [P] [US1] [US3] Provision's seams the move plans through
   - Owns: `packages/agents/src/provision/{plan-apply,credentials,shared-cloudflare,origin-tls,storage}.ts` (+ tests)
   - Lead note (after T2805): whenever B's zone is pending, pass `pendingZone: true` to `inspectShared` together with `waitForActive: false` to `applyShared`, so B's shared plan settles after its first apply.
   - Reads: plan 3., 4.4, 7.6, 11.; data-model 7; T2804's and T2805's blocks
@@ -291,7 +292,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/provision && pnpm lint`
   - Effort: high
 
-- [ ] T2812 [P] [US1] [US2] The record, the local files, and the guards
+- [x] T2812 [P] [US1] [US2] The record, the local files, and the guards
   - Owns: `packages/agents/src/cloudflare-move/{record,progress}*.ts`, `packages/agents/src/provision/guard*.ts`, the guard in `packages/agents/src/destroy/run.ts`, the refusal in `packages/agents/src/retarget/{run,start}.ts`, the guard lines in `packages/agents/src/rotate/**` entry points and `packages/agents/src/environments/{add,previews}.ts`, the opt-out in `packages/agents/src/design/run.ts` (+ tests)
   - Reads: plan 2., 11.; data-model 1, 2; `retarget/pending.ts`, `provision/guard.ts`, `destroy/run.ts`, `rotate/` (each exported rotation), `environments/{add,previews}.ts`
   - Depends: T2803
@@ -491,6 +492,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
 
 - [ ] T2821 [US1] Abort
   - Owns: `packages/agents/src/cloudflare-move/abort*.ts`
+  - Lead note (after T2811): forget only B's kept bucket keys with `forgetStorageKey(deps, bucket, { account: B, moveTo: B })`, so A's (kept before the move without an account) stay.
   - Reads: plan 8.; data-model 1, 2, 3
   - Depends: T2809, T2812, T2813, T2814, T2815, T2816, T2817, T2818
   - Accept:
@@ -527,6 +529,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
 
 - [ ] T2823 [US1] [US3] Finish, part 2: the steps in order
   - Owns: `packages/agents/src/cloudflare-move/finish*.ts` except T2822's files
+  - Lead note (after T2812, T2811): a damaged app progress file reads as absent and loses `window.stoppedAt`, so the finish also tells from the app itself (or its state) that it is stopped; forget A's kept bucket keys with `forgetStorageKey(deps, bucket, { account: A, moveTo: B })` so B's stay.
   - Reads: plan 7., 9.; data-model 1, 2, 3, 7
   - Depends: T2813, T2815, T2816, T2818, T2822
   - Accept:
@@ -580,6 +583,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
 ## Phase 8: Wave 7
 
 - [ ] T2826 The live test files for the rehearsal and the real move, and `docs/e2e.md`
+  - Lead note (after T2808): record the SSH probe's status code and duration for an accepted service token (a quick 502, or a held stream until `--max-time 5`); if Access holds the stream, the probe moves to `-I`. Confirm `wrangler deploy --secrets-file` to B and cloudflared's behaviour on a refused token.
   - Owns: `packages/cli/test/live/cloudflare-move*.ts`, the move's section of `docs/e2e.md`
   - Reads: plan 15.; quickstart's live part; `packages/cli/test/live/{harness,retarget-anywhere,own-server,live,snapshots-support,tls-support}.ts`
   - Depends: T2824
@@ -603,6 +607,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   with the checklist of plan 15.; `docs/e2e-coverage.md`'s row and results (the gap's figures,
   SC-2801 to SC-2807); then `.env.e2e`'s tokens for the zone become B's.
 - [ ] T2828 Simplify across the feature's code (lead): read-only reviews per area, then one
+  - From T2812's review: the guard's hints name no `--app <key>`/`--env` (as retarget's); pass the command's flags to `requireNoCloudflareMove`.
   - From T2807's review: `runtime/tunnel-next.ts` and `portainer-target/next-connector.ts` copy the main connector's renderers; give those a "next" variant (name suffix and folder) and drop the copies.
   implementer per area so no two edit the same file; known so far: the move's and retarget's
   pending-plan files, the texts kept per file, the two rclone call sites.
