@@ -890,6 +890,25 @@ describe("device logins in a Valkey service's environment (OPSCREW_ACL_USERS)", 
 });
 
 describe("the self-hosted monitoring's values", () => {
+  it("keeps the origin TLS values of a move to another Cloudflare account through provision's rewrite", async () => {
+    const deps = await createTestPhaseDeps();
+    const originTls = { certificate: "app certificate", key: fakeSecret("generic-password") };
+    const originTlsNext = {
+      certificate: "new account's certificate",
+      key: fakeSecret("generic-password"),
+    };
+    await mkdir(dirname(generatedValuesFile(deps)), { recursive: true });
+    await writeFile(
+      generatedValuesFile(deps),
+      `${JSON.stringify({ originTls, originTlsNext })}
+`,
+    );
+    await buildAppEnvironment(deps, testPlan({ userSecret: false }), {});
+    const generated = JSON.parse(await readFile(generatedValuesFile(deps), "utf8"));
+    expect(generated.originTls).toEqual(originTls);
+    expect(generated.originTlsNext).toEqual(originTlsNext);
+  });
+
   it("generates each password once, keeps it through provision's rewrite and registers it with the redactor", async () => {
     const deps = await createTestPhaseDeps();
     await recordGeneratedEntries(deps, "grants", { "laptop/db": fakeSecret("generic-password") });
