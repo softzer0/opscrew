@@ -2078,6 +2078,33 @@ export const RetargetSchema = z.strictObject({
   startedAt: IsoDateTimeSchema,
 });
 
+/** A Cloudflare account or zone id: 32 lower-case hex characters. */
+export const CloudflareIdSchema = z
+  .string()
+  .regex(/^[0-9a-f]{32}$/, { message: "must be a Cloudflare id (32 lower-case hex characters)" });
+
+/**
+ * A move of the app's Cloudflare zone to another Cloudflare account in progress (`opscrew
+ * cloudflare move`), in the plan of every environment the move covers. Ids, flags and times only.
+ */
+export const CloudflareMoveSchema = z.strictObject({
+  /** The zone that moves. */
+  zone: FqdnSchema,
+  /** The account that holds the zone when the move starts, and the zone there. */
+  from: z.strictObject({ accountId: CloudflareIdSchema, zoneId: CloudflareIdSchema }),
+  /** The account the zone moves to, and the zone there once it exists. */
+  to: z.strictObject({ accountId: CloudflareIdSchema, zoneId: CloudflareIdSchema.optional() }),
+  /** The registry published a DS record when the move started. */
+  dsAtStart: z.boolean(),
+  /** Last completed step. */
+  step: z.enum(["started", "prepared", "adopted"]),
+  /** Present once the abort began: its last completed step. */
+  abort: z.strictObject({ step: z.enum(["started", "removed"]) }).optional(),
+  startedAt: IsoDateTimeSchema,
+  preparedAt: IsoDateTimeSchema.optional(),
+  adoptedAt: IsoDateTimeSchema.optional(),
+});
+
 const DeployPlanFieldsSchema = z.strictObject({
   schemaVersion: z.literal(1),
   createdAt: IsoDateTimeSchema,
@@ -2319,6 +2346,8 @@ const DeployPlanFieldsSchema = z.strictObject({
     })
     .prefault({}),
   retarget: RetargetSchema.optional(),
+  /** A move of the app's zone to another Cloudflare account in progress; absent when none. */
+  cloudflareMove: CloudflareMoveSchema.optional(),
   /** A service's move between the app's servers in progress; absent when none. */
   move: MoveSchema.optional(),
 });
@@ -2375,6 +2404,7 @@ const DeployPlanObjectSchema = DeployPlanFieldsSchema.superRefine((plan, ctx) =>
     });
   }
   if (plan.retarget !== undefined) checkRetarget(plan.retarget, plan, ctx);
+  if (plan.cloudflareMove !== undefined) checkCloudflareMove(plan.cloudflareMove, plan, ctx);
   if (plan.target.provider === "portainer") checkPortainerTarget(plan.target, plan, ctx);
   if (plan.target.provider === "localhost") checkLocalhostTarget(plan, ctx);
   if (isServerlessTarget(plan.target)) checkServerlessTarget(plan.target, plan, ctx);
@@ -2569,6 +2599,50 @@ function checkComponents(plan: DeployPlanFields, ctx: z.RefinementCtx): void {
 }
 
 /**
+ * The rules of a zone's move to another Cloudflare account: never beside a retarget or in a
+ * preview environment, to another account, aborted only before the new account took the app over,
+ * and of the plan's own zone.
+ */
+function checkCloudflareMove(
+  move: NonNullable<DeployPlanFields["cloudflareMove"]>,
+  plan: DeployPlanFields,
+  ctx: z.RefinementCtx,
+): void {
+  const issue = (path: (string | number)[], message: string) =>
+    ctx.addIssue({ code: "custom", path: ["cloudflareMove", ...path], message });
+  if (plan.retarget !== undefined) {
+    issue(
+      [],
+      "can't be present beside retarget: finish or abort the move to another target first (opscrew retarget --finish or --abort), then move the app's zone",
+    );
+  }
+  if (plan.environment?.previews !== undefined) {
+    issue(
+      [],
+      "can't be present in a preview environment's plan: previews don't move with the zone; turn previews off before the move, and on again after it",
+    );
+  }
+  if (move.to.accountId === move.from.accountId) {
+    issue(
+      ["to", "accountId"],
+      "must differ from cloudflareMove.from.accountId: the zone moves to another Cloudflare account",
+    );
+  }
+  if (move.abort !== undefined && move.step === "adopted") {
+    issue(
+      ["abort"],
+      'can be present only while cloudflareMove.step is "started" or "prepared": once the new account has taken the app over, the move can only be finished',
+    );
+  }
+  if (plan.dns.zone !== undefined && move.zone !== plan.dns.zone) {
+    issue(
+      ["zone"],
+      `must be ${plan.dns.zone}, the plan's dns.zone: only the app's own Cloudflare zone moves`,
+    );
+  }
+}
+
+/**
  * The rules of a move: what starts empty is an enabled service on the app's server, `app` (the
  * app's own volumes) or `monitoring` while it runs on the app's server, as only the app's server
  * moves.
@@ -2718,6 +2792,8 @@ export const PORTAINER_TARGET_NO_MOVE = {
 export type PortainerWeb = PortainerDeployTarget["web"];
 /** A move to another provider in progress. */
 export type Retarget = NonNullable<DeployPlan["retarget"]>;
+/** A move of the app's zone to another Cloudflare account in progress. */
+export type CloudflareMove = NonNullable<DeployPlan["cloudflareMove"]>;
 /** An extra server of the app, with an extra cloud server's image filled in. */
 export type ExtraServer = NonNullable<DeployPlan["servers"]>[number];
 /** Portainer CE settings with their defaults filled in. */
