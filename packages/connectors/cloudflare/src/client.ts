@@ -979,6 +979,11 @@ function toScannedRecord(raw: z.infer<typeof ScannedRecordSchema>): RegistrarDns
   };
 }
 
+/** Of several zones with one name, the `active` one, else the first. */
+function preferActive(zones: z.infer<typeof ZoneSchema>[]): z.infer<typeof ZoneSchema> | undefined {
+  return zones.find((one) => one.status === "active") ?? zones[0];
+}
+
 function toZone(zone: z.infer<typeof ZoneSchema>): CloudflareZone {
   return {
     id: zone.id,
@@ -1353,11 +1358,15 @@ export class CloudflareClient {
 
   /**
    * Every zone named exactly `name` the token sees (one per account, and a moved or pending one
-   * beside an active one), only `accountId`'s when given.
+   * beside an active one), only `accountId`'s when given: asked of Cloudflare and checked here too,
+   * so another account's zone never comes back.
    */
   async #zonesByName(name: string, accountId?: string): Promise<z.infer<typeof ZoneSchema>[]> {
     const query = new URLSearchParams({ name, ...(accountId ? { "account.id": accountId } : {}) });
-    return this.#all(`/zones?${query}`, ZoneSchema, `look up the zone ${name}`, { perPage: 50 });
+    const zones = await this.#all(`/zones?${query}`, ZoneSchema, `look up the zone ${name}`, {
+      perPage: 50,
+    });
+    return accountId === undefined ? zones : zones.filter((one) => one.account?.id === accountId);
   }
 
   /**
@@ -1370,8 +1379,7 @@ export class CloudflareClient {
     options: { accountId?: string } = {},
   ): Promise<CloudflareZone | undefined> {
     for (const candidate of zoneCandidates(domain)) {
-      const zones = await this.#zonesByName(candidate, options.accountId);
-      const zone = zones.find((one) => one.status === "active") ?? zones[0];
+      const zone = preferActive(await this.#zonesByName(candidate, options.accountId));
       if (zone) return toZone(zone);
     }
     return undefined;
@@ -2492,25 +2500,24 @@ export class CloudflareClient {
       status === 409 ||
       body.errors.some((e) => e.code === ZONE_EXISTS_CODE || /already exists/i.test(e.message));
     if (!exists) this.#fail(status, body, what, hints);
+    // One lookup of every account's zones: the account's own answer, the others word the refusal.
     const zones = await this.#zonesByName(zoneName);
-    const zone = zones.find((one) => one.account?.id === accountId) ?? zones[0];
-    if (!zone) {
-      throw new OpsCrewError(
-        "PROVIDER_ERROR",
-        `Cloudflare says the zone ${zoneName} already exists, but this token cannot see it.`,
-        {
-          hint: "It may be in another Cloudflare account; move or delete it there, or use a token for that account.",
-        },
-      );
-    }
-    if (zone.account?.id && zone.account.id !== accountId) {
+    const own = preferActive(zones.filter((one) => one.account?.id === accountId));
+    if (own) return toZone(own);
+    if (zones.length > 0) {
       throw new OpsCrewError(
         "PROVIDER_ERROR",
         `The zone ${zoneName} already exists in another Cloudflare account.`,
         { hint: "Delete it there, or buy and manage the domain from that account." },
       );
     }
-    return toZone(zone);
+    throw new OpsCrewError(
+      "PROVIDER_ERROR",
+      `Cloudflare says the zone ${zoneName} already exists, but this token cannot see it.`,
+      {
+        hint: "It may be in another Cloudflare account; move or delete it there, or use a token for that account.",
+      },
+    );
   }
 
   /**
@@ -2597,11 +2604,20 @@ export class CloudflareClient {
   ): Promise<string[]> {
     const ids: string[] = [];
     for (let i = 0; i < records.length; i += BATCH_LIMIT) {
-      const posts = records.slice(i, i + BATCH_LIMIT);
-      const result = await this.#call(
+      const posts = records.slice(i, i + BATCH_LIMIT).map((r) => ({
+        type: r.type,
+        name: r.name,
+        ...(r.content === undefined ? {} : { content: r.content }),
+        ...(r.data === undefined ? {} : { data: r.data }),
+        ttl: r.ttl,
+        ...(r.proxied === undefined ? {} : { proxied: r.proxied }),
+        ...(r.priority === undefined ? {} : { priority: r.priority }),
+        ...(r.comment === undefined ? {} : { comment: r.comment }),
+      }));
+      const what = `create ${plural(posts.length, "DNS record")}`;
+      const answer = await this.#send(
         `/zones/${encodeURIComponent(zoneId)}/dns_records/batch`,
-        BatchResultSchema.nullish(),
-        `create ${plural(posts.length, "DNS record")}`,
+        what,
         {
           method: "POST",
           body: { posts },
@@ -2611,6 +2627,7 @@ export class CloudflareClient {
           },
         },
       );
+      const result = this.#parseWrite(BatchResultSchema.nullish(), answer.body.result, what);
       ids.push(...(result?.posts ?? []).map((r) => r.id));
     }
     return ids;

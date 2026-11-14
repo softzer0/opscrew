@@ -123,6 +123,18 @@ describe("CloudflareClient zones for a move", () => {
     expect((await cf.findZone("example.com", { accountId: ACCOUNT_A }))?.id).toBe(ZONE_A);
   });
 
+  it("never answers another account's zone, even when Cloudflare ignores the filter", async () => {
+    const { cf } = client({
+      "GET /zones?name=example.com": ok([
+        zoneOf(ZONE_A, ACCOUNT_A, "active", "a"),
+        zoneOf(ZONE_B, ACCOUNT_B, "pending", "b"),
+      ]),
+      "GET /zones?name=app.example.com": ok([]),
+    });
+    expect((await cf.findZone("app.example.com", { accountId: ACCOUNT_B }))?.id).toBe(ZONE_B);
+    expect(await cf.findZone("example.com", { accountId: "c".repeat(32) })).toBeUndefined();
+  });
+
   it("answers a moved zone when the account has no active one", async () => {
     const { fetch } = zonesApi([zoneOf("3".repeat(32), ACCOUNT_A, "moved", "old")], seen);
     const cf = new CloudflareClient({ token: TOKEN, fetch, sleep: noSleep });
@@ -184,6 +196,8 @@ describe("CloudflareClient zones for a move", () => {
         : fetch(input, init);
     const cf = new CloudflareClient({ token: TOKEN, fetch: create, sleep: noSleep });
     expect((await cf.createZone(ACCOUNT_B, "example.com")).id).toBe(ZONE_B);
+    // Another account's zone comes first, then the account's moved zone, then its active one.
+    expect((await cf.createZone(ACCOUNT_A, "example.com")).id).toBe(ZONE_A);
   });
 
   it("refuses a 409 for a zone that exists only in another account", async () => {
@@ -293,6 +307,45 @@ describe("CloudflareClient records with every field", () => {
     expect(bodies.map((b) => b.length)).toEqual([200, 200, 50]);
     expect(bodies[0]?.[0]).toEqual(records[0]);
     expect(bodies[2]?.[49]).toEqual(caa);
+  });
+
+  it("sends a listed record's named fields only, never its id or meta", async () => {
+    const { cf, calls } = client({ [`POST ${RECORDS}/batch`]: ok({ posts: [{ id: "new" }] }) });
+    const listed = {
+      id: "r1",
+      type: "MX",
+      name: "example.com",
+      content: "mx.example.net",
+      ttl: 300,
+      proxied: false,
+      priority: 10,
+      comment: "mail",
+      meta: { auto_added: false },
+    };
+    expect(await cf.createZoneRecords(ZONE_A, [listed])).toEqual(["new"]);
+    expect(calls[0]?.body).toStrictEqual({
+      posts: [
+        {
+          type: "MX",
+          name: "example.com",
+          content: "mx.example.net",
+          ttl: 300,
+          proxied: false,
+          priority: 10,
+          comment: "mail",
+        },
+      ],
+    });
+  });
+
+  it("never sends a batch again after a server error, saying it may have been made", async () => {
+    const { cf, calls } = client({
+      [`POST ${RECORDS}/batch`]: { status: 502, body: { success: false, errors: [] } },
+    });
+    const record = { type: "TXT", name: "example.com", content: '"v"', ttl: 1 };
+    const error = await rejection(cf.createZoneRecords(ZONE_A, [record]));
+    expect(error.message).toContain("may still have reached Cloudflare");
+    expect(calls).toHaveLength(1);
   });
 
   it("says which records exist when a later batch is refused", async () => {
