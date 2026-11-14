@@ -33,12 +33,20 @@ import { siteEnvSecret } from "../serverless/site";
 import { sshHostname, tunnelMode } from "../tunnel";
 import type { RenderedFile } from "../types";
 import { buildReads } from "./build";
-import { CLOUDFLARE_DEPLOY_SECRETS, renderCloudflareWorkersWorkflow } from "./cloudflare-workers";
+import {
+  CLOUDFLARE_DEPLOY_SECRETS,
+  CLOUDFLARE_DEPLOY_SECRETS_NEW,
+  renderCloudflareWorkersWorkflow,
+} from "./cloudflare-workers";
 import { edgeCheckStep } from "./edge-check";
 import { renderGithubPagesWorkflow } from "./github-pages";
 import { afterDeployJobs, deployJob, jobsBeforeDeploy } from "./jobs";
 import { inFolder, pushPaths } from "./paths";
-import { PORTAINER_DEPLOY_SECRETS, renderPortainerWorkflow } from "./portainer";
+import {
+  PORTAINER_DEPLOY_SECRETS,
+  PORTAINER_DEPLOY_SECRETS_NEW,
+  renderPortainerWorkflow,
+} from "./portainer";
 import { publicSshClosed, serverDeploySecrets } from "./servers";
 import {
   block,
@@ -94,10 +102,18 @@ import {
   switchCommands,
 } from "./switch";
 
-export { CLOUDFLARE_DEPLOY_SECRETS, renderCloudflareWorkersWorkflow } from "./cloudflare-workers";
+export {
+  CLOUDFLARE_DEPLOY_SECRETS,
+  CLOUDFLARE_DEPLOY_SECRETS_NEW,
+  renderCloudflareWorkersWorkflow,
+} from "./cloudflare-workers";
 export { PAGES_PUBLISH_JOB, renderGithubPagesWorkflow } from "./github-pages";
 export { DEPLOY_PAUSED_VARIABLE } from "./pause";
-export { PORTAINER_DEPLOY_SECRETS, portainerHealthUrl } from "./portainer";
+export {
+  PORTAINER_DEPLOY_SECRETS,
+  PORTAINER_DEPLOY_SECRETS_NEW,
+  portainerHealthUrl,
+} from "./portainer";
 export { serverDeploySecrets } from "./servers";
 export {
   buildRunner,
@@ -140,14 +156,21 @@ export {
  * The Cloudflare Access service token the deploy workflow reaches SSH through the tunnel with
  * (tunnel mode only; terraform outputs `deploy_service_token_client_id` and
  * `deploy_service_token_client_secret`). `opscrew provision` sets them next to
- * {@link DEPLOY_SECRETS}. While the app moves to another Cloudflare account, the `…New` ones hold
- * the new account's service token, which SSH tries once Access refuses the first.
+ * {@link DEPLOY_SECRETS}.
  */
 export const TUNNEL_DEPLOY_SECRETS = {
   serviceTokenId: "OPSCREW_TUNNEL_SERVICE_TOKEN_ID",
   serviceTokenSecret: "OPSCREW_TUNNEL_SERVICE_TOKEN_SECRET",
-  serviceTokenIdNew: "OPSCREW_TUNNEL_SERVICE_TOKEN_ID_NEW",
-  serviceTokenSecretNew: "OPSCREW_TUNNEL_SERVICE_TOKEN_SECRET_NEW",
+} as const;
+
+/**
+ * {@link TUNNEL_DEPLOY_SECRETS} of the new account while the app moves to another Cloudflare
+ * account: its deploy service token, which SSH uses once Access refuses the first. Provision never
+ * sets them.
+ */
+export const TUNNEL_DEPLOY_SECRETS_NEW = {
+  serviceTokenId: "OPSCREW_TUNNEL_SERVICE_TOKEN_ID_NEW",
+  serviceTokenSecret: "OPSCREW_TUNNEL_SERVICE_TOKEN_SECRET_NEW",
 } as const;
 
 const SSH_OPTS_BASE =
@@ -308,20 +331,39 @@ const ACCESS_SSH = "opscrew-access-ssh";
 
 /**
  * Writes the tunnel's `ProxyCommand` to `file`: `cloudflared access ssh` (at `cloudflared`) to the
- * host it is given, with the service token from the step's environment, and when that fails and
- * the `_NEW` one is set (during a move to another Cloudflare account, whose Access takes over at
- * the switch), once more with that. The script names the variables, never their values.
+ * host it is given, with the service token from the step's environment. While the `_NEW` one is
+ * set (during a move to another Cloudflare account, whose Access takes over at the switch), Access
+ * is first asked over HTTPS which token it takes, since cloudflared may wait for a browser login
+ * instead of failing on a refused one: the deploy's, else the new account's, else neither (a 401,
+ * 403 or redirect each time) and the connection fails. The tokens reach curl only in a header
+ * file only the runner user reads, removed right after; the script names the variables, never
+ * their values.
  */
 function accessSshScript(cloudflared: string, file: string): string[] {
-  const proxy = `"${cloudflared}" access ssh --hostname "$1"`;
+  const script = [
+    "#!/bin/sh",
+    "accepted() {",
+    '  headers="$(mktemp)"',
+    `  (umask 077 && printf 'CF-Access-Client-Id: %s\\nCF-Access-Client-Secret: %s\\n' "$1" "$2" > "$headers")`,
+    `  code="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' -H @"$headers" "https://$3" || true)"`,
+    '  rm -f "$headers"',
+    '  case "$code" in 401 | 403 | 3??) return 1 ;; esac',
+    "}",
+    'if [ -n "$TUNNEL_SERVICE_TOKEN_ID_NEW" ] && ! accepted "$TUNNEL_SERVICE_TOKEN_ID" "$TUNNEL_SERVICE_TOKEN_SECRET" "$1"; then',
+    '  if ! accepted "$TUNNEL_SERVICE_TOKEN_ID_NEW" "$TUNNEL_SERVICE_TOKEN_SECRET_NEW" "$1"; then',
+    `    echo "::error::Cloudflare Access refused the deploy's service token in both Cloudflare accounts, the one the app moves from and the one it moves to. Run opscrew cloudflare move again to set the new account's token, then run the workflow again." >&2`,
+    "    exit 1",
+    "  fi",
+    '  TUNNEL_SERVICE_TOKEN_ID="$TUNNEL_SERVICE_TOKEN_ID_NEW"',
+    '  TUNNEL_SERVICE_TOKEN_SECRET="$TUNNEL_SERVICE_TOKEN_SECRET_NEW"',
+    "  export TUNNEL_SERVICE_TOKEN_ID TUNNEL_SERVICE_TOKEN_SECRET",
+    "fi",
+    `exec "${cloudflared}" access ssh --hostname "$1"`,
+  ];
   return [
-    "    {",
-    "      echo '#!/bin/sh'",
-    `      echo '${proxy} && exit 0'`,
-    "      echo 'status=$?'",
-    `      echo '[ -n "$TUNNEL_SERVICE_TOKEN_ID_NEW" ] || exit "$status"'`,
-    `      echo 'TUNNEL_SERVICE_TOKEN_ID="$TUNNEL_SERVICE_TOKEN_ID_NEW" TUNNEL_SERVICE_TOKEN_SECRET="$TUNNEL_SERVICE_TOKEN_SECRET_NEW" exec ${proxy}'`,
-    `    } > ${file}`,
+    `    cat > ${file} <<'ACCESS_SSH'`,
+    ...script.map((line) => `    ${line}`),
+    "    ACCESS_SSH",
     `    chmod 700 ${file}`,
   ];
 }
@@ -885,8 +927,8 @@ function sshDeploy(plan: DeployPlan, ctx: RuntimeContext, upload: Upload): Deplo
       : [
           `    TUNNEL_SERVICE_TOKEN_ID: ${secret(plan, TUNNEL_DEPLOY_SECRETS.serviceTokenId)}`,
           `    TUNNEL_SERVICE_TOKEN_SECRET: ${secret(plan, TUNNEL_DEPLOY_SECRETS.serviceTokenSecret)}`,
-          `    TUNNEL_SERVICE_TOKEN_ID_NEW: ${secret(plan, TUNNEL_DEPLOY_SECRETS.serviceTokenIdNew)}`,
-          `    TUNNEL_SERVICE_TOKEN_SECRET_NEW: ${secret(plan, TUNNEL_DEPLOY_SECRETS.serviceTokenSecretNew)}`,
+          `    TUNNEL_SERVICE_TOKEN_ID_NEW: ${secret(plan, TUNNEL_DEPLOY_SECRETS_NEW.serviceTokenId)}`,
+          `    TUNNEL_SERVICE_TOKEN_SECRET_NEW: ${secret(plan, TUNNEL_DEPLOY_SECRETS_NEW.serviceTokenSecret)}`,
         ]),
   ];
   // The app's folder: OpsCrew's own servers (cloud-init) have only /srv/apps before the first deploy.
@@ -1495,16 +1537,14 @@ export function deploySecretNamesFor(plan: DeployPlan): string[] {
     ].map(siteEnvSecret);
     if (plan.target.provider === "github-pages") return values;
     const read = !promoted(plan) || plan.target.render === "ssr";
-    const { apiToken, accountId } = CLOUDFLARE_DEPLOY_SECRETS;
-    return [apiToken, accountId, ...(read ? values : [])];
+    return [...Object.values(CLOUDFLARE_DEPLOY_SECRETS), ...(read ? values : [])];
   }
   const build: string[] = promoted(plan)
     ? []
     : [DEPLOY_SECRETS.buildEnv, DEPLOY_SECRETS.buildSecrets];
   if (plan.target.provider === "portainer") {
     const cloudflare = plan.target.redeploy === "cloudflare";
-    const { webhookUrl, accessClientId, accessClientSecret } = PORTAINER_DEPLOY_SECRETS;
-    return [...build, ...(cloudflare ? [webhookUrl, accessClientId, accessClientSecret] : [])];
+    return [...build, ...(cloudflare ? Object.values(PORTAINER_DEPLOY_SECRETS) : [])];
   }
   const tunnel = tunnelMode(plan);
   const connection = deploysInPlace(plan)
@@ -1513,9 +1553,7 @@ export function deploySecretNamesFor(plan: DeployPlan): string[] {
         DEPLOY_SECRETS.host,
         DEPLOY_SECRETS.sshKey,
         DEPLOY_SECRETS.knownHosts,
-        ...(tunnel
-          ? [TUNNEL_DEPLOY_SECRETS.serviceTokenId, TUNNEL_DEPLOY_SECRETS.serviceTokenSecret]
-          : []),
+        ...(tunnel ? Object.values(TUNNEL_DEPLOY_SECRETS) : []),
       ];
   const servers = plan.servers ?? [];
   // The extra servers' known hosts, and their addresses unless public SSH is closed (then the
@@ -1554,13 +1592,13 @@ export async function isMoveReady(
   if (plan.target.provider === "cloudflare-workers") {
     const dir = plan.infra.dir.replace(/\\/g, "/").replace(/\/+$/, "");
     const main = (await read(`${dir}/main.tf`)) ?? "";
-    return main.includes("var.custom_domains") && reads(CLOUDFLARE_DEPLOY_SECRETS.apiTokenNew);
+    return main.includes("var.custom_domains") && reads(CLOUDFLARE_DEPLOY_SECRETS_NEW.apiToken);
   }
   if (plan.target.provider === "portainer" && plan.target.redeploy === "cloudflare") {
-    return reads(PORTAINER_DEPLOY_SECRETS.accessClientIdNew);
+    return reads(PORTAINER_DEPLOY_SECRETS_NEW.accessClientId);
   }
   if (tunnelMode(plan) && !deploysInPlace(plan)) {
-    return reads(TUNNEL_DEPLOY_SECRETS.serviceTokenIdNew);
+    return reads(TUNNEL_DEPLOY_SECRETS_NEW.serviceTokenId);
   }
   return true;
 }

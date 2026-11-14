@@ -149,9 +149,7 @@ describe("the deploy job on a runner machine", () => {
     expect(install).toContain('chmod 0755 "$RUNNER_TEMP/cloudflared"');
     const setup = stepOf(deploy, SSH_SETUP).run ?? "";
     expect(setup).toContain('echo "  ProxyCommand $RUNNER_TEMP/opscrew-ssh/opscrew-access-ssh %h"');
-    expect(setup).toContain(
-      `echo '"$RUNNER_TEMP/cloudflared" access ssh --hostname "$1" && exit 0'`,
-    );
+    expect(setup).toContain('exec "$RUNNER_TEMP/cloudflared" access ssh --hostname "$1"\n');
     expect(setup).toContain('} > "$RUNNER_TEMP/opscrew-ssh/config"');
     expect(stepOf(deploy, UPLOAD).run).toContain('-F "$RUNNER_TEMP/opscrew-ssh/config"');
     expect(stepOf(deploy, "start").env).toEqual(
@@ -194,7 +192,7 @@ describe.skipIf(!bashWorks())("the SSH steps on a runner machine", { timeout: 18
     );
     // The ProxyCommand script finds cloudflared in the job's temp folder when it runs.
     expect(readFileSync(`${temp}/opscrew-ssh/opscrew-access-ssh`, "utf8")).toContain(
-      '"$RUNNER_TEMP/cloudflared" access ssh --hostname "$1" && exit 0\n',
+      'exec "$RUNNER_TEMP/cloudflared" access ssh --hostname "$1"\n',
     );
 
     // The upload's ssh and scp get the job's own key, known hosts and config.
@@ -291,11 +289,7 @@ describe("deploySecretNamesFor on a runner machine", () => {
     );
     const tunnel = staging(tunnelPlan(), { runner: "host" });
     expect(deploySecretNamesFor(tunnel)).toEqual(
-      expect.arrayContaining([
-        ...connection,
-        TUNNEL_DEPLOY_SECRETS.serviceTokenId,
-        TUNNEL_DEPLOY_SECRETS.serviceTokenSecret,
-      ]),
+      expect.arrayContaining([...connection, ...Object.values(TUNNEL_DEPLOY_SECRETS)]),
     );
     // The server's runner deploys on its own machine and needs none.
     expect(deploySecretNamesFor(staging(serverPlan(), { runner: "server" }))).not.toContain(

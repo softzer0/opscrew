@@ -1164,8 +1164,7 @@ describe("deploySecretNamesFor", () => {
     expect(deploySecretNamesFor(server)).toEqual([...app, DEPLOY_SECRETS.originTls, ...build]);
     expect(deploySecretNamesFor(tunnel)).toEqual([
       ...connection,
-      TUNNEL_DEPLOY_SECRETS.serviceTokenId,
-      TUNNEL_DEPLOY_SECRETS.serviceTokenSecret,
+      ...Object.values(TUNNEL_DEPLOY_SECRETS),
       ...app,
       ...build,
     ]);
@@ -1184,9 +1183,7 @@ describe("deploySecretNamesFor", () => {
     expect(deploySecretNamesFor(portainerTestPlan({ redeploy: "updater" }))).toEqual(build);
     expect(deploySecretNamesFor(portainerTestPlan({ redeploy: "cloudflare" }))).toEqual([
       ...build,
-      PORTAINER_DEPLOY_SECRETS.webhookUrl,
-      PORTAINER_DEPLOY_SECRETS.accessClientId,
-      PORTAINER_DEPLOY_SECRETS.accessClientSecret,
+      ...Object.values(PORTAINER_DEPLOY_SECRETS),
     ]);
   });
 

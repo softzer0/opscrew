@@ -286,13 +286,26 @@ jobs:
             echo '  ProxyCommand ~/.ssh/opscrew-access-ssh %h'
           } > ~/.ssh/config
           chmod 600 ~/.ssh/config
-          {
-            echo '#!/bin/sh'
-            echo '"/usr/local/bin/cloudflared" access ssh --hostname "$1" && exit 0'
-            echo 'status=$?'
-            echo '[ -n "$TUNNEL_SERVICE_TOKEN_ID_NEW" ] || exit "$status"'
-            echo 'TUNNEL_SERVICE_TOKEN_ID="$TUNNEL_SERVICE_TOKEN_ID_NEW" TUNNEL_SERVICE_TOKEN_SECRET="$TUNNEL_SERVICE_TOKEN_SECRET_NEW" exec "/usr/local/bin/cloudflared" access ssh --hostname "$1"'
-          } > ~/.ssh/opscrew-access-ssh
+          cat > ~/.ssh/opscrew-access-ssh <<'ACCESS_SSH'
+          #!/bin/sh
+          accepted() {
+            headers="$(mktemp)"
+            (umask 077 && printf 'CF-Access-Client-Id: %s\\nCF-Access-Client-Secret: %s\\n' "$1" "$2" > "$headers")
+            code="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' -H @"$headers" "https://$3" || true)"
+            rm -f "$headers"
+            case "$code" in 401 | 403 | 3??) return 1 ;; esac
+          }
+          if [ -n "$TUNNEL_SERVICE_TOKEN_ID_NEW" ] && ! accepted "$TUNNEL_SERVICE_TOKEN_ID" "$TUNNEL_SERVICE_TOKEN_SECRET" "$1"; then
+            if ! accepted "$TUNNEL_SERVICE_TOKEN_ID_NEW" "$TUNNEL_SERVICE_TOKEN_SECRET_NEW" "$1"; then
+              echo "::error::Cloudflare Access refused the deploy's service token in both Cloudflare accounts, the one the app moves from and the one it moves to. Run opscrew cloudflare move again to set the new account's token, then run the workflow again." >&2
+              exit 1
+            fi
+            TUNNEL_SERVICE_TOKEN_ID="$TUNNEL_SERVICE_TOKEN_ID_NEW"
+            TUNNEL_SERVICE_TOKEN_SECRET="$TUNNEL_SERVICE_TOKEN_SECRET_NEW"
+            export TUNNEL_SERVICE_TOKEN_ID TUNNEL_SERVICE_TOKEN_SECRET
+          fi
+          exec "/usr/local/bin/cloudflared" access ssh --hostname "$1"
+          ACCESS_SSH
           chmod 700 ~/.ssh/opscrew-access-ssh
       - name: Upload runtime files and environment
         env:

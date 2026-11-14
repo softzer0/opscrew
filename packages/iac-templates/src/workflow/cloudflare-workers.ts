@@ -44,14 +44,21 @@ import {
  * The GitHub Actions secrets of a Cloudflare hosting target's deploy job (before
  * `deploySecretName`): the deploy token, which holds only Account → Workers Scripts → Edit, and
  * the account id. `opscrew provision` sets them; the build reads the app's variables
- * ({@link siteEnvSecret}). While the app moves to another Cloudflare account, the `…New` ones hold
- * that account's, to which the deploy job also deploys the new version ({@link moveDeployStep}).
+ * ({@link siteEnvSecret}).
  */
 export const CLOUDFLARE_DEPLOY_SECRETS = {
   apiToken: "OPSCREW_CLOUDFLARE_API_TOKEN",
   accountId: "OPSCREW_CLOUDFLARE_ACCOUNT_ID",
-  apiTokenNew: "OPSCREW_CLOUDFLARE_API_TOKEN_NEW",
-  accountIdNew: "OPSCREW_CLOUDFLARE_ACCOUNT_ID_NEW",
+} as const;
+
+/**
+ * {@link CLOUDFLARE_DEPLOY_SECRETS} of the new account while the app moves to another Cloudflare
+ * account, to which the deploy job also deploys the new version ({@link moveDeployStep}). Provision
+ * never sets them.
+ */
+export const CLOUDFLARE_DEPLOY_SECRETS_NEW = {
+  apiToken: "OPSCREW_CLOUDFLARE_API_TOKEN_NEW",
+  accountId: "OPSCREW_CLOUDFLARE_ACCOUNT_ID_NEW",
 } as const;
 
 /** Where the deploy job writes the app's secrets for the new version (bash, then Actions syntax). */
@@ -271,8 +278,8 @@ function moveDeployStep(
   return [
     "- name: Deploy the new version to the new Cloudflare account too",
     "  env:",
-    `    CLOUDFLARE_API_TOKEN: ${secret(plan, CLOUDFLARE_DEPLOY_SECRETS.apiTokenNew)}`,
-    `    CLOUDFLARE_ACCOUNT_ID: ${secret(plan, CLOUDFLARE_DEPLOY_SECRETS.accountIdNew)}`,
+    `    CLOUDFLARE_API_TOKEN: ${secret(plan, CLOUDFLARE_DEPLOY_SECRETS_NEW.apiToken)}`,
+    `    CLOUDFLARE_ACCOUNT_ID: ${secret(plan, CLOUDFLARE_DEPLOY_SECRETS_NEW.accountId)}`,
     `    MESSAGE: ${o.message}`,
     ...o.env,
     ...run([

@@ -1,7 +1,16 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: bash and GitHub Actions syntax, not JavaScript templates.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -52,7 +61,7 @@ describe("renderWorkflow for an own server in tunnel mode", () => {
     expect(configure?.run).toContain("echo 'Host ssh-shop.example.com'");
     expect(configure?.run).toContain("echo '  ProxyCommand ~/.ssh/opscrew-access-ssh %h'");
     expect(configure?.run).toContain(
-      `echo '"/usr/local/bin/cloudflared" access ssh --hostname "$1" && exit 0'`,
+      'exec "/usr/local/bin/cloudflared" access ssh --hostname "$1"\n',
     );
     expect(sshSteps.map((s) => s.name)).toEqual([
       "Upload runtime files and environment",
@@ -206,9 +215,10 @@ describe.skipIf(!bashWorks())("cloudflared install script", { timeout: 180_000 }
 
 /*
  * Runs the generated SSH setup in bash with its home in a temp folder, then the ProxyCommand it
- * wrote as ssh runs it (`exec <command>` in a shell, `%h` filled in), with a stub cloudflared that
- * logs the service token it gets, fails for the one in REFUSED (as when Access refuses it) and
- * otherwise passes the connection through.
+ * wrote as ssh runs it (`exec <command>` in a shell, `%h` filled in), with stubs: curl logs its
+ * arguments and the header file it sends, and answers 401 (Access's refusal of a service token)
+ * for a client id in REFUSED, else 200; cloudflared logs the service token it gets, fails for one
+ * in REFUSED and otherwise passes the connection through.
  */
 describe.skipIf(!bashWorks())("the tunnel's ProxyCommand", { timeout: 180_000 }, () => {
   const configure =
@@ -221,24 +231,33 @@ describe.skipIf(!bashWorks())("the tunnel's ProxyCommand", { timeout: 180_000 },
   };
   const UNSET = { TUNNEL_SERVICE_TOKEN_ID_NEW: "", TUNNEL_SERVICE_TOKEN_SECRET_NEW: "" };
 
+  function stub(path: string, lines: string[]) {
+    writeFileSync(path, ["#!/bin/sh", ...lines, ""].join("\n"));
+    chmodSync(path, 0o755);
+  }
+
   function connect(env: Record<string, string>) {
     const work = mkdtempSync(join(tmpdir(), "opscrew-access-ssh-")).replaceAll("\\", "/");
     try {
-      const stub = `${work}/cloudflared`;
-      writeFileSync(
-        stub,
-        [
-          "#!/bin/sh",
-          'echo "$TUNNEL_SERVICE_TOKEN_ID $TUNNEL_SERVICE_TOKEN_SECRET $*" >> "$CALLS"',
-          '[ "$TUNNEL_SERVICE_TOKEN_ID" = "$REFUSED" ] && exit 1',
-          "exec cat",
-          "",
-        ].join("\n"),
-      );
-      chmodSync(stub, 0o755);
+      stub(`${work}/cloudflared`, [
+        'echo "$TUNNEL_SERVICE_TOKEN_ID $TUNNEL_SERVICE_TOKEN_SECRET $*" >> "$WORK/cloudflared.log"',
+        'case " $REFUSED " in *" $TUNNEL_SERVICE_TOKEN_ID "*) exit 1 ;; esac',
+        "exec cat",
+      ]);
+      stub(`${work}/curl`, [
+        'echo "curl $*" >> "$WORK/curl.log"',
+        "headers=",
+        'for arg in "$@"; do case "$arg" in @*) headers="${arg#@}" ;; esac; done',
+        'cat "$headers" >> "$WORK/headers.log"',
+        'id="$(sed -n "s/^CF-Access-Client-Id: //p" "$headers")"',
+        'case " $REFUSED " in *" $id "*) printf 401 ;; *) printf 200 ;; esac',
+      ]);
+      mkdirSync(`${work}/tmp`);
       // Git for Windows' install cannot set a folder's mode on every drive; the paths are the point.
       const install = 'install() { mkdir -p "${@: -1}"; }';
-      const script = configure.replaceAll("/usr/local/bin/cloudflared", stub);
+      const script = configure
+        .replaceAll("/usr/local/bin/cloudflared", `${work}/cloudflared`)
+        .replaceAll("$(curl ", `$("${work}/curl" `);
       const setup = spawnSync("bash", ["-c", `${install}\n${script}`], {
         env: { ...process.env, HOME: work, SSH_KEY: "key", KNOWN_HOSTS: "known" },
         encoding: "utf8",
@@ -250,40 +269,89 @@ describe.skipIf(!bashWorks())("the tunnel's ProxyCommand", { timeout: 180_000 },
         "bash",
         ["-c", `exec ${proxy.replace("%h", "ssh-shop.example.com")}`],
         {
-          env: { ...process.env, HOME: work, CALLS: `${work}/calls`, ...env },
+          env: { ...process.env, HOME: work, WORK: work, TMPDIR: `${work}/tmp`, ...env },
           input: `${BANNER}\n`,
           encoding: "utf8",
         },
       );
-      const calls = existsSync(`${work}/calls`) ? readFileSync(`${work}/calls`, "utf8") : "";
-      return { status: result.status, stdout: result.stdout, calls: calls.trim().split("\n") };
+      const lines = (name: string) =>
+        existsSync(`${work}/${name}`)
+          ? readFileSync(`${work}/${name}`, "utf8").trim().split("\n")
+          : [];
+      return {
+        status: result.status,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        probes: lines("curl.log"),
+        headers: lines("headers.log"),
+        connections: lines("cloudflared.log"),
+        // The header files the probes wrote, none of them left behind.
+        left: readdirSync(`${work}/tmp`),
+      };
     } finally {
       rmSync(work, { recursive: true, force: true });
     }
   }
 
   const HOST = "access ssh --hostname ssh-shop.example.com";
+  const PROBE =
+    /^curl -sS --max-time 15 -o \/dev\/null -w %\{http_code\} -H @\S+ https:\/\/ssh-shop\.example\.com$/;
 
-  it("connects with the deploy's service token while Access takes it, even with a new one set", () => {
-    const result = connect({ ...OLD, ...NEW, REFUSED: "none" });
-    expect(result.status).toBe(0);
+  it("connects with the deploy's service token while Access takes it, after one probe", () => {
+    const result = connect({ ...OLD, ...NEW, REFUSED: "" });
+    expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toBe(`${BANNER}\n`);
-    expect(result.calls).toEqual([`old-id old-secret ${HOST}`]);
+    expect(result.probes).toHaveLength(1);
+    expect(result.probes[0]).toMatch(PROBE);
+    expect(result.headers).toEqual([
+      "CF-Access-Client-Id: old-id",
+      "CF-Access-Client-Secret: old-secret",
+    ]);
+    expect(result.connections).toEqual([`old-id old-secret ${HOST}`]);
+    expect(result.left).toEqual([]);
   });
 
-  it("tries the new account's service token once Access refuses the old one", () => {
+  it("connects with the new account's service token once Access refuses the old one", () => {
     const result = connect({ ...OLD, ...NEW, REFUSED: "old-id" });
-    expect(result.status).toBe(0);
-    // The connection's first bytes reach the second try: the failed one read none of them.
+    expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toBe(`${BANNER}\n`);
-    expect(result.calls).toEqual([`old-id old-secret ${HOST}`, `new-id new-secret ${HOST}`]);
+    expect(result.probes).toHaveLength(2);
+    for (const probe of result.probes) {
+      expect(probe).toMatch(PROBE);
+      // The tokens reach curl only in the header file.
+      expect(probe).not.toMatch(/old-|new-/);
+    }
+    expect(result.headers.slice(2)).toEqual([
+      "CF-Access-Client-Id: new-id",
+      "CF-Access-Client-Secret: new-secret",
+    ]);
+    expect(result.connections).toEqual([`new-id new-secret ${HOST}`]);
+    expect(result.left).toEqual([]);
   });
 
-  it("fails as before when Access refuses the token and no new one is set", () => {
-    const result = connect({ ...OLD, ...UNSET, REFUSED: "old-id" });
+  it("connects as before, with no probe, when no new token is set", () => {
+    const refused = connect({ ...OLD, ...UNSET, REFUSED: "old-id" });
+    expect(refused.status).toBe(1);
+    expect(refused.stdout).toBe("");
+    expect(refused.probes).toEqual([]);
+    expect(refused.connections).toEqual([`old-id old-secret ${HOST}`]);
+    const taken = connect({ ...OLD, ...UNSET, REFUSED: "" });
+    expect(taken.status, taken.stderr).toBe(0);
+    expect(taken.stdout).toBe(`${BANNER}\n`);
+    expect(taken.probes).toEqual([]);
+  });
+
+  it("fails without connecting when both accounts' Access refuse their tokens, and says so", () => {
+    const result = connect({ ...OLD, ...NEW, REFUSED: "old-id new-id" });
     expect(result.status).toBe(1);
     expect(result.stdout).toBe("");
-    expect(result.calls).toEqual([`old-id old-secret ${HOST}`]);
+    expect(result.probes).toHaveLength(2);
+    expect(result.connections).toEqual([]);
+    expect(result.stderr).toContain(
+      "::error::Cloudflare Access refused the deploy's service token in both Cloudflare accounts",
+    );
+    expect(result.stderr).not.toMatch(/old-secret|new-secret/);
+    expect(result.left).toEqual([]);
   });
 });
 

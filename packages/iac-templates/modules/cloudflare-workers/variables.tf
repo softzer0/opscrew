@@ -37,7 +37,7 @@ variable "preview_urls" {
 }
 
 variable "custom_domains" {
-  description = "Give the Worker its custom domains; false while a move between site hosts leaves the hostnames with the other host."
+  description = "Give the Worker its custom domains; false while a move between site hosts leaves the hostnames with the other host, or while a move to another Cloudflare account prepares the Worker there."
   type        = bool
   default     = true
 }

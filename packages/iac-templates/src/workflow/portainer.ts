@@ -35,15 +35,22 @@ import {
  * (`https://<portainer hostname>/api/stacks/webhooks/<uuid>`, a secret) and the Access service
  * token (terraform outputs `deploy_service_token_client_id` and
  * `deploy_service_token_client_secret`). `opscrew provision` sets them; the build job also reads
- * `OPSCREW_BUILD_ENV`. While the app moves to another Cloudflare account, the `…New` ones hold the
- * new account's service token, which the webhook call tries once Access refuses the first.
+ * `OPSCREW_BUILD_ENV`.
  */
 export const PORTAINER_DEPLOY_SECRETS = {
   webhookUrl: "OPSCREW_PORTAINER_WEBHOOK_URL",
   accessClientId: "OPSCREW_PORTAINER_ACCESS_CLIENT_ID",
   accessClientSecret: "OPSCREW_PORTAINER_ACCESS_CLIENT_SECRET",
-  accessClientIdNew: "OPSCREW_PORTAINER_ACCESS_CLIENT_ID_NEW",
-  accessClientSecretNew: "OPSCREW_PORTAINER_ACCESS_CLIENT_SECRET_NEW",
+} as const;
+
+/**
+ * The Access service token of {@link PORTAINER_DEPLOY_SECRETS} in the new account while the app
+ * moves to another Cloudflare account, which the webhook call uses once Access refuses the first.
+ * Provision never sets them.
+ */
+export const PORTAINER_DEPLOY_SECRETS_NEW = {
+  accessClientId: "OPSCREW_PORTAINER_ACCESS_CLIENT_ID_NEW",
+  accessClientSecret: "OPSCREW_PORTAINER_ACCESS_CLIENT_SECRET_NEW",
 } as const;
 
 /**
@@ -159,8 +166,8 @@ function webhookEnv(plan: DeployPlan): string[] {
     `    WEBHOOK_URL: ${secret(plan, PORTAINER_DEPLOY_SECRETS.webhookUrl)}`,
     `    ACCESS_CLIENT_ID: ${secret(plan, PORTAINER_DEPLOY_SECRETS.accessClientId)}`,
     `    ACCESS_CLIENT_SECRET: ${secret(plan, PORTAINER_DEPLOY_SECRETS.accessClientSecret)}`,
-    `    ACCESS_CLIENT_ID_NEW: ${secret(plan, PORTAINER_DEPLOY_SECRETS.accessClientIdNew)}`,
-    `    ACCESS_CLIENT_SECRET_NEW: ${secret(plan, PORTAINER_DEPLOY_SECRETS.accessClientSecretNew)}`,
+    `    ACCESS_CLIENT_ID_NEW: ${secret(plan, PORTAINER_DEPLOY_SECRETS_NEW.accessClientId)}`,
+    `    ACCESS_CLIENT_SECRET_NEW: ${secret(plan, PORTAINER_DEPLOY_SECRETS_NEW.accessClientSecret)}`,
   ];
 }
 

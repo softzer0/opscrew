@@ -1,10 +1,19 @@
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { ACCOUNT_ID, testCloudflare, testContext, testPlan } from "../__fixtures__/plans";
+import {
+  CLOUDFLARE_DEPLOY_SECRETS,
+  CLOUDFLARE_DEPLOY_SECRETS_NEW,
+  isMoveReady,
+  PORTAINER_DEPLOY_SECRETS,
+  PORTAINER_DEPLOY_SECRETS_NEW,
+  renderWorkflow,
+  TUNNEL_DEPLOY_SECRETS,
+  TUNNEL_DEPLOY_SECRETS_NEW,
+} from "../index";
 import { renderInfra } from "../infra";
 import { portainerTestPlan } from "../portainer-target/__fixtures__/plans";
 import { cloudflarePlan } from "../serverless/__fixtures__/plans";
-import { isMoveReady, renderWorkflow } from "./index";
 
 const ctx = testContext({ cloudflare: { ...testCloudflare(), accountId: ACCOUNT_ID } });
 
@@ -29,6 +38,28 @@ function without(files: Map<string, string>, needle: string): Map<string, string
     ]),
   );
 }
+
+describe("the new account's deploy secrets", () => {
+  it("are objects of their own, so the provisioned names never include them", () => {
+    for (const plain of [
+      TUNNEL_DEPLOY_SECRETS,
+      PORTAINER_DEPLOY_SECRETS,
+      CLOUDFLARE_DEPLOY_SECRETS,
+    ]) {
+      expect(Object.values(plain).filter((name) => name.endsWith("_NEW"))).toEqual([]);
+    }
+    expect(Object.values(TUNNEL_DEPLOY_SECRETS_NEW)).toEqual(
+      Object.values(TUNNEL_DEPLOY_SECRETS).map((name) => `${name}_NEW`),
+    );
+    expect(Object.values(PORTAINER_DEPLOY_SECRETS_NEW)).toEqual([
+      `${PORTAINER_DEPLOY_SECRETS.accessClientId}_NEW`,
+      `${PORTAINER_DEPLOY_SECRETS.accessClientSecret}_NEW`,
+    ]);
+    expect(Object.values(CLOUDFLARE_DEPLOY_SECRETS_NEW)).toEqual(
+      Object.values(CLOUDFLARE_DEPLOY_SECRETS).map((name) => `${name}_NEW`),
+    );
+  });
+});
 
 describe("isMoveReady", () => {
   const tunnel = testPlan({ provider: "own", access: "tunnel", domain: "shop.example.com" });

@@ -881,7 +881,7 @@ describe.skipIf(!bash)("the promoted environment's check of the build's run (nee
 
 describe("deploySecretNamesFor on Cloudflare's hosting", () => {
   it("lists the deploy token, the account id and the app's variables, which a promoted static site does not read", () => {
-    const token = [CLOUDFLARE_DEPLOY_SECRETS.apiToken, CLOUDFLARE_DEPLOY_SECRETS.accountId];
+    const token = Object.values(CLOUDFLARE_DEPLOY_SECRETS);
     expect(token).toEqual(["OPSCREW_CLOUDFLARE_API_TOKEN", "OPSCREW_CLOUDFLARE_ACCOUNT_ID"]);
     const env = ["API_KEY", "PUBLIC_SITE_URL"];
     const values = ["OPSCREW_ENV_API_KEY", "OPSCREW_ENV_PUBLIC_SITE_URL"];
