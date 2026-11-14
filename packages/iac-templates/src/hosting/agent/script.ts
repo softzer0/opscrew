@@ -56,7 +56,8 @@ import {
  * environment and Passenger (research R14), so the app root is the folder `app/`
  * (`opscrew/<app>-<env>/app` from the home folder), which the agent makes and never switches or
  * prunes. An `app` request with `action=create` makes it with the settings' version and startup
- * file, then hands the selector the values of `shared/.env` (`set --env-vars`), as an `env` request
+ * file (unless the selector's registry already has the app, which is kept, so a create can be asked
+ * again), then hands the selector the values of `shared/.env` (`set --env-vars`), as an `env` request
  * does again; the file is linked into each release too. The header of the section the selector
  * added to `~/.cl.selector/htaccess_cache` is kept in `state/selector-section` (empty when none, or
  * more than one, was added). The app is made with the startup file `current/<startup file>`, and
@@ -1101,36 +1102,55 @@ cache_headers() {
   if [ -f "$cache" ]; then grep '^\\[' "$cache" || true; fi
 }
 
+# Whether CloudLinux's selector already has an app at the app root: its registry,
+# ~/.cl.selector/node-selector.json (python-selector.json for Python), names the folder app/, which
+# it keys apps by (the folder the root resolves to, research R14), from the home folder or whole.
+selector_has_app() {
+  local registry=$HOME/.cl.selector/node-selector.json root
+  if [ "$APP_KIND" = python ]; then registry=$HOME/.cl.selector/python-selector.json; fi
+  root=$(app_root)
+  [ -f "$registry" ] && grep -qF -e "\\"$root\\"" -e "/$root\\"" "$registry"
+}
+
 # Makes the app in CloudLinux's selector, its root the folder app/ (made first, with app/current a
 # link to ../current, kept), started from current/<startup file> through that link and served at
 # the hostname's root; keeps the header of the section the selector added to htaccess_cache (empty
-# when it added none, or more than one). When the selector refuses to make it, the answer's made=no
-# says nothing was made, so the CLI forgets the app it recorded before asking. When the selector
-# made the app but refused its settings, the answer is done, its note saying so.
+# when it added none, or more than one). Safe to ask again, as provision does after an answer that
+# wasn't clear: an app the selector already has is kept as it is, its note says so, and the rest is
+# done again (the section added since a create that stopped part-way, the settings). When the
+# selector refuses to make it, the answer's made=no says nothing was made, so the CLI forgets the
+# app it recorded before asking. When the selector refused the app's settings, the answer is done,
+# its note saying so.
 app_create() {
-  local name=$1 mode=() added
+  local name=$1 mode=() added note=""
   if [ "$APP_KIND" = node ]; then mode=(--app-mode production); fi
   mkdir -p app
   if [ ! -L app/current ]; then ln -s ../current app/current; fi
-  cache_headers > state/selector.before
-  if ! selector create --version "$RUNTIME_VERSION" --app-root "$(app_root)" --app-uri / \${mode[@]+"\${mode[@]}"} --domain "$HOST_NAME" --startup-file "current/$STARTUP_FILE"; then
-    rm -f state/selector.before
-    answer "$name" failed "CloudLinux's selector didn't make the app: \${SELECTOR_SAID:-no answer}" made=no
-    return 0
-  fi
-  cache_headers | grep -vxF -f state/selector.before > state/selector.added || true
-  added=$(wc -l < state/selector.added)
-  if [ "$added" -eq 1 ]; then
-    mv -f state/selector.added state/selector-section
+  if selector_has_app; then
+    note="CloudLinux's selector already had the app, from an earlier request, so it was kept as it is"
   else
-    : > state/selector-section
+    cache_headers > state/selector.before
+    if ! selector create --version "$RUNTIME_VERSION" --app-root "$(app_root)" --app-uri / \${mode[@]+"\${mode[@]}"} --domain "$HOST_NAME" --startup-file "current/$STARTUP_FILE"; then
+      rm -f state/selector.before
+      answer "$name" failed "CloudLinux's selector didn't make the app: \${SELECTOR_SAID:-no answer}" made=no
+      return 0
+    fi
   fi
-  rm -f state/selector.before state/selector.added
+  # The sections added since state/selector.before: this create's, or one that stopped part-way.
+  if [ -f state/selector.before ]; then
+    cache_headers | grep -vxF -f state/selector.before > state/selector.added || true
+    added=$(wc -l < state/selector.added)
+    if [ "$added" -eq 1 ]; then
+      mv -f state/selector.added state/selector-section
+    else
+      : > state/selector-section
+    fi
+    rm -f state/selector.before state/selector.added
+  fi
   if ! pass_env; then
-    answer "$name" done "" "note=CloudLinux's selector made the app but refused its settings, so the app gets them only from its .env file until a settings change hands them over again"
-    return 0
+    note="\${note:+$note; }CloudLinux's selector made the app but refused its settings, so the app gets them only from its .env file until a settings change hands them over again"
   fi
-  answer "$name" done ""
+  if [ -n "$note" ]; then answer "$name" done "" "note=$note"; else answer "$name" done ""; fi
 }
 
 # Decodes value $1 of a line of shared/.env as OpsCrew writes it (bare; in single quotes; or in

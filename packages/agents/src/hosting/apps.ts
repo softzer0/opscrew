@@ -15,23 +15,29 @@ import { sendRequest, type WaitOptions } from "./requests";
 /** The interpreter's name in plain English. */
 export const RUNTIME_NAMES = { nodejs: "Node.js", python: "Python" } as const;
 
-/** Plan B's `app` step for a Node.js or Python app OpsCrew didn't make in the selector yet. */
+/**
+ * Plan B's `app` step for a Node.js or Python app OpsCrew didn't make in the selector yet: asked
+ * `again` while the record has it only as `asked` (no clear answer came; the agent keeps an app the
+ * selector already has).
+ */
 export function appStep(
   target: HostingDeployTarget,
   record: Pick<HostingRecord, "objects"> | undefined,
 ): Extract<AppStep, { kind: "app" }> | undefined {
   const { runtime } = target;
-  if (runtime === undefined || recordedObject(record, "app") !== undefined) return undefined;
-  return { kind: "app", ...runtime };
+  if (runtime === undefined) return undefined;
+  const app = recordedObject(record, "app");
+  if (app === undefined) return { kind: "app", ...runtime };
+  return app.state === "asked" ? { kind: "app", ...runtime, again: true } : undefined;
 }
 
 /**
  * Asks the agent to make the app in the selector (`create`) or remove it (`destroy`), bound to the
  * approved plan's hash, and waits for its answer: its note, if any (what a removal left, or the
- * settings the selector refused when it made the app). A create's caller records the app before
- * (a stop or a wait without an answer may leave it made); `madeNothing` runs only on an answer that
- * says the agent made nothing: it refused the request, or the selector refused to make the app
- * (`made=no`).
+ * settings the selector refused when it made the app, or that it already had it). A create's
+ * caller records the app as `asked` before (a stop or a wait without an answer may leave it made);
+ * `madeNothing` runs only on an answer that says the agent made nothing: it refused the request, or
+ * the selector refused to make the app (`made=no`).
  * @throws OpsCrewError `PROVIDER_ERROR` when the agent didn't carry it out.
  */
 export async function selectorApp(
@@ -64,9 +70,9 @@ export async function selectorApp(
   }
   throw new OpsCrewError(
     "PROVIDER_ERROR",
-    `The agent didn't say it made the app in CloudLinux's selector: ${reason}. OpsCrew keeps the app recorded in .opscrew/hosting.json, so \`opscrew destroy\` removes it if it is there.`,
+    `The agent didn't say it made the app in CloudLinux's selector: ${reason}. OpsCrew keeps the app recorded as asked for in .opscrew/hosting.json, so \`opscrew destroy\` removes it if it is there.`,
     {
-      hint: "The panel's Setup Node.js App or Setup Python App page shows whether the app is there, and `opscrew logs` the agent's lines. If it is there, run `opscrew provision` again; if it isn't, remove the entry of kind \"app\" from .opscrew/hosting.json first.",
+      hint: "`opscrew logs` shows the agent's lines. The next `opscrew provision` asks the agent for the app again, and the agent keeps an app the selector already has.",
     },
   );
 }

@@ -216,35 +216,48 @@ describe("the selector app's step", () => {
         }
       },
       approvedHash: hostingPlanHash(plan),
-    }).catch((e: unknown) => e);
+    }).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
     const answered = [...fake.state.files.keys()].filter((path) => path.endsWith(".result"));
     return { error: error as OpsCrewError, made, asked, forgotten, answered, requests };
   }
 
   const APP = { kind: "app", key: "nodejs", value: "22" };
+  const ASKED = { ...APP, state: "asked" };
 
-  it("records the app before it asks the agent for it, and keeps it when the run making it stopped", async () => {
+  it("records the app as asked before it asks the agent for it, then as made once it is done", async () => {
+    const { error, made, asked, forgotten, answered } = await applyApp("result=done\n");
+    expect(error).toBeUndefined();
+    expect(asked[0]).toEqual([]);
+    expect(answered).toHaveLength(1);
+    expect(made).toEqual([ASKED, { ...APP, state: "made" }]);
+    expect(forgotten).toEqual([]);
+  });
+
+  it("keeps it as asked when the run making it stopped", async () => {
     const { error, made, asked, forgotten, answered } = await applyApp(STOPPED);
     // Recorded while no request was on the account yet; then the one request was answered.
     expect(asked).toEqual([[]]);
     expect(answered).toHaveLength(1);
     expect(error).toBeInstanceOf(HostingApplyError);
     expect(error.message).toBe(
-      "The agent didn't say it made the app in CloudLinux's selector: the agent stopped while carrying it out. OpsCrew keeps the app recorded in .opscrew/hosting.json, so `opscrew destroy` removes it if it is there. Nothing was changed before it.",
+      "The agent didn't say it made the app in CloudLinux's selector: the agent stopped while carrying it out. OpsCrew keeps the app recorded as asked for in .opscrew/hosting.json, so `opscrew destroy` removes it if it is there. Nothing was changed before it.",
     );
     expect(error.hint).toBe(
-      "The panel's Setup Node.js App or Setup Python App page shows whether the app is there, and `opscrew logs` the agent's lines. If it is there, run `opscrew provision` again; if it isn't, remove the entry of kind \"app\" from .opscrew/hosting.json first.",
+      "`opscrew logs` shows the agent's lines. The next `opscrew provision` asks the agent for the app again, and the agent keeps an app the selector already has.",
     );
-    expect(made).toEqual([APP]);
+    expect(made).toEqual([ASKED]);
     expect(forgotten).toEqual([]);
   });
 
-  it("keeps it when no answer comes", async () => {
+  it("keeps it as asked when no answer comes", async () => {
     const { error, made, asked, forgotten, requests } = await applyApp(undefined);
     expect(asked).toEqual([[]]);
     expect(requests()).toHaveLength(1);
     expect(error.message).toContain("didn't carry out OpsCrew's request within 5 minutes");
-    expect(made).toEqual([APP]);
+    expect(made).toEqual([ASKED]);
     expect(forgotten).toEqual([]);
   });
 

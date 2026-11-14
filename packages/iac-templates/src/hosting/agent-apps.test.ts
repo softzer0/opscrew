@@ -300,6 +300,43 @@ describe.skipIf(reason !== undefined)(
       expect(a.file("state/selector-section")).toBeUndefined();
     });
 
+    // A second create needs app/current to be a real link, which it keeps (Windows copies a folder).
+    switching(
+      "keeps the app a stopped create made when asked again: no second create, its section recorded, done with a note",
+      () => {
+        const a = account();
+        a.run();
+        writeCache(a, OTHER);
+        // The run stops right after the selector made the app: a folder stands where the agent lists
+        // the sections the selector added.
+        mkdirSync(`${a.dir}/state/selector.added`);
+        expect(app(a, "create")).toEqual({ ...STOPPED, pending: "1" });
+        expect(a.stubFile("selector-apps")).toBe(`nodejs ${ROOT} 22 current/index.js\n`);
+        expect(a.file("state/selector-section")).toBeUndefined();
+        rmSync(`${a.dir}/state/selector.added`, { recursive: true });
+
+        // Provision asks again: another request, its expires keeping it apart.
+        expect(app(a, "create", { action: "create", expires: "99999999999" })).toEqual({
+          result: "done",
+          note: "CloudLinux's selector already had the app, from an earlier request, so it was kept as it is",
+        });
+        const creates = calls(a).filter((line) => line.startsWith("cloudlinux-selector create"));
+        expect(creates).toHaveLength(1);
+        // The settings handed over, and the section the selector added when it made the app kept.
+        expect(calls(a).at(-1)).toMatch(/^cloudlinux-selector set /);
+        expect(a.file("state/selector-section")).toMatch(
+          /^\[\S+\/home\/opscrew\/notes-prod\/app\]\n$/,
+        );
+        expect(a.file("state/selector.before")).toBeUndefined();
+
+        // Removed as usual, only its section of htaccess_cache with it.
+        expect(app(a, "destroy", { action: "destroy", expires: "99999999998" })).toEqual({
+          result: "done",
+        });
+        expect(readFileSync(cacheFile(a), "utf8")).toBe(OTHER);
+      },
+    );
+
     it("answers a create its run stopped in at the next run, which holds the lock: failed, no longer pending", () => {
       const a = account();
       a.run();
@@ -975,6 +1012,9 @@ describe.skipIf(reason !== undefined)(
       expect(made.status).toBe(0);
       expect(a.stubFile("selector-apps")).toBe(
         "nodejs opscrew/notes-prod/releases/0-0 22 index.js\n",
+      );
+      expect(readFileSync(`${a.home}/.cl.selector/node-selector.json`, "utf8")).toContain(
+        '/opscrew/notes-prod/releases/0-0": {"app_root": "opscrew/notes-prod/releases/0-0", ',
       );
       expect(a.file("releases/0-0/index.js")).toContain("It works!");
       expect(appRoots(a, "current")).toEqual([`${a.home}/opscrew/notes-prod/releases/0-0`]);

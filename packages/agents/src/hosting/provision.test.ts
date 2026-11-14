@@ -857,6 +857,7 @@ describe("provision on a cPanel account", () => {
       kind: "app",
       key: "nodejs",
       value: step?.kind === "app" ? step.version : "",
+      state: "made",
     });
 
     // A run again makes nothing new in the selector.
@@ -865,21 +866,25 @@ describe("provision on a cPanel account", () => {
     expect(s.requests.filter((request) => request.startsWith("kind=app\n"))).toHaveLength(1);
   });
 
-  /** A cPanel account whose agent answers every request with `answer`. */
-  function answering(answer: string): Account {
+  /** A cPanel account whose agent answers every request with `answer()`, when it gives one. */
+  function answering(answer: () => string | undefined): Account {
     const fake = fakeCpanel({ user: "acct", token: TOKEN, mainDomain: "example.com" });
     const account = cpanelAccount(fake);
     return {
       ...account,
       write: (path, text) =>
-        account.write(path, /\/state\/[0-9a-f]{64}\.result$/.test(path) ? answer : text),
+        account.write(
+          path,
+          /\/state\/[0-9a-f]{64}\.result$/.test(path) ? (answer() ?? text) : text,
+        ),
     };
   }
 
   it("stops with the agent's reason when the selector can't make the app (T2717)", async () => {
     const s = await project(
       answering(
-        "result=failed\nreason=CloudLinux's selector didn't make the app: no version 99\nmade=no\n",
+        () =>
+          "result=failed\nreason=CloudLinux's selector didn't make the app: no version 99\nmade=no\n",
       ),
       { example: "hono-api" },
     );
@@ -892,21 +897,54 @@ describe("provision on a cPanel account", () => {
     expect((await record(s.root)).objects.some((object) => object.kind === "app")).toBe(false);
   });
 
-  it("keeps the app recorded when the agent's run stopped while making it, so destroy removes it (T2757)", async () => {
+  it("keeps the app recorded as asked when the agent's run stopped while making it, and asks again on the next provision (T2757)", async () => {
+    let answer: string | undefined =
+      "result=failed\nreason=the agent stopped while carrying it out\n";
     const s = await project(
-      answering("result=failed\nreason=the agent stopped while carrying it out\n"),
+      answering(() => answer),
       { example: "hono-api" },
     );
     const { error } = await s.run();
     expect(error).toBeInstanceOf(OpsCrewError);
     expect((error as OpsCrewError).message).toContain(
-      "The agent didn't say it made the app in CloudLinux's selector: the agent stopped while carrying it out. OpsCrew keeps the app recorded in .opscrew/hosting.json, so `opscrew destroy` removes it if it is there.",
+      "The agent didn't say it made the app in CloudLinux's selector: the agent stopped while carrying it out. OpsCrew keeps the app recorded as asked for in .opscrew/hosting.json, so `opscrew destroy` removes it if it is there.",
     );
-    expect((await record(s.root)).objects).toContainEqual(
-      expect.objectContaining({ kind: "app", key: "nodejs" }),
-    );
-  });
+    const asked = (await record(s.root)).objects.find((object) => object.kind === "app");
+    expect(asked).toEqual({
+      kind: "app",
+      key: "nodejs",
+      value: expect.stringMatching(/^\d+/),
+      state: "asked",
+    });
 
+    // The next provision asks again, in plan B, and the agent makes the app this time.
+    answer = undefined;
+    const again = await s.run();
+    expect(again.error).toBeUndefined();
+    const plan = HostingPlanSchema.parse(
+      JSON.parse(await readFile(hostingPlanFile(again.deps.paths, "prod", "app"), "utf8")),
+    );
+    expect(plan.steps.find((step) => step.kind === "app")).toEqual({
+      kind: "app",
+      interpreter: "nodejs",
+      version: asked?.value,
+      startup: "dist/index.js",
+      again: true,
+    });
+    expect(said(again.deps)).toContain(
+      `served at https://${HOSTNAME}/ (again: OpsCrew asked for it before and got no clear answer)`,
+    );
+    expect(said(again.deps)).toContain(
+      "If the selector already has the app from that request, the agent keeps it as it is.",
+    );
+    expect(s.requests.filter((request) => request.startsWith("kind=app\n"))).toHaveLength(2);
+    expect((await record(s.root)).objects).toContainEqual({ ...asked, state: "made" });
+
+    // Made: a run again asks nothing more.
+    await s.merge();
+    expect((await s.run()).error).toBeUndefined();
+    expect(s.requests.filter((request) => request.startsWith("kind=app\n"))).toHaveLength(2);
+  });
   it("records the app and shows the note when the selector refused its settings (T2717)", async () => {
     const note =
       "CloudLinux's selector made the app but refused its settings, so the app gets them only from its .env file until a settings change hands them over again";

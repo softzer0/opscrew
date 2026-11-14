@@ -425,15 +425,18 @@ async function applyStep(
       await panel.setPhpVersion(step.hostname, step.version);
       return ctx.made({ kind: "php", key: step.hostname, value: step.version });
     case "app": {
-      // Recorded before it is asked for, so destroy removes it after a stop or an unclear answer;
-      // forgotten only when the agent's answer says it made nothing.
-      await ctx.made({ kind: "app", key: step.interpreter, value: step.version });
+      const app = { kind: "app", key: step.interpreter, value: step.version } as const;
+      // Recorded as asked before it is asked for, so after a stop or an unclear answer destroy
+      // removes it and the next provision asks again; forgotten only when the agent's answer says
+      // it made nothing.
+      await ctx.made({ ...app, state: "asked" });
       const note = await selectorApp(files, folder, "create", {
         hash: ctx.approvedHash,
         now: ctx.now(),
         sleep: ctx.sleep,
         madeNothing: () => ctx.forget("app", step.interpreter),
       });
+      await ctx.made({ ...app, state: "made" });
       if (note !== undefined) ctx.warn?.(`${note}.`);
       return;
     }

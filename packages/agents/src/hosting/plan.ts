@@ -135,12 +135,14 @@ const AppStepSchema = z.discriminatedUnion("kind", [
     version: z.string().regex(/^\d+\.\d+$/),
   }),
   // A Node.js or Python app in CloudLinux's selector, made by the agent on an `app` request
-  // (`apps.ts`): its interpreter, version and startup file, as the agent's settings name them.
+  // (`apps.ts`): its interpreter, version and startup file, as the agent's settings name them;
+  // `again` when OpsCrew asked for it before and got no clear answer (the record says `asked`).
   z.strictObject({
     kind: z.literal("app"),
     interpreter: z.enum(["nodejs", "python"]),
     version: z.string().regex(/^\d+(?:\.\d+){0,2}$/),
     startup: PathSchema,
+    again: z.literal(true).optional(),
   }),
   // One of the app's cron lines.
   z.strictObject({ kind: z.literal("cron"), schedule: ScheduleSchema, command: CommandSchema }),
@@ -279,9 +281,9 @@ function stepItem(plan: HostingPlan, step: HostingStep): AdapterPlanItem {
       return { title: `Set ${step.hostname}'s PHP version to ${step.version}`, state: "change" };
     case "app":
       return {
-        title: `Make the ${RUNTIME_NAMES[step.interpreter]} ${step.version} app ~/${folder}/app in CloudLinux's selector, started from current/${step.startup} and served at https://${plan.hostname}/`,
+        title: `Make the ${RUNTIME_NAMES[step.interpreter]} ${step.version} app ~/${folder}/app in CloudLinux's selector, started from current/${step.startup} and served at https://${plan.hostname}/${step.again ? " (again: OpsCrew asked for it before and got no clear answer)" : ""}`,
         state: "change",
-        reason: `The agent runs the selector's create on the account. The selector keeps the app's one environment for ~/${folder}/app, and the app runs current/${step.startup} from there, through the link ~/${folder}/app/current to the running release. Each release whose package files changed has them installed into that environment just before its switch, so the running release gets them a moment early.`,
+        reason: `${step.again ? "If the selector already has the app from that request, the agent keeps it as it is. " : ""}The agent runs the selector's create on the account. The selector keeps the app's one environment for ~/${folder}/app, and the app runs current/${step.startup} from there, through the link ~/${folder}/app/current to the running release. Each release whose package files changed has them installed into that environment just before its switch, so the running release gets them a moment early.`,
       };
     case "remove-cron":
       return {

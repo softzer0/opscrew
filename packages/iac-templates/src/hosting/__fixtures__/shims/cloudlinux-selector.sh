@@ -4,9 +4,11 @@
 # call is logged in $STUB/selector.log; install-modules also logs the package.json it finds in the
 # app root. A command named in $STUB/selector-fails answers an error.
 # It resolves --app-root (from the home folder) once, as the real one does: its registry,
-# $STUB/selector-apps (the real one's is ~/.cl.selector/node-selector.json), keys each app by the
-# resolved folder ("<interpreter> <folder> <version> <startup file>" lines), and every command but
-# create answers "No such application" for a folder it doesn't hold.
+# $STUB/selector-apps, keys each app by the resolved folder ("<interpreter> <folder> <version>
+# <startup file>" lines), and every command but create answers "No such application" for a folder
+# it doesn't hold. After create and destroy it writes the interpreter's apps as the real one keeps
+# them, ~/.cl.selector/node-selector.json (python-selector.json for Python): a JSON object keyed by
+# each app's resolved folder, its app_root that folder from the home folder.
 # create makes ~/nodevenv/<resolved root>/<version>/lib/node_modules (virtualenv for Python), the
 # environment its Passenger block names, but no node_modules link in the app root (R14), puts its
 # placeholder app (the startup file, which answers "It works!") at the startup path in the app
@@ -88,9 +90,27 @@ passenger() {
   printf '%s\n' "$begin" "PassengerAppRoot \"$app\"" "${lines[@]}" 'PassengerBaseURI "/"' "$end" >> "$served"
 }
 
+# Writes the interpreter's apps of $STUB/selector-apps into the real one's registry file.
+registry() {
+  local file=$HOME/.cl.selector/node-selector.json i r v s sep=""
+  [ "$interpreter" = nodejs ] || file=$HOME/.cl.selector/python-selector.json
+  mkdir -p "$HOME/.cl.selector"
+  {
+    printf '{'
+    while read -r i r v s; do
+      [ "$i" = "$interpreter" ] || continue
+      printf '%s"%s/%s": {"app_root": "%s", "app_uri": "/", "startup_file": "%s", "version": "%s"}' \
+        "$sep" "$home" "$r" "$r" "$s" "$v"
+      sep=", "
+    done < "$STUB/selector-apps"
+    printf '}\n'
+  } > "$file"
+}
+
 case $command in
   create)
     echo "$interpreter $resolved $version $startup" >> "$STUB/selector-apps"
+    registry
     mkdir -p "$HOME/$venv/$resolved/$version/lib/node_modules" "$(dirname "$app/$startup")"
     [ -e "$app/$startup" ] || printf '%s\n' "// CloudLinux's placeholder: It works!" > "$app/$startup"
     passenger
@@ -115,6 +135,7 @@ case $command in
       [ "$i $r" = "$interpreter $resolved" ] || echo "$i $r $rest"
     done < "$STUB/selector-apps" > "$STUB/selector-apps.next"
     mv "$STUB/selector-apps.next" "$STUB/selector-apps"
+    registry
     ;;
 esac
 echo '{"result": "success", "timestamp": 1794000000.0}'

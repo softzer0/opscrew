@@ -70,6 +70,11 @@ const HostingObjectSchema = z.strictObject({
    * public half, a panel step's value.
    */
   value: z.string().min(1).optional(),
+  /**
+   * The app in CloudLinux's selector only: `asked` from the moment OpsCrew asks the agent to make
+   * it, `made` once the agent answers that it did. Provision asks again while it is `asked`.
+   */
+  state: z.enum(["asked", "made"]).optional(),
 });
 
 const HostingRecordSchema = z.strictObject({
