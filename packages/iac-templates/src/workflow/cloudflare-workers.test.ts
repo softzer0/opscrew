@@ -66,6 +66,9 @@ const staticDoc = doc(staticFlow.content);
 const ssrDoc = doc(ssrFlow.content);
 const promotedDoc = doc(promotedFlow.content);
 
+/** The deploy job's step for a move to another Cloudflare account. */
+const MOVE_DEPLOY = "Deploy the new version to the new Cloudflare account too";
+
 function step(job: Job | undefined, key: string): Step {
   const found = job?.steps.find((s) => s.id === key || s.name === key);
   if (!found) throw new Error(`no step ${key}`);
@@ -316,6 +319,7 @@ describe("renderCloudflareWorkersWorkflow", () => {
       "version",
       "activate",
       "check",
+      MOVE_DEPLOY,
       "rollback",
       "Report the failed deploy",
     ]);
@@ -481,9 +485,10 @@ describe("renderCloudflareWorkersWorkflow", () => {
           expect(script, s.name).not.toMatch(/\$\{\{\s*secrets\./);
           expect(String(s.with?.command ?? ""), s.name).not.toMatch(/\$\{\{\s*secrets\./);
           for (const line of script.split("\n")) {
-            // The token only into the header file, never into the log or curl's command line.
+            // The token only into the header file, never into the log or curl's command line;
+            // the move's step only tests whether it is set.
             if (line.includes("$CLOUDFLARE_API_TOKEN")) {
-              expect(line).toContain('> "$headers"');
+              expect(line).toMatch(/> "\$headers"|^if \[\[ -z "\$CLOUDFLARE_API_TOKEN" \]\]; then/);
             }
             if (line.includes("env.OPSCREW_ENV_")) expect(line).toContain("umask 077");
           }
@@ -619,6 +624,101 @@ describe("renderCloudflareWorkersWorkflow", () => {
       "::error::Cloudflare did not find the new version 1f6e2c3a-4b5d-4e6f-8a9b-0c1d2e3f4a5b within 2 minutes",
     );
   }, 180_000);
+
+  it("deploys the same version to a new Cloudflare account too, once it answers, while a move sets its token", () => {
+    const deploy = ssrDoc.jobs.deploy;
+    const names = deploy.steps.map((s) => s.id ?? s.name);
+    expect(names.indexOf(MOVE_DEPLOY)).toBe(names.indexOf("check") + 1);
+    const move = step(deploy, MOVE_DEPLOY);
+    // Only after the check passed (the default `success()`), and without a rollback of its own.
+    expect(move.if).toBeUndefined();
+    expect(move.env).toEqual({
+      CLOUDFLARE_API_TOKEN: "${{ secrets.OPSCREW_CLOUDFLARE_API_TOKEN_NEW }}",
+      CLOUDFLARE_ACCOUNT_ID: "${{ secrets.OPSCREW_CLOUDFLARE_ACCOUNT_ID_NEW }}",
+      MESSAGE: "opscrew ${{ github.run_id }} ${{ needs.build.outputs.sha256 }}",
+      OPSCREW_ENV_API_KEY: "${{ secrets.OPSCREW_ENV_API_KEY }}",
+      OPSCREW_ENV_PUBLIC_SITE_URL: "${{ secrets.OPSCREW_ENV_PUBLIC_SITE_URL }}",
+    });
+    expect(step(promotedDoc.jobs.deploy, MOVE_DEPLOY).env?.MESSAGE).toBe(
+      "opscrew ${{ inputs.run }} ${{ inputs.sha256 }}",
+    );
+    expect(step(staticDoc.jobs.deploy, MOVE_DEPLOY).env).toEqual({
+      CLOUDFLARE_API_TOKEN: "${{ secrets.OPSCREW_CLOUDFLARE_API_TOKEN_NEW }}",
+      CLOUDFLARE_ACCOUNT_ID: "${{ secrets.OPSCREW_CLOUDFLARE_ACCOUNT_ID_NEW }}",
+      MESSAGE: "opscrew ${{ github.run_id }} ${{ needs.build.outputs.sha256 }}",
+    });
+  });
+
+  it("runs the new account's deploy only with its token, with the same build and secrets", async () => {
+    if (!bash) {
+      console.warn("Skipped the bash run of the new account's deploy: no bash.");
+      return;
+    }
+    // The fake Wrangler records its folder and arguments, and the secrets file it was given; the
+    // fake jq writes the program it was given (the upload's, from the same values).
+    const fakes = [
+      'jq() { printf "%s\\n" "$*"; }',
+      "npx() {",
+      '  printf \'%s|%s\\n\' "${PWD##*/}" "$*" >> "$CALLS"',
+      '  if [[ -f "$RUNNER_TEMP/opscrew-secrets.json" ]]; then cat "$RUNNER_TEMP/opscrew-secrets.json" >> "$SEEN"; fi',
+      '  return "${WRANGLER_CODE:-0}"',
+      "}",
+    ].join("\n");
+    async function deployNew(doc: Workflow, env: Record<string, string>) {
+      const dir = await tree({ "wrangler/package.json": "{}" });
+      const result = await runScript(`${fakes}\n${step(doc.jobs.deploy, MOVE_DEPLOY).run}`, dir, {
+        RUNNER_TEMP: slashed(dir),
+        GITHUB_WORKSPACE: "/work",
+        MESSAGE: "opscrew 42 abc",
+        CALLS: slashed(join(dir, "calls")),
+        SEEN: slashed(join(dir, "seen")),
+        OPSCREW_ENV_API_KEY: "api-key-value",
+        OPSCREW_ENV_PUBLIC_SITE_URL: "https://docs.example.com",
+        ...env,
+      });
+      const read = (name: string) => readFile(join(dir, name), "utf8").catch(() => "");
+      const left = spawnSync("bash", ["-c", "[[ -e opscrew-secrets.json ]]"], { cwd: dir });
+      return {
+        ...result,
+        calls: await read("calls"),
+        seen: await read("seen"),
+        left: left.status === 0,
+      };
+    }
+    const account = { CLOUDFLARE_API_TOKEN: "new-token", CLOUDFLARE_ACCOUNT_ID: "new-account" };
+    const config = "--config /work/opscrew/cloudflare/wrangler.jsonc";
+
+    // No move: nothing runs.
+    for (const doc of [staticDoc, ssrDoc]) {
+      const none = await deployNew(doc, { CLOUDFLARE_API_TOKEN: "", CLOUDFLARE_ACCOUNT_ID: "" });
+      expect(none.status, none.stderr).toBe(0);
+      expect(none.calls).toBe("");
+    }
+
+    const staticSite = await deployNew(staticDoc, account);
+    expect(staticSite.status, staticSite.stderr).toBe(0);
+    expect(staticSite.calls).toBe(
+      `wrangler|--no-install wrangler deploy --message opscrew 42 abc ${config}\n`,
+    );
+
+    const ssr = await deployNew(ssrDoc, account);
+    expect(ssr.status, ssr.stderr).toBe(0);
+    expect(ssr.calls).toMatch(
+      /^wrangler\|--no-install wrangler deploy .*\/opscrew-site\/worker\/headers-entry\.js --no-bundle --message opscrew 42 abc --secrets-file .*\/opscrew-secrets\.json --config \/work\/opscrew\/cloudflare\/wrangler\.jsonc\n$/,
+    );
+    expect(ssr.seen).toBe(
+      '-n {"API_KEY": env.OPSCREW_ENV_API_KEY, "PUBLIC_SITE_URL": env.OPSCREW_ENV_PUBLIC_SITE_URL}\n',
+    );
+    expect(ssr.left).toBe(false);
+    expect(ssr.stdout).not.toContain("api-key-value");
+
+    const failed = await deployNew(ssrDoc, { ...account, WRANGLER_CODE: "1" });
+    expect(failed.status).toBe(1);
+    expect(failed.stdout).toContain(
+      "::error::Wrangler could not deploy the new version to the new Cloudflare account",
+    );
+    expect(failed.left).toBe(false);
+  });
 
   it("reads the new version's id from Wrangler's output, and stops without one", async () => {
     if (!bash) {
@@ -781,7 +881,7 @@ describe.skipIf(!bash)("the promoted environment's check of the build's run (nee
 
 describe("deploySecretNamesFor on Cloudflare's hosting", () => {
   it("lists the deploy token, the account id and the app's variables, which a promoted static site does not read", () => {
-    const token = Object.values(CLOUDFLARE_DEPLOY_SECRETS);
+    const token = [CLOUDFLARE_DEPLOY_SECRETS.apiToken, CLOUDFLARE_DEPLOY_SECRETS.accountId];
     expect(token).toEqual(["OPSCREW_CLOUDFLARE_API_TOKEN", "OPSCREW_CLOUDFLARE_ACCOUNT_ID"]);
     const env = ["API_KEY", "PUBLIC_SITE_URL"];
     const values = ["OPSCREW_ENV_API_KEY", "OPSCREW_ENV_PUBLIC_SITE_URL"];
@@ -800,9 +900,12 @@ describe("deploySecretNamesFor on Cloudflare's hosting", () => {
     const read = [...new Set([...content.matchAll(/secrets\.([A-Z0-9_]+)/g)].map((m) => m[1]))];
     expect(read.sort()).toEqual([
       "OPSCREW_STAGING_CLOUDFLARE_ACCOUNT_ID",
+      "OPSCREW_STAGING_CLOUDFLARE_ACCOUNT_ID_NEW",
       "OPSCREW_STAGING_CLOUDFLARE_API_TOKEN",
+      "OPSCREW_STAGING_CLOUDFLARE_API_TOKEN_NEW",
       "OPSCREW_STAGING_ENV_API_KEY",
     ]);
+    // A move to another Cloudflare account sets the `_NEW` ones; provision never does.
     expect(deploySecretNamesFor(plan)).toEqual([
       "OPSCREW_CLOUDFLARE_API_TOKEN",
       "OPSCREW_CLOUDFLARE_ACCOUNT_ID",

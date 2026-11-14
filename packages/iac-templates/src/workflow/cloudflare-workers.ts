@@ -44,11 +44,14 @@ import {
  * The GitHub Actions secrets of a Cloudflare hosting target's deploy job (before
  * `deploySecretName`): the deploy token, which holds only Account → Workers Scripts → Edit, and
  * the account id. `opscrew provision` sets them; the build reads the app's variables
- * ({@link siteEnvSecret}).
+ * ({@link siteEnvSecret}). While the app moves to another Cloudflare account, the `…New` ones hold
+ * that account's, to which the deploy job also deploys the new version ({@link moveDeployStep}).
  */
 export const CLOUDFLARE_DEPLOY_SECRETS = {
   apiToken: "OPSCREW_CLOUDFLARE_API_TOKEN",
   accountId: "OPSCREW_CLOUDFLARE_ACCOUNT_ID",
+  apiTokenNew: "OPSCREW_CLOUDFLARE_API_TOKEN_NEW",
+  accountIdNew: "OPSCREW_CLOUDFLARE_ACCOUNT_ID_NEW",
 } as const;
 
 /** Where the deploy job writes the app's secrets for the new version (bash, then Actions syntax). */
@@ -252,6 +255,44 @@ function activateStep(plan: DeployPlan, env: readonly string[]): string[] {
 }
 
 /**
+ * The step that deploys the new version to the new Cloudflare account too while the app moves
+ * there (`CLOUDFLARE_API_TOKEN_NEW` set; without it the step does nothing), once the new version
+ * answers here, so that account's Worker always runs what this one does: the same build, message
+ * and, with `secrets`, the app's variables (`values`, written as for the upload and removed right
+ * after), with `wrangler deploy` from the Wrangler the upload installed in {@link WRANGLER_DIR}.
+ * `env` holds the variables' lines.
+ */
+function moveDeployStep(
+  plan: DeployPlan,
+  o: { message: string; env: readonly string[]; values: string; secrets: boolean; ssr: boolean },
+): string[] {
+  const script = o.ssr ? ` "${SITE_DIR}/${WORKER_BUNDLE}" --no-bundle` : "";
+  const file = o.secrets ? ` --secrets-file "${SECRETS_FILE}"` : "";
+  return [
+    "- name: Deploy the new version to the new Cloudflare account too",
+    "  env:",
+    `    CLOUDFLARE_API_TOKEN: ${secret(plan, CLOUDFLARE_DEPLOY_SECRETS.apiTokenNew)}`,
+    `    CLOUDFLARE_ACCOUNT_ID: ${secret(plan, CLOUDFLARE_DEPLOY_SECRETS.accountIdNew)}`,
+    `    MESSAGE: ${o.message}`,
+    ...o.env,
+    ...run([
+      "set -euo pipefail",
+      "# Only while the app moves to another Cloudflare account.",
+      'if [[ -z "$CLOUDFLARE_API_TOKEN" ]]; then exit 0; fi',
+      `cd "${WRANGLER_DIR}"`,
+      ...(o.secrets ? [`(umask 077 && jq -n '${o.values}' > "${SECRETS_FILE}")`] : []),
+      "code=0",
+      `npx --no-install wrangler deploy${script} --message "$MESSAGE"${file} --config "$GITHUB_WORKSPACE"/${shellQuote(wranglerConfigPath(plan))} || code=$?`,
+      ...(o.secrets ? [`rm -f "${SECRETS_FILE}"`] : []),
+      'if [[ "$code" -ne 0 ]]; then',
+      '  echo "::error::Wrangler could not deploy the new version to the new Cloudflare account; its output above says why. Run the workflow again."',
+      "  exit 1",
+      "fi",
+    ]),
+  ];
+}
+
+/**
  * A promoted environment's trigger: `opscrew promote` dispatches the workflow with the run that
  * built the site the source environment runs, and that build's SHA-256.
  */
@@ -360,7 +401,9 @@ function buildRunCheck(
  * 5. `wrangler versions deploy <id>@100`, tried again for up to 2 minutes while Cloudflare does not
  *    find the version it just created ({@link activateStep}), then a check of the answer on the domain
  *    ({@link answerCheck}). When the activation or the check fails, the version that ran before
- *    (the latest deployment's, read before the upload) is activated again and the job fails.
+ *    (the latest deployment's, read before the upload) is activated again and the job fails;
+ * 6. while the app moves to another Cloudflare account, the same version deployed there too
+ *    ({@link moveDeployStep}).
  *
  * It is skipped while the environment's deploys are paused ({@link unpaused}): `opscrew
  * rollback` activates an earlier version itself, with no run.
@@ -398,6 +441,9 @@ function deployJob(
     ...own.map((name) => `"${name}": env.${stored(name)}`),
     ...previous.map((name) => `"${name}": (env.${stored(name)} // "")`),
   ].join(", ")}}`;
+  const secretEnv = names.map(
+    (name) => `    ${stored(name)}: ${secret(plan, siteEnvSecret(name))}`,
+  );
   const mismatch = fromRun
     ? `The site run $RUN built has the SHA-256 $sha256, not $SHA256, the one \\\`opscrew promote\\\` asked for. Promote again with \\\`${promoteCommand(plan)}\\\`, which reads the build the source environment runs.`
     : "The downloaded site has the SHA-256 $sha256, not $SHA256, the build's. Run the workflow again.";
@@ -439,7 +485,7 @@ function deployJob(
     "  run: |",
     ...block([...headersProgram(plan).split("\n"), "main();"], 4),
     ...prepareWrangler(
-      names.map((name) => `    ${stored(name)}: ${secret(plan, siteEnvSecret(name))}`),
+      secretEnv,
       secrets.length === 0
         ? []
         : [
@@ -497,6 +543,13 @@ function deployJob(
         `Cloudflare has not issued the certificate for ${plan.dns.domain} yet, so this run could not check the new version over HTTPS. It usually comes within a few minutes of the custom domain; \\\`opscrew verify${appFlag(plan)}\\\` checks the site once it is there.`,
       ),
     ),
+    ...moveDeployStep(plan, {
+      message: `opscrew ${builtBy} ${want}`,
+      env: secretEnv,
+      values,
+      secrets: secrets.length > 0,
+      ssr,
+    }),
     ...wrangler(
       "rollback",
       "Activate the version that ran before again",

@@ -35,21 +35,24 @@ const NEW = `ghcr.io/acme/shop@sha256:${"b".repeat(64)}`;
 const OLD = `ghcr.io/acme/shop@sha256:${"a".repeat(64)}`;
 const ACCESS_ID = "access-client-id-placeholder";
 const ACCESS_SECRET = "access-client-secret-placeholder";
+/** The `_NEW` Access client of a move to another Cloudflare account, unset. */
+const NO_NEW_CLIENT = { ACCESS_CLIENT_ID_NEW: "", ACCESS_CLIENT_SECRET_NEW: "" };
 const WEBHOOK = "https://portainer-shop.example.com/api/stacks/webhooks/webhook-id-placeholder";
 
 const FAKES = [
-  // curl: `CURL_CODE` (default 204) for the webhook; the version file answers `VERSION` per call
-  // and any other URL `HEALTH` (default `ok`) per call (`down`, or what it answers), the last one
-  // repeating. `<kind>-count` counts the calls.
+  // curl: the webhook answers `CURL_CODE` (default 204) per call, the version file `VERSION` per
+  // call and any other URL `HEALTH` (default `ok`) per call (`down`, or what it answers), the last
+  // one repeating. `<kind>-count` counts the calls.
   "curl() {",
   '  echo "curl $*" >> "$WORK/curl.log"',
   '  for arg in "$@"; do case "$arg" in @*) cat "${arg#@}" >> "$WORK/headers.log" ;; esac; done',
-  '  if [[ " $* " == *" -w %{http_code} "* ]]; then printf \'%s\' "${CURL_CODE:-204}"; return 0; fi',
   "  local kind=health list=${HEALTH:-ok}",
+  '  if [[ " $* " == *" -w %{http_code} "* ]]; then kind=webhook list=${CURL_CODE:-204}; fi',
   '  if [[ " $* " == *"/.well-known/opscrew-version "* ]]; then kind=version list=$VERSION; fi',
   '  local n; n=$(( $(cat "$WORK/$kind-count" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$WORK/$kind-count"',
   "  local answers=($list) answer",
   '  answer="${answers[$(( n <= ${#answers[@]} ? n - 1 : ${#answers[@]} - 1 ))]}"',
+  '  [[ "$kind" == webhook ]] && { printf \'%s\' "$answer"; return 0; }',
   '  [[ "$answer" == down ]] && return 22',
   "  printf '%s' \"$answer\"",
   "}",
@@ -268,6 +271,8 @@ describe.skipIf(!bashWorks())("the Portainer deploy job's scripts (bash + git)",
         WEBHOOK_URL: WEBHOOK,
         ACCESS_CLIENT_ID: ACCESS_ID,
         ACCESS_CLIENT_SECRET: ACCESS_SECRET,
+        // Empty, as the workflow gives them while no move to another Cloudflare account runs.
+        ...NO_NEW_CLIENT,
       };
       const ok = sh(steps.redeploy ?? "", env);
       expect(ok.status, ok.output).toBe(0);
@@ -300,6 +305,75 @@ describe.skipIf(!bashWorks())("the Portainer deploy job's scripts (bash + git)",
         expect(out).not.toContain(ACCESS_SECRET);
         expect(out).not.toContain("webhook-id-placeholder");
       }
+    },
+    timeout,
+  );
+
+  it(
+    "calls the webhook once more with a new Cloudflare account's Access client once Access refuses the first",
+    () => {
+      const NEW_ID = "new-access-client-id-placeholder";
+      const NEW_SECRET = "new-access-client-secret-placeholder";
+      const env = {
+        WEBHOOK_URL: WEBHOOK,
+        ACCESS_CLIENT_ID: ACCESS_ID,
+        ACCESS_CLIENT_SECRET: ACCESS_SECRET,
+        ACCESS_CLIENT_ID_NEW: NEW_ID,
+        ACCESS_CLIENT_SECRET_NEW: NEW_SECRET,
+      };
+      const headers = (id: string, secret: string) =>
+        `CF-Access-Client-Id: ${id}\nCF-Access-Client-Secret: ${secret}\n`;
+      const calls = () => readFileSync(join(work, "curl.log"), "utf8").trim().split("\n");
+      const reset = () => {
+        for (const name of ["curl.log", "headers.log", "webhook-count"])
+          rmSync(join(work, name), { force: true });
+      };
+
+      // Before the switch the old account's Access takes the first client: one call.
+      const before = sh(steps.redeploy ?? "", env);
+      expect(before.status, before.output).toBe(0);
+      expect(calls()).toHaveLength(1);
+      expect(readFileSync(join(work, "headers.log"), "utf8")).toBe(
+        headers(ACCESS_ID, ACCESS_SECRET),
+      );
+
+      // After it, Access refuses the first (403, or a redirect to its login) and takes the new one.
+      for (const refusal of ["403", "302"]) {
+        reset();
+        const after = sh(steps.redeploy ?? "", { ...env, CURL_CODE: `${refusal} 204` });
+        expect(after.status, after.output).toBe(0);
+        expect(after.output).toContain("Portainer accepted the redeploy.");
+        expect(calls()).toHaveLength(2);
+        expect(readFileSync(join(work, "headers.log"), "utf8")).toBe(
+          headers(ACCESS_ID, ACCESS_SECRET) + headers(NEW_ID, NEW_SECRET),
+        );
+        expect(existsSync(join(work, "runner", "access-headers"))).toBe(false);
+        for (const value of [ACCESS_SECRET, NEW_SECRET]) {
+          expect(after.output).not.toContain(value);
+          for (const call of calls()) expect(call).not.toContain(value);
+        }
+      }
+
+      // Another answer is not Access's refusal: no second call.
+      reset();
+      const unknown = sh(steps.redeploy ?? "", { ...env, CURL_CODE: "404 204" });
+      expect(unknown.status).toBe(1);
+      expect(calls()).toHaveLength(1);
+
+      // Without the new client, a refusal fails as before.
+      reset();
+      const unset = sh(steps.redeploy ?? "", { ...env, ...NO_NEW_CLIENT, CURL_CODE: "403 204" });
+      expect(unset.status).toBe(1);
+      expect(unset.output).toContain(
+        "Cloudflare Access refused the deploy workflow's service token",
+      );
+      expect(calls()).toHaveLength(1);
+
+      // Both refused: the second answer decides.
+      reset();
+      const both = sh(steps.redeploy ?? "", { ...env, CURL_CODE: "403 403" });
+      expect(both.status).toBe(1);
+      expect(calls()).toHaveLength(2);
     },
     timeout,
   );
@@ -406,6 +480,8 @@ describe.skipIf(!bashWorks())("the Portainer deploy job's scripts (bash + git)",
         WEBHOOK_URL: WEBHOOK,
         ACCESS_CLIENT_ID: ACCESS_ID,
         ACCESS_CLIENT_SECRET: ACCESS_SECRET,
+        // Empty, as the workflow gives them while no move to another Cloudflare account runs.
+        ...NO_NEW_CLIENT,
       });
       expect(run.status).toBe(1);
       expect(run.output).toContain(
@@ -457,6 +533,8 @@ describe.skipIf(!bashWorks())("the Portainer deploy job's scripts (bash + git)",
         WEBHOOK_URL: WEBHOOK,
         ACCESS_CLIENT_ID: ACCESS_ID,
         ACCESS_CLIENT_SECRET: ACCESS_SECRET,
+        // Empty, as the workflow gives them while no move to another Cloudflare account runs.
+        ...NO_NEW_CLIENT,
       });
       expect(run.status, run.output).toBe(1);
       fetchBranch();

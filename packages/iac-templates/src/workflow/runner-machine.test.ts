@@ -148,8 +148,9 @@ describe("the deploy job on a runner machine", () => {
     const install = stepOf(deploy, `Install cloudflared ${TOOLS.cloudflared.version}`).run ?? "";
     expect(install).toContain('chmod 0755 "$RUNNER_TEMP/cloudflared"');
     const setup = stepOf(deploy, SSH_SETUP).run ?? "";
+    expect(setup).toContain('echo "  ProxyCommand $RUNNER_TEMP/opscrew-ssh/opscrew-access-ssh %h"');
     expect(setup).toContain(
-      'echo "  ProxyCommand $RUNNER_TEMP/cloudflared access ssh --hostname %h"',
+      `echo '"$RUNNER_TEMP/cloudflared" access ssh --hostname "$1" && exit 0'`,
     );
     expect(setup).toContain('} > "$RUNNER_TEMP/opscrew-ssh/config"');
     expect(stepOf(deploy, UPLOAD).run).toContain('-F "$RUNNER_TEMP/opscrew-ssh/config"');
@@ -189,7 +190,11 @@ describe.skipIf(!bashWorks())("the SSH steps on a runner machine", { timeout: 18
     expect(readFileSync(`${temp}/opscrew-ssh/opscrew`, "utf8")).toBe("key-for-the-test\n");
     expect(readFileSync(`${temp}/opscrew-ssh/known_hosts`, "utf8")).toBe("known-for-the-test\n");
     expect(readFileSync(`${temp}/opscrew-ssh/config`, "utf8")).toBe(
-      `Host ssh-shop-staging.example.com\n  ProxyCommand ${temp}/cloudflared access ssh --hostname %h\n`,
+      `Host ssh-shop-staging.example.com\n  ProxyCommand ${temp}/opscrew-ssh/opscrew-access-ssh %h\n`,
+    );
+    // The ProxyCommand script finds cloudflared in the job's temp folder when it runs.
+    expect(readFileSync(`${temp}/opscrew-ssh/opscrew-access-ssh`, "utf8")).toContain(
+      '"$RUNNER_TEMP/cloudflared" access ssh --hostname "$1" && exit 0\n',
     );
 
     // The upload's ssh and scp get the job's own key, known hosts and config.
@@ -286,7 +291,11 @@ describe("deploySecretNamesFor on a runner machine", () => {
     );
     const tunnel = staging(tunnelPlan(), { runner: "host" });
     expect(deploySecretNamesFor(tunnel)).toEqual(
-      expect.arrayContaining([...connection, ...Object.values(TUNNEL_DEPLOY_SECRETS)]),
+      expect.arrayContaining([
+        ...connection,
+        TUNNEL_DEPLOY_SECRETS.serviceTokenId,
+        TUNNEL_DEPLOY_SECRETS.serviceTokenSecret,
+      ]),
     );
     // The server's runner deploys on its own machine and needs none.
     expect(deploySecretNamesFor(staging(serverPlan(), { runner: "server" }))).not.toContain(
@@ -302,7 +311,10 @@ describe("deploySecretNamesFor on a runner machine", () => {
     for (const plan of plans) {
       const listed = new Set(deploySecretNamesFor(plan).map((n) => deploySecretName(plan, n)));
       for (const [, name] of content(plan).matchAll(/secrets\.([A-Z_]+)/g)) {
-        if (name !== "GITHUB_TOKEN") expect(listed.has(name ?? ""), name).toBe(true);
+        // A move to another Cloudflare account sets the `_NEW` ones; provision never does.
+        if (name !== "GITHUB_TOKEN" && !name?.endsWith("_NEW")) {
+          expect(listed.has(name ?? ""), name).toBe(true);
+        }
       }
     }
   });

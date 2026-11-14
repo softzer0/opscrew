@@ -283,14 +283,24 @@ jobs:
           printf '%s\\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
           {
             echo 'Host ssh-shop.example.com'
-            echo '  ProxyCommand /usr/local/bin/cloudflared access ssh --hostname %h'
+            echo '  ProxyCommand ~/.ssh/opscrew-access-ssh %h'
           } > ~/.ssh/config
           chmod 600 ~/.ssh/config
+          {
+            echo '#!/bin/sh'
+            echo '"/usr/local/bin/cloudflared" access ssh --hostname "$1" && exit 0'
+            echo 'status=$?'
+            echo '[ -n "$TUNNEL_SERVICE_TOKEN_ID_NEW" ] || exit "$status"'
+            echo 'TUNNEL_SERVICE_TOKEN_ID="$TUNNEL_SERVICE_TOKEN_ID_NEW" TUNNEL_SERVICE_TOKEN_SECRET="$TUNNEL_SERVICE_TOKEN_SECRET_NEW" exec "/usr/local/bin/cloudflared" access ssh --hostname "$1"'
+          } > ~/.ssh/opscrew-access-ssh
+          chmod 700 ~/.ssh/opscrew-access-ssh
       - name: Upload runtime files and environment
         env:
           HOST: ssh-shop.example.com
           TUNNEL_SERVICE_TOKEN_ID: \${{ secrets.OPSCREW_TUNNEL_SERVICE_TOKEN_ID }}
           TUNNEL_SERVICE_TOKEN_SECRET: \${{ secrets.OPSCREW_TUNNEL_SERVICE_TOKEN_SECRET }}
+          TUNNEL_SERVICE_TOKEN_ID_NEW: \${{ secrets.OPSCREW_TUNNEL_SERVICE_TOKEN_ID_NEW }}
+          TUNNEL_SERVICE_TOKEN_SECRET_NEW: \${{ secrets.OPSCREW_TUNNEL_SERVICE_TOKEN_SECRET_NEW }}
           OPSCREW_APP_ENV: \${{ secrets.OPSCREW_APP_ENV }}
           OPSCREW_SERVICE_DB_ENV: \${{ secrets.OPSCREW_SERVICE_DB_ENV }}
         run: |
@@ -741,6 +751,8 @@ jobs:
           HOST: ssh-shop.example.com
           TUNNEL_SERVICE_TOKEN_ID: \${{ secrets.OPSCREW_TUNNEL_SERVICE_TOKEN_ID }}
           TUNNEL_SERVICE_TOKEN_SECRET: \${{ secrets.OPSCREW_TUNNEL_SERVICE_TOKEN_SECRET }}
+          TUNNEL_SERVICE_TOKEN_ID_NEW: \${{ secrets.OPSCREW_TUNNEL_SERVICE_TOKEN_ID_NEW }}
+          TUNNEL_SERVICE_TOKEN_SECRET_NEW: \${{ secrets.OPSCREW_TUNNEL_SERVICE_TOKEN_SECRET_NEW }}
           IMAGE: \${{ needs.build.outputs.image || needs.verify.outputs.image }}
           TAG: \${{ needs.build.outputs.tag || needs.verify.outputs.tag }}
           MODE: \${{ inputs.rollback && 'rollback' || 'deploy' }}
@@ -998,6 +1010,8 @@ jobs:
           HOST: ssh-shop.example.com
           TUNNEL_SERVICE_TOKEN_ID: \${{ secrets.OPSCREW_TUNNEL_SERVICE_TOKEN_ID }}
           TUNNEL_SERVICE_TOKEN_SECRET: \${{ secrets.OPSCREW_TUNNEL_SERVICE_TOKEN_SECRET }}
+          TUNNEL_SERVICE_TOKEN_ID_NEW: \${{ secrets.OPSCREW_TUNNEL_SERVICE_TOKEN_ID_NEW }}
+          TUNNEL_SERVICE_TOKEN_SECRET_NEW: \${{ secrets.OPSCREW_TUNNEL_SERVICE_TOKEN_SECRET_NEW }}
           IMAGE: \${{ needs.build.outputs.image || needs.verify.outputs.image }}
           MODE: \${{ inputs.rollback && 'rollback' || 'deploy' }}
         run: |

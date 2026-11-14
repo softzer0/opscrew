@@ -1164,7 +1164,8 @@ describe("deploySecretNamesFor", () => {
     expect(deploySecretNamesFor(server)).toEqual([...app, DEPLOY_SECRETS.originTls, ...build]);
     expect(deploySecretNamesFor(tunnel)).toEqual([
       ...connection,
-      ...Object.values(TUNNEL_DEPLOY_SECRETS),
+      TUNNEL_DEPLOY_SECRETS.serviceTokenId,
+      TUNNEL_DEPLOY_SECRETS.serviceTokenSecret,
       ...app,
       ...build,
     ]);
@@ -1183,7 +1184,9 @@ describe("deploySecretNamesFor", () => {
     expect(deploySecretNamesFor(portainerTestPlan({ redeploy: "updater" }))).toEqual(build);
     expect(deploySecretNamesFor(portainerTestPlan({ redeploy: "cloudflare" }))).toEqual([
       ...build,
-      ...Object.values(PORTAINER_DEPLOY_SECRETS),
+      PORTAINER_DEPLOY_SECRETS.webhookUrl,
+      PORTAINER_DEPLOY_SECRETS.accessClientId,
+      PORTAINER_DEPLOY_SECRETS.accessClientSecret,
     ]);
   });
 
@@ -1192,7 +1195,10 @@ describe("deploySecretNamesFor", () => {
     for (const plan of [prod, staging, promotedProd, server, tunnel]) {
       const listed = new Set(deploySecretNamesFor(plan).map((n) => deploySecretName(plan, n)));
       for (const [, name] of content(plan).matchAll(/secrets\.([A-Z_]+)/g)) {
-        if (name !== "GITHUB_TOKEN") expect(listed.has(name ?? ""), name).toBe(true);
+        // A move to another Cloudflare account sets the `_NEW` ones; provision never does.
+        if (name !== "GITHUB_TOKEN" && !name?.endsWith("_NEW")) {
+          expect(listed.has(name ?? ""), name).toBe(true);
+        }
       }
     }
   });

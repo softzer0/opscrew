@@ -410,6 +410,25 @@ jobs:
           fi
           echo "::error::The site did not answer at $URL."
           exit 1
+      - name: Deploy the new version to the new Cloudflare account too
+        env:
+          CLOUDFLARE_API_TOKEN: \${{ secrets.OPSCREW_CLOUDFLARE_API_TOKEN_NEW }}
+          CLOUDFLARE_ACCOUNT_ID: \${{ secrets.OPSCREW_CLOUDFLARE_ACCOUNT_ID_NEW }}
+          MESSAGE: opscrew \${{ inputs.run }} \${{ inputs.sha256 }}
+          OPSCREW_ENV_API_KEY: \${{ secrets.OPSCREW_ENV_API_KEY }}
+        run: |
+          set -euo pipefail
+          # Only while the app moves to another Cloudflare account.
+          if [[ -z "$CLOUDFLARE_API_TOKEN" ]]; then exit 0; fi
+          cd "$RUNNER_TEMP/wrangler"
+          (umask 077 && jq -n '{"API_KEY": env.OPSCREW_ENV_API_KEY}' > "$RUNNER_TEMP/opscrew-secrets.json")
+          code=0
+          npx --no-install wrangler deploy "$RUNNER_TEMP/opscrew-site/worker/headers-entry.js" --no-bundle --message "$MESSAGE" --secrets-file "$RUNNER_TEMP/opscrew-secrets.json" --config "$GITHUB_WORKSPACE"/'opscrew/cloudflare/wrangler.jsonc' || code=$?
+          rm -f "$RUNNER_TEMP/opscrew-secrets.json"
+          if [[ "$code" -ne 0 ]]; then
+            echo "::error::Wrangler could not deploy the new version to the new Cloudflare account; its output above says why. Run the workflow again."
+            exit 1
+          fi
       - id: rollback
         name: Activate the version that ran before again
         if: failure() && (steps.activate.outcome == 'failure' || steps.check.outcome == 'failure') && steps.previous.outputs.id != ''
@@ -769,6 +788,26 @@ jobs:
           fi
           echo "::error::The site did not answer at $URL."
           exit 1
+      - name: Deploy the new version to the new Cloudflare account too
+        env:
+          CLOUDFLARE_API_TOKEN: \${{ secrets.OPSCREW_CLOUDFLARE_API_TOKEN_NEW }}
+          CLOUDFLARE_ACCOUNT_ID: \${{ secrets.OPSCREW_CLOUDFLARE_ACCOUNT_ID_NEW }}
+          MESSAGE: opscrew \${{ github.run_id }} \${{ needs.build.outputs.sha256 }}
+          OPSCREW_ENV_API_KEY: \${{ secrets.OPSCREW_ENV_API_KEY }}
+          OPSCREW_ENV_PUBLIC_SITE_URL: \${{ secrets.OPSCREW_ENV_PUBLIC_SITE_URL }}
+        run: |
+          set -euo pipefail
+          # Only while the app moves to another Cloudflare account.
+          if [[ -z "$CLOUDFLARE_API_TOKEN" ]]; then exit 0; fi
+          cd "$RUNNER_TEMP/wrangler"
+          (umask 077 && jq -n '{"API_KEY": env.OPSCREW_ENV_API_KEY, "PUBLIC_SITE_URL": env.OPSCREW_ENV_PUBLIC_SITE_URL}' > "$RUNNER_TEMP/opscrew-secrets.json")
+          code=0
+          npx --no-install wrangler deploy "$RUNNER_TEMP/opscrew-site/worker/headers-entry.js" --no-bundle --message "$MESSAGE" --secrets-file "$RUNNER_TEMP/opscrew-secrets.json" --config "$GITHUB_WORKSPACE"/'opscrew/cloudflare/wrangler.jsonc' || code=$?
+          rm -f "$RUNNER_TEMP/opscrew-secrets.json"
+          if [[ "$code" -ne 0 ]]; then
+            echo "::error::Wrangler could not deploy the new version to the new Cloudflare account; its output above says why. Run the workflow again."
+            exit 1
+          fi
       - id: rollback
         name: Activate the version that ran before again
         if: failure() && (steps.activate.outcome == 'failure' || steps.check.outcome == 'failure') && steps.previous.outputs.id != ''
@@ -1089,6 +1128,22 @@ jobs:
           fi
           echo "::error::The site did not answer at $URL."
           exit 1
+      - name: Deploy the new version to the new Cloudflare account too
+        env:
+          CLOUDFLARE_API_TOKEN: \${{ secrets.OPSCREW_CLOUDFLARE_API_TOKEN_NEW }}
+          CLOUDFLARE_ACCOUNT_ID: \${{ secrets.OPSCREW_CLOUDFLARE_ACCOUNT_ID_NEW }}
+          MESSAGE: opscrew \${{ github.run_id }} \${{ needs.build.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          # Only while the app moves to another Cloudflare account.
+          if [[ -z "$CLOUDFLARE_API_TOKEN" ]]; then exit 0; fi
+          cd "$RUNNER_TEMP/wrangler"
+          code=0
+          npx --no-install wrangler deploy --message "$MESSAGE" --config "$GITHUB_WORKSPACE"/'opscrew/cloudflare/wrangler.jsonc' || code=$?
+          if [[ "$code" -ne 0 ]]; then
+            echo "::error::Wrangler could not deploy the new version to the new Cloudflare account; its output above says why. Run the workflow again."
+            exit 1
+          fi
       - id: rollback
         name: Activate the version that ran before again
         if: failure() && (steps.activate.outcome == 'failure' || steps.check.outcome == 'failure') && steps.previous.outputs.id != ''

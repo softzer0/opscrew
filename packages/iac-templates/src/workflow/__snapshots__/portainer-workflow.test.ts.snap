@@ -305,12 +305,21 @@ jobs:
           WEBHOOK_URL: \${{ secrets.OPSCREW_PORTAINER_WEBHOOK_URL }}
           ACCESS_CLIENT_ID: \${{ secrets.OPSCREW_PORTAINER_ACCESS_CLIENT_ID }}
           ACCESS_CLIENT_SECRET: \${{ secrets.OPSCREW_PORTAINER_ACCESS_CLIENT_SECRET }}
+          ACCESS_CLIENT_ID_NEW: \${{ secrets.OPSCREW_PORTAINER_ACCESS_CLIENT_ID_NEW }}
+          ACCESS_CLIENT_SECRET_NEW: \${{ secrets.OPSCREW_PORTAINER_ACCESS_CLIENT_SECRET_NEW }}
         run: |
           set -euo pipefail
           headers="$RUNNER_TEMP/access-headers"
-          (umask 077 && printf 'CF-Access-Client-Id: %s\\nCF-Access-Client-Secret: %s\\n' "$ACCESS_CLIENT_ID" "$ACCESS_CLIENT_SECRET" > "$headers")
-          code="$(curl -sS --connect-timeout 20 --max-time 120 -X POST -H @"$headers" -o /dev/null -w '%{http_code}' "$WEBHOOK_URL" || true)"
-          rm -f "$headers"
+          webhook() {
+            (umask 077 && printf 'CF-Access-Client-Id: %s\\nCF-Access-Client-Secret: %s\\n' "$1" "$2" > "$headers")
+            code="$(curl -sS --connect-timeout 20 --max-time 120 -X POST -H @"$headers" -o /dev/null -w '%{http_code}' "$WEBHOOK_URL" || true)"
+            rm -f "$headers"
+          }
+          webhook "$ACCESS_CLIENT_ID" "$ACCESS_CLIENT_SECRET"
+          if [[ "$code" =~ ^(401|403|3[0-9][0-9])$ && -n "$ACCESS_CLIENT_ID_NEW" ]]; then
+            echo "Cloudflare Access refused the service token (HTTP $code); calling the webhook again with the service token of the new Cloudflare account."
+            webhook "$ACCESS_CLIENT_ID_NEW" "$ACCESS_CLIENT_SECRET_NEW"
+          fi
           case "$code" in
             2[0-9][0-9]) echo "Portainer accepted the redeploy." ;;
             401|403)
@@ -361,6 +370,8 @@ jobs:
           WEBHOOK_URL: \${{ secrets.OPSCREW_PORTAINER_WEBHOOK_URL }}
           ACCESS_CLIENT_ID: \${{ secrets.OPSCREW_PORTAINER_ACCESS_CLIENT_ID }}
           ACCESS_CLIENT_SECRET: \${{ secrets.OPSCREW_PORTAINER_ACCESS_CLIENT_SECRET }}
+          ACCESS_CLIENT_ID_NEW: \${{ secrets.OPSCREW_PORTAINER_ACCESS_CLIENT_ID_NEW }}
+          ACCESS_CLIENT_SECRET_NEW: \${{ secrets.OPSCREW_PORTAINER_ACCESS_CLIENT_SECRET_NEW }}
         run: |
           set -uo pipefail
           if [[ -z "$PREVIOUS" ]]; then
@@ -377,9 +388,16 @@ jobs:
             exit 1
           fi
           headers="$RUNNER_TEMP/access-headers"
-          (umask 077 && printf 'CF-Access-Client-Id: %s\\nCF-Access-Client-Secret: %s\\n' "$ACCESS_CLIENT_ID" "$ACCESS_CLIENT_SECRET" > "$headers")
-          code="$(curl -sS --connect-timeout 20 --max-time 120 -X POST -H @"$headers" -o /dev/null -w '%{http_code}' "$WEBHOOK_URL" || true)"
-          rm -f "$headers"
+          webhook() {
+            (umask 077 && printf 'CF-Access-Client-Id: %s\\nCF-Access-Client-Secret: %s\\n' "$1" "$2" > "$headers")
+            code="$(curl -sS --connect-timeout 20 --max-time 120 -X POST -H @"$headers" -o /dev/null -w '%{http_code}' "$WEBHOOK_URL" || true)"
+            rm -f "$headers"
+          }
+          webhook "$ACCESS_CLIENT_ID" "$ACCESS_CLIENT_SECRET"
+          if [[ "$code" =~ ^(401|403|3[0-9][0-9])$ && -n "$ACCESS_CLIENT_ID_NEW" ]]; then
+            echo "Cloudflare Access refused the service token (HTTP $code); calling the webhook again with the service token of the new Cloudflare account."
+            webhook "$ACCESS_CLIENT_ID_NEW" "$ACCESS_CLIENT_SECRET_NEW"
+          fi
           if [[ "$code" == 2[0-9][0-9] ]]; then
             echo "::error::The deploy failed; OpsCrew wrote the previous version back to the opscrew-deploy branch and asked Portainer to deploy it."
           else

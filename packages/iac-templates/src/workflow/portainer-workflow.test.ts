@@ -104,6 +104,9 @@ describe("renderWorkflow for a Portainer target", () => {
       WEBHOOK_URL: `\${{ secrets.${PORTAINER_DEPLOY_SECRETS.webhookUrl} }}`,
       ACCESS_CLIENT_ID: `\${{ secrets.${PORTAINER_DEPLOY_SECRETS.accessClientId} }}`,
       ACCESS_CLIENT_SECRET: `\${{ secrets.${PORTAINER_DEPLOY_SECRETS.accessClientSecret} }}`,
+      // A move to another Cloudflare account's Access client, empty unless one is in progress.
+      ACCESS_CLIENT_ID_NEW: "${{ secrets.OPSCREW_PORTAINER_ACCESS_CLIENT_ID_NEW }}",
+      ACCESS_CLIENT_SECRET_NEW: "${{ secrets.OPSCREW_PORTAINER_ACCESS_CLIENT_SECRET_NEW }}",
     });
     const script = redeploy.run ?? "";
     expect(script).toContain("CF-Access-Client-Id: %s\\nCF-Access-Client-Secret: %s\\n");
@@ -129,10 +132,14 @@ describe("renderWorkflow for a Portainer target", () => {
         expect(script, s.name).not.toMatch(/\$\{\{\s*secrets\./);
         for (const line of script.split("\n")) {
           if (/\$\{?(ACCESS_CLIENT_ID|ACCESS_CLIENT_SECRET)/.test(line)) {
-            // Only into the header file, never into the log.
-            expect(line, s.name).toContain('> "$headers"');
+            // Only to the call, which writes them into the header file, never into the log; the
+            // `_NEW` client is otherwise only tested for being set.
+            expect(line, s.name).toMatch(
+              /^ *webhook "\$ACCESS_CLIENT_ID(_NEW)?" "\$ACCESS_CLIENT_SECRET(_NEW)?"$|-n "\$ACCESS_CLIENT_ID_NEW" \]\]; then$/,
+            );
           }
-          if (/\$\{?WEBHOOK_URL/.test(line)) expect(line, s.name).toMatch(/^code="\$\(curl /);
+          if (line.includes('"$1" "$2"')) expect(line, s.name).toContain('> "$headers"');
+          if (/\$\{?WEBHOOK_URL/.test(line)) expect(line, s.name).toMatch(/^ {2}code="\$\(curl /);
         }
       }
     }

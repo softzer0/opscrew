@@ -35,12 +35,15 @@ import {
  * (`https://<portainer hostname>/api/stacks/webhooks/<uuid>`, a secret) and the Access service
  * token (terraform outputs `deploy_service_token_client_id` and
  * `deploy_service_token_client_secret`). `opscrew provision` sets them; the build job also reads
- * `OPSCREW_BUILD_ENV`.
+ * `OPSCREW_BUILD_ENV`. While the app moves to another Cloudflare account, the `…New` ones hold the
+ * new account's service token, which the webhook call tries once Access refuses the first.
  */
 export const PORTAINER_DEPLOY_SECRETS = {
   webhookUrl: "OPSCREW_PORTAINER_WEBHOOK_URL",
   accessClientId: "OPSCREW_PORTAINER_ACCESS_CLIENT_ID",
   accessClientSecret: "OPSCREW_PORTAINER_ACCESS_CLIENT_SECRET",
+  accessClientIdNew: "OPSCREW_PORTAINER_ACCESS_CLIENT_ID_NEW",
+  accessClientSecretNew: "OPSCREW_PORTAINER_ACCESS_CLIENT_SECRET_NEW",
 } as const;
 
 /**
@@ -133,13 +136,22 @@ function writeScript(branch: string, template: string, provision: string): strin
 /**
  * Calls the webhook through Cloudflare Access and leaves the HTTP status in `code` (`000` when
  * nothing answered). The service token goes to curl in a file only the runner user can read, never
- * on its command line or in the log.
+ * on its command line or in the log. When Access refuses it (401, 403, or a redirect to its login)
+ * and the `_NEW` one is set (during a move to another Cloudflare account, whose Access takes over
+ * at the switch), the call is made once more with that.
  */
 const WEBHOOK_CALL = [
   'headers="$RUNNER_TEMP/access-headers"',
-  '(umask 077 && printf \'CF-Access-Client-Id: %s\\nCF-Access-Client-Secret: %s\\n\' "$ACCESS_CLIENT_ID" "$ACCESS_CLIENT_SECRET" > "$headers")',
-  'code="$(curl -sS --connect-timeout 20 --max-time 120 -X POST -H @"$headers" -o /dev/null -w \'%{http_code}\' "$WEBHOOK_URL" || true)"',
-  'rm -f "$headers"',
+  "webhook() {",
+  '  (umask 077 && printf \'CF-Access-Client-Id: %s\\nCF-Access-Client-Secret: %s\\n\' "$1" "$2" > "$headers")',
+  '  code="$(curl -sS --connect-timeout 20 --max-time 120 -X POST -H @"$headers" -o /dev/null -w \'%{http_code}\' "$WEBHOOK_URL" || true)"',
+  '  rm -f "$headers"',
+  "}",
+  'webhook "$ACCESS_CLIENT_ID" "$ACCESS_CLIENT_SECRET"',
+  'if [[ "$code" =~ ^(401|403|3[0-9][0-9])$ && -n "$ACCESS_CLIENT_ID_NEW" ]]; then',
+  '  echo "Cloudflare Access refused the service token (HTTP $code); calling the webhook again with the service token of the new Cloudflare account."',
+  '  webhook "$ACCESS_CLIENT_ID_NEW" "$ACCESS_CLIENT_SECRET_NEW"',
+  "fi",
 ];
 
 function webhookEnv(plan: DeployPlan): string[] {
@@ -147,6 +159,8 @@ function webhookEnv(plan: DeployPlan): string[] {
     `    WEBHOOK_URL: ${secret(plan, PORTAINER_DEPLOY_SECRETS.webhookUrl)}`,
     `    ACCESS_CLIENT_ID: ${secret(plan, PORTAINER_DEPLOY_SECRETS.accessClientId)}`,
     `    ACCESS_CLIENT_SECRET: ${secret(plan, PORTAINER_DEPLOY_SECRETS.accessClientSecret)}`,
+    `    ACCESS_CLIENT_ID_NEW: ${secret(plan, PORTAINER_DEPLOY_SECRETS.accessClientIdNew)}`,
+    `    ACCESS_CLIENT_SECRET_NEW: ${secret(plan, PORTAINER_DEPLOY_SECRETS.accessClientSecretNew)}`,
   ];
 }
 

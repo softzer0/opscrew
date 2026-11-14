@@ -1,7 +1,7 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: bash and GitHub Actions syntax, not JavaScript templates.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -50,8 +50,9 @@ describe("renderWorkflow for an own server in tunnel mode", () => {
   it("reaches SSH on the SSH hostname through cloudflared access ssh", () => {
     const configure = deploySteps.find((s) => s.name === "Configure SSH with the pinned host key");
     expect(configure?.run).toContain("echo 'Host ssh-shop.example.com'");
+    expect(configure?.run).toContain("echo '  ProxyCommand ~/.ssh/opscrew-access-ssh %h'");
     expect(configure?.run).toContain(
-      "echo '  ProxyCommand /usr/local/bin/cloudflared access ssh --hostname %h'",
+      `echo '"/usr/local/bin/cloudflared" access ssh --hostname "$1" && exit 0'`,
     );
     expect(sshSteps.map((s) => s.name)).toEqual([
       "Upload runtime files and environment",
@@ -66,16 +67,27 @@ describe("renderWorkflow for an own server in tunnel mode", () => {
       expect(step.env?.TUNNEL_SERVICE_TOKEN_SECRET).toBe(
         `\${{ secrets.${TUNNEL_DEPLOY_SECRETS.serviceTokenSecret} }}`,
       );
+      // A move to another Cloudflare account's service token, empty unless one is in progress.
+      expect(step.env?.TUNNEL_SERVICE_TOKEN_ID_NEW).toBe(
+        "${{ secrets.OPSCREW_TUNNEL_SERVICE_TOKEN_ID_NEW }}",
+      );
+      expect(step.env?.TUNNEL_SERVICE_TOKEN_SECRET_NEW).toBe(
+        "${{ secrets.OPSCREW_TUNNEL_SERVICE_TOKEN_SECRET_NEW }}",
+      );
     }
     expect(tunnel).not.toContain(`secrets.${DEPLOY_SECRETS.host}`);
   });
 
   it("never prints the service token or puts it on a command line", () => {
+    const proxy = "Configure SSH with the pinned host key";
     for (const step of deploySteps) {
       const run = step.run ?? "";
-      expect(run).not.toMatch(/TUNNEL_SERVICE_TOKEN|service-token|\$\{\{/);
+      expect(run).not.toMatch(/service-token|\$\{\{/);
+      // Only the ProxyCommand script names the variables, to hand the `_NEW` ones to cloudflared.
+      if (step.name !== proxy) expect(run).not.toMatch(/TUNNEL_SERVICE_TOKEN/);
     }
     expect(tunnel.match(/TUNNEL_SERVICE_TOKEN_(?:ID|SECRET):/g)).toHaveLength(6);
+    expect(tunnel.match(/TUNNEL_SERVICE_TOKEN_(?:ID|SECRET)_NEW:/g)).toHaveLength(6);
   });
 
   it("checks health on the domain through Cloudflare", () => {
@@ -189,6 +201,89 @@ describe.skipIf(!bashWorks())("cloudflared install script", { timeout: 180_000 }
     expect(result.status).not.toBe(0);
     expect(result.output).toContain("no cloudflared build for this runner (riscv64)");
     expect(result.installed).toBe(false);
+  });
+});
+
+/*
+ * Runs the generated SSH setup in bash with its home in a temp folder, then the ProxyCommand it
+ * wrote as ssh runs it (`exec <command>` in a shell, `%h` filled in), with a stub cloudflared that
+ * logs the service token it gets, fails for the one in REFUSED (as when Access refuses it) and
+ * otherwise passes the connection through.
+ */
+describe.skipIf(!bashWorks())("the tunnel's ProxyCommand", { timeout: 180_000 }, () => {
+  const configure =
+    deploySteps.find((s) => s.name === "Configure SSH with the pinned host key")?.run ?? "";
+  const BANNER = "SSH-2.0-OpenSSH_9.6";
+  const OLD = { TUNNEL_SERVICE_TOKEN_ID: "old-id", TUNNEL_SERVICE_TOKEN_SECRET: "old-secret" };
+  const NEW = {
+    TUNNEL_SERVICE_TOKEN_ID_NEW: "new-id",
+    TUNNEL_SERVICE_TOKEN_SECRET_NEW: "new-secret",
+  };
+  const UNSET = { TUNNEL_SERVICE_TOKEN_ID_NEW: "", TUNNEL_SERVICE_TOKEN_SECRET_NEW: "" };
+
+  function connect(env: Record<string, string>) {
+    const work = mkdtempSync(join(tmpdir(), "opscrew-access-ssh-")).replaceAll("\\", "/");
+    try {
+      const stub = `${work}/cloudflared`;
+      writeFileSync(
+        stub,
+        [
+          "#!/bin/sh",
+          'echo "$TUNNEL_SERVICE_TOKEN_ID $TUNNEL_SERVICE_TOKEN_SECRET $*" >> "$CALLS"',
+          '[ "$TUNNEL_SERVICE_TOKEN_ID" = "$REFUSED" ] && exit 1',
+          "exec cat",
+          "",
+        ].join("\n"),
+      );
+      chmodSync(stub, 0o755);
+      // Git for Windows' install cannot set a folder's mode on every drive; the paths are the point.
+      const install = 'install() { mkdir -p "${@: -1}"; }';
+      const script = configure.replaceAll("/usr/local/bin/cloudflared", stub);
+      const setup = spawnSync("bash", ["-c", `${install}\n${script}`], {
+        env: { ...process.env, HOME: work, SSH_KEY: "key", KNOWN_HOSTS: "known" },
+        encoding: "utf8",
+      });
+      expect(setup.status, `${setup.stdout}${setup.stderr}`).toBe(0);
+      const config = readFileSync(`${work}/.ssh/config`, "utf8");
+      const proxy = /^ {2}ProxyCommand (.+)$/m.exec(config)?.[1] ?? "";
+      const result = spawnSync(
+        "bash",
+        ["-c", `exec ${proxy.replace("%h", "ssh-shop.example.com")}`],
+        {
+          env: { ...process.env, HOME: work, CALLS: `${work}/calls`, ...env },
+          input: `${BANNER}\n`,
+          encoding: "utf8",
+        },
+      );
+      const calls = existsSync(`${work}/calls`) ? readFileSync(`${work}/calls`, "utf8") : "";
+      return { status: result.status, stdout: result.stdout, calls: calls.trim().split("\n") };
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
+  }
+
+  const HOST = "access ssh --hostname ssh-shop.example.com";
+
+  it("connects with the deploy's service token while Access takes it, even with a new one set", () => {
+    const result = connect({ ...OLD, ...NEW, REFUSED: "none" });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe(`${BANNER}\n`);
+    expect(result.calls).toEqual([`old-id old-secret ${HOST}`]);
+  });
+
+  it("tries the new account's service token once Access refuses the old one", () => {
+    const result = connect({ ...OLD, ...NEW, REFUSED: "old-id" });
+    expect(result.status).toBe(0);
+    // The connection's first bytes reach the second try: the failed one read none of them.
+    expect(result.stdout).toBe(`${BANNER}\n`);
+    expect(result.calls).toEqual([`old-id old-secret ${HOST}`, `new-id new-secret ${HOST}`]);
+  });
+
+  it("fails as before when Access refuses the token and no new one is set", () => {
+    const result = connect({ ...OLD, ...UNSET, REFUSED: "old-id" });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.calls).toEqual([`old-id old-secret ${HOST}`]);
   });
 });
 

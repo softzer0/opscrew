@@ -123,6 +123,7 @@ describe("renderInfra on Cloudflare's hosting", () => {
       worker: "example-app",
       workers_dev: false,
       preview_urls: false,
+      custom_domains: true,
     });
     const turnedOn = serverlessPlan(
       { ...WORKERS, worker: "example-app-staging", workersDev: true, previewUrls: true },
@@ -135,6 +136,14 @@ describe("renderInfra on Cloudflare's hosting", () => {
       workers_dev: true,
       preview_urls: true,
     });
+  });
+
+  it("gives the Worker its custom domains through a root variable a move to another Cloudflare account turns off", () => {
+    const main = file(files, "prod/main.tf");
+    expect(block(main, 'module "worker"')).toMatch(/^ {2}custom_domains = var\.custom_domains$/m);
+    expect(file(files, "prod/variables.tf")).toMatch(
+      /variable "custom_domains" \{\n {2}description = "Give the Worker its custom domains; false while a move to another Cloudflare account prepares the Worker there\."\n {2}type {8}= bool\n\}/,
+    );
   });
 
   it("needs the Cloudflare account id and the zone id", () => {
@@ -452,7 +461,17 @@ const NETWORK_ERROR =
   /dial tcp|no such host|i\/o timeout|connection (?:refused|reset)|network is unreachable|TLS handshake|context deadline exceeded|could not connect/i;
 
 /** Each root, the folder it renders to, and what its offline plan creates and leaves out. */
-const ROOTS = {
+const ROOTS: Record<
+  string,
+  {
+    files: () => RenderedFile[];
+    dir: string;
+    /** The plan's `-var` arguments. */
+    vars?: string[];
+    creates: string[];
+    absent: string[];
+  }
+> = {
   "Cloudflare hosting": {
     files: () => renderInfra(serverlessPlan(WORKERS, { www: true }), ctx()),
     dir: "opscrew/infra/prod",
@@ -464,6 +483,17 @@ const ROOTS = {
       "module.worker.cloudflare_workers_custom_domain.www[0]",
     ],
     absent: ["cloudflare_dns_record"],
+  },
+  "a move to another Cloudflare account: the Worker without its custom domains": {
+    files: () => renderInfra(serverlessPlan(WORKERS, { www: true }), ctx()),
+    dir: "opscrew/infra/prod",
+    vars: ["-var", "custom_domains=false"],
+    creates: [
+      "module.worker.terraform_data.worker",
+      "module.worker.cloudflare_workers_script.this",
+      "module.worker.cloudflare_workers_script_subdomain.this",
+    ],
+    absent: ["cloudflare_workers_custom_domain", "cloudflare_dns_record"],
   },
   "a site move: the Worker's shell beside GitHub Pages' records": {
     files: () => renderInfra(movingSite(PAGES, WORKERS), ctx({ siteMove: true })),
@@ -563,6 +593,7 @@ describe.skipIf(!runIt)("the server-less roots validate and plan (integration)",
               "-refresh=false",
               "-lock=false",
               `-out=${planFile}`,
+              ...(spec.vars ?? []),
             ],
             { cwd, env },
           );

@@ -13,13 +13,14 @@ provider "cloudflare" {}
 module "worker" {
   source = "../modules/cloudflare-workers"
 
-  account_id   = var.cloudflare_account_id
-  zone_id      = var.cloudflare_zone_id
-  worker       = var.worker
-  domain       = var.domain
-  www          = var.www
-  workers_dev  = var.workers_dev
-  preview_urls = var.preview_urls
+  account_id     = var.cloudflare_account_id
+  zone_id        = var.cloudflare_zone_id
+  worker         = var.worker
+  domain         = var.domain
+  www            = var.www
+  workers_dev    = var.workers_dev
+  preview_urls   = var.preview_urls
+  custom_domains = var.custom_domains
 }
 "
 `;
@@ -70,6 +71,11 @@ variable "workers_dev" {
 
 variable "preview_urls" {
   description = "Give each version of the Worker its own preview URL."
+  type        = bool
+}
+
+variable "custom_domains" {
+  description = "Give the Worker its custom domains; false while a move to another Cloudflare account prepares the Worker there."
   type        = bool
 }
 "
