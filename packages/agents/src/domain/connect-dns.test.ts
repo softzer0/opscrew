@@ -1,7 +1,7 @@
 import type { FetchLike } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { describe, expect, it, vi } from "vitest";
-import { lookupPublishedDs } from "./connect-dns";
+import { lookupPublishedDs, publicNameservers } from "./connect-dns";
 
 function answering(body: unknown, status = 200) {
   const calls: { url: string; headers: Record<string, string> }[] = [];
@@ -119,5 +119,43 @@ describe("lookupPublishedDs", () => {
     } finally {
       timeout.mockRestore();
     }
+  });
+});
+
+describe("publicNameservers", () => {
+  it("asks Cloudflare's DNS over HTTPS for the NS records: lower case, no trailing dot, sorted", async () => {
+    const { fetch, calls } = answering({
+      Status: 0,
+      Answer: [
+        { name: "example.com.", type: 2, TTL: 86400, data: "Zara.NS.cloudflare.com." },
+        { name: "example.com.", type: 2, TTL: 86400, data: "adam.ns.cloudflare.com." },
+        { name: "example.com.", type: 2, TTL: 86400, data: "adam.ns.cloudflare.com" },
+        { name: "other.example.com.", type: 2, TTL: 86400, data: "ns1.elsewhere.example." },
+        { name: "example.com.", type: 46, TTL: 86400, data: "NS 13 2 86400 ignored" },
+      ],
+    });
+
+    expect(await publicNameservers(fetch, "Example.com.")).toEqual([
+      "adam.ns.cloudflare.com",
+      "zara.ns.cloudflare.com",
+    ]);
+    expect(calls.map((c) => c.url)).toEqual([
+      "https://cloudflare-dns.com/dns-query?name=example.com&type=NS",
+    ]);
+  });
+
+  it("returns none when the name has no NS records or does not exist", async () => {
+    expect(await publicNameservers(answering({ Status: 0 }).fetch, "example.com")).toEqual([]);
+    expect(await publicNameservers(answering({ Status: 3 }).fetch, "example.com")).toEqual([]);
+  });
+
+  it("stops when the resolver fails, so the delegation is never guessed", async () => {
+    const error = await failure(publicNameservers(answering({ Status: 2 }).fetch, "example.com"));
+
+    expect(error.code).toBe("PROVIDER_ERROR");
+    expect(error.message).toBe(
+      "OpsCrew could not look up the nameservers of example.com (the resolver answered with DNS status 2).",
+    );
+    expect(error.hint).toBe("Check the internet connection and run the command again.");
   });
 });

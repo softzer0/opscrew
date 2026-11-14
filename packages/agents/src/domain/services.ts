@@ -74,6 +74,44 @@ export const SANDBOX_ZONES: DomainZoneApi = {
   scanRecords: async () => [],
 };
 
+/**
+ * The zone calls over a Cloudflare client: `domain connect`'s, or any other account's client
+ * (the move gives the new account's). `findZone` answers only for a zone named exactly `name`.
+ */
+export function domainZonesFrom(client: CloudflareClient): DomainZoneApi {
+  return {
+    findZone: async (name) => {
+      const zone = await client.findZone(name);
+      return zone !== undefined && zone.name.toLowerCase() === name ? zone : undefined;
+    },
+    createZone: (accountId, name) => client.createZone(accountId, name),
+    enableDnssec: async (zoneId) => {
+      await client.enableDnssec(zoneId);
+    },
+    dnssecEnabled: async (zoneId) => {
+      const { status } = await client.getDnssec(zoneId);
+      return status === "active" || status === "pending";
+    },
+    dsRecord: async (zoneId) => {
+      const { keyTag, algorithm, digestType, digest, ds } = await client.getDnssec(zoneId);
+      if (
+        keyTag === undefined ||
+        algorithm === undefined ||
+        digestType === undefined ||
+        digest === undefined
+      ) {
+        return undefined;
+      }
+      return { keyTag, algorithm, digestType, digest, ds };
+    },
+    activationCheck: (zoneId) => client.activationCheck(zoneId),
+    listRecords: (zoneId) => client.listDnsRecords(zoneId),
+    createRecords: async (zoneId, records) =>
+      (await client.batchCreateRecords(zoneId, records)).length,
+    scanRecords: (zoneId) => client.scanDnsRecords(zoneId),
+  };
+}
+
 /** The Cloudflare collaborators: accounts, the registrar of one account, extensions and zones. */
 export type CloudflareDomainServices = Pick<
   ResolvedDomainServices,
@@ -110,39 +148,7 @@ export function defaultDomainServices(deps: PhaseDeps): CloudflareDomainServices
         ? undefined
         : { contactExtensionsRequired: found.contactExtensionsRequired };
     },
-    zones: sandbox
-      ? SANDBOX_ZONES
-      : {
-          findZone: async (name) => {
-            const zone = await client.findZone(name);
-            return zone !== undefined && zone.name.toLowerCase() === name ? zone : undefined;
-          },
-          createZone: (accountId, name) => client.createZone(accountId, name),
-          enableDnssec: async (zoneId) => {
-            await client.enableDnssec(zoneId);
-          },
-          dnssecEnabled: async (zoneId) => {
-            const { status } = await client.getDnssec(zoneId);
-            return status === "active" || status === "pending";
-          },
-          dsRecord: async (zoneId) => {
-            const { keyTag, algorithm, digestType, digest, ds } = await client.getDnssec(zoneId);
-            if (
-              keyTag === undefined ||
-              algorithm === undefined ||
-              digestType === undefined ||
-              digest === undefined
-            ) {
-              return undefined;
-            }
-            return { keyTag, algorithm, digestType, digest, ds };
-          },
-          activationCheck: (zoneId) => client.activationCheck(zoneId),
-          listRecords: (zoneId) => client.listDnsRecords(zoneId),
-          createRecords: async (zoneId, records) =>
-            (await client.batchCreateRecords(zoneId, records)).length,
-          scanRecords: (zoneId) => client.scanDnsRecords(zoneId),
-        },
+    zones: sandbox ? SANDBOX_ZONES : domainZonesFrom(client),
   };
 }
 

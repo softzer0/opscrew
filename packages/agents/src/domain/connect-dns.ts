@@ -46,3 +46,29 @@ export async function lookupPublishedDs(fetch: FetchLike, domain: string): Promi
   }
   return ttl === undefined ? { records } : { records, ttlSeconds: ttl };
 }
+
+const NS_TYPE = 2;
+
+/**
+ * The nameservers the public DNS names for `domain` now: its NS records through Cloudflare's
+ * public resolver (see `dohQuery`), lower case, without the trailing dot, sorted. Empty when the
+ * name has none or does not exist. A failed, timed-out or unreadable lookup stops: OpsCrew never
+ * guesses where a domain is delegated.
+ */
+export async function publicNameservers(fetch: FetchLike, domain: string): Promise<string[]> {
+  const name = normalizeHostName(domain);
+  const answer = await dohQuery(fetch, name, "NS");
+  if (answer.state === "missing") return [];
+  if (answer.state === "unknown") {
+    throw new OpsCrewError(
+      "PROVIDER_ERROR",
+      `OpsCrew could not look up the nameservers of ${name} (${answer.problem}).`,
+      { hint: "Check the internet connection and run the command again." },
+    );
+  }
+  const found = answer.records
+    .filter((r) => r.type === NS_TYPE && normalizeHostName(r.name) === name)
+    .map((r) => normalizeHostName(r.data))
+    .filter((n) => n !== "");
+  return [...new Set(found)].sort();
+}

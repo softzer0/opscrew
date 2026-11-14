@@ -18,6 +18,15 @@ import {
 import { readBindFile } from "./connect-bind";
 import { lookupPublishedDs } from "./connect-dns";
 import {
+  type DsReading,
+  readDs,
+  removeDsAndWait,
+  seenState,
+  switchAfterRemoval,
+  unionDs,
+  waitFor,
+} from "./connect-ds";
+import {
   type CopyPlan,
   copyPlan,
   createLines,
@@ -29,9 +38,7 @@ import {
 import {
   type ConnectState,
   connectStatePath,
-  dsWaitSeconds,
   laterSwitch,
-  REMOVAL_MARGIN_SECONDS,
   readConnectState,
   removeConnectState,
   writeConnectState,
@@ -47,6 +54,7 @@ import {
   recordDomain,
 } from "./project";
 import { formatTime } from "./purchase";
+import { askRegistrars, otherConfiguredRegistrars } from "./registrar-lookup";
 import {
   OTHER_REGISTRAR_IDS,
   type OtherRegistrarId,
@@ -99,20 +107,6 @@ interface ConnectContext extends SwitchContext {
   state: ConnectState | undefined;
   /** This run's command with the options that matter on a later run (for hints). */
   command: string;
-}
-
-/** The DS records published for the domain now. */
-interface DsReading {
-  /** What the registrar's API lists (registrars with DNSSEC in their API). */
-  api?: DsRecord[];
-  /** What the public DNS shows. */
-  public: DsRecord[];
-  /** Both combined: before the switch, every one of them is an old DS record. */
-  records: DsRecord[];
-  /** The public answer's TTL: how long its copy of the records has left (seconds). */
-  ttlSeconds?: number;
-  /** When they were read. */
-  at: Date;
 }
 
 /** The domain's current records and where they came from. */
@@ -283,9 +277,7 @@ async function findRegistrar(
   given: OtherRegistrarId | undefined,
 ): Promise<{ registrarId: OtherRegistrarId; registrar: Registrar }> {
   if (given !== undefined) return { registrarId: given, registrar: services.otherRegistrar(given) };
-  const ids = services
-    .configuredRegistrars()
-    .filter((id): id is OtherRegistrarId => id !== "cloudflare");
+  const ids = otherConfiguredRegistrars(services);
   const envHelp = OTHER_REGISTRAR_IDS.map(
     (id) => `${REGISTRAR_ENV[id].join(" and ")} for ${REGISTRAR_NAMES[id]}`,
   ).join(", ");
@@ -299,22 +291,7 @@ async function findRegistrar(
     );
   }
   const names = ids.map((id) => REGISTRAR_NAMES[id]);
-  deps.reporter.step(
-    `Looking for ${domain} in your ${listText(names)} account${ids.length === 1 ? "" : "s"}…`,
-  );
-  const answers = await Promise.all(
-    ids.map(async (id) => {
-      try {
-        const registrar = services.otherRegistrar(id);
-        if (registrar.ownsDomain === undefined) {
-          return { id, registrar, owns: false, error: "its API cannot list domains" };
-        }
-        return { id, registrar, owns: await registrar.ownsDomain(domain) };
-      } catch (error) {
-        return { id, owns: false, error: errorText(deps, error) };
-      }
-    }),
-  );
+  const answers = await askRegistrars(deps, services, domain, ids);
   const owners = answers.filter((a) => a.owns && a.registrar !== undefined);
   const [owner] = owners;
   if (owners.length === 1 && owner?.registrar !== undefined) {
@@ -382,77 +359,6 @@ function canRemoveDs(ctx: ConnectContext): boolean {
   return ctx.registrar.capabilities.dnssec && ctx.registrar.removeDsRecord !== undefined;
 }
 
-/** Adds the records `extra` has and `list` lacks (same DS record: see `sameDs`). */
-function unionDs(list: readonly DsRecord[], extra: readonly DsRecord[]): DsRecord[] {
-  const all = [...list];
-  for (const record of extra) if (!all.some((r) => sameDs(r, record))) all.push(record);
-  return all;
-}
-
-/**
- * The DS records published now: what the registrar's API lists (registrars with DNSSEC in their
- * API) and what the public DNS shows, combined. A failed public lookup stops the run: OpsCrew
- * never switches nameservers on a guess.
- */
-async function readDs(ctx: ConnectContext): Promise<DsReading> {
-  const { registrar, domain, deps } = ctx;
-  const at = deps.clock.now();
-  const api =
-    registrar.capabilities.dnssec && registrar.listDsRecords !== undefined
-      ? await registrar.listDsRecords(domain)
-      : undefined;
-  const published = await lookupPublishedDs(deps.fetch, domain);
-  return {
-    api,
-    public: published.records,
-    records: unionDs(api ?? [], published.records),
-    ttlSeconds: published.ttlSeconds,
-    at,
-  };
-}
-
-/**
- * When the old DS records are gone from the public DNS at the earliest (milliseconds): when the
- * copy the public answer showed expires, and never before `after`.
- */
-function publicGoneAt(ds: DsReading, after: Date): number {
-  const expires =
-    ds.public.length > 0 && ds.ttlSeconds !== undefined
-      ? ds.at.getTime() + ds.ttlSeconds * 1000
-      : after.getTime();
-  return Math.max(after.getTime(), expires);
-}
-
-/** The wait for these DS records: their TTL within 24 and 48 hours, never shorter than noted. */
-function waitFor(ctx: ConnectContext, ds: DsReading): number {
-  return Math.max(dsWaitSeconds(ds.ttlSeconds), ctx.state?.waitSeconds ?? 0);
-}
-
-/**
- * The switch time once the old DS records were removed through the API (or are no longer listed
- * there) at `at`: the wait after the public DNS's copy expires, plus an hour in case the registry
- * publishes them a little longer, never earlier than the note says.
- */
-function switchAfterRemoval(ctx: ConnectContext, ds: DsReading, at: Date): string {
-  const wait = waitFor(ctx, ds) + REMOVAL_MARGIN_SECONDS;
-  return laterSwitch(ctx.state, publicGoneAt(ds, at) + wait * 1000);
-}
-
-/**
- * The note while old DS records OpsCrew did not remove are published: when they were first seen
- * and the wait that starts once a run sees them gone.
- */
-function seenState(ctx: ConnectContext, zone: DomainZone | undefined, ds: DsReading): ConnectState {
-  return {
-    domain: ctx.domain,
-    registrar: ctx.registrarId,
-    zoneId: zone?.id,
-    dsSeen: ctx.state?.dsSeen ?? ctx.deps.clock.now().toISOString(),
-    switchAfter: ctx.state?.switchAfter,
-    waitSeconds: waitFor(ctx, ds),
-  };
-}
-
 function result(
   ctx: ConnectContext,
   fields: Partial<ConnectDomainResult> & Pick<ConnectDomainResult, "outcome" | "next">,
@@ -485,7 +391,7 @@ async function dsMustGoFirst(
 ): Promise<ConnectDomainResult> {
   const { deps, domain } = ctx;
   const name = nameOf(ctx);
-  const seen = seenState(ctx, zone, ds);
+  const seen = seenState(ctx, zone?.id, ds);
   await writeConnectState(ctx.stateFile, seen);
   const why =
     (ds.api ?? []).length > 0
@@ -520,8 +426,8 @@ async function stillPublished(
   const name = nameOf(ctx);
   const state = {
     ...(ctx.state as ConnectState),
-    switchAfter: switchAfterRemoval(ctx, ds, ds.at),
-    waitSeconds: waitFor(ctx, ds),
+    switchAfter: switchAfterRemoval(ctx.state, ds, ds.at),
+    waitSeconds: waitFor(ctx.state, ds),
   };
   await writeConnectState(ctx.stateFile, state);
   deps.reporter.warn(
@@ -900,12 +806,12 @@ function approvalDetails(
   const to = zoneNs.length > 0 ? listText(zoneNs) : "the zone's Cloudflare nameservers";
   if (removeDs) {
     const listed = ds.api ?? [];
-    const switchAfter = switchAfterRemoval(ctx, ds, deps.clock.now());
+    const switchAfter = switchAfterRemoval(ctx.state, ds, deps.clock.now());
     lines.push(
       `Old DNSSEC (DS) records at ${name} (${listed.length}), removed through ${name}'s API in this run:`,
       ...listed.map((record) => `  - ${dsRecordText(record)}`),
       `Switching nameservers while resolvers still remember these records would take ${domain} offline, so this run removes them and does not switch the nameservers. Removing them turns DNSSEC off at the current DNS provider; ${domain} keeps working without it.`,
-      `Nameservers at ${name}: not changed in this run. Run \`${ctx.command}\` again after ${formatTime(switchAfter)} (at least ${hoursText(waitFor(ctx, ds))} after the public DNS stops showing the old records, plus an hour in case the registry publishes them a little longer) to switch them from ${listText(current) || "none"} to ${to}; it checks that neither ${name}'s API nor the public DNS shows them and asks again first.`,
+      `Nameservers at ${name}: not changed in this run. Run \`${ctx.command}\` again after ${formatTime(switchAfter)} (at least ${hoursText(waitFor(ctx.state, ds))} after the public DNS stops showing the old records, plus an hour in case the registry publishes them a little longer) to switch them from ${listText(current) || "none"} to ${to}; it checks that neither ${name}'s API nor the public DNS shows them and asks again first.`,
     );
     return lines.join("\n");
   }
@@ -937,18 +843,7 @@ async function removeOldDs(
   const { deps, domain } = ctx;
   const { zone, ds, copied } = input;
   const name = nameOf(ctx);
-  const seen = seenState(ctx, zone, ds);
-  await writeConnectState(ctx.stateFile, seen);
-  await removeDsRecords(ctx, ds.api ?? [], `before switching to zone ${zone.id}`);
-  const switchAfter = laterSwitch(seen, Date.parse(switchAfterRemoval(ctx, ds, deps.clock.now())));
-  const removed: ConnectState = {
-    domain,
-    registrar: ctx.registrarId,
-    zoneId: zone.id,
-    switchAfter,
-    waitSeconds: seen.waitSeconds,
-  };
-  await writeConnectState(ctx.stateFile, removed);
+  const { switchAfter } = await removeDsAndWait({ ...ctx, ds, zoneId: zone.id }, ctx.stateFile);
   const until = formatTime(switchAfter);
   deps.reporter.success(
     `OpsCrew copied ${plural(copied, "record")} into the Cloudflare zone of ${domain} and removed its old DNSSEC records at ${name}.`,
@@ -1175,31 +1070,6 @@ async function dnssecStep(
     default:
       // `skipped` or `later`: nothing was published.
       return unchanged;
-  }
-}
-
-/** Removes DS records through the registrar's API (one call per key tag), each audited. */
-async function removeDsRecords(
-  ctx: ConnectContext,
-  records: readonly DsRecord[],
-  why: string,
-): Promise<void> {
-  const { deps, domain, registrar } = ctx;
-  const remove = registrar.removeDsRecord?.bind(registrar);
-  if (records.length === 0 || remove === undefined) return;
-  deps.reporter.step(`Removing DNSSEC (DS) records of ${domain} at ${nameOf(ctx)}…`);
-  for (const keyTag of new Set(records.map((ds) => ds.keyTag))) {
-    await remove(domain, keyTag);
-    const removed = records
-      .filter((ds) => ds.keyTag === keyTag)
-      .map((ds) => `algorithm ${ds.algorithm}, digest type ${ds.digestType}`)
-      .join("; ");
-    await auditDomain(
-      deps,
-      "remove DS record",
-      domain,
-      `${nameOf(ctx)}: key tag ${keyTag} (${removed}), ${why}`,
-    );
   }
 }
 

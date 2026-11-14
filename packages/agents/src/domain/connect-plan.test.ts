@@ -6,6 +6,8 @@ import {
   createLines,
   managedText,
   missingFromZone,
+  recordsMissingFromZone,
+  sameRecordContent,
   unquoteTxt,
 } from "./connect-plan";
 
@@ -205,6 +207,82 @@ describe("copyPlan against the zone", () => {
         { type: "MX", name: DOMAIN, content: "mx1.example.net" },
       ]).map((r) => r.type),
     ).toEqual(["TXT", "SRV", "CAA"]);
+  });
+});
+
+describe("recordsMissingFromZone and sameRecordContent: one zone's records against another's", () => {
+  /** Records as Cloudflare lists them, with every field. */
+  const A_ZONE = [
+    { type: "A", name: DOMAIN, content: "192.0.2.10", ttl: 1, proxied: true, comment: "web" },
+    { type: "MX", name: DOMAIN, content: "mx1.example.net", priority: 10, ttl: 3600 },
+    { type: "TXT", name: DOMAIN, content: '"v=spf1 include:_spf.example.net ~all"', ttl: 1 },
+    {
+      type: "SRV",
+      name: `_sip._tcp.${DOMAIN}`,
+      content: "60 5060 sip.example.com",
+      priority: 10,
+      data: { priority: 10, weight: 60, port: 5060, target: "sip.example.com" },
+      ttl: 1,
+    },
+    { type: "CAA", name: DOMAIN, content: '0 issue "letsencrypt.org"', ttl: 1 },
+    { type: "AAAA", name: `www.${DOMAIN}`, content: "2001:0db8:0:0::1", ttl: 1 },
+  ];
+
+  it("returns every record of an empty zone, each with all its fields", () => {
+    expect(recordsMissingFromZone(A_ZONE, [])).toEqual(A_ZONE);
+  });
+
+  it("compares type, name and normalised content only, never the TTL, proxying or comment", () => {
+    const inB = [
+      { type: "A", name: "Example.com.", content: "192.0.2.10", ttl: 300, proxied: false },
+      { type: "MX", name: DOMAIN, content: "MX1.example.net.", priority: 10, ttl: 1 },
+      { type: "TXT", name: DOMAIN, content: '"v=spf1  include:_spf.example.net   ~all"', ttl: 1 },
+      { type: "AAAA", name: `www.${DOMAIN}`, content: "2001:db8::1", ttl: 1 },
+      // the same SRV and CAA given by their data instead of Cloudflare's content
+      {
+        type: "SRV",
+        name: `_sip._tcp.${DOMAIN}`,
+        data: { priority: 10, weight: 60, port: 5060, target: "sip.example.com." },
+        ttl: 1,
+      },
+      { type: "CAA", name: DOMAIN, data: { flags: 0, tag: "ISSUE", value: "letsencrypt.org" } },
+    ];
+
+    expect(recordsMissingFromZone(A_ZONE, inB)).toEqual([]);
+    for (const [i, record] of A_ZONE.entries()) {
+      expect(sameRecordContent(record, inB.find((b) => b.type === record.type) ?? record)).toBe(
+        true,
+      );
+      expect(sameRecordContent(record, A_ZONE[(i + 1) % A_ZONE.length] ?? record)).toBe(false);
+    }
+  });
+
+  it("keeps a record whose content or priority differs, and matches each zone record once", () => {
+    const missing = recordsMissingFromZone(
+      [
+        { type: "A", name: DOMAIN, content: "192.0.2.10", ttl: 1 },
+        { type: "A", name: DOMAIN, content: "192.0.2.10", ttl: 1 },
+        { type: "MX", name: DOMAIN, content: "mx1.example.net", priority: 10, ttl: 1 },
+        { type: "TXT", name: DOMAIN, content: '"verification=one"', ttl: 1 },
+      ],
+      [
+        { type: "A", name: DOMAIN, content: "192.0.2.10" },
+        { type: "MX", name: DOMAIN, content: "mx1.example.net", priority: 20 },
+        { type: "TXT", name: DOMAIN, content: '"verification=two"' },
+      ],
+    );
+
+    expect(missing.map((r) => `${r.type} ${r.content}`)).toEqual([
+      "A 192.0.2.10",
+      "MX mx1.example.net",
+      'TXT "verification=one"',
+    ]);
+    expect(
+      sameRecordContent(
+        { type: "MX", name: DOMAIN, content: "mx1.example.net", priority: 10 },
+        { type: "MX", name: DOMAIN, content: "mx1.example.net" },
+      ),
+    ).toBe(true);
   });
 });
 

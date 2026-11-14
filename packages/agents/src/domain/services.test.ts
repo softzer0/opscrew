@@ -1,12 +1,19 @@
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
+import { CloudflareClient } from "@opscrew/connector-cloudflare";
 import type { FetchLike } from "@opscrew/contracts";
 import type { OpsCrewError } from "@opscrew/core";
+import { fakeSecret } from "@opscrew/core/testing";
 import { readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { createTestPhaseDeps, domainProject, domainTestPlan, TOKEN, visibleText } from "../testing";
 import { buyDomain } from "./buy";
-import { defaultDomainServices, resolveDomainServices, SANDBOX_ZONES } from "./services";
+import {
+  defaultDomainServices,
+  domainZonesFrom,
+  resolveDomainServices,
+  SANDBOX_ZONES,
+} from "./services";
 
 const API = "https://api.cloudflare.com/client/v4";
 const REG = "/accounts/acc-1/registrar";
@@ -58,6 +65,39 @@ const registration = {
   locked: true,
   privacy_mode: "redaction",
 };
+
+describe("domainZonesFrom", () => {
+  it("makes the zone calls with the given client's token only (another account's)", async () => {
+    const tokenB = fakeSecret("cloudflare-token", "account-b");
+    const api = fakeApi({
+      "GET /zones?name=shopapp.com&per_page=1": ok([
+        {
+          id: "zb",
+          name: "shopapp.com",
+          status: "pending",
+          name_servers: ["kim.ns.cloudflare.com"],
+        },
+      ]),
+      "GET /zones?name=app.shopapp.com&per_page=1": ok([]),
+      "GET /zones/zb/dns_records?page=1&per_page=100": ok([
+        { id: "r1", type: "TXT", name: "shopapp.com", content: '"v=spf1 -all"', ttl: 1 },
+      ]),
+    });
+    const zones = domainZonesFrom(new CloudflareClient({ token: tokenB, fetch: api.fetch }));
+
+    expect(await zones.findZone("shopapp.com")).toMatchObject({
+      id: "zb",
+      nameServers: ["kim.ns.cloudflare.com"],
+    });
+    // a parent zone is not the zone named exactly
+    expect(await zones.findZone("app.shopapp.com")).toBeUndefined();
+    expect(await zones.listRecords("zb")).toMatchObject([
+      { type: "TXT", name: "shopapp.com", content: '"v=spf1 -all"' },
+    ]);
+    expect(api.calls.length).toBeGreaterThan(0);
+    expect(api.calls.every((c) => c.auth === `Bearer ${tokenB}`)).toBe(true);
+  });
+});
 
 describe("defaultDomainServices", () => {
   it("talks to Cloudflare with the token, through the run's fetch", async () => {

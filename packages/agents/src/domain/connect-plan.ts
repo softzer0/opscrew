@@ -128,8 +128,21 @@ function numberOf(value: unknown): number | undefined {
   return undefined;
 }
 
+/**
+ * A DNS record as two Cloudflare zones are compared: Cloudflare's `content`, or its `data` when
+ * there is no content (SRV, CAA). Other fields (TTL, proxying, comment …) are not compared.
+ */
+export interface ComparableRecord {
+  type: string;
+  name: string;
+  content?: string;
+  data?: Record<string, unknown>;
+  /** MX (or SRV) priority. */
+  priority?: number;
+}
+
 /** The comparable form of a record OpsCrew would create. */
-function inputComparable(record: CloudflareRecordInput): Comparable {
+function inputComparable(record: ComparableRecord): Comparable {
   const type = record.type.toUpperCase();
   const data = record.data ?? {};
   if (type === "SRV") {
@@ -149,7 +162,9 @@ function inputComparable(record: CloudflareRecordInput): Comparable {
 }
 
 /** The comparable form of a record in the zone (Cloudflare's content format). */
-function zoneComparable(record: ZoneRecord): Comparable {
+function zoneComparable(
+  record: Pick<ZoneRecord, "type" | "name" | "content" | "priority">,
+): Comparable {
   const type = record.type.toUpperCase();
   const raw = record.content.trim();
   const given = numberOf(record.priority);
@@ -344,15 +359,46 @@ export function missingFromZone(
   records: readonly CloudflareRecordInput[],
   inZone: readonly ZoneRecord[],
 ): CloudflareRecordInput[] {
-  const zone = inZone.map(zoneComparable);
+  return unmatched(records, inputComparable, inZone.map(zoneComparable));
+}
+
+/** A zone record in comparable form: by its content when it has one, else by its data. */
+function recordComparable(record: ComparableRecord): Comparable {
+  const { content } = record;
+  return content === undefined ? inputComparable(record) : zoneComparable({ ...record, content });
+}
+
+/** `records` without those `inZone` has, each zone record matching one record at most. */
+function unmatched<T>(
+  records: readonly T[],
+  of: (record: T) => Comparable,
+  inZone: readonly Comparable[],
+): T[] {
   const used = new Set<number>();
   return records.filter((record) => {
-    const wanted = inputComparable(record);
-    const index = zone.findIndex((z, i) => !used.has(i) && sameRecord(z, wanted));
+    const wanted = of(record);
+    const index = inZone.findIndex((z, i) => !used.has(i) && sameRecord(z, wanted));
     if (index === -1) return true;
     used.add(index);
     return false;
   });
+}
+
+/**
+ * The records of one zone (`source`, with every field kept) that another zone (`zone`) does not
+ * have: the copy plan's comparison (type, name and normalised content, IPv6 canonical, TXT
+ * unquoted, the priority when both sides know it).
+ */
+export function recordsMissingFromZone<T extends ComparableRecord>(
+  source: readonly T[],
+  zone: readonly ComparableRecord[],
+): T[] {
+  return unmatched(source, recordComparable, zone.map(recordComparable));
+}
+
+/** True when both are the same record by the copy plan's comparison (see `recordsMissingFromZone`). */
+export function sameRecordContent(a: ComparableRecord, b: ComparableRecord): boolean {
+  return sameRecord(recordComparable(a), recordComparable(b));
 }
 
 /** `MX shopapp.com 10 mx1.example.net`: a record as the approval shows it. */
