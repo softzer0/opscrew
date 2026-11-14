@@ -4,6 +4,72 @@ What changed in each release of OpsCrew: the `opscrew` CLI on npm and the Claude
 installs the same version. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Until 1.0, a release can change the files OpsCrew writes and the commands' flags.
 
+## [0.2.8] - 2026-11-14
+
+Nothing to redo. Two defaults change at your next `npx opscrew design` and `npx opscrew provision`:
+prod takes a snapshot of the app's data before each release too, and the cloud provider's
+automated backups are on by default only in prod. A staging or dev plan that already has
+`target.backups: true` keeps it until you change it.
+
+### Added
+
+- **Shared hosting accounts.** OpsCrew deploys static sites and PHP apps (plain PHP and Laravel,
+  with MySQL or MariaDB) to a hosting account you already pay for: one with cPanel, Plesk or
+  DirectAdmin, or a host you reach only over SFTP. See
+  [Deploy to a hosting account](docs/guide/hosting-accounts.md).
+  - Nothing on the account changes until you approve the plan by its hash, and OpsCrew only ever
+    changes or removes what it made there.
+  - On a panel, a small agent on the account pulls each release, switches to it in one step, keeps
+    the releases before it and checks the app after every switch. No credential for the account
+    goes to GitHub. On an SFTP-only host, GitHub Actions uploads the release and switches to it
+    over SFTP.
+  - Node.js and Python apps run through CloudLinux's selector on a panel that has it.
+  - `opscrew rollback`, `destroy`, `status`, `logs`, `verify`, `secure`, `drift` and `snapshot`
+    work there too.
+  - Each panel has its page: [cPanel](docs/guide/cpanel.md), [Plesk](docs/guide/plesk.md),
+    [DirectAdmin](docs/guide/directadmin.md) and [SFTP](docs/guide/sftp.md).
+- **OpenLiteSpeed** as a third reverse proxy on a server, beside Caddy and nginx: certbot's
+  certificates, your own rules in `opscrew/proxy/additions.openlitespeed`, and the app's page cache
+  emptied at each deploy. See [The reverse proxy](docs/guide/reverse-proxy.md).
+- **Contabo's Object Storage** for your app's bucket on Contabo, when it stores up to 250 GB.
+  OpsCrew orders it only after you approve its own plan, reuses one you already have in the region,
+  and never cancels it. See [Object storage](docs/guide/object-storage.md).
+- **Contabo's Auto Backup** as the provider's backups on Contabo, turned on through Contabo's API
+  once you approve the plan. Contabo publishes no price per plan for it, so OpsCrew says it is
+  priced on Contabo's order page and never counts it in a total. You turn it off and restore a
+  backup in Contabo's Customer Control Panel. See [Deploy to Contabo](docs/guide/contabo.md#auto-backup).
+- **Snapshots' copies on storage you already have.** `opscrew snapshot offsite on --to s3` sends
+  the encrypted copies to your own S3-compatible bucket (Wasabi, Backblaze B2, MinIO, AWS S3,
+  Contabo and others), and `--to sftp` to a machine of yours over SFTP, its host key confirmed
+  once. OpsCrew never creates or deletes that bucket or folder: it deletes only the app's copies
+  older than `--days`, and before the first copy it checks that the server can write there. See
+  [Snapshots and restores](docs/guide/snapshots.md#an-encrypted-copy-off-the-server).
+- **The app's queues in a rollback.** A rollback that restores the snapshot names each queue
+  (RabbitMQ, NATS, Kafka, Redpanda, and a Valkey, Redis or Dragonfly that holds background jobs)
+  and what happens to its jobs; `--keep-queues` keeps them as they are. See
+  [Rollback](docs/guide/rollback.md#the-apps-queues).
+- **Guide pages** [Deploy to Hetzner Cloud](docs/guide/hetzner.md) and
+  [Deploy to DigitalOcean](docs/guide/digitalocean.md).
+- **The Claude Code plugin** covers hosting accounts in its deploy skill and tools, and the
+  snapshots' copies to your own bucket or SFTP machine in its snapshots skill.
+
+### Changed
+
+- **The snapshot before each release is on in prod too**, in every environment but previews, and
+  it copies ClickHouse and Neo4j by default, each stopped for a moment. `deploy.snapshots` and
+  `deploy.snapshotStop` in a plan still decide. See [Snapshots and restores](docs/guide/snapshots.md).
+- **The provider's automated backups are on by default only in prod,** when the interview says
+  the data matters; dev and staging rely on OpsCrew's own snapshots. `target.backups` in a plan
+  still decides, and `opscrew advise` proposes backups only for prod.
+
+### Fixed
+
+- The check of your proxy additions downloads the proxy's image first, and says so, so a slow
+  download is no longer reported as a refusal of your rules.
+- The MCP server's promote tool says what a rollback does with the database and the queues.
+- In your Portainer, the off-server copies on DigitalOcean Spaces older than `--days` are deleted,
+  as the guide says and as on a server.
+
 ## [0.2.7] - 2026-11-12
 
 Nothing to redo: projects on Hetzner Cloud and DigitalOcean keep their files as they are. A PHP
@@ -620,6 +686,7 @@ deployment on your own account:
 - `destroy`, `retarget`, `status` and `drift` after the first deploy.
 - The MCP server (`opscrew mcp`) and the Claude Code plugin.
 
+[0.2.8]: https://github.com/opscrew-hub/opscrew/compare/v0.2.7...v0.2.8
 [0.2.7]: https://github.com/opscrew-hub/opscrew/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/opscrew-hub/opscrew/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/opscrew-hub/opscrew/compare/v0.2.4...v0.2.5
