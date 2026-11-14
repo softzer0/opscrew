@@ -1625,6 +1625,46 @@ describe("origin TLS and the zone's minimum TLS", () => {
     expect(zone.calls.filter((c) => c.method === "POST" && c.path.startsWith(AOP))).toHaveLength(1);
   });
 
+  it("with waitForActive false, turns the client certificate on without waiting for it or the hostnames' settings (a pending zone)", async () => {
+    const zone = new FakeZone();
+    zone.pendingReads = Number.POSITIVE_INFINITY;
+    zone.certificatePendingReads = Number.POSITIVE_INFINITY;
+    const m = material();
+    const time = fakeTime();
+    const plan = await tlsPlan(zone, wanted(m), undefined, time);
+    const before = zone.calls.length;
+    const result = await applyShared(clientFor(zone), plan, {
+      approvedHash: plan.hash,
+      keys: m.keys,
+      csr: m.csr,
+      clock: time.clock,
+      sleep: time.sleep,
+      waitForActive: false,
+    });
+    expect(time.sleeps).toEqual([]);
+    expect(result.applied).toEqual([
+      "upload-client-certificate",
+      "enable-client-certificate",
+      "create-origin-certificate",
+      `create-entrypoint ${WAF}`,
+      `create-entrypoint ${CONFIG}`,
+    ]);
+    const calls = zone.calls.slice(before).map((c) => `${c.method} ${c.path}`);
+    expect(calls.some((c) => c.startsWith(`GET ${AOP}/certificates`))).toBe(false);
+    // Only the check that no other certificate holds them, before the change.
+    expect(
+      calls.slice(calls.indexOf(`POST ${AOP}/certificates`) + 1, calls.indexOf(`PUT ${AOP}`)),
+    ).toEqual([`GET ${AOP}/${SHOP}`, `GET ${AOP}/${WWW}`]);
+    expect(
+      calls.slice(calls.indexOf(`PUT ${AOP}`) + 1, calls.indexOf("POST /certificates")),
+    ).toEqual([]);
+    const [client] = zone.clientCertificates;
+    expect([...zone.hostnameAop.values()]).toEqual(
+      A.map((hostname) => ({ hostname, cert_id: client?.id, enabled: true })),
+    );
+    expect(result.record.tls?.client).toMatchObject({ id: client?.id, enabled: A, retiring: [] });
+  });
+
   it("records each change as it is made, so the next plan after a failed origin certificate continues without uploading again", async () => {
     const zone = new FakeZone();
     const m = material();

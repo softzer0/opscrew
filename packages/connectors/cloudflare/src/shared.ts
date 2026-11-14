@@ -1116,7 +1116,7 @@ function minTlsAdvised(value: string, editable: boolean, others: readonly string
  * before the first write and before each write; every write is sent once and checked against the
  * ruleset Cloudflare returns. Before a client certificate is turned on, the certificate is waited
  * for until Cloudflare reports it active, and then each hostname's setting (each wait at most 5
- * minutes); the record is updated after each change.
+ * minutes), unless `waitForActive` is false; the record is updated after each change.
  */
 export async function applyShared(
   client: CloudflareClient,
@@ -1130,6 +1130,12 @@ export async function applyShared(
     /** Times the wait for active and `setAt`. Default: this computer's clock. */
     clock?: Clock;
     sleep?: (ms: number) => Promise<void>;
+    /**
+     * Wait for the client certificate and the hostnames' settings to be active before going on
+     * (default true). False on a pending zone, where Cloudflare deploys them only once the zone
+     * is active.
+     */
+    waitForActive?: boolean;
   },
 ): Promise<SharedApplyResult> {
   if (!isPlanHash(opts.approvedHash) || opts.approvedHash.toLowerCase() !== sharedPlanHash(plan)) {
@@ -1286,6 +1292,7 @@ async function applyTlsChange(
     csr?: string;
     clock: Clock;
     sleep: (ms: number) => Promise<void>;
+    waitForActive?: boolean;
   },
 ): Promise<void> {
   const { tls } = state;
@@ -1315,13 +1322,16 @@ async function applyTlsChange(
           { hint: "Run the command again to make a new plan, and approve that one." },
         );
       }
+      const wait = given.waitForActive ?? true;
       // The certificate itself first: an upload answers `pending_deployment` (spike T1402).
-      await untilActive(
-        given,
-        () => client.listHostnameClientCertificates(zoneId),
-        (certificates) => certificates.some((c) => c.id === current.id && c.status === "active"),
-        () => "deploying the app's client certificate",
-      );
+      if (wait) {
+        await untilActive(
+          given,
+          () => client.listHostnameClientCertificates(zoneId),
+          (certificates) => certificates.some((c) => c.id === current.id && c.status === "active"),
+          () => "deploying the app's client certificate",
+        );
+      }
       await checkNotTaken(client, zoneId, change.hostnames, current.id);
       current.enabled = sortedUnique([...current.enabled, ...change.hostnames]);
       current.retiring = current.retiring.filter((h) => !change.hostnames.includes(h));
@@ -1329,13 +1339,15 @@ async function applyTlsChange(
         zoneId,
         change.hostnames.map((hostname) => ({ hostname, certId: current.id, enabled: true })),
       );
-      await untilActive(
-        given,
-        () => client.listHostnameAopSettings(zoneId, change.hostnames),
-        (settings) => change.hostnames.every((h) => isOn(settings, h, current.id)),
-        (settings) =>
-          `turning on the client certificate for ${listText(change.hostnames.filter((h) => !isOn(settings, h, current.id)))}`,
-      );
+      if (wait) {
+        await untilActive(
+          given,
+          () => client.listHostnameAopSettings(zoneId, change.hostnames),
+          (settings) => change.hostnames.every((h) => isOn(settings, h, current.id)),
+          (settings) =>
+            `turning on the client certificate for ${listText(change.hostnames.filter((h) => !isOn(settings, h, current.id)))}`,
+        );
+      }
       return;
     }
     case "create-origin-certificate": {

@@ -1,5 +1,5 @@
 import type { FetchLike } from "@opscrew/contracts";
-import { type FakeReply, fakeFetch } from "@opscrew/core/testing";
+import type { FakeReply } from "@opscrew/core/testing";
 import { CLOUDFLARE_API, type WebSocketFactory } from "../client";
 import {
   analyticsAnswer,
@@ -9,6 +9,7 @@ import {
   tailMessage,
   telemetryEvents,
 } from "./fake-observability";
+import { answer, type FakeFault, ok, refuse, takeFault } from "./replies";
 
 /**
  * A fake Cloudflare zone and account behind core's `fakeFetch`, with the Rulesets behaviour the
@@ -130,14 +131,6 @@ export interface FakeWorkerDomain {
   zone_name: string;
 }
 
-/** A one-shot failure of the next request matching `"METHOD /path"` (prefix). */
-export interface FakeFault {
-  match: string;
-  reply: FakeReply;
-  /** Carry the request out first: the change reaches Cloudflare, but its answer is `reply`. */
-  applied?: boolean;
-}
-
 /** Rules per phase (custom, configuration) by plan, as Cloudflare enforces them. */
 const LIMITS = new Map<string, [number, number]>([
   ["free", [5, 10]],
@@ -147,20 +140,10 @@ const LIMITS = new Map<string, [number, number]>([
 ]);
 const UPDATED = "2026-10-17T00:00:00.000000Z";
 
-const ok = (result: unknown): FakeReply => ({
-  body: { success: true, errors: [], messages: [], result },
-});
-const refuse = (status: number, code: number, message: string): FakeReply => ({
-  status,
-  body: { success: false, errors: [{ code, message }], messages: [], result: null },
-});
-
-/** `reply` sent the way core's `fakeFetch` sends it (a timeout and a lost connection included). */
-const answer = (reply: FakeReply, ...request: Parameters<FetchLike>) =>
-  fakeFetch({ "/": reply }, { base: CLOUDFLARE_API }).fetch(...request);
-
 /** A fake zone and account; send a `CloudflareClient`'s requests to its `fetch`. */
 export class FakeZone {
+  /** The zone's id in its paths (default {@link FAKE_ZONE_ID}). */
+  readonly zoneId: string;
   /** The zone's plan as `plan.legacy_id`; undefined leaves `plan` out of the zone details. */
   plan: string | undefined = "free";
   /** The zone's entrypoint rulesets by phase. */
@@ -213,18 +196,28 @@ export class FakeZone {
   /** When the fake issues certificates (they expire 15 years later). */
   now = new Date("2026-10-21T09:00:00Z");
   #ids = 0;
+  /** Where the fake's ids come from, when not its own count. */
+  readonly #nextId: (() => string) | undefined;
   /** Reads of each hostname setting since it last changed. */
   readonly #reads = new Map<string, number>();
   /** Lists of the client certificates since each one was uploaded, by id. */
   readonly #certificateReads = new Map<string, number>();
+
+  /**
+   * `zoneId` and `ids` (where every new id comes from) let several fake zones answer for one fake
+   * Cloudflare, each its own zone with ids unique across them.
+   */
+  constructor(options: { zoneId?: string; ids?: () => string } = {}) {
+    this.zoneId = options.zoneId ?? FAKE_ZONE_ID;
+    this.#nextId = options.ids;
+  }
 
   readonly fetch: FetchLike = async (input, init) => {
     const method = init?.method ?? "GET";
     const path = String(input).slice(CLOUDFLARE_API.length);
     const body = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
     this.calls.push({ method, path, body });
-    const at = this.faults.findIndex((f) => `${method} ${path}`.startsWith(f.match));
-    const fault = at === -1 ? undefined : this.faults.splice(at, 1)[0];
+    const fault = takeFault(this.faults, method, path);
     if (!fault || fault.applied) {
       const reply = this.#handle(method, path, body);
       if (!fault) return answer(reply, input, init);
@@ -288,6 +281,7 @@ export class FakeZone {
   }
 
   #id(): string {
+    if (this.#nextId) return this.#nextId();
     this.#ids++;
     return this.#ids.toString(16).padStart(32, "0");
   }
@@ -334,15 +328,15 @@ export class FakeZone {
   }
 
   #handle(method: string, path: string, body: unknown): FakeReply {
-    if (method === "GET" && path === `/zones/${FAKE_ZONE_ID}`) {
+    if (method === "GET" && path === `/zones/${this.zoneId}`) {
       return ok({
-        id: FAKE_ZONE_ID,
+        id: this.zoneId,
         name: "example.com",
         status: "active",
         ...(this.plan ? { plan: { id: "0".repeat(32), legacy_id: this.plan } } : {}),
       });
     }
-    const zone = `/zones/${FAKE_ZONE_ID}/rulesets`;
+    const zone = `/zones/${this.zoneId}/rulesets`;
     const account = `/accounts/${FAKE_ACCOUNT_ID}/access`;
     const entry = new RegExp(`^${zone}/phases/([a-z_]+)/entrypoint$`).exec(path);
     if (entry?.[1]) return this.#entrypoint(method, entry[1], body);
@@ -355,7 +349,7 @@ export class FakeZone {
     const url = new URL(path, "https://fake.invalid");
     const route = url.pathname;
     if (route.startsWith("/certificates")) return this.#originCa(method, route, url, body);
-    const aop = `/zones/${FAKE_ZONE_ID}/origin_tls_client_auth/hostnames`;
+    const aop = `/zones/${this.zoneId}/origin_tls_client_auth/hostnames`;
     if (route.startsWith(aop)) return this.#aop(method, route.slice(aop.length), body);
     const workers = `/accounts/${FAKE_ACCOUNT_ID}/workers`;
     if (route.startsWith(workers)) {
@@ -368,11 +362,11 @@ export class FakeZone {
         "Could not route to the path, perhaps your object identifier is invalid?",
       );
     }
-    if (route === `/zones/${FAKE_ZONE_ID}/settings/min_tls_version`) {
+    if (route === `/zones/${this.zoneId}/settings/min_tls_version`) {
       return this.#minTls(method, body);
     }
     if (route === "/graphql" && method === "POST") return this.#graphql(body);
-    if (route === `/zones/${FAKE_ZONE_ID}/dns_records` && method === "GET") {
+    if (route === `/zones/${this.zoneId}/dns_records` && method === "GET") {
       if (this.denied.has("dns")) return refuse(403, 10000, "Authentication error");
       return {
         body: {
@@ -403,7 +397,7 @@ export class FakeZone {
   #originCa(method: string, route: string, url: URL, body: unknown): FakeReply {
     if (this.denied.has("ssl")) return refuse(403, 10000, "Authentication error");
     if (method === "GET" && route === "/certificates") {
-      if (url.searchParams.get("zone_id") !== FAKE_ZONE_ID) {
+      if (url.searchParams.get("zone_id") !== this.zoneId) {
         return refuse(400, 1001, "zone_id is required");
       }
       return ok(this.originCertificates);
