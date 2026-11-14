@@ -172,6 +172,50 @@ export interface WorkerCustomDomain {
   zoneId: string;
 }
 
+/** A Workers custom domain of a zone, with its id and the Worker it serves. */
+export interface ZoneWorkerDomain extends WorkerCustomDomain {
+  id: string;
+  /** The Worker's name. */
+  service: string;
+}
+
+/** A DNS record of a zone with every field a copy to another zone keeps. */
+export interface CloudflareZoneRecord {
+  id: string;
+  type: string;
+  name: string;
+  content: string;
+  /** Structured content (SRV, CAA and the like), as Cloudflare names its fields. */
+  data?: Record<string, unknown>;
+  ttl: number;
+  proxied?: boolean;
+  priority?: number;
+  comment?: string;
+  /**
+   * Cloudflare's own metadata about the record, as it sent it: its fields mark a record that
+   * Cloudflare made (a Workers custom domain's, for one) and must not be copied.
+   */
+  meta?: Record<string, unknown>;
+}
+
+/** A DNS record to create, with every field kept (named as {@link CloudflareZoneRecord}'s). */
+export type CloudflareZoneRecordInput = Omit<CloudflareZoneRecord, "id" | "meta" | "content"> & {
+  /** Absent for types that use `data`. */
+  content?: string;
+};
+
+/** The account-level permissions {@link CloudflareClient.accountPermissions} probes. */
+export type AccountPermissionNeed =
+  | "tunnel"
+  | "access-apps"
+  | "access-service-tokens"
+  | "access-organization"
+  | "r2"
+  | "workers";
+
+/** The zone-level permissions {@link CloudflareClient.zonePermissions} probes. */
+export type ZonePermissionNeed = "dns" | ManagedRulesetPhase | "ssl" | "settings";
+
 export interface CloudflareZone {
   id: string;
   name: string;
@@ -396,7 +440,11 @@ const RecordSchema = z.looseObject({
   ttl: z.number(),
   priority: z.number().nullable().optional(),
   comment: z.string().nullable().optional(),
+  data: z.record(z.string(), z.unknown()).nullish(),
+  meta: z.record(z.string(), z.unknown()).nullish(),
 });
+
+const ZoneHoldSchema = z.looseObject({ hold: z.boolean() });
 
 const ZonePlanSchema = z.looseObject({
   plan: z.looseObject({ legacy_id: z.string().nullish() }).nullish(),
@@ -557,6 +605,13 @@ const WorkerDeploymentSchema = z.looseObject({
 const WorkerDomainsSchema = z
   .array(z.looseObject({ hostname: z.string().min(1), zone_id: z.string().min(1) }))
   .nullable();
+
+const ZoneWorkerDomainSchema = z.looseObject({
+  id: z.string().min(1),
+  hostname: z.string().min(1),
+  zone_id: z.string().min(1),
+  service: z.string().min(1),
+});
 
 /** Most versions one read lists: Cloudflare keeps the last 100 for a rollback. */
 const WORKER_VERSIONS_PAGE = 100;
@@ -742,6 +797,80 @@ const SETTINGS_HINTS: FailHints = {
 const WORKERS_HINTS: FailHints = {
   auth: `Cloudflare hosting needs the account permission "${WORKERS_PERMISSION}" on the token. Edit the token at ${CLOUDFLARE_TOKEN_PAGE}; then set CLOUDFLARE_API_TOKEN.`,
 };
+
+/** Hints for deleting a zone. */
+const ZONE_DELETE_HINTS: FailHints = {
+  auth: `Deleting a zone needs the token permission "Zone → Zone → Edit" for it. Edit the token at ${CLOUDFLARE_TOKEN_PAGE}; then set CLOUDFLARE_API_TOKEN.`,
+};
+
+/**
+ * The read-only call that probes each account permission, and the permission as the token builder
+ * names it. A refusal (HTTP 403) means the permission is missing.
+ */
+const ACCOUNT_PROBES: Record<
+  AccountPermissionNeed,
+  { path: string; what: string; permission: string; hints?: FailHints }
+> = {
+  tunnel: {
+    path: "/cfd_tunnel?per_page=1",
+    what: "list the account's Cloudflare Tunnels",
+    permission: "Account → Cloudflare Tunnel → Edit",
+  },
+  "access-apps": {
+    path: "/access/apps",
+    what: "list the account's Access applications",
+    permission: "Account → Access: Apps and Policies → Edit",
+  },
+  "access-service-tokens": {
+    path: "/access/service_tokens",
+    what: "list the account's Access service tokens",
+    permission: "Account → Access: Service Tokens → Edit",
+  },
+  "access-organization": {
+    path: "/access/identity_providers",
+    what: "list the account's Access login methods",
+    permission: "Account → Access: Organizations, Identity Providers, and Groups → Edit",
+  },
+  r2: {
+    path: "/r2/buckets?per_page=1",
+    what: "list the account's R2 buckets",
+    permission: "Account → Workers R2 Storage → Edit",
+  },
+  workers: {
+    path: "/workers/scripts",
+    what: "list the account's Workers",
+    permission: WORKERS_PERMISSION,
+    hints: WORKERS_HINTS,
+  },
+};
+
+/** The zone permission each zone-level need is, as the token builder names it. */
+const ZONE_PERMISSIONS: Record<ZonePermissionNeed, string> = {
+  dns: "Zone → DNS → Edit",
+  http_config_settings: "Zone → Config Rules → Edit",
+  http_request_firewall_custom: "Zone → Zone WAF → Edit",
+  http_request_dynamic_redirect: "Zone → Single Redirect → Edit",
+  ssl: "Zone → SSL and Certificates → Edit",
+  settings: "Zone → Zone Settings → Edit",
+};
+
+/** The read-only call that probes each zone need other than a rule phase (its entrypoint). */
+const ZONE_PROBES: Record<"dns" | "ssl" | "settings", { path: string; what: string }> = {
+  dns: { path: "/dns_records?per_page=1", what: "list DNS records" },
+  ssl: { path: "/ssl/certificate_packs?per_page=1", what: "list the zone's certificate packs" },
+  settings: { path: "/settings/min_tls_version", what: "read the zone's minimum TLS version" },
+};
+
+/** Cloudflare Access was never turned on for the account: nothing OpsCrew can fix with a token. */
+function accessNotEnabled(): OpsCrewError {
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    "Cloudflare Access is not turned on for this Cloudflare account yet. Nothing was changed.",
+    {
+      hint: "Open the Zero Trust dashboard at https://one.dash.cloudflare.com/, choose a team name and the Free plan, then run the command again.",
+    },
+  );
+}
 
 /** Hints for a Worker's past logs. */
 const LOGS_HINTS: FailHints = {
@@ -1093,7 +1222,7 @@ export class CloudflareClient {
     return this.#result(await this.#request(path, options), schema, what, options.hints);
   }
 
-  /** Every page of a list: `?page=<n>&per_page=<perPage>`, then `filter`. */
+  /** Every page of a list: `page=<n>&per_page=<perPage>`, then `filter`, after `path`'s own query. */
   async #all<T>(
     path: string,
     item: z.ZodType<T>,
@@ -1107,7 +1236,7 @@ export class CloudflareClient {
         per_page: String(options.perPage),
         ...options.filter,
       });
-      const answer = await this.#request(`${path}?${query}`);
+      const answer = await this.#request(`${path}${path.includes("?") ? "&" : "?"}${query}`);
       out.push(...this.#result(answer, z.array(item), what, options.hints));
       if (page >= (answer.body.result_info?.total_pages ?? 1)) return out;
     }
@@ -1222,23 +1351,57 @@ export class CloudflareClient {
     };
   }
 
-  /** The zone named exactly `name`, with its account id when Cloudflare returns it. */
-  async #zoneByName(name: string): Promise<z.infer<typeof ZoneSchema> | undefined> {
-    const zones = await this.#call(
-      `/zones?name=${encodeURIComponent(name)}&per_page=1`,
-      z.array(ZoneSchema),
-      `look up the zone ${name}`,
-    );
-    return zones[0];
+  /**
+   * Every zone named exactly `name` the token sees (one per account, and a moved or pending one
+   * beside an active one), only `accountId`'s when given.
+   */
+  async #zonesByName(name: string, accountId?: string): Promise<z.infer<typeof ZoneSchema>[]> {
+    const query = new URLSearchParams({ name, ...(accountId ? { "account.id": accountId } : {}) });
+    return this.#all(`/zones?${query}`, ZoneSchema, `look up the zone ${name}`, { perPage: 50 });
   }
 
-  /** The zone that contains `domain` (tries the domain itself, then each parent), if any. */
-  async findZone(domain: string): Promise<CloudflareZone | undefined> {
+  /**
+   * The zone that contains `domain` (tries the domain itself, then each parent), if any: in
+   * `options.accountId` only when given, since one token may see several accounts. Of several
+   * zones with the name, the `active` one is preferred over any other status (`pending`, `moved`).
+   */
+  async findZone(
+    domain: string,
+    options: { accountId?: string } = {},
+  ): Promise<CloudflareZone | undefined> {
     for (const candidate of zoneCandidates(domain)) {
-      const zone = await this.#zoneByName(candidate);
+      const zones = await this.#zonesByName(candidate, options.accountId);
+      const zone = zones.find((one) => one.status === "active") ?? zones[0];
       if (zone) return toZone(zone);
     }
     return undefined;
+  }
+
+  /** A zone by id: its status (`pending`, `active`, `moved` …) and nameservers. Read-only. */
+  async getZone(zoneId: string): Promise<CloudflareZone> {
+    return toZone(
+      await this.#call(`/zones/${encodeURIComponent(zoneId)}`, ZoneSchema, "read the zone"),
+    );
+  }
+
+  /** Deletes a zone with everything in it (`DELETE /zones/{id}`). Sent once. */
+  async deleteZone(zoneId: string): Promise<void> {
+    const what = `delete the zone ${zoneId}`;
+    const answer = await this.#send(`/zones/${encodeURIComponent(zoneId)}`, what, {
+      method: "DELETE",
+      hints: ZONE_DELETE_HINTS,
+    });
+    this.#parseWrite(IdResultSchema, answer.body.result, what);
+  }
+
+  /** Whether the zone has a zone hold (`GET /zones/{id}/hold`), which a move must not have. */
+  async zoneHold(zoneId: string): Promise<{ hold: boolean }> {
+    const hold = await this.#call(
+      `/zones/${encodeURIComponent(zoneId)}/hold`,
+      ZoneHoldSchema,
+      "read the zone's hold",
+    );
+    return { hold: hold.hold };
   }
 
   /**
@@ -1281,6 +1444,42 @@ export class CloudflareClient {
       ...(r.priority == null ? {} : { priority: r.priority }),
       ...(r.comment ? { comment: r.comment } : {}),
     }));
+  }
+
+  /**
+   * Every DNS record of a zone with every field a copy keeps: content and `data`, TTL, proxied,
+   * priority, comment, and Cloudflare's `meta`. Follows pagination. Read-only.
+   */
+  async listZoneRecords(zoneId: string): Promise<CloudflareZoneRecord[]> {
+    const records = await this.#all(
+      `/zones/${encodeURIComponent(zoneId)}/dns_records`,
+      RecordSchema,
+      "list DNS records",
+      { perPage: 100 },
+    );
+    return records.map((r) => ({
+      id: r.id,
+      type: r.type,
+      name: r.name,
+      content: r.content,
+      ...(r.data == null ? {} : { data: r.data }),
+      ttl: r.ttl,
+      ...(r.proxied === undefined ? {} : { proxied: r.proxied }),
+      ...(r.priority == null ? {} : { priority: r.priority }),
+      ...(r.comment ? { comment: r.comment } : {}),
+      ...(r.meta == null ? {} : { meta: r.meta }),
+    }));
+  }
+
+  /** Deletes one DNS record (`DELETE /zones/{id}/dns_records/{id}`). Sent once. */
+  async deleteRecord(zoneId: string, recordId: string): Promise<void> {
+    const what = `delete the DNS record ${recordId}`;
+    const answer = await this.#send(
+      `/zones/${encodeURIComponent(zoneId)}/dns_records/${encodeURIComponent(recordId)}`,
+      what,
+      { method: "DELETE", hints: ZONE_COVERAGE_HINTS },
+    );
+    this.#parseWrite(IdResultSchema, answer.body.result, what);
   }
 
   /**
@@ -1600,15 +1799,7 @@ export class CloudflareClient {
       `/accounts/${encodeURIComponent(accountId)}/access/organizations`,
     );
     const { status, body } = answer;
-    if (body.errors.some((e) => ACCESS_NOT_ENABLED.test(e.message))) {
-      throw new OpsCrewError(
-        "PHASE_PRECONDITION",
-        "Cloudflare Access is not turned on for this Cloudflare account yet. Nothing was changed.",
-        {
-          hint: "Open the Zero Trust dashboard at https://one.dash.cloudflare.com/, choose a team name and the Free plan, then run the command again.",
-        },
-      );
-    }
+    if (body.errors.some((e) => ACCESS_NOT_ENABLED.test(e.message))) throw accessNotEnabled();
     if (status === 404) return undefined;
     if (body.success && status < 400) {
       // Only an absent or null result means "no organization"; anything else must name its team
@@ -1713,12 +1904,63 @@ export class CloudflareClient {
    * write then names the permission. Read-only.
    */
   async workersPermissions(accountId: string): Promise<{ missing: string[] }> {
-    const answer = await this.#request(
-      `/accounts/${encodeURIComponent(accountId)}/workers/scripts`,
-    );
-    if (answer.status === 403) return { missing: [WORKERS_PERMISSION] };
-    this.#result(answer, z.unknown(), "list the account's Workers", WORKERS_HINTS);
-    return { missing: [] };
+    return this.accountPermissions(accountId, ["workers"]);
+  }
+
+  /**
+   * Whether a read-only probe is refused for a missing permission (HTTP 403). An account without
+   * Cloudflare Access throws PHASE_PRECONDITION (no token fixes that); any other failure throws.
+   */
+  async #lacks(path: string, what: string, hints?: FailHints): Promise<boolean> {
+    const answer = await this.#request(path);
+    if (answer.body.errors.some((e) => ACCESS_NOT_ENABLED.test(e.message))) {
+      throw accessNotEnabled();
+    }
+    if (answer.status === 403) return true;
+    this.#result(answer, z.unknown(), what, hints);
+    return false;
+  }
+
+  /**
+   * Which of the account permissions in `needs` the token lacks, named as in the token builder.
+   * Cloudflare does not list a token's permissions, so each is probed with a read-only call: a
+   * refusal means it is missing. A token with only the read permission passes, and the first
+   * write then names the permission. Read-only.
+   */
+  async accountPermissions(
+    accountId: string,
+    needs: readonly AccountPermissionNeed[],
+  ): Promise<{ missing: string[] }> {
+    const missing: string[] = [];
+    for (const need of new Set(needs)) {
+      const probe = ACCOUNT_PROBES[need];
+      const path = `/accounts/${encodeURIComponent(accountId)}${probe.path}`;
+      if (await this.#lacks(path, probe.what, probe.hints)) missing.push(probe.permission);
+    }
+    return { missing };
+  }
+
+  /**
+   * Which of the zone permissions in `needs` the token lacks for the zone, named as in the token
+   * builder: DNS, each OpsCrew rule phase (its entrypoint ruleset), SSL and certificates, and the
+   * zone settings. Probed with read-only calls, as {@link accountPermissions}. Read-only.
+   */
+  async zonePermissions(
+    zoneId: string,
+    needs: readonly ZonePermissionNeed[],
+  ): Promise<{ missing: string[] }> {
+    const missing: string[] = [];
+    for (const need of new Set(needs)) {
+      const lacks =
+        need === "dns" || need === "ssl" || need === "settings"
+          ? await this.#lacks(
+              `/zones/${encodeURIComponent(zoneId)}${ZONE_PROBES[need].path}`,
+              ZONE_PROBES[need].what,
+            )
+          : (await this.entrypointRuleset(zoneId, need)) === "forbidden";
+      if (lacks) missing.push(ZONE_PERMISSIONS[need]);
+    }
+    return { missing };
   }
 
   /**
@@ -1829,6 +2071,55 @@ export class CloudflareClient {
       { hints: WORKERS_HINTS },
     );
     return (domains ?? []).map((d) => ({ hostname: d.hostname, zoneId: d.zone_id }));
+  }
+
+  /**
+   * The account's Workers custom domains in one zone, whichever Worker serves each
+   * (`GET /accounts/{id}/workers/domains?zone_id=`). Read-only.
+   */
+  async listZoneWorkerDomains(accountId: string, zoneId: string): Promise<ZoneWorkerDomain[]> {
+    const domains = await this.#call(
+      `/accounts/${encodeURIComponent(accountId)}/workers/domains?${new URLSearchParams({ zone_id: zoneId })}`,
+      z.array(ZoneWorkerDomainSchema).nullable(),
+      "list the zone's Workers custom domains",
+      { hints: WORKERS_HINTS },
+    );
+    return (domains ?? []).map((d) => ({
+      id: d.id,
+      hostname: d.hostname,
+      zoneId: d.zone_id,
+      service: d.service,
+    }));
+  }
+
+  /**
+   * Attaches `hostname` in the zone to the Worker `service` as a custom domain
+   * (`PUT /accounts/{id}/workers/domains`); answers the custom domain's id. Sent once.
+   */
+  async attachWorkerDomain(
+    accountId: string,
+    domain: { hostname: string; zoneId: string; service: string },
+  ): Promise<string> {
+    const what = `attach ${domain.hostname} to the Worker ${domain.service}`;
+    const answer = await this.#send(
+      `/accounts/${encodeURIComponent(accountId)}/workers/domains`,
+      what,
+      {
+        method: "PUT",
+        body: { hostname: domain.hostname, zone_id: domain.zoneId, service: domain.service },
+        hints: WORKERS_HINTS,
+      },
+    );
+    return this.#parseWrite(IdResultSchema, answer.body.result, what).id;
+  }
+
+  /** Detaches a Workers custom domain by its id (`DELETE …/workers/domains/{id}`). Sent once. */
+  async detachWorkerDomain(accountId: string, domainId: string): Promise<void> {
+    await this.#send(
+      `/accounts/${encodeURIComponent(accountId)}/workers/domains/${encodeURIComponent(domainId)}`,
+      `detach the Workers custom domain ${domainId}`,
+      { method: "DELETE", hints: WORKERS_HINTS },
+    );
   }
 
   /**
@@ -2184,7 +2475,7 @@ export class CloudflareClient {
 
   /**
    * Creates a full zone for `name` on the account. When Cloudflare says it already exists, returns
-   * the existing zone, provided it belongs to the same account.
+   * the account's zone of that name; one only in another account is refused.
    */
   async createZone(accountId: string, name: string): Promise<CloudflareZone> {
     const zoneName = normalizeHostName(name);
@@ -2201,7 +2492,8 @@ export class CloudflareClient {
       status === 409 ||
       body.errors.some((e) => e.code === ZONE_EXISTS_CODE || /already exists/i.test(e.message));
     if (!exists) this.#fail(status, body, what, hints);
-    const zone = await this.#zoneByName(zoneName);
+    const zones = await this.#zonesByName(zoneName);
+    const zone = zones.find((one) => one.account?.id === accountId) ?? zones[0];
     if (!zone) {
       throw new OpsCrewError(
         "PROVIDER_ERROR",
@@ -2291,6 +2583,17 @@ export class CloudflareClient {
   async batchCreateRecords(
     zoneId: string,
     records: readonly CloudflareRecordInput[],
+  ): Promise<string[]> {
+    return this.createZoneRecords(zoneId, records);
+  }
+
+  /**
+   * Creates DNS records with every field they have (content or `data`, TTL, proxied, priority,
+   * comment), in batches of 200 as {@link batchCreateRecords}. Returns the created records' ids.
+   */
+  async createZoneRecords(
+    zoneId: string,
+    records: readonly CloudflareZoneRecordInput[],
   ): Promise<string[]> {
     const ids: string[] = [];
     for (let i = 0; i < records.length; i += BATCH_LIMIT) {

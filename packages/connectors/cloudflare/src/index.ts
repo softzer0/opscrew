@@ -1,4 +1,5 @@
 export {
+  type AccountPermissionNeed,
   type CertificatePack,
   type CertificatePackQuota,
   CLOUDFLARE_DEPLOY_TOKEN_PERMISSIONS,
@@ -12,6 +13,8 @@ export {
   CloudflareError,
   type CloudflareIdentityProvider,
   type CloudflareRuleInput,
+  type CloudflareZoneRecord,
+  type CloudflareZoneRecordInput,
   type EntrypointRuleset,
   type HostnameAop,
   type HostnameClientCertificate,
@@ -26,6 +29,8 @@ export {
   type WorkerDeployment,
   WorkerSecretsChangedError,
   type WorkerVersion,
+  type ZonePermissionNeed,
+  type ZoneWorkerDomain,
   zoneCandidates,
 } from "./client";
 export { type CloudflareConnector, cloudflareConnector } from "./connector";
