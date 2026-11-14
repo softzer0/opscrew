@@ -699,6 +699,19 @@ names the change.
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/agents && npx vitest run --root packages/agents src/provision && pnpm lint`
   - Effort: medium
 
+- [ ] T2757 A request's answer is never read before it is final, and a selector app is recorded before it is asked for (the cPanel pass, runs 30–32)
+  - Owns: `packages/iac-templates/src/hosting/agent/**`, `packages/iac-templates/src/hosting/agent-*.test.ts`, `packages/iac-templates/src/hosting/__snapshots__/**`, `packages/agents/src/hosting/{requests,apps,apply,destroy,record,provision-plans,plan}.ts` and their tests, `packages/iac-templates/src/hosting/__fixtures__/shims/**`, `docs/guide/hosting-accounts.md` (only if a sentence there describes the request's answer)
+  - Why: in run 31 the agent made the Node.js app in CloudLinux's selector and wrote `done`, yet provision read the agent's placeholder answer (`failed`, "the agent stopped while carrying it out"), written before a request starts, as final. The app wasn't recorded, so the cleanup's `opscrew destroy` neither removed it from the selector nor ended its `lsnode` process, which stayed on the account (the lead ended it). Run 32 passed the same leg. How the CLI saw the placeholder while the request file was gone isn't known; the fix doesn't depend on it.
+  - Accept:
+    - The agent's placeholder answer carries `pending=1`. The CLI's wait never takes an answer with `pending`, whatever it reads of the request file.
+    - The agent, once it holds its lock and before its requests, turns any answer still `pending` (a run that stopped part-way) into its final `failed` answer without `pending`. A stopped run's request is then answered at the agent's next run, and the CLI's 5-minute wait covers it.
+    - Provision records the selector app as OpsCrew's before it sends the `app` create request. It forgets the app only on the agent's clear refusal or the selector's own failure to make it, so a stop or an unclear answer leaves it recorded and `destroy` removes it.
+    - The agent's `app_destroy` accepts an app the selector doesn't list: it still ends the app's processes and removes its folder, and answers `done` with a note.
+    - (Lead, after the first commit.) The record marks the app `asked` until the agent answers `done`, then `made`. Provision plans the create again while it is only `asked`, and the agent's create is safe to repeat: when the selector already has the app at its root, it skips the selector's create, finishes the other steps and answers `done` with a note. No hand edit of `.opscrew/hosting.json` is ever needed.
+    - Tests: an answer with `pending` waited past; a `pending` answer finalised at the next run (a Linux agent test); a create the agent stopped during is recorded and destroyed; destroying an app the selector doesn't list.
+  - Verify: `pnpm turbo run typecheck --filter=@opscrew/iac-templates --filter=@opscrew/agents && npx vitest run --root packages/iac-templates src/hosting && npx vitest run --root packages/agents src/hosting && pnpm lint`
+  - Effort: high
+
 ## Phase 8d: In the same release (founder, 2026-11-13)
 
 The founder added these to 0.2.8.
