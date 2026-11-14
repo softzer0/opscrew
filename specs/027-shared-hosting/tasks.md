@@ -712,7 +712,7 @@ The founder added these to 0.2.8.
   - Accept: design turns on `target.backups` by default only for the prod environment (when the data matters, as now); dev, staging and previews default to off, and `target.backups` in an environment's plan still turns them on. Design's text says which, and why. Tests for prod, staging and an override.
   - Effort: medium
 
-- [ ] T2751 Contabo's Auto Backup as the provider's backups (after T2749)
+- [x] T2751 Contabo's Auto Backup as the provider's backups (after T2749)
   - Owns: `packages/providers/contabo/**`, `packages/agents/src/design/**` (Contabo's backup lines), `packages/agents/src/provision/**` and `packages/agents/src/drift/**` (Contabo's Auto Backup step and check, beside its firewall's), `packages/agents/src/destroy/**` (its text only), `docs/guide/contabo.md`; widened by the lead after the first attempt stopped: `packages/contracts/src/connector.ts` and the provider definition's contract (`ProviderBackupsApi { turnOn }`, `VpsConnector.backups?`, an optional `backupsPrice: "percent" | "order-page"` defaulting to percent, a `ProviderSecOps` backups hook), `packages/secops/src/policies/plan.ts` (the critical-data backups check reads a provider's backups through that hook), `packages/iac-templates/src/infra/**` (a root `wanted_backups` output beside `wanted_firewalls`), `packages/iac-templates/src/runbook/**` and its tests, `packages/agents/src/advise/**`, `packages/agents/src/shared/**`, `packages/agents/src/testing/**`, the test fixtures whose Contabo plans change
   - Decided by the lead (2026-11-13):
     - One `terraform_data.backup` per Contabo server with `input = { server_id, on = var.backups }`, so turning backups on or off is an in-place update in the hashed plan, never a destroy.
