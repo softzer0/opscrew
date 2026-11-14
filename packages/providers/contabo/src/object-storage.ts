@@ -57,7 +57,11 @@ export function contaboObjectStorageApi(client: ContaboClient): ObjectStorageApi
           displayName: request.displayName,
         });
       } catch (error) {
-        if (error instanceof ContaboStatusError) return { refused: error.message };
+        // Below 500 (429 included) Contabo ordered nothing; a 5xx may follow a taken order, so its
+        // outcome is unknown.
+        if (error instanceof ContaboStatusError && error.status < 500) {
+          return { refused: error.message };
+        }
         throw error;
       }
       const ready = await client.waitForObjectStorage(ordered.objectStorageId, {

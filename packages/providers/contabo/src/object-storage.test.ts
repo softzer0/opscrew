@@ -124,6 +124,23 @@ describe("objectStorage", () => {
     expect(calls()).toEqual(["POST /v1/object-storages"]);
   });
 
+  it("answers a rate limit as refused: Contabo ordered nothing", async () => {
+    const { api } = setup({
+      "POST /v1/object-storages": { status: 429, body: { message: "Too many requests" } },
+    });
+    const answer = await api.order({ region: "EU", sizeTb: 0.25, displayName: "x" });
+    expect(answer).toMatchObject({ refused: expect.stringContaining("rate limit was reached") });
+  });
+
+  it("rejects on a 5xx answer to the order, as Contabo may have taken it, and never sends it twice", async () => {
+    const { api, calls } = setup({
+      "POST /v1/object-storages": { status: 502, body: { message: "Bad Gateway" } },
+    });
+    const error = await failure(api.order({ region: "EU", sizeTb: 0.25, displayName: "x" }));
+    expect(error.message).toContain("HTTP 502");
+    expect(calls()).toEqual(["POST /v1/object-storages"]);
+  });
+
   it("rejects when the order got no answer: it may have been made", async () => {
     const { api } = setup({ "POST /v1/object-storages": { error: new Error("socket hang up") } });
     const error = await failure(api.order({ region: "EU", sizeTb: 0.25, displayName: "x" }));

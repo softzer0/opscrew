@@ -9,6 +9,7 @@ import type {
   IacEngine,
   IacInitOptions,
   IacRunOptions,
+  ObjectStorageApi,
 } from "@opscrew/contracts";
 import {
   ageRecipientOf,
@@ -21,6 +22,7 @@ import {
 import { fakeSecret } from "@opscrew/core/testing";
 import { STORAGE_PRICES } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
+import { cloudProvider } from "@opscrew/providers";
 import { describe, expect, it } from "vitest";
 import { readRecord } from "../secrets/store";
 import {
@@ -1491,6 +1493,74 @@ describe.skipIf(!findExecutable("git"))(
         message: expect.stringContaining("the order may still be in progress"),
       });
       expect(objectStorage.orders).toHaveLength(1);
+    });
+
+    /**
+     * Contabo's own object storage API over a fake fetch: a login, no storage listed, and every
+     * order answered with `status` (each counted in `orders`).
+     */
+    const contaboAnswering = (status: number) => {
+      const orders: string[] = [];
+      const fetch = async (input: string | URL | Request, init?: RequestInit) => {
+        const url = String(input instanceof Request ? input.url : input);
+        if (url.includes("/protocol/openid-connect/token")) {
+          return Response.json({ access_token: "access", expires_in: 300 });
+        }
+        if (url.includes("/v1/object-storages") && init?.method === "POST") {
+          orders.push(url);
+          return Response.json({ message: "Contabo is busy" }, { status });
+        }
+        if (url.includes("/v1/object-storages")) {
+          return Response.json({ data: [], _pagination: { page: 1, totalPages: 1 } });
+        }
+        return new Response("not found", { status: 404 });
+      };
+      const env = {
+        CNTB_OAUTH2_CLIENT_ID: "opscrew",
+        CNTB_OAUTH2_CLIENT_SECRET: "client-word",
+        CNTB_OAUTH2_USER: "me",
+        CNTB_OAUTH2_PASS: "pass-word",
+      };
+      const connector = cloudProvider("contabo").connector({ env, fetch, sleep: async () => {} });
+      return { objectStorage: connector.objectStorage as ObjectStorageApi, orders };
+    };
+
+    it("keeps the record when Contabo answers the order with a 5xx, so the next run never orders twice", async () => {
+      const contabo = contaboAnswering(502);
+      const f = await flow({
+        plan: withBucket(testPlan({ provider: "contabo" }), "contabo"),
+        storage: bucketEngine("contabo"),
+        services: { objectStorage: contabo.objectStorage },
+      });
+      await expect(runProvision(f.deps, { services: f.services })).rejects.toMatchObject({
+        code: "PROVIDER_ERROR",
+        message: expect.stringContaining("HTTP 502"),
+      });
+      expect(await record(f)).toEqual({
+        provider: "contabo",
+        region: "EU",
+        at: expect.any(String),
+      });
+      await expect(runProvision(f.deps, { services: f.services })).rejects.toMatchObject({
+        message: expect.stringContaining("the order may still be in progress"),
+      });
+      expect(contabo.orders).toHaveLength(1);
+    });
+
+    it("removes the record when Contabo answers the order with a 429: nothing was ordered", async () => {
+      const contabo = contaboAnswering(429);
+      const f = await flow({
+        plan: withBucket(testPlan({ provider: "contabo" }), "contabo"),
+        storage: bucketEngine("contabo"),
+        services: { objectStorage: contabo.objectStorage },
+      });
+      await expect(runProvision(f.deps, { services: f.services })).rejects.toMatchObject({
+        code: "PROVIDER_ERROR",
+        message: expect.stringContaining(
+          "Contabo refused the order of Contabo Object Storage in EU, so nothing was ordered",
+        ),
+      });
+      await expect(readTextIfExists(orderedStorageFile(f.deps.paths))).resolves.toBeUndefined();
     });
 
     it("removes the record when Contabo refused the order: nothing was ordered", async () => {

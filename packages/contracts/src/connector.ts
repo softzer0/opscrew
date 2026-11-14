@@ -220,8 +220,8 @@ export interface ProviderBackupsApi {
   /**
    * Turns on the automated backups of the server `serverId`, a paid add-on. Mutating: only after
    * an approved plan names it. Resolves with nothing once the provider took it, and with `refused`
-   * when the provider answered with an error status, so nothing was turned on; rejects when the
-   * outcome is unknown (no answer, a lost connection).
+   * when the provider answered with a client error (a status below 500), so nothing was turned on;
+   * rejects when the outcome is unknown (no answer, a lost connection, a 5xx).
    */
   turnOn(serverId: string): Promise<{ refused: string } | undefined>;
 }
@@ -259,9 +259,9 @@ export interface ObjectStorageApi {
   /**
    * Orders a storage of `sizeTb` TB in `region` and resolves once the provider reports it ready,
    * with its S3 endpoint; it is billed from then on. Resolves with `refused` when the provider
-   * answered the order with an error status, so nothing was ordered; rejects when the outcome is
-   * unknown (no answer, a lost connection) or the storage did not become ready. Mutating: only
-   * after an approved plan.
+   * answered the order with a client error (a status below 500), so nothing was ordered; rejects
+   * when the outcome is unknown (no answer, a lost connection, a 5xx) or the storage did not
+   * become ready. Mutating: only after an approved plan.
    */
   order(request: {
     region: string;
