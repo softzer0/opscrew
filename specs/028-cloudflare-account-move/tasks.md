@@ -75,7 +75,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
 
 ## Phase 2: Wave 1 (parallel)
 
-- [ ] T2803 [P] [US1] The move's record in the plan
+- [x] T2803 [P] [US1] The move's record in the plan
   - Owns: `packages/plan-schema/src/**`, `packages/plan-schema/schemas/**`
   - Reads: data-model 1; `plan-schema/src/plan.ts` (`RetargetSchema`, `checkRetarget`)
   - Depends: T2801
@@ -89,7 +89,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Verify: `pnpm --filter @opscrew/plan-schema gen:schemas && pnpm turbo run typecheck --filter=@opscrew/plan-schema && npx vitest run --root packages/plan-schema && pnpm lint`
   - Effort: medium
 
-- [ ] T2804 [P] [US1] [US4] [US5] Cloudflare's client: zones, records, holds, Workers domains, probes
+- [x] T2804 [P] [US1] [US4] [US5] Cloudflare's client: zones, records, holds, Workers domains, probes
   - Owns: `packages/connectors/cloudflare/src/client.ts`, `packages/connectors/cloudflare/src/index.ts`, new `packages/connectors/cloudflare/src/client-move*.test.ts`
   - Reads: plan 3., 4., 5., 13.; research R1, R5, R8, R10; Cloudflare's API reference (official pages only) for each call
   - Depends: T2801
@@ -265,6 +265,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
 
 - [ ] T2811 [P] [US1] [US3] Provision's seams the move plans through
   - Owns: `packages/agents/src/provision/{plan-apply,credentials,shared-cloudflare,origin-tls,storage}.ts` (+ tests)
+  - Lead note (after T2805): whenever B's zone is pending, pass `pendingZone: true` to `inspectShared` together with `waitForActive: false` to `applyShared`, so B's shared plan settles after its first apply.
   - Reads: plan 3., 4.4, 7.6, 11.; data-model 7; T2804's and T2805's blocks
   - Depends: T2804, T2805
   - Accept:
@@ -313,6 +314,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
 
 - [ ] T2813 [P] [US1] [US3] [US4] Shadow states
   - Owns: `packages/agents/src/cloudflare-move/shadow*.ts`
+  - Lead note (after T2807): `accountVariables(tfvars, ctx)` takes the root's parsed `terraform.tfvars.json` and `{ cloudflare: { zoneId, accountId, oneTimePinIdentityProviderId } }` from B's setup.
   - Reads: plan 3.; data-model 3; research R10; `shared/engine.ts`, `provision/plan-apply.ts`, `retarget/plans.ts` (`planBounded`, saved-plan approvals), `provision/storage.ts`, `destroy/deletion.ts`
   - Depends: T2802, T2807, T2808, T2810, T2811, T2812
   - Accept:
@@ -339,6 +341,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
 
 - [ ] T2814 [P] [US1] B's shared plan, A's Origin CA certificate, B's shared removal
   - Owns: `packages/agents/src/cloudflare-move/shared*.ts`
+  - Lead note (after T2805): whenever B's zone is pending, pass `pendingZone: true` to `inspectShared` together with `waitForActive: false` to `applyShared`, so B's shared plan settles after its first apply.
   - Reads: plan 4.4.1, 7.7, 8.; ADR 0014, ADR 0017; `provision/{shared-cloudflare,origin-tls}.ts`; research R10.2, R10.7
   - Depends: T2802, T2805, T2810, T2811
   - Accept:
@@ -358,6 +361,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
 
 - [ ] T2815 [P] [US1] B's connector beside A's
   - Owns: `packages/agents/src/cloudflare-move/connector*.ts`, additions to `packages/agents/src/provision/{portainer-flow,stack-plan}.ts` (+ tests)
+  - Lead note (after T2806): `planNextTunnelConnector` and `planNextTunnelConnectorRemoval` take `facts` from `inspectHost(remote)` and refuse when another app is named `<app>-tunnel-next`; as root the folder is `/srv/opscrew/cloudflared-next/<app>`, on a cloud server as the login pass `dir: "/home/deploy/opscrew/cloudflared-next"`.
   - Reads: plan 4.4.3, 7.4, 8., 9.; `rotate/infra-connectors.ts`, `shared/host-plan.ts`, `vpn/servers.ts` (`networkServer`), `provision/portainer-flow.ts`; T2806's and T2807's blocks
   - Depends: T2802, T2806, T2807, T2810
   - Accept:
@@ -405,6 +409,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
 
 - [ ] T2817 [P] [US1] [US2] The zone plan: B's zone, the copy, the marks, coverage
   - Owns: `packages/agents/src/cloudflare-move/{zone,marks}*.ts`
+  - Lead note (after T2807): `opscrewRecordNames(plan, zone)` leaves out GitHub's verification TXT record (`_github-pages-challenge-<owner>.<domain>`); coverage counts a `_github-pages-challenge-*` TXT record as the Pages app's by that prefix.
   - Reads: plan 4.3, 4.5, 5.1, 5.2, 7.8; data-model 4, 5; `provision/shared-cloudflare.ts` (how a `cloudflare-apply` plan is shown and approved); T2804's and T2809's blocks
   - Depends: T2804, T2805, T2807, T2809, T2810
   - Accept:
@@ -447,6 +452,8 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
 
 - [ ] T2819 [US2] [US4] [US5] The switch and the HTTPS gap
   - Owns: `packages/agents/src/cloudflare-move/{switch,gap}*.ts`
+  - Lead note (after T2805): the two-account fake models no Cloudflare Registrar registration; tests stub `getDomain`/`getRegistration` for the registrar decision.
+  - Lead note (after T2809): read the DS wait as `dsWaitStatus(stateFile, now, ds)` with a fresh `readDs` reading, in a note file of the switch's own (not the switch file).
   - Reads: plan 5., 6.; data-model 2; spec FR-2806 to FR-2809; `domain/{switch,connect}.ts`; T2809's and T2817's blocks
   - Depends: T2804, T2809, T2810, T2812, T2817
   - Accept:
@@ -596,6 +603,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   with the checklist of plan 15.; `docs/e2e-coverage.md`'s row and results (the gap's figures,
   SC-2801 to SC-2807); then `.env.e2e`'s tokens for the zone become B's.
 - [ ] T2828 Simplify across the feature's code (lead): read-only reviews per area, then one
+  - From T2807's review: `runtime/tunnel-next.ts` and `portainer-target/next-connector.ts` copy the main connector's renderers; give those a "next" variant (name suffix and folder) and drop the copies.
   implementer per area so no two edit the same file; known so far: the move's and retarget's
   pending-plan files, the texts kept per file, the two rclone call sites.
 - [ ] T2829 `CLAUDE.md`'s package notes (the move's folder), and the roadmap: 028 done (lead).
