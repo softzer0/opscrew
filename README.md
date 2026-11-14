@@ -2,7 +2,7 @@
 
 From a GitHub repo to a hardened production deployment on your own cloud. Any cloud. You keep the infrastructure code.
 
-> Status: alpha. Tested live on Hetzner Cloud, on a server you already own and on an existing Portainer. DigitalOcean is tested against a fake only so far. Expect breaking changes before 1.0.
+> Status: alpha. Tested live on Hetzner Cloud, Contabo, a server you already own, an existing Portainer, Cloudflare, GitHub Pages, a cPanel account and an SFTP-only host. DigitalOcean, Plesk and DirectAdmin are tested against fakes only so far. Expect breaking changes before 1.0.
 
 The full guide is at [docs.opscrew.dev](https://docs.opscrew.dev).
 
