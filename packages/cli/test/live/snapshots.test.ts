@@ -10,11 +10,14 @@
  *   (SC-2401); `--only db` puts back only the database. `snapshot delete` needs the id typed. With
  *   `OPSCREW_E2E_SNAPSHOTS_SCHEDULE=1` too, a schedule at `1h` with `--keep 1`: two scheduled
  *   snapshots on the hour, the first pruned (SC-2403), then `schedule off` removes the crontab line.
- * - **the off-server copy**, with `OPSCREW_E2E_SNAPSHOTS_OFFSITE=1`, to R2 (`OPSCREW_E2E_R2=1`)
- *   and to Hetzner Object Storage (its S3 key): turned on before provision; a snapshot by hand is in
- *   the bucket as age files only, none readable (SC-2404, SC-2406). The server destroyed and
- *   provisioned again empty, `restore <id> --from offsite --key-file` puts the data back. The test
- *   deletes the bucket itself at the end: OpsCrew leaves that to the user.
+ * - **the off-server copy**, with `OPSCREW_E2E_SNAPSHOTS_OFFSITE=1`, to R2 (`OPSCREW_E2E_R2=1`),
+ *   to Hetzner Object Storage (its S3 key), to the user's own S3-compatible bucket (one the test
+ *   makes in Hetzner Object Storage with that key) and to the user's own machine over SFTP (a
+ *   throwaway server the test sets up): turned on before provision; a snapshot by hand is in the
+ *   bucket or folder as age files only, none readable (SC-2404, SC-2406). On the user's own
+ *   storage, with `--days 1`, a copy planted two days back goes after the next upload. The server
+ *   destroyed and provisioned again empty, `restore <id> --from offsite --key-file` puts the data
+ *   back. The test deletes the bucket itself at the end: OpsCrew leaves that to the user.
  * - **a whole server**, with `OPSCREW_E2E_SNAPSHOTS_SERVER=1`: `snapshot --server` while the app
  *   serves, `restore --server` rebuilds it: the same server and address, its protection back, the
  *   SQLite value of the snapshot's time, and the app answers (SC-2405).
@@ -26,15 +29,33 @@
  * in a snapshot, restore or rollback output (SC-2406).
  */
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, posix } from "node:path";
-import { backupsBucketName } from "@opscrew/agents";
-import { appDir, OFFSITE_LOG, portainerDeployBranch } from "@opscrew/iac-templates";
-import { backupsBucketOf, snapshotsOn, writeArtifact } from "@opscrew/plan-schema";
+import { backupsBucketName, backupsStateFile, hostKeyFingerprint } from "@opscrew/agents";
+import {
+  appDir,
+  OFFSITE_LOG,
+  OFFSITE_PREFIX,
+  offsitePlace,
+  portainerDeployBranch,
+} from "@opscrew/iac-templates";
+import {
+  backupsBucketOf,
+  type SnapshotOffsite,
+  snapshotOffsiteOf,
+  snapshotsOn,
+  writeArtifact,
+} from "@opscrew/plan-schema";
 import { describe, expect } from "vitest";
 import { underLoad } from "./builder-checks";
 import { httpRequest, minutes, waitFor } from "./cloud";
-import { bucketPass, readValue, serverContainers, writeValue } from "./component-checks";
+import {
+  type BucketPass,
+  bucketPass,
+  readValue,
+  serverContainers,
+  writeValue,
+} from "./component-checks";
 import { type StorageChoice, storageChoice } from "./components-support";
 import { AppEnvironments, designProd, opscrewUntilApproved } from "./environment-checks";
 import { LiveRun, serverSettings } from "./harness";
@@ -52,6 +73,7 @@ import {
   ageKeysOnServer,
   approvedRestore,
   BackupsBucket,
+  type CopyStore,
   changeData,
   type DeployRun,
   deployLogLeaks,
@@ -63,6 +85,7 @@ import {
   readData,
   removeServerSnapshots,
   restoredMark,
+  SftpMachine,
   seedData,
   snapshotOf,
   waitForVersion,
@@ -83,13 +106,19 @@ import {
   PORTAINER_GATE,
   PORTAINER_VARIABLES,
   restartedServices,
+  retentionProblems,
   SCHEDULE_GATE,
   SERVER_GATE,
+  SFTP_MACHINE,
+  SFTP_MACHINE_LABEL,
   SNAPSHOT_EXAMPLE,
   SNAPSHOT_VARIABLES,
   SNAPSHOTS_GATE,
   type SnapshotData,
   servicesIn,
+  sftpMachineAddresses,
+  sftpMachineSetup,
+  snapshotIdAt,
   takenSnapshotId,
   withSnapshotServices,
   writtenValues,
@@ -136,16 +165,29 @@ function rememberDumped(run: LiveRun, values: readonly string[]): void {
 
 /**
  * The leak search of every pass: as for environments, then no address in its snapshot outputs,
- * then the deploy job's log of each of `deployRuns`.
+ * then the deploy job's log of each of `deployRuns`. The user's SFTP machine of the
+ * off-server copy is named on purpose in the plan (committed) and in what OpsCrew says of the
+ * copies, so its addresses are cut out of the texts first, as the SSH sources a user plans are.
  */
 async function snapshotLeaks(
   run: LiveRun,
   envs: AppEnvironments,
   deployRuns: readonly DeployRun[] = [],
 ): Promise<string[]> {
-  const addresses = run.scrubber.entries().filter(({ label }) => label.startsWith("server-"));
+  const entries = run.scrubber.entries();
+  const addresses = entries.filter(({ label }) => label.startsWith("server-"));
+  const machine = entries
+    .filter(({ label }) => label.startsWith(SFTP_MACHINE_LABEL))
+    .map(({ value }) => value);
+  // Cutting the machine's address out would also cut it out of an app server address holding it
+  // (49.13.5.7 in 49.13.5.71), and hide that address's leak.
+  const hidden = addresses.filter(({ value }) => machine.some((cut) => value.includes(cut)));
   return [
-    ...(await envs.leaks({ cloudflare: true })),
+    ...hidden.map(
+      ({ label }) =>
+        `The SFTP machine's address is part of the app server's ${label}, so the leak search cannot tell them apart; run the test again.`,
+    ),
+    ...(await envs.leaks({ cloudflare: true, userCidrs: machine })),
     ...addressesInSnapshotOutputs(run.outputs, addresses),
     ...(await deployLogLeaks(run, deployRuns)),
   ];
@@ -493,17 +535,42 @@ describe.skipIf(MISSING.data.length > 0)(
 );
 
 // ---------------------------------------------------------------------------------------------
-// The off-server copy: to R2, and to Hetzner Object Storage.
+// The off-server copy: to R2, to Hetzner Object Storage, to the user's own S3-compatible bucket
+// and to the user's own machine over SFTP.
 
-for (const provider of ["r2", "hetzner"] as const satisfies readonly OffsiteProvider[]) {
-  const storage = storageChoice(ENV, provider);
-  const missing = [...MISSING.offsite, ...("skip" in storage ? [storage.skip] : [])];
-  const where = provider === "r2" ? "Cloudflare R2" : "Hetzner Object Storage";
+/** Each leg of the off-server copy: where its copies go, as its title names it. */
+const OFFSITE_LEGS = [
+  { provider: "r2", where: "Cloudflare R2" },
+  { provider: "hetzner", where: "Hetzner Object Storage" },
+  { provider: "s3", where: "your own S3 bucket" },
+  { provider: "sftp", where: "your own SFTP machine" },
+] as const satisfies readonly { provider: OffsiteProvider; where: string }[];
+
+/** Where the s3 leg creates its bucket at Hetzner, standing in for the user's own. */
+const OWN_BUCKET_REGION = "fsn1";
+/** The variable naming the private key file the copies log in to the SFTP machine with. */
+const OFFSITE_SFTP_KEY = "OPSCREW_OFFSITE_SFTP_KEY";
+/** A copy's record, written last: in every copy, and what the retention check plants. */
+const RECORD = "about.json.age";
+/** How far back the retention check dates the copy it plants, past `--days 1`. */
+const TWO_DAYS = minutes(2 * 24 * 60);
+
+for (const { provider, where } of OFFSITE_LEGS) {
+  // The user's own bucket is one the test makes with the Hetzner leg's key, gated as that leg.
+  const storage =
+    provider === "sftp" ? undefined : storageChoice(ENV, provider === "r2" ? "r2" : "hetzner");
+  const missing = [
+    ...MISSING.offsite,
+    ...(storage !== undefined && "skip" in storage ? [storage.skip] : []),
+  ];
+  /** The user's own storage: OpsCrew creates, prices and deletes nothing there. */
+  const own = provider === "s3" || provider === "sftp";
+  const noun = provider === "sftp" ? "folder" : "bucket";
 
   describe.skipIf(missing.length > 0)(
     missing.length > 0
       ? `live snapshots, off-server copy to ${where} (skipped: ${missing.join("; ")}; see docs/e2e.md)`
-      : `live snapshots, off-server copy to ${where}: examples/${SNAPSHOT_EXAMPLE} at Hetzner, destroyed and restored from the bucket`,
+      : `live snapshots, off-server copy to ${where}: examples/${SNAPSHOT_EXAMPLE} at Hetzner, destroyed and restored from the ${noun}`,
     () => {
       const run: LiveRun = new LiveRun({
         label: `snapshots, off-server to ${provider}`,
@@ -520,14 +587,147 @@ for (const provider of ["r2", "hetzner"] as const satisfies readonly OffsiteProv
       let site = "";
       let project = "";
       let seeded: SnapshotData | undefined;
+      /** The bucket the test deletes at the end: OpsCrew's on R2 or Hetzner, or the user's own. */
       let bucket: BackupsBucket | undefined;
+      /** Where the test reads the copies: the bucket, or the SFTP machine. */
+      let store: CopyStore | undefined;
+      /** The SFTP machine's host key fingerprint, as `createServer` checked it there. */
+      let fingerprint = "";
       let taken: ListedSnapshot | undefined;
       const exec = async () => execOn(await envs.shell());
       const copy = () => taken as ListedSnapshot;
+      const copies = () => store as CopyStore;
+
+      /**
+       * The s3 leg's bucket, standing in for the user's own: created by the test in Hetzner Object
+       * Storage, named after the run, read with the Hetzner key (`pass`, `key`), its copies under
+       * `<app>-prod/backups/`. Returns `offsite on`'s flags for it.
+       */
+      async function ownBucket(
+        pass: BucketPass,
+        key: { accessKeyId: string; secretAccessKey: string },
+      ): Promise<string[]> {
+        const name = `e2e-snap-${run.runId}-own`;
+        const root = `${name}/${run.app()}-prod/${OFFSITE_PREFIX}`;
+        const made = new BackupsBucket(
+          run,
+          pass,
+          "hetzner",
+          name,
+          OWN_BUCKET_REGION,
+          key,
+          "",
+          root,
+        );
+        if (await made.exists()) {
+          throw new Error(
+            `A bucket named ${name} is already there; this test would take it over. Delete it (in Hetzner Object Storage, emptied first), then run the test again.`,
+          );
+        }
+        bucket = made;
+        store = made;
+        await made.create();
+        return ["--endpoint", made.endpoint, "--bucket", name, "--region", OWN_BUCKET_REGION];
+      }
+
+      /**
+       * The sftp leg's machine, as the guide tells the user to set it up: a throwaway server with
+       * an account chrooted to its home, SFTP only, a writable `/backups`, and in its
+       * `authorized_keys` the public half of a key made here without a passphrase, which
+       * `OPSCREW_OFFSITE_SFTP_KEY` names. Its addresses are masked under labels of their own. In a
+       * script `offsite on` without `--host-key` must stop, changing nothing. Returns `offsite
+       * on`'s flags for it, `--host-key` the fingerprint checked on the machine.
+       */
+      async function ownMachine(): Promise<string[]> {
+        fingerprint = await run.createServer();
+        for (const entry of sftpMachineAddresses(run.scrubber.entries())) {
+          run.scrubber.add(entry.value, entry.label);
+        }
+        const keyFile = join(run.work, "offsite-sftp-key");
+        const keygen = await run.runner.run(
+          "ssh-keygen",
+          [
+            "-q",
+            "-t",
+            "ed25519",
+            "-N",
+            "",
+            "-C",
+            `opscrew-e2e-backups-${run.runId}`,
+            "-f",
+            keyFile,
+          ],
+          { env: run.env, timeoutMs: 60_000 },
+        );
+        if (keygen.exitCode !== 0) throw new Error(`ssh-keygen failed: ${keygen.stderr.trim()}`);
+        await run.rememberSecretFile(keyFile, "offsite-sftp-key");
+        run.env[OFFSITE_SFTP_KEY] = keyFile;
+        const publicKey = (await readFile(`${keyFile}.pub`, "utf8")).trim();
+        await run.shell().ok(sftpMachineSetup(publicKey), minutes(5));
+        const { home, path, user } = SFTP_MACHINE;
+        store = new SftpMachine(run.shell(), `${home}${path}/${run.app()}-prod/${OFFSITE_PREFIX}`);
+        const flags = ["--host", run.ipv4(), "--user", user, "--path", path];
+        const refused = await run.opscrew("snapshot", "offsite", "on", "--to", "sftp", ...flags);
+        expect(
+          refused.exitCode,
+          `offsite on without --host-key:\n${run.tail(refused.output)}`,
+        ).not.toBe(0);
+        for (const text of ["must be confirmed", "--host-key"]) {
+          expect(
+            refused.output.includes(text),
+            `the refusal says "${text}":\n${run.tail(refused.output)}`,
+          ).toBe(true);
+        }
+        expect(
+          snapshotOffsiteOf(await run.readPlan())?.provider,
+          "the plan's off-server copy after the refusal",
+        ).not.toBe("sftp");
+        return [...flags, "--host-key", fingerprint];
+      }
+
+      /**
+       * Waits up to 10 minutes until `snapshot list` marks the snapshot `id` copied off the server;
+       * else fails with what `opscrew snapshot` printed (`printed`) and the upload's log on the
+       * server, both scrubbed.
+       */
+      function copiedOff(id: string, printed: string): Promise<ListedSnapshot> {
+        return waitFor(
+          `the snapshot ${id} copied off the server`,
+          minutes(10),
+          async () => {
+            const listed = snapshotOf(await listSnapshots(run), id);
+            return listed.offsite ? listed : undefined;
+          },
+          30_000,
+        ).catch(async (error: unknown) => {
+          const dir = appDir(await run.readPlan());
+          const log = await offsiteLogTail(await exec(), dir).catch(
+            (failure: unknown) => `The log was not read: ${String(failure)}`,
+          );
+          throw new Error(
+            `${String(error)}\nopscrew snapshot printed:\n${run.tail(printed)}\nThe server's ${dir}/${OFFSITE_LOG}, its last lines:\n${run.tail(log)}`,
+          );
+        });
+      }
+
+      /** After `what`: the bucket is still there, and on the user's own storage the copy too. */
+      async function expectCopyKept(what: string): Promise<void> {
+        if (bucket !== undefined) {
+          expect(await bucket.exists(), `the bucket after ${what}`).toBe(true);
+        }
+        if (own) {
+          expect(
+            (await copies().objects()).includes(`${copy().id}/${RECORD}`),
+            `the copy's record in the ${noun} after ${what}`,
+          ).toBe(true);
+        }
+      }
 
       run.step(
-        `O1. snapshot offsite on --to ${provider}, then provision and the first deploy: the bucket <app>-prod-backups, the recovery key; the data seeded`,
-        minutes(75),
+        own
+          ? `O1. ${provider === "s3" ? "a bucket of the user's own made first, then snapshot offsite on --to s3" : "a throwaway server set up as the user's SFTP machine, snapshot offsite on --to sftp refused in a script without --host-key, then with it"} --days 1, priced by nobody; provision plans no bucket and checks it can write there; the first deploy; the data seeded`
+          : `O1. snapshot offsite on --to ${provider}, then provision and the first deploy: the bucket <app>-prod-backups, the recovery key; the data seeded`,
+        minutes(own ? 100 : 75),
         async () => {
           await requireDocker(
             "This pass reads the off-server bucket with rclone, which this test runs from its pinned image in Docker on this computer",
@@ -540,66 +740,116 @@ for (const provider of ["r2", "hetzner"] as const satisfies readonly OffsiteProv
           );
           await run.opscrewOk("design");
           await run.adaptAndMerge();
-          // The bucket's key, as the components pass gets one, as OpsCrew reads it in a script.
-          const pass = await bucketPass(
-            {
-              app: SNAPSHOT_EXAMPLE,
-              searchEngine: false,
-              // The pass runs only when the choice had no skip.
-              storage: storage as StorageChoice,
-            },
-            SETTINGS.cloudflareToken,
-            SETTINGS.domain,
-          );
-          if (pass === undefined || "skip" in pass) {
-            throw new Error(`The bucket's key: ${pass?.skip ?? "none"}.`);
+          let pass: BucketPass | undefined;
+          let key: { accessKeyId: string; secretAccessKey: string } | undefined;
+          if (storage !== undefined) {
+            // The bucket's key, as the components pass gets one, as OpsCrew reads it in a script.
+            const got = await bucketPass(
+              {
+                app: SNAPSHOT_EXAMPLE,
+                searchEngine: false,
+                // The pass runs only when the choice had no skip.
+                storage: storage as StorageChoice,
+              },
+              SETTINGS.cloudflareToken,
+              SETTINGS.domain,
+            );
+            if (got === undefined || "skip" in got) {
+              throw new Error(`The bucket's key: ${got?.skip ?? "none"}.`);
+            }
+            pass = got;
+            const login = offsiteKey(got.env);
+            key = login.key;
+            for (const [name, secret] of Object.entries(login.env)) run.scrubber.add(secret, name);
+            Object.assign(run.env, login.env);
           }
-          const { key, env: keyEnv } = offsiteKey(pass.env);
-          for (const [name, secret] of Object.entries(keyEnv)) run.scrubber.add(secret, name);
-          Object.assign(run.env, keyEnv);
           // The recovery copy's first key goes to a file of the test's own, its copy to a folder
           // (a public repository gets no committed copy in a script).
-          const copies = join(run.work, "copies");
-          await mkdir(copies, { recursive: true });
-          await run.opscrewOk("secrets", "folder", copies);
+          const folder = join(run.work, "copies");
+          await mkdir(folder, { recursive: true });
+          await run.opscrewOk("secrets", "folder", folder);
           ageKey = join(run.work, "age-key.txt");
           run.provisionFlags = ["--key-out", ageKey];
 
-          const on = await run.opscrewOk("snapshot", "offsite", "on", "--to", provider);
-          expect(
-            on.output.includes("Expected cost:"),
-            `snapshot offsite on shows the bucket's expected cost:\n${run.tail(on.output)}`,
-          ).toBe(true);
-          const plan = await run.readPlan();
-          const offsite = backupsBucketOf(plan);
-          expect(offsite?.provider, "the plan's off-server copy").toBe(provider);
-          expect(offsite?.bucket, "the copies' bucket").toBe(backupsBucketName(plan));
-          const zone = run.zone;
-          if (offsite === undefined || zone === undefined) {
-            throw new Error("The pass needs the off-server copy and the run's Cloudflare zone.");
-          }
-          // The bucket must be this run's own: the cleanup deletes it, and only it.
-          const planned = new BackupsBucket(
-            run,
-            pass,
+          const flags =
+            provider === "s3"
+              ? await ownBucket(pass as BucketPass, key as NonNullable<typeof key>)
+              : provider === "sftp"
+                ? await ownMachine()
+                : [];
+          const on = await run.opscrewOk(
+            "snapshot",
+            "offsite",
+            "on",
+            "--to",
             provider,
-            offsite.bucket,
-            offsite.region,
-            key,
-            zone.accountId,
+            ...flags,
+            ...(own ? ["--days", "1"] : []),
           );
-          if (await planned.exists()) {
-            throw new Error(
-              `A bucket named ${offsite.bucket} is already there; this test would take it over. Delete it (in ${where}, emptied first), then run the test again.`,
+          const plan = await run.readPlan();
+          if (own) {
+            expect(
+              on.output.includes("OpsCrew prices nothing for it"),
+              `snapshot offsite on prices nothing:\n${run.tail(on.output)}`,
+            ).toBe(true);
+            const offsite = snapshotOffsiteOf(plan);
+            expect(offsite?.provider, "the plan's off-server copy").toBe(provider);
+            expect(offsite?.days, "the copies' retention, in days").toBe(1);
+            if (offsite?.provider === "sftp") {
+              expect(
+                hostKeyFingerprint(offsite.hostKey.split(" ")[1] ?? ""),
+                "the host key the plan pins",
+              ).toBe(fingerprint);
+            }
+          } else {
+            expect(
+              on.output.includes("Expected cost:"),
+              `snapshot offsite on shows the bucket's expected cost:\n${run.tail(on.output)}`,
+            ).toBe(true);
+            const offsite = backupsBucketOf(plan);
+            expect(offsite?.provider, "the plan's off-server copy").toBe(provider);
+            expect(offsite?.bucket, "the copies' bucket").toBe(backupsBucketName(plan));
+            const zone = run.zone;
+            if (offsite === undefined || zone === undefined) {
+              throw new Error("The pass needs the off-server copy and the run's Cloudflare zone.");
+            }
+            // The bucket must be this run's own: the cleanup deletes it, and only it.
+            const planned = new BackupsBucket(
+              run,
+              pass as BucketPass,
+              provider,
+              offsite.bucket,
+              offsite.region,
+              key as NonNullable<typeof key>,
+              zone.accountId,
             );
+            if (await planned.exists()) {
+              throw new Error(
+                `A bucket named ${offsite.bucket} is already there; this test would take it over. Delete it (in ${where}, emptied first), then run the test again.`,
+              );
+            }
+            bucket = planned;
+            store = planned;
           }
-          bucket = planned;
-          await envs.provision("prod", "prod with the off-server copy");
+          const provisioned = await envs.provision("prod", "prod with the off-server copy");
           expect(
             await run.rememberSecretFile(ageKey, "age-identity"),
             "provision wrote the recovery copy's age key to --key-out",
           ).toBe(true);
-          expect(await planned.exists(), `the bucket ${offsite.bucket} after provision`).toBe(true);
+          if (own) {
+            expect(
+              existsSync(backupsStateFile(run.paths())),
+              "the state of a bucket OpsCrew planned",
+            ).toBe(false);
+            const offsite = snapshotOffsiteOf(plan) as SnapshotOffsite;
+            expect(
+              provisioned.includes(`can write to ${offsitePlace(plan, offsite)}.`),
+              `provision checked that the server can write to the ${noun}:\n${run.tail(provisioned)}`,
+            ).toBe(true);
+          } else {
+            const planned = bucket as BackupsBucket;
+            expect(await planned.exists(), `the bucket ${planned.name} after provision`).toBe(true);
+          }
           deployRuns.push({
             what: "the first deploy",
             id: await run.deployAny("the first deploy"),
@@ -614,39 +864,22 @@ for (const provider of ["r2", "hetzner"] as const satisfies readonly OffsiteProv
       );
 
       run.step(
-        "O2. a snapshot by hand is copied off the server: in the bucket as age files only, one per part and its record, none holding a known value; the server holds no age key (SC-2404, SC-2406)",
+        `O2. a snapshot by hand is copied off the server: in the ${noun} as age files only, one per part and its record, none holding a known value${own ? ", and no write check's file left" : ""}; the server holds no age key (SC-2404, SC-2406)`,
         minutes(30),
         async () => {
           const result = await run.opscrewOk("snapshot");
           const id = takenSnapshotId(result.output);
           if (id === undefined) throw new Error(`No snapshot id:\n${run.tail(result.output)}`);
-          taken = await waitFor(
-            `the snapshot ${id} copied off the server`,
-            minutes(10),
-            async () => {
-              const listed = snapshotOf(await listSnapshots(run), id);
-              return listed.offsite ? listed : undefined;
-            },
-            30_000,
-          ).catch(async (error: unknown) => {
-            // What the snapshot said, and the upload's own log on the server, both scrubbed.
-            const dir = appDir(await run.readPlan());
-            const log = await offsiteLogTail(await exec(), dir).catch(
-              (failure: unknown) => `The log was not read: ${String(failure)}`,
-            );
-            throw new Error(
-              `${String(error)}\nopscrew snapshot printed:\n${run.tail(result.output)}\nThe server's ${dir}/${OFFSITE_LOG}, its last lines:\n${run.tail(log)}`,
-            );
-          });
+          taken = await copiedOff(id, result.output);
           expect(servicesIn(copy()), "the services it copied").toEqual(COPIED(false));
-          const store = bucket as BackupsBucket;
           // Some of Hetzner's nodes do not know a new bucket for about 15 minutes, and answer that
-          // it is not there: each read is tried again until it holds the copy.
+          // it is not there: each read is tried again until it holds the copy. Any file but an age
+          // file is a problem, provision's write check's too.
           const objects = await waitFor(
-            `the copy ${id} in the bucket`,
+            `the copy ${id} in the ${noun}`,
             minutes(5),
             async () => {
-              const listed = await store.objects();
+              const listed = await copies().objects();
               const wrong = bucketObjectProblems(listed, id, servicesIn(copy()).length);
               if (wrong.length > 0) throw new Error(wrong.join(" "));
               return listed;
@@ -659,7 +892,7 @@ for (const provider of ["r2", "hetzner"] as const satisfies readonly OffsiteProv
             const text = await waitFor(
               `${object} read`,
               minutes(5),
-              () => store.read(object),
+              () => copies().read(object),
               15_000,
             );
             problems.push(...objectContentProblems(object, text, known));
@@ -669,17 +902,56 @@ for (const provider of ["r2", "hetzner"] as const satisfies readonly OffsiteProv
             await ageKeysOnServer(await exec(), appDir(await run.readPlan())),
             "age private keys on the server",
           ).toEqual([]);
-          log(`observed: ${objects.length} objects in the bucket, every one an age file`);
+          log(`observed: ${objects.length} objects in the ${noun}, every one an age file`);
         },
       );
 
+      if (own) {
+        run.step(
+          `O2b. with --days 1, a copy the test plants dated two days back is gone after the next snapshot's upload${provider === "sftp" ? ", its folder too" : ""}; the copies just taken stay`,
+          minutes(30),
+          async () => {
+            const at = new Date(Date.now() - TWO_DAYS);
+            const planted = snapshotIdAt(at);
+            await copies().plant(`${planted}/${RECORD}`, at);
+            expect(
+              (await copies().objects()).includes(`${planted}/${RECORD}`),
+              "the planted copy",
+            ).toBe(true);
+            const result = await run.opscrewOk("snapshot");
+            const id = takenSnapshotId(result.output);
+            if (id === undefined) throw new Error(`No snapshot id:\n${run.tail(result.output)}`);
+            const next = await copiedOff(id, result.output);
+            const kept = [copy(), next].map((listed) => ({
+              id: listed.id,
+              parts: servicesIn(listed).length,
+            }));
+            // The server deletes the old copies after the upload, which may end after the listing.
+            await waitFor(
+              "the planted copy deleted, the copies just taken kept",
+              minutes(5),
+              async () => {
+                const wrong = retentionProblems(await copies().objects(), planted, kept);
+                if (wrong.length > 0) throw new Error(wrong.join(" "));
+                return true;
+              },
+              15_000,
+            );
+            if (store instanceof SftpMachine) {
+              expect(await store.holds(planted), "the planted copy's folder").toBe(false);
+            }
+            log(`observed: the copy dated two days back is gone; ${copy().id} and ${id} stay`);
+          },
+        );
+      }
+
       run.step(
-        "O3. destroy, then provision and deploy again: the server is empty, the bucket keeps the copy, and snapshot list --key-file shows it only there",
+        `O3. destroy, then provision and deploy again: the server is empty, the ${noun} keeps the copy, and snapshot list --key-file shows it only there`,
         minutes(90),
         async () => {
           await envs.destroy("prod");
           await envs.expectNothingLeft("prod");
-          expect(await (bucket as BackupsBucket).exists(), "the bucket after destroy").toBe(true);
+          await expectCopyKept("destroy");
           // Provisioned again: the cleanup's destroy covers the new server too.
           envs.destroyed.delete("prod");
           run.destroyed = false;
@@ -693,7 +965,7 @@ for (const provider of ["r2", "hetzner"] as const satisfies readonly OffsiteProv
             404,
           );
           const listed = snapshotOf(await listSnapshots(run, ["--key-file", ageKey]), copy().id);
-          expect(listed.where, "where the copy is").toContain("only in the off-server bucket");
+          expect(listed.where, "where the copy is").toContain(`only in the off-server ${noun}`);
           expect(servicesIn(listed), "the copy's services, read with the key").toEqual(
             COPIED(false),
           );
@@ -735,14 +1007,28 @@ for (const provider of ["r2", "hetzner"] as const satisfies readonly OffsiteProv
       );
 
       run.step(
-        "O5. destroy leaves nothing at Hetzner or in Cloudflare; then the test deletes the bucket, as the guide tells the user",
+        own
+          ? `O5. destroy leaves nothing at Hetzner or in Cloudflare, and says the copies stay in the ${noun}, which keeps them${provider === "s3" ? "; then the test deletes the bucket" : ""}`
+          : "O5. destroy leaves nothing at Hetzner or in Cloudflare; then the test deletes the bucket, as the guide tells the user",
         minutes(30),
         async () => {
+          const plan = await run.readPlan();
+          const before = run.outputs.size;
           await envs.destroy("prod");
           await envs.expectNothingLeft("prod");
           await run.expectCloudflareClean();
-          expect(await (bucket as BackupsBucket).exists(), "the bucket after destroy").toBe(true);
-          await (bucket as BackupsBucket).remove();
+          if (own) {
+            const said = [...run.outputs.values()].slice(before).join("\n");
+            const offsite = snapshotOffsiteOf(plan) as SnapshotOffsite;
+            expect(
+              said.includes(
+                `The off-server copies of the snapshots stay in ${offsitePlace(plan, offsite)}`,
+              ),
+              `destroy says where the copies stay:\n${run.tail(said)}`,
+            ).toBe(true);
+          }
+          await expectCopyKept("destroy");
+          await bucket?.remove();
         },
       );
 

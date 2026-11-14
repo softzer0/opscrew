@@ -16,9 +16,15 @@ import {
   objectContentProblems,
   offsiteKey,
   onTheHour,
+  plantedFileScript,
   restartedServices,
+  retentionProblems,
+  SFTP_MACHINE,
   servicesIn,
+  sftpMachineAddresses,
+  sftpMachineSetup,
   shownRestore,
+  snapshotIdAt,
   takenSnapshotId,
   withSnapshotServices,
   writtenValues,
@@ -219,6 +225,77 @@ describe("the off-server bucket", () => {
     expect(objectContentProblems("x.age", "PGDMP value-run1", known)).toEqual([
       "x.age does not start with age's header",
       "x.age contains: dumped-value",
+    ]);
+  });
+});
+
+describe("the retention check", () => {
+  const kept = "20261114T101500Z";
+  const planted = "20261112T101500Z";
+  const copy = [`${kept}/db.dump.age`, `${kept}/about.json.age`];
+
+  it("names a snapshot id as OpsCrew does: the UTC time to the second", () => {
+    expect(snapshotIdAt(new Date("2026-11-12T10:15:00.250Z"))).toBe(planted);
+  });
+
+  it("wants the planted copy gone and every copy just taken whole", () => {
+    expect(retentionProblems(copy, planted, [{ id: kept, parts: 1 }])).toEqual([]);
+    expect(
+      retentionProblems([...copy, `${planted}/about.json.age`], planted, [{ id: kept, parts: 1 }]),
+    ).toEqual([`backups/${planted}/about.json.age, dated two days back, is still there`]);
+    expect(retentionProblems([`${kept}/db.dump.age`], planted, [{ id: kept, parts: 1 }])).toEqual([
+      `backups/${kept}/about.json.age is missing`,
+    ]);
+  });
+
+  it("plants a file dated back, owned by the SFTP account", () => {
+    const script = plantedFileScript(
+      "/srv/sftp/e2ebackups/backups/shop-prod/backups/20261112T101500Z/about.json.age",
+      new Date("2026-11-12T10:15:00Z"),
+      "e2ebackups",
+    );
+    expect(script).toBe(
+      [
+        "mkdir -p /srv/sftp/e2ebackups/backups/shop-prod/backups/20261112T101500Z",
+        ": > /srv/sftp/e2ebackups/backups/shop-prod/backups/20261112T101500Z/about.json.age",
+        "touch -d @1794478500 /srv/sftp/e2ebackups/backups/shop-prod/backups/20261112T101500Z/about.json.age",
+        "chown e2ebackups:e2ebackups /srv/sftp/e2ebackups/backups/shop-prod/backups/20261112T101500Z /srv/sftp/e2ebackups/backups/shop-prod/backups/20261112T101500Z/about.json.age",
+      ].join(" && "),
+    );
+    expect(() => plantedFileScript("/srv/sftp/x y", new Date(), "e2ebackups")).toThrow(/not plain/);
+  });
+});
+
+describe("the SFTP machine", () => {
+  const publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample opscrew-e2e";
+
+  it("chroots its account to its home with internal-sftp only and a writable folder", () => {
+    const script = sftpMachineSetup(publicKey);
+    const { user, home, path } = SFTP_MACHINE;
+    for (const line of [
+      `useradd --home-dir ${home} --no-create-home --shell /usr/sbin/nologin ${user}`,
+      `install -d -o root -g root -m 755 /srv/sftp ${home}`,
+      `install -d -o ${user} -g ${user} -m 755 ${home}${path}`,
+      `printf '%s\\n' '${publicKey}' > ${home}/.ssh/authorized_keys`,
+      `Match User ${user}`,
+      "  ChrootDirectory %h",
+      "  ForceCommand internal-sftp",
+      "sshd -t",
+    ]) {
+      expect(script).toContain(line);
+    }
+    expect(() => sftpMachineSetup("ssh-ed25519 AAAA' ; rm -rf /")).toThrow(/public key/);
+  });
+
+  it("masks the machine's addresses under a label of their own, never as the app server's", () => {
+    const entries = [
+      { label: "server-ipv4", value: "203.0.113.7" },
+      { label: "server-ipv6", value: "2001:db8::1" },
+      { label: "hetzner-token", value: "token" },
+    ];
+    expect(sftpMachineAddresses(entries)).toEqual([
+      { label: "sftp-machine-ipv4", value: "203.0.113.7" },
+      { label: "sftp-machine-ipv6", value: "2001:db8::1" },
     ]);
   });
 });

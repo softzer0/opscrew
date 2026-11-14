@@ -5,7 +5,8 @@
  * - `opscrew snapshot list --json` and `opscrew restore` as a script runs them;
  * - the app named after the run, so every resource and the bucket are the run's own;
  * - the off-server copies' bucket read with the pinned rclone image in local Docker, and deleted
- *   explicitly at the end (deleting it is the user's job, not OpsCrew's);
+ *   explicitly at the end (deleting it is the user's job, not OpsCrew's); the user's own bucket
+ *   created first; the user's SFTP machine read as root there;
  * - the whole-server snapshots OpsCrew took of the run's server at Hetzner, deleted if a run left
  *   any;
  * - the deploy jobs' logs in the leak search.
@@ -28,7 +29,15 @@ import {
   RESTORED_IMAGE_FILE,
 } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
-import { api, HETZNER_API, httpRequest, minutes, retryDelete, waitFor } from "./cloud";
+import {
+  api,
+  HETZNER_API,
+  httpRequest,
+  minutes,
+  type RootShell,
+  retryDelete,
+  waitFor,
+} from "./cloud";
 import type { BucketPass, ServerExec } from "./component-checks";
 import type { AppEnvironments } from "./environment-checks";
 import type { CliRun, LiveRun } from "./harness";
@@ -45,6 +54,9 @@ import {
   type ListedSnapshot,
   listedSnapshots,
   type OffsiteProvider,
+  plantedFileScript,
+  SFTP_MACHINE,
+  SFTP_MACHINE_LABEL,
   type SnapshotData,
   SQLITE_CONTENT_SCRIPT,
   shownRestore,
@@ -209,12 +221,28 @@ export async function approvedRestore(
 // The off-server copies' bucket.
 
 /**
+ * Where the pass reads the off-server copies: a bucket ({@link BackupsBucket}) or the user's SFTP
+ * machine ({@link SftpMachine}), each object's path relative to the copies' `backups/` folder.
+ */
+export interface CopyStore {
+  /** Every object under `backups/`, its path relative to it. */
+  objects(): Promise<string[]>;
+  /** The object `backups/<path>` read whole (still encrypted), as text. */
+  read(path: string): Promise<string>;
+  /** Writes an empty object `backups/<path>` dated `at`, as the retention check plants one. */
+  plant(path: string, at: Date): Promise<void>;
+}
+
+/**
  * The off-server copies' bucket `name` at `provider` (`region` its location; R2's `auto`, in the
  * zone's account `accountId`): read with the pinned rclone image in local Docker with the bucket's
  * key, which stays in rclone's environment; checked and deleted as the components pass's buckets
- * are (`pass`, its `bucketPass`).
+ * are (`pass`, its `bucketPass`). The copies are under `root` (rclone's path, by default the
+ * bucket's `backups/`; in the user's own bucket `<bucket>/<app>-<env>/backups`).
  */
-export class BackupsBucket {
+export class BackupsBucket implements CopyStore {
+  /** The bucket's S3 endpoint. */
+  readonly endpoint: string;
   /** rclone's settings (the bucket's key among them), and `docker`'s arguments that run it. */
   private readonly rclone: { settings: Record<string, string>; docker: string[] };
   /** The bucket as `pass` reads it: its provider, name and region (the rest is the app's only). */
@@ -223,24 +251,33 @@ export class BackupsBucket {
   constructor(
     private readonly run: LiveRun,
     private readonly pass: Pick<BucketPass, "exists" | "deleteThroughApi">,
-    readonly provider: OffsiteProvider,
+    readonly provider: Extract<OffsiteProvider, "r2" | "hetzner">,
     readonly name: string,
     region: string,
     key: { accessKeyId: string; secretAccessKey: string },
     accountId: string,
+    private readonly root = `${name}/${OFFSITE_PREFIX}`,
   ) {
     const endpoint =
       provider === "r2" ? r2Endpoint(accountId) : STORAGE_ENDPOINTS.hetzner?.(region);
     if (endpoint === undefined) throw new Error("OpsCrew knows no endpoint for Hetzner's buckets.");
+    this.endpoint = endpoint;
     this.rclone = offsiteRclone({ provider, region }, endpoint, key);
     this.bucket = { provider, bucket: name, region } as ProviderBucket;
   }
 
-  /** rclone's `args`; its exit code 3 (not there) is returned, any other failure thrown. */
-  private async rcloneIn(args: readonly string[], what: string) {
+  /**
+   * rclone's `args` (with `overrides` of its settings); its exit code 3 (not there) is returned,
+   * any other failure thrown.
+   */
+  private async rcloneIn(
+    args: readonly string[],
+    what: string,
+    overrides: Record<string, string> = {},
+  ) {
     const { settings, docker } = this.rclone;
     const result = await this.run.runner.run("docker", [...docker, ...args], {
-      env: { ...this.run.env, ...settings },
+      env: { ...this.run.env, ...settings, ...overrides },
       timeoutMs: minutes(10),
     });
     if (result.exitCode !== 0 && result.exitCode !== RCLONE_NOT_FOUND) {
@@ -252,27 +289,50 @@ export class BackupsBucket {
     return result;
   }
 
-  /** Every object under `backups/`, its path relative to it. */
   async objects(): Promise<string[]> {
     const listed = await this.rcloneIn(
-      ["lsf", "-R", "--files-only", `offsite:${this.name}/${OFFSITE_PREFIX}`],
+      ["lsf", "-R", "--files-only", `offsite:${this.root}`],
       "list the copies",
     );
     if (listed.exitCode === RCLONE_NOT_FOUND) return [];
-    return listed.stdout
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line !== "");
+    return listedLines(listed.stdout);
   }
 
-  /** The object `backups/<path>` read whole (still encrypted), as text. */
   async read(path: string): Promise<string> {
-    const read = await this.rcloneIn(
-      ["cat", `offsite:${this.name}/${OFFSITE_PREFIX}/${path}`],
-      `read ${path}`,
-    );
+    const read = await this.rcloneIn(["cat", `offsite:${this.root}/${path}`], `read ${path}`);
     if (read.exitCode === RCLONE_NOT_FOUND) throw new Error(`The bucket has no ${path}.`);
     return read.stdout;
+  }
+
+  /** An empty object, its modification time (rclone's, which `--min-age` reads) `at`. */
+  async plant(path: string, at: Date): Promise<void> {
+    await this.rcloneIn(
+      ["touch", "-t", at.toISOString().slice(0, 19), `offsite:${this.root}/${path}`],
+      `write ${path}`,
+    );
+  }
+
+  /**
+   * Creates the bucket, as the user's own (the copies' settings never create one), then waits
+   * until 5 listings in a row find it: for about 15 minutes some of Hetzner's nodes answer that a
+   * new bucket is not there, and provision's write check would meet one.
+   */
+  async create(): Promise<void> {
+    this.run.log(`creating the bucket ${this.name}, standing in for the user's own`);
+    await this.rcloneIn(["mkdir", `offsite:${this.name}`], "create the bucket", {
+      RCLONE_CONFIG_OFFSITE_NO_CHECK_BUCKET: "false",
+    });
+    let found = 0;
+    await waitFor(
+      `the new bucket ${this.name} known to Hetzner's nodes`,
+      minutes(20),
+      async () => {
+        const listed = await this.rcloneIn(["lsf", `offsite:${this.name}`], "list the bucket");
+        found = listed.exitCode === 0 ? found + 1 : 0;
+        return found >= 5 ? true : undefined;
+      },
+      10_000,
+    );
   }
 
   /** Whether the bucket is there (R2's API, or Hetzner's answer to an unsigned `HEAD`). */
@@ -300,6 +360,49 @@ export class BackupsBucket {
     if (await this.exists()) {
       throw new Error(`The off-server bucket ${this.name} is still there after its deletion.`);
     }
+  }
+}
+
+/** The non-empty lines of a listing, trimmed. */
+function listedLines(stdout: string): string[] {
+  return stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
+}
+
+/**
+ * The copies on the user's SFTP machine (a throwaway server the test set up, {@link SFTP_MACHINE}),
+ * read as root there through `shell`: under `root`, the folder `backups/` of the environment's
+ * copies as the machine's own disk has it (inside the account's chroot).
+ */
+export class SftpMachine implements CopyStore {
+  constructor(
+    private readonly shell: RootShell,
+    readonly root: string,
+  ) {}
+
+  async objects(): Promise<string[]> {
+    const { root } = this;
+    return listedLines(
+      await this.shell.ok(
+        `if [ -d ${root} ]; then cd ${root} && find . -type f | sed 's|^\\./||'; fi`,
+      ),
+    );
+  }
+
+  read(path: string): Promise<string> {
+    return this.shell.ok(`cat ${this.root}/${path}`, minutes(5));
+  }
+
+  async plant(path: string, at: Date): Promise<void> {
+    await this.shell.ok(plantedFileScript(`${this.root}/${path}`, at, SFTP_MACHINE.user));
+  }
+
+  /** Whether the folder `backups/<path>` is there. */
+  async holds(path: string): Promise<boolean> {
+    const dir = `${this.root}/${path}`;
+    return (await this.shell.ok(`if [ -d ${dir} ]; then echo yes; else echo no; fi`)) === "yes";
   }
 }
 
@@ -441,7 +544,10 @@ export interface DeployRun {
  * GitHub masks only its own secrets.
  */
 export async function deployLogLeaks(run: LiveRun, runs: readonly DeployRun[]): Promise<string[]> {
-  const secrets = run.scrubber.entries().filter(({ label }) => !label.startsWith("server-"));
+  // The user's SFTP machine is named in the plan, so the deploy job may name it too.
+  const secrets = run.scrubber
+    .entries()
+    .filter(({ label }) => !label.startsWith("server-") && !label.startsWith(SFTP_MACHINE_LABEL));
   const problems: string[] = [];
   for (const { what, id } of runs) {
     const text = await jobLog(run.github, id, SERVER_DEPLOY_JOB).catch((error: Error) => {

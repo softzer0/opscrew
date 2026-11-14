@@ -2830,13 +2830,20 @@ between 5 and 6):
 - **S3.** `snapshot schedule off`, then provision and deploy. The crontab line must be gone, and
   the scheduled snapshot must still be listed.
 
-**The off-server copy** (`OPSCREW_E2E_SNAPSHOTS_OFFSITE=1`), to Cloudflare R2
-(`-t "Cloudflare R2"`, with `OPSCREW_E2E_R2=1`) and to Hetzner Object Storage
-(`-t "Hetzner Object Storage"`, with its S3 key). Each target is a pass of its own, and a target
-without its variables is skipped. The bucket's key is the one [the components](#the-components)
-use (R2's comes from the Cloudflare token), which OpsCrew reads as `OPSCREW_OFFSITE_ACCESS_KEY_ID`
-and `OPSCREW_OFFSITE_SECRET_ACCESS_KEY`. Each pass needs Docker on this computer: the restore
-reads the bucket with rclone from its pinned image, and so does the test.
+**The off-server copy** (`OPSCREW_E2E_SNAPSHOTS_OFFSITE=1`), in four legs:
+- to Cloudflare R2 (`-t "Cloudflare R2"`, with `OPSCREW_E2E_R2=1`);
+- to Hetzner Object Storage (`-t "Hetzner Object Storage"`, with its S3 key);
+- to your own S3-compatible bucket (`-t "your own S3 bucket"`, with the same S3 key): a bucket the
+  test creates first in Hetzner Object Storage, in `fsn1`, named `e2e-snap-<run id>-own`, stands
+  in for the user's own;
+- to your own machine over SFTP (`-t "your own SFTP machine"`, with the gate alone): a throwaway
+  Hetzner server the test sets up as the user's machine.
+
+Each leg is a pass of its own, and a leg without its variables is skipped. The bucket's key is the
+one [the components](#the-components) use (R2's comes from the Cloudflare token), which OpsCrew
+reads as `OPSCREW_OFFSITE_ACCESS_KEY_ID` and `OPSCREW_OFFSITE_SECRET_ACCESS_KEY`. Each pass needs
+Docker on this computer: the restore reads the copies with rclone from its pinned image, and so
+does the test for a bucket. The SFTP machine's copies the test reads as root there.
 - **O1.** Prod is designed with the services above and `adapt`'s pull request merged. Then
   `secrets folder <a folder of the run>`, and every provision passes `--key-out <file>`, as for
   [your existing Portainer](#your-existing-portainer). `snapshot offsite on --to r2|hetzner` must
@@ -2844,15 +2851,39 @@ reads the bucket with rclone from its pinned image, and so does the test.
   bucket must not exist yet: if it does, the pass stops before provision, saying to delete it,
   and the cleanup leaves it alone. Provision must write the age key to the file and create the
   bucket. Then the first deploy, and the data is seeded.
+
+  On your own bucket, the test creates the bucket first (it must not exist yet) and waits until
+  five listings in a row find it, since some of Hetzner's nodes don't know a new bucket for about
+  15 minutes. On the SFTP leg, the test creates the throwaway server and sets it up as the guide
+  says: an account chrooted to its home with `internal-sftp` only and a writable `/backups`, and
+  in its `authorized_keys` the public half of a key made on this computer without a passphrase,
+  which `OPSCREW_OFFSITE_SFTP_KEY` names. The machine's addresses are masked under labels of their
+  own (`sftp-machine-*`), and the leak search cuts them out first: the plan names the machine on
+  purpose. In a script, `snapshot offsite on --to sftp` without `--host-key` must stop, saying the
+  host key "must be confirmed" and naming that flag, and leave the plan as it was. Then
+  `snapshot offsite on --to s3 --endpoint … --bucket … --region fsn1 --days 1`, or
+  `--to sftp --host … --user e2ebackups --path /backups --host-key <the fingerprint checked on the
+  machine> --days 1`, must say "OpsCrew prices nothing for it" and set `snapshots.offsite` (the
+  host key the plan pins must have that fingerprint). Provision must plan no bucket (no
+  `backups.tfstate`) and say the server "can write to" the bucket or folder.
 - **O2** (SC-2404, SC-2406): `opscrew snapshot`. Within 10 minutes the list must mark it as copied
   off the server. In the bucket every object under `backups/` must be an age file. The copy must
-  hold its record (`about.json.age`) and one file per part. Each of the copy's objects, read
+  hold its record (`about.json.age`) and one file per part. On your own storage the copies are
+  under `<app>-prod/backups/` in the bucket, or `/backups/<app>-prod/backups/` on the machine, and
+  provision's `.opscrew-write-check` must not be left there. Each of the copy's objects, read
   whole, must start with age's header and hold no known secret or value the test wrote. No file
   in the app's folder or its snapshots on the server may hold an age private key (searched for
   `AGE-SECRET-KEY-`, never the key).
-- **O3.** `destroy`: nothing left at Hetzner, and the bucket stays. Then provision and deploy
+- **O2b** (your own storage only): the retention. The test plants an empty copy record
+  (`<id>/about.json.age`, its id and modification time two days back: `rclone touch -t` in the
+  bucket, `touch -d` as root on the machine, owned by the SFTP account). After the next
+  `opscrew snapshot` is copied off the server, within 5 minutes the planted copy must be gone
+  (`--days 1`), and on the machine its folder too. Both copies just taken must stay whole.
+- **O3.** `destroy`: nothing left at Hetzner, and the bucket stays (on your own storage, with the
+  copy). Then provision and deploy
   again. `GET /data` must answer 404 on the new, empty server. `snapshot list --json --key-file
-  <file>` must list the copy "only in the off-server bucket", with its parts, read with the key.
+  <file>` must list the copy "only in the off-server bucket" (on SFTP, "folder"), with its parts,
+  read with the key.
 - **O4.** `restore <id> --from offsite --key-file <file>`. When the new server runs another image
   than the copy's (a new build), the first run must refuse, saying "was taken while another
   version ran" and naming `--allow-other-version`, which the next runs then pass. The approval
@@ -2863,7 +2894,9 @@ reads the bucket with rclone from its pinned image, and so does the test.
   every object (on Hetzner, whose bucket keeps versions, `rclone backend cleanup-hidden` deletes
   the old versions too). Then the bucket goes, as [the components](#the-components)' buckets do:
   through Cloudflare's API for R2, and S3's `DeleteBucket` with the key for Hetzner. It must be
-  gone.
+  gone. On your own storage, destroy must say "The off-server copies of the snapshots stay in" the
+  bucket or folder, which must still hold the copy; the test then deletes your own bucket in the
+  same way. The SFTP machine goes in the cleanup.
 - **O6.** Nothing leaked, as step 7, the deploy job's log of both deploys included. The bucket's
   key and the age key are searched for too.
 
@@ -2920,8 +2953,9 @@ reads the bucket with rclone from its pinned image, and so does the test.
 The cleanup is the one for environments, after every step and always: `opscrew destroy` if needed,
 then Hetzner's API by the app's labels, the GitHub environments and deploy secrets, the app's
 records in Cloudflare, and the repository reset. Then, per pass:
-- **off-server copy:** the run's bucket, once O1 found it was not there before, is deleted as in
-  O5 when it is still there. A bucket that stays is a problem that fails the run;
+- **off-server copy:** the run's bucket (or your own bucket the test created), once O1 found it
+  was not there before, is deleted as in O5 when it is still there. A bucket that stays is a
+  problem that fails the run. The harness deletes the SFTP leg's throwaway server;
 - **whole server:** this run's snapshots of the app's server at Hetzner are deleted: images
   labelled `created-by=opscrew,app=<app>` and taken of the server W1 kept, or since the run
   started. Each one deleted is a problem, since W4 deletes its own. An older one with those labels
@@ -2933,21 +2967,24 @@ records in Cloudflare, and the repository reset. Then, per pass:
 - at Hetzner, the snapshots under Servers → Snapshots labelled `app=e2e-snap-<run id>`, and the
   throwaway server `opscrew-e2e-snapshots-portainer-<run id>` (labelled `managed-by=opscrew-e2e`);
 - the bucket `e2e-snap-<run id>-prod-backups`: in R2 (Cloudflare dashboard → R2) or Hetzner
-  Object Storage (the console's Object Storage), emptied first.
+  Object Storage (the console's Object Storage), emptied first; and `e2e-snap-<run id>-own` in
+  Hetzner Object Storage;
+- the SFTP leg's throwaway server `opscrew-e2e-snapshots-sftp-<run id>` (labelled
+  `managed-by=opscrew-e2e`).
 
 | Variable | What it is |
 |---|---|
 | `OPSCREW_E2E_SNAPSHOTS` | `1` runs the data pass. |
 | `OPSCREW_E2E_SNAPSHOTS_SCHEDULE` | With the data pass, `1` also runs the schedule's steps (about two hours more). |
-| `OPSCREW_E2E_SNAPSHOTS_OFFSITE` | `1` runs the off-server copy, once for each target whose variables are set. |
+| `OPSCREW_E2E_SNAPSHOTS_OFFSITE` | `1` runs the off-server copy, once for each leg whose variables are set; the SFTP leg needs nothing more. |
 | `OPSCREW_E2E_SNAPSHOTS_SERVER` | `1` runs the whole-server pass. |
 | `OPSCREW_E2E_SNAPSHOTS_PORTAINER` | `1` runs the Portainer pass. |
 | `OPSCREW_E2E_HCLOUD_TOKEN`, `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN`, `OPSCREW_E2E_CLOUDFLARE_TOKEN`, `OPSCREW_E2E_DOMAIN` | Every pass, as for environments. |
 | `OPSCREW_E2E_R2` | The off-server copy to R2: `1` once R2 is on for the account, as for [the components](#the-components). |
-| `OPSCREW_E2E_HETZNER_S3_ACCESS_KEY_ID`, `OPSCREW_E2E_HETZNER_S3_SECRET_ACCESS_KEY` | The off-server copy to Hetzner Object Storage, as for the components. The test never deletes the key. |
+| `OPSCREW_E2E_HETZNER_S3_ACCESS_KEY_ID`, `OPSCREW_E2E_HETZNER_S3_SECRET_ACCESS_KEY` | The off-server copy to Hetzner Object Storage and to your own S3 bucket (which the test creates there), as for the components. The test never deletes the key. |
 | `OPSCREW_E2E_GHCR_READ_TOKEN` | The Portainer pass: as for [your existing Portainer](#your-existing-portainer), Portainer pulls the app's image with it, and P5's rollback lists the versions with it, as for [Rollback](#rollback). The GitHub token needs Variables (read and write) too: the rollback sets the deploy pause, and `--resume` removes it. |
 | `OPSCREW_E2E_REPO_READ_TOKEN` | The Portainer pass, when `OPSCREW_E2E_GITHUB_REPO` is private. |
-| `OPSCREW_E2E_REGION` | Optional, as above. The off-server copy to Hetzner needs `eu-central` (the default) or `eu-north`, where Hetzner has Object Storage. |
+| `OPSCREW_E2E_REGION` | Optional, as above. The off-server copy to Hetzner and to your own S3 bucket needs `eu-central` (the default) or `eu-north`, where Hetzner has Object Storage. |
 
 ```bash
 pnpm --filter opscrew build
@@ -2956,9 +2993,16 @@ export OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e \
   OPSCREW_E2E_GITHUB_TOKEN=… OPSCREW_E2E_CLOUDFLARE_TOKEN=… OPSCREW_E2E_DOMAIN=e2e.example.com
 # Data on staging (add OPSCREW_E2E_SNAPSHOTS_SCHEDULE=1 for the schedule).
 OPSCREW_E2E_SNAPSHOTS=1 npx vitest run test/live/snapshots.test.ts -t "snapshots, data"
-# The off-server copy, to R2 and to Hetzner Object Storage.
+# The off-server copy, its four legs (or one: -t "Cloudflare R2", "Hetzner Object Storage",
+# "your own S3 bucket" or "your own SFTP machine").
 OPSCREW_E2E_SNAPSHOTS_OFFSITE=1 OPSCREW_E2E_R2=1 OPSCREW_E2E_HETZNER_S3_ACCESS_KEY_ID=… \
   OPSCREW_E2E_HETZNER_S3_SECRET_ACCESS_KEY=… npx vitest run test/live/snapshots.test.ts -t "off-server"
+# Your own S3 bucket alone.
+OPSCREW_E2E_SNAPSHOTS_OFFSITE=1 OPSCREW_E2E_HETZNER_S3_ACCESS_KEY_ID=… \
+  OPSCREW_E2E_HETZNER_S3_SECRET_ACCESS_KEY=… \
+  npx vitest run test/live/snapshots.test.ts -t "your own S3 bucket"
+# Your own SFTP machine alone.
+OPSCREW_E2E_SNAPSHOTS_OFFSITE=1 npx vitest run test/live/snapshots.test.ts -t "your own SFTP machine"
 # A whole server.
 OPSCREW_E2E_SNAPSHOTS_SERVER=1 npx vitest run test/live/snapshots.test.ts -t "whole server"
 # Your Portainer.
@@ -2970,9 +3014,10 @@ Not measured yet. What each pass runs, at about 0.01–0.02 EUR an hour per serv
 design picks (check Hetzner's price list):
 - **data:** one staging server (with Kafka and MySQL, a few GB of memory) for about an hour, and
   one deploy run. With the schedule, about 2.5 hours more and two more deploy runs;
-- **off-server copy:** per target, two servers in turn for about 1.5–2 hours, and two deploy runs.
+- **off-server copy:** per leg, two servers in turn for about 1.5–2 hours, and two deploy runs.
   R2 stays within its free tier. Hetzner Object Storage is billed monthly in part (about 5 EUR a
-  month, a few cents for the run's hours);
+  month, a few cents for the run's hours), your own S3 bucket's leg too. The SFTP leg adds the
+  throwaway machine for those 2 hours, at the same hourly price;
 - **whole server:** one server for about 45 minutes, one deploy run, and a snapshot of a few GB
   for a few minutes (Hetzner bills about 0.01 EUR per GB a month, so well under a cent);
 - **Portainer:** the Portainer server for about 1.5 hours, three deploy runs with a build (v1,

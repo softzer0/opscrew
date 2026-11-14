@@ -8,6 +8,7 @@
  * `snapshots-support.test.ts`.
  */
 import { createHash } from "node:crypto";
+import { posix } from "node:path";
 import { OFFSITE_KEY_VARS, STORAGE_KEY_VARS } from "@opscrew/agents";
 import { AGE_VERSION } from "@opscrew/core/testing";
 import { kafkaTool, OFFSITE_PREFIX, pinnedVersion, serviceSpec } from "@opscrew/iac-templates";
@@ -48,8 +49,12 @@ export const PORTAINER_VARIABLES = [
   "OPSCREW_E2E_GHCR_READ_TOKEN",
 ] as const;
 
-/** Where the off-server pass keeps the copies. */
-export type OffsiteProvider = "r2" | "hetzner";
+/**
+ * Where the off-server pass keeps the copies: a bucket OpsCrew creates on R2 or at Hetzner, the
+ * user's own S3-compatible bucket (one the test creates first in Hetzner Object Storage), or a
+ * folder on the user's own machine over SFTP (a throwaway Hetzner server the test sets up).
+ */
+export type OffsiteProvider = "r2" | "hetzner" | "s3" | "sftp";
 
 /**
  * The bucket key a pass got as `OPSCREW_STORAGE_*` (the components pass's `bucketPass`), and the
@@ -323,6 +328,118 @@ export function objectContentProblems(
   const found = leakedLabels(text, known);
   if (found.length > 0) problems.push(`${path} contains: ${found.join(", ")}`);
   return problems;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The retention of the copies on the user's own storage.
+
+/** The id OpsCrew gives a data snapshot taken at `at`: its UTC time to the second. */
+export function snapshotIdAt(at: Date): string {
+  return at
+    .toISOString()
+    .replace(/[-:]/g, "")
+    .replace(/\.\d{3}/, "");
+}
+
+/**
+ * What is wrong after the upload that deletes the copies older than `--days` (`objects` relative
+ * to `backups/`): an object of the copy `planted`, dated two days back, still there, or one of
+ * `copies` just taken (each its id and number of parts) no longer whole.
+ */
+export function retentionProblems(
+  objects: readonly string[],
+  planted: string,
+  copies: readonly { id: string; parts: number }[],
+): string[] {
+  const problems = objects
+    .filter((object) => object.startsWith(`${planted}/`))
+    .map((object) => `${OFFSITE_PREFIX}/${object}, dated two days back, is still there`);
+  for (const { id, parts } of copies) problems.push(...bucketObjectProblems(objects, id, parts));
+  return [...new Set(problems)];
+}
+
+/**
+ * The script (as root on the SFTP machine) that writes the empty file `file` dated `at`, its
+ * folder made when missing, both owned by `owner`, as the SFTP account's own uploads are.
+ */
+export function plantedFileScript(file: string, at: Date, owner: string): string {
+  if (!/^[A-Za-z0-9/._-]+$/.test(file)) throw new Error(`The path "${file}" is not plain.`);
+  const dir = posix.dirname(file);
+  return [
+    `mkdir -p ${dir}`,
+    `: > ${file}`,
+    `touch -d @${Math.floor(at.getTime() / 1000)} ${file}`,
+    `chown ${owner}:${owner} ${dir} ${file}`,
+  ].join(" && ");
+}
+
+// ---------------------------------------------------------------------------------------------
+// The user's own machine over SFTP.
+
+/**
+ * The SFTP machine's account for the copies, chrooted to its home, and the folder it writes
+ * (`--path`, as SFTP shows it inside the chroot).
+ */
+export const SFTP_MACHINE = {
+  user: "e2ebackups",
+  home: "/srv/sftp/e2ebackups",
+  path: "/backups",
+} as const;
+
+/**
+ * The script (as root) that sets up a throwaway server as the user's machine for the copies, as
+ * the guide tells the user to: the account {@link SFTP_MACHINE} chrooted to its home, SFTP only
+ * (`internal-sftp`), with `publicKey` (the key made on this computer) in its `authorized_keys`
+ * and its own folder `/backups`.
+ */
+export function sftpMachineSetup(publicKey: string): string {
+  if (!/^ssh-ed25519 [A-Za-z0-9+/=]+( [A-Za-z0-9@._-]+)?$/.test(publicKey)) {
+    throw new Error("That is not an ed25519 public key.");
+  }
+  const { user, home, path } = SFTP_MACHINE;
+  return [
+    "set -eu",
+    `id ${user} > /dev/null 2>&1 || useradd --home-dir ${home} --no-create-home --shell /usr/sbin/nologin ${user}`,
+    // The chroot must be root's; the account writes only its own folder in it.
+    `install -d -o root -g root -m 755 /srv/sftp ${home}`,
+    `install -d -o ${user} -g ${user} -m 755 ${home}${path}`,
+    `install -d -o ${user} -g ${user} -m 700 ${home}/.ssh`,
+    `printf '%s\\n' '${publicKey}' > ${home}/.ssh/authorized_keys`,
+    `chown ${user}:${user} ${home}/.ssh/authorized_keys`,
+    `chmod 600 ${home}/.ssh/authorized_keys`,
+    // `Match all` closes the block: sshd_config's own lines follow its Include.
+    "cat > /etc/ssh/sshd_config.d/50-opscrew-e2e-backups.conf <<'EOF'",
+    `Match User ${user}`,
+    "  ChrootDirectory %h",
+    "  ForceCommand internal-sftp",
+    "  PasswordAuthentication no",
+    "  AllowTcpForwarding no",
+    "  X11Forwarding no",
+    "  PermitTTY no",
+    "Match all",
+    "EOF",
+    "sshd -t",
+    "systemctl reload ssh",
+  ].join("\n");
+}
+
+/**
+ * The start of the labels the SFTP machine's addresses are masked under. The harness masks a
+ * throwaway server's as `server-*`, which the leak search takes for the app server's; the user's
+ * machine is named in the plan and in what OpsCrew prints on purpose.
+ */
+export const SFTP_MACHINE_LABEL = "sftp-machine-";
+
+/**
+ * The scrubber's `server-*` entries (right after the SFTP machine was made, only its addresses)
+ * under {@link SFTP_MACHINE_LABEL} instead, to add again.
+ */
+export function sftpMachineAddresses(
+  entries: readonly { label: string; value: string }[],
+): { label: string; value: string }[] {
+  return entries
+    .filter(({ label }) => label.startsWith("server-"))
+    .map(({ label, value }) => ({ label: `${SFTP_MACHINE_LABEL}${label.slice(7)}`, value }));
 }
 
 // ---------------------------------------------------------------------------------------------
