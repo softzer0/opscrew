@@ -1,4 +1,5 @@
 import type { FetchLike, HostingPanelAccess } from "@opscrew/contracts";
+import { readTar, type TarEntry } from "@opscrew/core";
 
 /**
  * An in-memory DirectAdmin user account answering the calls `DirectAdminPanel` makes, in the
@@ -395,16 +396,22 @@ export class FakeDirectAdmin {
       const archive = this.files.get(source);
       if (archive?.type !== "file") return opError(source, "NOT_FOUND");
       if (this.files.get(destination)?.type !== "dir") return opError(destination, "NOT_FOUND");
-      const entries = readTar(archive.content);
-      if (entries === undefined) return opError(source, "FILE_NOT_SUPPORTED");
+      let entries: TarEntry[];
+      try {
+        entries = readTar(archive.content);
+      } catch {
+        return opError(source, "FILE_NOT_SUPPORTED");
+      }
       for (const entry of entries) {
         const path = join(destination, entry.name);
         if (this.files.has(path) && body.mergeAndOverwrite !== true) {
           return opError(path, "ALREADY_EXISTS");
         }
         this.mkdir(parentOf(path));
-        if (entry.entry.type === "dir") this.mkdir(path);
-        else this.files.set(path, entry.entry);
+        if (entry.type === "dir") this.mkdir(path);
+        else if (entry.type === "link")
+          this.files.set(path, { type: "symlink", target: entry.target });
+        else this.files.set(path, { type: "file", content: entry.content, mode: entry.mode });
       }
       return new Response(null, { status: 204 });
     }
@@ -528,32 +535,4 @@ function join(dir: string, name: string): string {
 function parentOf(path: string): string {
   const slash = path.lastIndexOf("/");
   return slash === -1 ? "" : path.slice(0, slash);
-}
-
-/** A ustar archive's files, folders and links, or undefined when it isn't one. */
-function readTar(archive: Uint8Array): { name: string; entry: FakeDirectAdminEntry }[] | undefined {
-  const decoder = new TextDecoder();
-  const field = (block: Uint8Array, start: number, length: number) =>
-    decoder.decode(block.subarray(start, start + length)).replace(/\0.*$/s, "");
-  const entries: { name: string; entry: FakeDirectAdminEntry }[] = [];
-  let offset = 0;
-  while (offset + 512 <= archive.length) {
-    const block = archive.subarray(offset, offset + 512);
-    if (block.every((byte) => byte === 0)) return entries;
-    if (!field(block, 257, 6).startsWith("ustar")) return undefined;
-    const prefix = field(block, 345, 155);
-    const name = clean(`${prefix === "" ? "" : `${prefix}/`}${field(block, 0, 100)}`);
-    const mode = Number.parseInt(field(block, 100, 8).trim() || "0", 8);
-    const size = Number.parseInt(field(block, 124, 12).trim() || "0", 8);
-    const type = field(block, 156, 1);
-    const data = archive.subarray(offset + 512, offset + 512 + size);
-    if (type === "5") entries.push({ name, entry: { type: "dir" } });
-    else if (type === "2")
-      entries.push({ name, entry: { type: "symlink", target: field(block, 157, 100) } });
-    else if (type === "0" || type === "") {
-      entries.push({ name, entry: { type: "file", content: new Uint8Array(data), mode } });
-    }
-    offset += 512 + Math.ceil(size / 512) * 512;
-  }
-  return entries;
 }

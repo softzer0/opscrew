@@ -5,7 +5,7 @@
  * step (`link`); `FakeSftpHost` plays the host in tests.
  */
 
-export { checkRemotePath, isRemotePath } from "./batch";
+export { isRemotePath } from "./batch";
 export {
   FakeSftpHost,
   type FakeSftpNode,

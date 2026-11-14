@@ -113,6 +113,7 @@ const terraform = z.object({
   serverResourceType: z.string(),
   firewallResourceType: z.string(),
   connectorFirewall: z.boolean(),
+  connectorBackups: z.boolean(),
   connectorRemoval: z.boolean(),
   homeCacheFiles: z.array(
     z

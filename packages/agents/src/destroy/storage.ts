@@ -17,11 +17,16 @@ import {
   type ProviderBucket,
   providerBucket,
   requireStorageKey,
-  type StorageKey,
   storageEngineEnv,
   storageStateFile,
 } from "../provision";
-import { describeChanges, type ProjectEngine, readValidJson, refusalReason } from "../shared";
+import {
+  describeChanges,
+  type ProjectEngine,
+  readValidJson,
+  refusalReason,
+  type StorageLogin,
+} from "../shared";
 import { storageS3Client } from "../shared/s3";
 import { planHeading } from "./checks";
 import { typeNameHint } from "./common";
@@ -44,7 +49,7 @@ export interface BucketDeletion {
   summary: PlanSummary;
   bucket: ProviderBucket;
   /** The key of a Hetzner, Spaces or Contabo bucket, to check that it is gone. Never logged. */
-  key?: StorageKey;
+  key?: StorageLogin;
 }
 
 /** Where the bucket is, in words: `shop-uploads on Hetzner Object Storage (fsn1)`. */
@@ -182,7 +187,7 @@ export interface BucketDeleted {
 export async function confirmBucketGone(
   deps: PhaseDeps,
   bucket: ProviderBucket,
-  key: StorageKey,
+  key: StorageLogin,
   sleep: (ms: number) => Promise<void>,
 ): Promise<BucketStillListed | undefined> {
   const client = storageS3Client(bucket, key, { fetch: deps.fetch, now: () => deps.clock.now() });

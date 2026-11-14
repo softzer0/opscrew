@@ -1,4 +1,5 @@
 import type { FetchLike, HostingDomain } from "@opscrew/contracts";
+import { readTar, type TarEntry } from "@opscrew/core";
 
 /**
  * A fake cPanel account behind `fetch`, for tests of `CpanelPanel` and of the agents that drive
@@ -637,8 +638,12 @@ export function fakeCpanel(options: FakeCpanelOptions): FakeCpanel {
         const to = relative(need(params, "destfiles"));
         const archive = state.files.get(from);
         if (archive?.kind !== "file") return fail(missing(from).message);
-        const entries = untar(archive.content);
-        if (entries === undefined) return fail("The archive could not be read.");
+        let entries: TarEntry[];
+        try {
+          entries = readTar(archive.content);
+        } catch {
+          return fail("The archive could not be read.");
+        }
         for (const entry of entries) {
           const path = to === "" ? entry.name : `${to}/${entry.name}`;
           if (entry.type === "dir") {
@@ -792,40 +797,4 @@ function need(params: Params, name: string): string {
   if (value === undefined || value === "")
     throw new Refusal(`The “${name}” parameter is required.`);
   return value;
-}
-
-type TarEntry =
-  | { name: string; type: "file"; mode: number; content: Uint8Array }
-  | { name: string; type: "dir" }
-  | { name: string; type: "link"; target: string };
-
-/** The entries of a ustar archive (files, folders and symbolic links), or undefined. */
-function untar(bytes: Uint8Array): TarEntry[] | undefined {
-  const text = (start: number, length: number) =>
-    new TextDecoder().decode(bytes.subarray(start, start + length)).replace(/\0.*$/s, "");
-  const entries: TarEntry[] = [];
-  let offset = 0;
-  while (offset + 512 <= bytes.length) {
-    if (bytes.subarray(offset, offset + 512).every((byte) => byte === 0)) return entries;
-    if (text(offset + 257, 5) !== "ustar") return undefined;
-    const prefix = text(offset + 345, 155);
-    const name = `${prefix ? `${prefix}/` : ""}${text(offset, 100)}`
-      .replace(/^\.\//, "")
-      .replace(/\/+$/, "");
-    const size = Number.parseInt(text(offset + 124, 12).trim() || "0", 8);
-    const type = text(offset + 156, 1) || "0";
-    const body = offset + 512;
-    if (type === "0") {
-      const mode = Number.parseInt(text(offset + 100, 8).trim() || "644", 8);
-      entries.push({ name, type: "file", mode, content: bytes.slice(body, body + size) });
-    } else if (type === "5") {
-      if (name !== "" && name !== ".") entries.push({ name, type: "dir" });
-    } else if (type === "2") {
-      entries.push({ name, type: "link", target: text(offset + 157, 100) });
-    } else {
-      return undefined;
-    }
-    offset = body + Math.ceil(size / 512) * 512;
-  }
-  return entries;
 }

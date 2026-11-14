@@ -8,13 +8,8 @@ import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
-import {
-  providerBucket,
-  type StorageKey,
-  storageEngineEnv,
-  storageStateFile,
-} from "../provision/storage";
-import { type ProjectEngine, projectEngine } from "../shared";
+import { providerBucket, storageEngineEnv, storageStateFile } from "../provision/storage";
+import { type ProjectEngine, projectEngine, type StorageLogin } from "../shared";
 import {
   type AttributesByType,
   LIFECYCLE_IGNORED,
@@ -276,7 +271,7 @@ export async function storageDrift(
     engine: IacEngine;
     engineEnv: Record<string, string | undefined>;
     changedFiles: readonly string[];
-    key: () => Promise<StorageKey | undefined>;
+    key: () => Promise<StorageLogin | undefined>;
   },
 ): Promise<Pick<InfrastructureComparison, "drift" | "pending" | "notes">> {
   const { plan } = input;

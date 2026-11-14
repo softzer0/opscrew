@@ -28,10 +28,16 @@ import type { CloudRunnerHost } from "../runners/cloud";
 import type { RunnerGitHubApi } from "../runners/github";
 import type { RunnerHostServices } from "../runners/machine";
 import type { RefreshRecoveryOptions } from "../secrets";
-import type { EnvAnswer, EnvQuestion, HostAdapterApi, OwnServerConnection } from "../shared";
+import type {
+  EnvAnswer,
+  EnvQuestion,
+  HostAdapterApi,
+  OwnServerConnection,
+  StorageLogin,
+} from "../shared";
 import type { FirewallApis } from "../shared/firewalls";
 import type { ProviderBackupsApis } from "../shared/provider-backups";
-import type { StorageKey, StorageKeyQuestion } from "./storage";
+import type { StorageKeyQuestion } from "./storage";
 
 /**
  * The Cloudflare calls provisioning needs (a `CloudflareClient` or a test fake). `listAccounts`
@@ -155,7 +161,7 @@ export interface ProvisionServices {
    * Interactive question for the key of the app's bucket at a provider, asked once with the
    * console steps (CLI prompt, hidden input). Never logged.
    */
-  askStorageKey?: (question: StorageKeyQuestion) => Promise<StorageKey>;
+  askStorageKey?: (question: StorageKeyQuestion) => Promise<StorageLogin>;
   /**
    * The object storage OpsCrew orders through its provider's API for a bucket there (Contabo;
    * default: the connector's `objectStorage`).

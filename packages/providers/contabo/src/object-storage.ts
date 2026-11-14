@@ -1,6 +1,6 @@
 import type { ObjectStorageApi, ObjectStorageKey, ProviderObjectStorage } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
-import { type ContaboClient, type ContaboObjectStorage, ContaboStatusError } from "./client";
+import { type ContaboClient, type ContaboObjectStorage, unlessRefused } from "./client";
 
 /** How long a new object storage may take to become ready (15 minutes; unverified live). */
 const READY_TIMEOUT_MS = 15 * 60_000;
@@ -49,22 +49,15 @@ export function contaboObjectStorageApi(client: ContaboClient): ObjectStorageApi
     },
 
     async order(request) {
-      let ordered: ContaboObjectStorage;
-      try {
-        ordered = await client.createObjectStorage({
+      const answer = await unlessRefused(async () => ({
+        ordered: await client.createObjectStorage({
           region: request.region,
           totalPurchasedSpaceTB: request.sizeTb,
           displayName: request.displayName,
-        });
-      } catch (error) {
-        // Below 500 (429 included) Contabo ordered nothing; a 5xx may follow a taken order, so its
-        // outcome is unknown.
-        if (error instanceof ContaboStatusError && error.status < 500) {
-          return { refused: error.message };
-        }
-        throw error;
-      }
-      const ready = await client.waitForObjectStorage(ordered.objectStorageId, {
+        }),
+      }));
+      if ("refused" in answer) return answer;
+      const ready = await client.waitForObjectStorage(answer.ordered.objectStorageId, {
         timeoutMs: READY_TIMEOUT_MS,
       });
       return { ordered: storageOf(ready) };

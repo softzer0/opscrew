@@ -16,6 +16,7 @@ export * from "./policy";
 export * from "./process";
 export * from "./redact";
 export * from "./state";
+export * from "./tar";
 export * from "./text";
 export * from "./time";
 export * from "./tools/fetch";

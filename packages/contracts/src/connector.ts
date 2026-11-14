@@ -232,7 +232,7 @@ export interface ProviderObjectStorage {
   id: string;
   /** The provider's region of the storage, for example `EU`. */
   region: string;
-  /** Its S3 endpoint, `https://…`, as the provider reports it. */
+  /** Its S3 endpoint, with `https://` and no trailing slash. */
   s3Url: string;
   /** When a cancelled storage ends (`2026-12-11`); absent while it is not cancelled. */
   cancelledUntil?: string;

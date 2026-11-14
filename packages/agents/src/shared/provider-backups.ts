@@ -54,10 +54,15 @@ export interface ProviderBackupsRun {
   backups?: ProviderBackupsApis | undefined;
 }
 
+/** Whether `id` is a cloud provider whose connector turns its backups on. */
+export function connectorBackupsProvider(id: string): id is CloudProvider {
+  return isCloudProvider(id) && cloudProvider(id).terraform.connectorBackups;
+}
+
 /** A provider whose connector turns its backups on. */
 const ProviderSchema = z
   .string()
-  .refine((id) => isCloudProvider(id) && cloudProvider(id).terraform.connectorBackups === true, {
+  .refine(connectorBackupsProvider, {
     message: "not a provider whose connector turns its backups on",
   })
   .transform((id) => id as CloudProvider);
@@ -212,12 +217,12 @@ function backupsApi(run: ProviderBackupsRun, provider: CloudProvider): ProviderB
 }
 
 /** `Contabo's automated backups of server 202611001`. */
-function label({ provider, serverId }: ModuleBackup): string {
+export function label({ provider, serverId }: ModuleBackup): string {
   return `${cloudProvider(provider).name}'s automated backups of server ${serverId}`;
 }
 
 /** Where the user checks a server's backups: `the Contabo Customer Control Panel`. */
-function panel(wanted: ModuleBackup): string {
+export function panel(wanted: ModuleBackup): string {
   return cloudProvider(wanted.provider).texts.destroy.console;
 }
 

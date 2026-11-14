@@ -1,9 +1,10 @@
-import type { FetchLike, HostingPanelAccess } from "@opscrew/contracts";
+import type { HostingPanelAccess } from "@opscrew/contracts";
 import {
-  CONNECTION_HINT,
-  durationText,
+  fetchText,
+  httpsOrigin,
   maybeDoneHint,
   OpsCrewError,
+  type PanelClientOptions,
   parseAnswer,
   Redactor,
 } from "@opscrew/core";
@@ -33,8 +34,6 @@ export const PLESK_XML_API_PATH = "/enterprise/control/agent.php";
  * https://docs.plesk.com/en-US/obsidian/api-rpc/about-xml-api/reference/managing-secret-keys/creating-secret-keys.37131/
  */
 const SECRET_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-const REQUEST_TIMEOUT_MS = 60_000;
 
 /**
  * Error codes of the XML API.
@@ -82,14 +81,6 @@ const SystemSchema = z.looseObject({
   errtext: z.string().optional(),
 });
 
-/** Options of {@link pleskClient}; every side effect is injectable. */
-export interface PleskClientOptions {
-  fetch?: FetchLike;
-  /** Shared redactor; a private one is used when omitted. The token is always registered. */
-  redactor?: Redactor;
-  timeoutMs?: number;
-}
-
 /** One request: a packet with one operation of one operator. */
 export interface PleskRequest {
   /** `site`, `subdomain`, `database`, `webspace`. */
@@ -117,19 +108,12 @@ export interface PleskClient {
 /** A client of the panel at `access.url` (`https://<host>:8443`), logged in as `access.user`. */
 export function pleskClient(
   access: HostingPanelAccess,
-  options: PleskClientOptions = {},
+  options: PanelClientOptions = {},
 ): PleskClient {
   const redactor = options.redactor ?? new Redactor();
   redactor.addLiteral(access.token, "OPSCREW_HOSTING_TOKEN");
-  const url = new URL(access.url);
-  if (url.protocol !== "https:") {
-    throw new OpsCrewError("INVALID_INPUT", "The Plesk address must start with https://.", {
-      hint: "Set OPSCREW_HOSTING_URL to https://<your panel's host>:8443.",
-    });
-  }
-  const endpoint = `${url.origin}${PLESK_XML_API_PATH}`;
-  const fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
-  const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
+  const origin = httpsOrigin(access.url, "https://panel.example.com:8443");
+  const endpoint = `${origin}${PLESK_XML_API_PATH}`;
   const auth: Record<string, string> = SECRET_KEY.test(access.token)
     ? { KEY: access.token }
     : { HTTP_AUTH_LOGIN: access.user, HTTP_AUTH_PASSWD: access.token };
@@ -154,35 +138,20 @@ export function pleskClient(
     async call(request) {
       const { operator, operation, what, write } = request;
       const packet = buildXml({ packet: { [operator]: { [operation]: request.body } } });
-      const signal = AbortSignal.timeout(timeoutMs);
-      let text: string;
-      let status: number;
-      try {
-        const response = await fetch(endpoint, {
-          method: "POST",
-          headers: { "Content-Type": "text/xml", ...auth },
-          body: packet,
-          signal,
-        });
-        status = response.status;
-        text = await response.text();
-      } catch {
-        throw error(
-          "PROVIDER_ERROR",
-          signal.aborted
-            ? `Plesk did not answer within ${durationText(timeoutMs)} when trying to ${what}.`
-            : `Could not reach Plesk at ${url.host} to ${what}.`,
-          write ? maybeDoneHint("Plesk") : CONNECTION_HINT,
-        );
-      }
-      const json = status >= 200 && status < 300 ? parseXml(text) : undefined;
+      const { status, ok, text } = await fetchText(
+        options.fetch,
+        endpoint,
+        { method: "POST", headers: { "Content-Type": "text/xml", ...auth }, body: packet },
+        { service: "Plesk", what, write, timeoutMs: options.timeoutMs },
+      );
+      const json = ok ? parseXml(text) : undefined;
       if (json === undefined) {
         throw error(
           "PROVIDER_ERROR",
           `Plesk answered HTTP ${status} without a readable packet when trying to ${what}.`,
           write
             ? maybeDoneHint("Plesk")
-            : `Check that ${url.host} is a Plesk panel and that it is running, then try again.`,
+            : `Check that ${new URL(origin).host} is a Plesk panel and that it is running, then try again.`,
         );
       }
       const packetSchema = z.looseObject({

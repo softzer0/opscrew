@@ -1,4 +1,5 @@
 import type { Currency, Money } from "@opscrew/contracts";
+import { OpsCrewError } from "./errors";
 
 /** Joins items as plain English: `a`, `a and b`, `a, b and c` (`""` for none). */
 export function listText(items: readonly string[]): string {
@@ -23,6 +24,57 @@ export function plural(count: number, word: string): string {
 /** A host or domain name for comparison: trimmed, lower case, without a trailing dot. */
 export function normalizeHostName(name: string): string {
   return name.trim().toLowerCase().replace(/\.$/, "");
+}
+
+const HOST_NAME =
+  /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
+
+/**
+ * `name` normalized ({@link normalizeHostName}) when it is a hostname of two labels or more
+ * (`app.example.com`).
+ * @throws OpsCrewError `INVALID_INPUT` when it isn't one.
+ */
+export function checkHostName(name: string): string {
+  const host = normalizeHostName(name);
+  if (!HOST_NAME.test(host)) {
+    throw new OpsCrewError("INVALID_INPUT", `"${name}" isn't a hostname.`, {
+      hint: "Use a name such as app.example.com.",
+    });
+  }
+  return host;
+}
+
+/** The longest of `domains` that `name` sits under (compared normalized), as `domains` has it. */
+export function parentDomain(name: string, domains: readonly string[]): string | undefined {
+  const host = normalizeHostName(name);
+  return domains
+    .filter((domain) => host.endsWith(`.${normalizeHostName(domain)}`))
+    .sort((a, b) => b.length - a.length)[0];
+}
+
+/** Whether a certificate for `names` covers `host`: one of them, or a wildcard of one label. */
+export function certificateCoversHost(host: string, names: readonly string[]): boolean {
+  const wanted = normalizeHostName(host);
+  return names.some((raw) => {
+    const name = normalizeHostName(raw);
+    if (name === wanted) return true;
+    if (!name.startsWith("*.")) return false;
+    const suffix = name.slice(1);
+    return wanted.endsWith(suffix) && !wanted.slice(0, -suffix.length).includes(".");
+  });
+}
+
+/**
+ * A file mode as four octal digits, `0600`.
+ * @throws OpsCrewError `INVALID_INPUT` for anything but a whole number from 0 to 0o777.
+ */
+export function octalMode(mode: number): string {
+  if (!Number.isInteger(mode) || mode < 0 || mode > 0o777) {
+    throw new OpsCrewError("INVALID_INPUT", `${mode} isn't a file mode.`, {
+      hint: "This is a bug in OpsCrew; please report it.",
+    });
+  }
+  return mode.toString(8).padStart(4, "0");
 }
 
 /**

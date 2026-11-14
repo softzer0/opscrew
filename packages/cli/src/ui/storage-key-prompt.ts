@@ -1,4 +1,4 @@
-import type { StorageKey, StorageKeyQuestion } from "@opscrew/agents";
+import type { StorageKeyQuestion, StorageLogin } from "@opscrew/agents";
 import { OpsCrewError } from "@opscrew/core";
 import type { UiPrompts } from "./prompts";
 
@@ -16,7 +16,7 @@ function cancelledKey(): OpsCrewError {
 export function createStorageKeyPrompt(
   prompts: UiPrompts,
   print: (text: string) => void,
-): (question: StorageKeyQuestion) => Promise<StorageKey> {
+): (question: StorageKeyQuestion) => Promise<StorageLogin> {
   return async (question) => {
     print(
       [

@@ -11,10 +11,9 @@ import {
   NEW_STORAGE_KEY_VARS,
   previousBucketKeyFile,
   STORAGE_KEY_VARS,
-  type StorageKey,
   storageKeyFile,
 } from "../provision/storage";
-import { readServerAddresses } from "../shared";
+import { readServerAddresses, type StorageLogin } from "../shared";
 import {
   cliAnswer,
   type MoveHarness,
@@ -33,7 +32,7 @@ import { finishRetarget } from "./finish";
 import type { RetargetResult, RetargetSummary } from "./types";
 
 const BUCKET = "shop-uploads";
-const key = (name: string): StorageKey => ({
+const key = (name: string): StorageLogin => ({
   accessKeyId: fakeSecret("aws-access-key-id", name),
   secretAccessKey: fakeSecret("aws-secret-access-key", name),
 });

@@ -1,5 +1,8 @@
-/** Reading the ustar archives OpsCrew makes (`tarStream`), which SFTP can't unpack on the host. */
-import { OpsCrewError } from "@opscrew/core";
+/**
+ * Reading the ustar archives OpsCrew makes (`tarStream`): SFTP can't unpack them on the host, and
+ * the panels' fakes unpack them as the panel would.
+ */
+import { OpsCrewError } from "./errors";
 
 /** An archive's entry: a folder, a file with its content, or a symbolic link with its target. */
 export type TarEntry =

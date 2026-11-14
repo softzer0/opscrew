@@ -74,18 +74,24 @@ export function pleskPanelStep(
     }
     return value;
   };
+  return { operation, ...stepOf(operation, need) };
+}
+
+/** {@link pleskPanelStep} without its operation. */
+function stepOf(
+  operation: HostingOperation,
+  need: (key: string) => string,
+): Omit<PanelStep, "operation"> {
   switch (operation) {
     // https://docs.plesk.com/en-US/obsidian/customer-guide/scheduling-tasks.65207/
     case "addCron":
       return {
-        operation,
         what: `Add a task: choose "Run a command", paste this command, set Run to "Cron style" with ${need("schedule")}, and click OK`,
         where: "Websites & Domains → Scheduled Tasks → Add Task",
         value: need("command"),
       };
     case "removeCron":
       return {
-        operation,
         what: "Remove the scheduled task that runs this command",
         where: "Websites & Domains → Scheduled Tasks",
         value: need("command"),
@@ -94,21 +100,18 @@ export function pleskPanelStep(
     // https://docs.plesk.com/en-US/obsidian/customer-guide/websites-and-domains/website-content/changing-file-and-directory-access-permissions-in-file-manager.70738/
     case "writeFile":
       return {
-        operation,
         what: `Upload this file (Upload File), then set its permissions to ${need("mode")} (Change Permissions)`,
         where: FILES,
         value: need("path"),
       };
     case "uploadTar":
       return {
-        operation,
         what: `Upload ${need("file")} into this folder (Upload File), select it and click Extract Files with "Replace existing files" selected, then remove ${need("file")}`,
         where: FILES,
         value: need("folder"),
       };
     case "remove":
       return {
-        operation,
         what: "Remove this file or folder with everything in it",
         where: FILES,
         value: need("path"),
@@ -116,20 +119,17 @@ export function pleskPanelStep(
     // https://docs.plesk.com/en-US/obsidian/customer-guide/websites-and-domains/securing-connections-with-ssltls-certificates/securing-connections-with-the-ssl-it%21-extension.65160/
     case "requestCertificate":
       return {
-        operation,
         what: 'Under "More options", click Install, then Get it free (a certificate from Let\'s Encrypt)',
         where: `Websites & Domains → ${need("hostname")} → SSL/TLS Certificates`,
       };
     case "removeCertificate":
       return {
-        operation,
         what: "Click Unassign Certificate, then OK",
         where: `Websites & Domains → ${need("hostname")} → SSL/TLS Certificates`,
       };
     // https://docs.plesk.com/en-US/obsidian/customer-guide/websites-and-domains/hosting-settings/web-scripting-settings/php-settings.70742/
     case "setPhpVersion":
       return {
-        operation,
         what: 'Select "PHP support" and this PHP version, then click OK',
         where: `Websites & Domains → ${need("hostname")} → PHP`,
         value: need("version"),

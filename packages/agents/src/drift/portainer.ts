@@ -48,12 +48,7 @@ import {
   readRequirements,
   withCloudflareZone,
 } from "../provision/render";
-import {
-  providerBucket,
-  requireStorageKey,
-  type StorageKey,
-  storageLogin,
-} from "../provision/storage";
+import { providerBucket, requireStorageKey, storageLogin } from "../provision/storage";
 import {
   type AppEnvironment,
   adapterBlocked,
@@ -189,7 +184,10 @@ async function readAppValues(
  * root needs none, so without one its key is just unknown here; a Hetzner or Spaces bucket's root
  * needs it, so without one drift stops with the steps, as on a server.
  */
-async function knownStorageKey(deps: PhaseDeps, plan: DeployPlan): Promise<StorageKey | undefined> {
+async function knownStorageKey(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+): Promise<StorageLogin | undefined> {
   const bucket = providerBucket(plan);
   if (bucket === undefined) return undefined;
   return requireStorageKey(deps, plan, {}, { command: "opscrew drift", asks: false }).catch(
@@ -208,7 +206,7 @@ async function knownStorageKey(deps: PhaseDeps, plan: DeployPlan): Promise<Stora
  */
 function knownStorageLogin(
   plan: DeployPlan,
-  key: StorageKey | undefined,
+  key: StorageLogin | undefined,
   account: CloudflareSetup | undefined,
 ): StorageLogin | undefined {
   if (providerBucket(plan) === undefined) return undefined;

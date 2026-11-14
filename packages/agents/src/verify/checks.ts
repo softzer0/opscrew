@@ -1,7 +1,7 @@
 import { BlockList, isIP, isIPv6, type LookupFunction } from "node:net";
 import { tunnelProject } from "@opscrew/connector-ssh-host";
 import type { CheckResult, FetchLike } from "@opscrew/contracts";
-import { normalizeHostName, upperFirst } from "@opscrew/core";
+import { certificateCoversHost, normalizeHostName, upperFirst } from "@opscrew/core";
 import { runtimeDir, tunnelMode } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { CERTIFICATE_WARN_DAYS, daysLeft, type TcpConnect } from "@opscrew/secops";
@@ -297,18 +297,6 @@ export function rangeList(ranges: CloudflareRanges): BlockList {
     }
   }
   return list;
-}
-
-/** Certificate name matching with single-label wildcards (`*.example.com`). */
-export function certificateCoversHost(host: string, names: readonly string[]): boolean {
-  const wanted = normalizeHostName(host);
-  return names.some((raw) => {
-    const name = normalizeHostName(raw);
-    if (name === wanted) return true;
-    if (!name.startsWith("*.")) return false;
-    const suffix = name.slice(1);
-    return wanted.endsWith(suffix) && !wanted.slice(0, -suffix.length).includes(".");
-  });
 }
 
 /**

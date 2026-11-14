@@ -168,9 +168,9 @@ export interface ProviderTerraform {
   /**
    * Whether the module only describes the automated backups it wants and the connector turns them
    * on (`backups`): a `terraform_data.backup` whose `input` is the module's `wanted_backup` output
-   * ({@link WantedBackupOutput}). Absent means false.
+   * ({@link WantedBackupOutput}).
    */
-  connectorBackups?: boolean;
+  connectorBackups: boolean;
   /**
    * Files the provider caches its login in, relative to the user's home folder. The engine
    * removes them before and after every command (ADR 0029, D9). Empty for most providers.

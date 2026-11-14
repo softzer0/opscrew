@@ -15,7 +15,7 @@ import type {
   HostingPanelAccess,
   HostingPanelKind,
 } from "@opscrew/contracts";
-import { NodeCommandRunner } from "@opscrew/core";
+import { NodeCommandRunner, readTar } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { FakeRollbackGitHub } from "../../rollback/__fixtures__/versions";
@@ -105,23 +105,6 @@ export function hostingTestPlan(o: HostingPlanOptions = {}): DeployPlan {
   });
 }
 
-/** The entries of a ustar archive: files with their text and links with their target. */
-function untar(bytes: Uint8Array): { name: string; type: string; text: string }[] {
-  const field = (offset: number, length: number) =>
-    new TextDecoder().decode(bytes.subarray(offset, offset + length)).replace(/\0.*$/s, "");
-  const entries = [];
-  for (let offset = 0; offset + 512 <= bytes.length; ) {
-    const name = field(offset, 100);
-    if (name === "") break;
-    const size = Number.parseInt(field(offset + 124, 12) || "0", 8);
-    const type = field(offset + 156, 1) || "0";
-    const body = bytes.subarray(offset + 512, offset + 512 + size);
-    entries.push({ name: name.replace(/\/$/, ""), type, text: new TextDecoder().decode(body) });
-    offset += 512 + Math.ceil(size / 512) * 512;
-  }
-  return entries;
-}
-
 /** An account's files in memory: what stands in for SFTP on Plesk. */
 export class MemoryFiles implements HostingFiles {
   readonly files = new Map<string, string>();
@@ -129,8 +112,11 @@ export class MemoryFiles implements HostingFiles {
     this.files.set(path, new TextDecoder().decode(content));
   }
   async uploadTar(folder: string, tar: Uint8Array) {
-    for (const entry of untar(tar)) {
-      if (entry.type === "0") this.files.set(folder === "." ? entry.name : `${folder}/${entry.name}`, entry.text);
+    for (const entry of readTar(tar)) {
+      if (entry.type === "file") {
+        const path = folder === "." ? entry.name : `${folder}/${entry.name}`;
+        this.files.set(path, new TextDecoder().decode(entry.content));
+      }
     }
   }
   async readFile(path: string) {

@@ -467,6 +467,17 @@ export interface StorageLogin {
 }
 
 /**
+ * The S3 endpoint of a plan's bucket: its provider's for its region, else the one `login` brings
+ * (R2's, or Contabo's storage's s3Url); undefined when neither is known.
+ */
+export function storageEndpoint(
+  bucket: { provider: string; region: string },
+  login: Pick<StorageLogin, "endpoint"> | undefined,
+): string | undefined {
+  return STORAGE_ENDPOINTS[bucket.provider]?.(bucket.region) ?? login?.endpoint;
+}
+
+/**
  * The value of a derived object storage variable from the plan's bucket and the user's `login`,
  * or undefined: Garage's keys come from its catalog entry, and without `login` a provider's keys
  * and R2's endpoint are not known.
@@ -487,7 +498,7 @@ function storageValue(
     case "path-style":
       return "true";
     case "endpoint":
-      return STORAGE_ENDPOINTS[storage.provider]?.(storage.region) ?? login?.endpoint;
+      return storageEndpoint(storage, login);
     case "key":
       return name === "AWS_ACCESS_KEY_ID" ? login?.accessKeyId : login?.secretAccessKey;
     default:

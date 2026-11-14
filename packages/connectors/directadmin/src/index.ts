@@ -4,13 +4,6 @@
  */
 
 export {
-  DIRECTADMIN_REQUEST_TIMEOUT_MS,
-  DirectAdminApiError,
-  DirectAdminClient,
-  type DirectAdminClientDeps,
-  LOGIN_KEY_HINT,
-} from "./client";
-export {
   FakeDirectAdmin,
   type FakeDirectAdminCall,
   type FakeDirectAdminCertificate,
@@ -19,4 +12,3 @@ export {
   type FakeDirectAdminOptions,
 } from "./fake";
 export { DIRECTADMIN_OPERATIONS, DirectAdminPanel } from "./panel";
-export { directAdminPanelStep } from "./steps";

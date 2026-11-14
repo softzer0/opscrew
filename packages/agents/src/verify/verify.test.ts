@@ -28,7 +28,6 @@ import {
   type TestPlanOptions,
   testPlan,
 } from "./__fixtures__/plan";
-import { certificateCoversHost } from "./checks";
 import type { DnsResolver, TlsCertificateInfo, TlsConnect } from "./net";
 import { runVerify } from "./run";
 
@@ -792,15 +791,5 @@ describe("runVerify", () => {
       code: "PHASE_PRECONDITION",
     });
     expect((await deps.state.read()).phases.verify?.status).toBe("failed");
-  });
-});
-
-describe("certificateCoversHost", () => {
-  it("matches exact names and single-label wildcards", () => {
-    expect(certificateCoversHost("shop.example.com", ["SHOP.example.com."])).toBe(true);
-    expect(certificateCoversHost("shop.example.com", ["*.example.com"])).toBe(true);
-    expect(certificateCoversHost("a.shop.example.com", ["*.example.com"])).toBe(false);
-    expect(certificateCoversHost("example.com", ["*.example.com"])).toBe(false);
-    expect(certificateCoversHost("shop.example.com", ["example.com"])).toBe(false);
   });
 });

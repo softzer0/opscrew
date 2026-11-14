@@ -1,6 +1,7 @@
 import type { FetchLike } from "@opscrew/contracts";
 import {
   CONNECTION_HINT,
+  changedApiHint,
   durationText,
   type JsonClient,
   jsonClient,
@@ -515,7 +516,7 @@ export class HetznerClient {
         return new OpsCrewError(
           "PROVIDER_ERROR",
           `Hetzner returned an unexpected response for ${path}: ${failure.issues}`,
-          { hint: "The Hetzner API may have changed; please report this to OpsCrew." },
+          { hint: changedApiHint("Hetzner") },
         );
       case "status":
         return statusError(failure.response, path);

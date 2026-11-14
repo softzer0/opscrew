@@ -1,5 +1,5 @@
 import type { ProviderBackupsApi } from "@opscrew/contracts";
-import { type ContaboClient, ContaboStatusError } from "./client";
+import { type ContaboClient, unlessRefused } from "./client";
 import { instanceId } from "./servers";
 
 /**
@@ -16,17 +16,10 @@ export function contaboBackupsApi(client: ContaboClient): ProviderBackupsApi {
   return {
     async turnOn(serverId: string): Promise<{ refused: string } | undefined> {
       const id = instanceId(serverId);
-      try {
+      return unlessRefused(async () => {
         await client.upgradeWithBackup(id);
-      } catch (error) {
-        // Below 500 (429 included) Contabo turned nothing on; a 5xx may follow a taken order, so
-        // its outcome is unknown.
-        if (error instanceof ContaboStatusError && error.status < 500) {
-          return { refused: error.message };
-        }
-        throw error;
-      }
-      return undefined;
+        return undefined;
+      });
     },
   };
 }

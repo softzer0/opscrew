@@ -9,9 +9,17 @@ import type {
   HostingPanelAccess,
   PanelStep,
 } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import {
+  certificateCoversHost,
+  changedApiHint,
+  checkHostName,
+  OpsCrewError,
+  octalMode,
+  type PanelClientOptions,
+  parentDomain,
+} from "@opscrew/core";
 import { z } from "zod";
-import { DirectAdminApiError, DirectAdminClient, type DirectAdminClientDeps } from "./client";
+import { DirectAdminApiError, DirectAdminClient } from "./client";
 import { directAdminPanelStep } from "./steps";
 
 /*
@@ -100,8 +108,8 @@ export class DirectAdminPanel implements HostingPanel {
   readonly operations = DIRECTADMIN_OPERATIONS;
   private readonly client: DirectAdminClient;
 
-  constructor(access: HostingPanelAccess, deps: DirectAdminClientDeps = {}) {
-    this.client = new DirectAdminClient(access, deps);
+  constructor(access: HostingPanelAccess, options: PanelClientOptions = {}) {
+    this.client = new DirectAdminClient(access, options);
   }
 
   panelStep(operation: HostingOperation, details: Readonly<Record<string, string>>): PanelStep {
@@ -166,7 +174,7 @@ export class DirectAdminPanel implements HostingPanel {
    * (https://docs.directadmin.com/changelog/version-1.647.html); the one that exists is answered.
    */
   async documentRoot(hostname: string): Promise<string | undefined> {
-    const name = hostnameOf(hostname);
+    const name = checkHostName(hostname);
     const config = await this.userConfig();
     if (config.domains.includes(name)) return domainRoot(name);
     const parent = parentDomain(name, config.domains);
@@ -191,7 +199,7 @@ export class DirectAdminPanel implements HostingPanel {
    * DirectAdmin made for it: its API can't choose one (`documentRoots: "panel"`).
    */
   async addHostname(hostname: string, documentRoot?: string): Promise<string> {
-    const name = hostnameOf(hostname);
+    const name = checkHostName(hostname);
     if (documentRoot !== undefined) {
       throw new OpsCrewError(
         "INVALID_INPUT",
@@ -236,7 +244,7 @@ export class DirectAdminPanel implements HostingPanel {
    * hold a link into the releases; OpsCrew removes what it put there with {@link remove}.
    */
   async removeHostname(hostname: string): Promise<void> {
-    const name = hostnameOf(hostname);
+    const name = checkHostName(hostname);
     const config = await this.userConfig();
     if (config.domains.includes(name)) {
       throw new OpsCrewError(
@@ -330,7 +338,7 @@ export class DirectAdminPanel implements HostingPanel {
         throw new OpsCrewError(
           "PROVIDER_ERROR",
           `DirectAdmin listed the cron job ${key} in a form OpsCrew doesn't know.`,
-          { hint: "The DirectAdmin API may have changed; please report this to OpsCrew." },
+          { hint: changedApiHint("DirectAdmin") },
         );
       }
       jobs.push({ key, schedule: fields.slice(0, 5).join(" "), command });
@@ -409,18 +417,10 @@ export class DirectAdminPanel implements HostingPanel {
    */
   async writeFile(path: string, content: Uint8Array, mode: number): Promise<void> {
     checkPath(path);
-    if (!Number.isInteger(mode) || mode < 0 || mode > 0o777) {
-      throw new OpsCrewError("INVALID_INPUT", `${mode} is not a file mode.`, {
-        hint: "This is a bug in OpsCrew; please report it.",
-      });
-    }
+    const perm = octalMode(mode);
     const { dir, name } = splitPath(path);
     const temporary = `.${name}.opscrew-${randomBytes(6).toString("hex")}.tmp`;
-    await this.client.upload(
-      `upload ${path}`,
-      { dir, name: temporary, perm: `0${mode.toString(8)}` },
-      content,
-    );
+    await this.client.upload(`upload ${path}`, { dir, name: temporary, perm }, content);
     try {
       await this.move(joinPath(dir, temporary), path, `put ${path} in place`);
     } catch (error) {
@@ -512,7 +512,7 @@ export class DirectAdminPanel implements HostingPanel {
    * name; `names` are the certificate's DNS names.
    */
   async certificate(hostname: string): Promise<HostingCertificate> {
-    const name = hostnameOf(hostname);
+    const name = checkHostName(hostname);
     const domain = await this.owningDomain(name);
     const list = await this.client.json({
       what: `read the certificates of ${domain}`,
@@ -521,7 +521,7 @@ export class DirectAdminPanel implements HostingPanel {
       schema: certsSchema,
     });
     const covering = list.certs.filter((cert) =>
-      cert.certificate?.dnsNames.some((dns) => covers(dns, name)),
+      certificateCoversHost(name, cert.certificate?.dnsNames ?? []),
     );
     const valid = covering
       .filter((cert) => cert.error === "")
@@ -560,7 +560,7 @@ export class DirectAdminPanel implements HostingPanel {
    * answers when done. One already running counts as requested.
    */
   async requestCertificate(hostname: string): Promise<void> {
-    const name = hostnameOf(hostname);
+    const name = checkHostName(hostname);
     const domain = await this.owningDomain(name);
     try {
       await this.client.json({
@@ -709,23 +709,6 @@ export class DirectAdminPanel implements HostingPanel {
   }
 }
 
-function hostnameOf(hostname: string): string {
-  const name = hostname.trim().toLowerCase().replace(/\.$/, "");
-  if (!/^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9-]{2,63}$/.test(name)) {
-    throw new OpsCrewError("INVALID_INPUT", `"${hostname}" is not a hostname.`, {
-      hint: "Use a name such as app.example.com.",
-    });
-  }
-  return name;
-}
-
-/** The longest of `domains` that `name` is a subdomain of. */
-function parentDomain(name: string, domains: readonly string[]): string | undefined {
-  return domains
-    .filter((domain) => name.endsWith(`.${domain}`))
-    .sort((a, b) => b.length - a.length)[0];
-}
-
 function domainRoot(domain: string): string {
   return `domains/${domain}/public_html`;
 }
@@ -736,16 +719,6 @@ function subdomainRoots(name: string, parent: string): [string, string] {
     `domains/${name}/public_html`,
     `${domainRoot(parent)}/${name.slice(0, -(parent.length + 1))}`,
   ];
-}
-
-/** Whether a certificate's DNS name (maybe `*.domain`) covers `name`. */
-function covers(dns: string, name: string): boolean {
-  const pattern = dns.toLowerCase();
-  if (pattern.startsWith("*.")) {
-    const rest = pattern.slice(2);
-    return name.endsWith(`.${rest}`) && !name.slice(0, -(rest.length + 1)).includes(".");
-  }
-  return pattern === name;
 }
 
 /** Refuses a path that is empty, absolute, the home folder itself or climbs out with `..`. */

@@ -44,6 +44,7 @@ import {
   type StorageLogin,
   storageStateFile,
 } from "../shared";
+import { credentialsMissing } from "../shared/errors";
 import { readRecord, writeRecord } from "../shared/records";
 import { storageS3Client } from "../shared/s3";
 import type { CloudflareSetup, GitHubSetup } from "./credentials";
@@ -54,14 +55,6 @@ import type { ProvisionServices } from "./types";
 export { backupsStateFile, storageStateFile } from "../shared";
 
 export { type BucketProvider, type ProviderBucket, providerBucket };
-
-/**
- * The key for the bucket: an access key ID and its secret, and for a bucket in Contabo's storage
- * the storage's S3 endpoint, which comes with its key. Never logged.
- */
-export type StorageKey = Pick<StorageLogin, "accessKeyId" | "secretAccessKey"> & {
-  endpoint?: string;
-};
 
 /** What `askStorageKey` asks with: the provider in words, the bucket and the console steps. */
 export interface StorageKeyQuestion {
@@ -163,7 +156,7 @@ function keyHint(
 }
 
 /** The key the variables `vars` hold, or undefined when neither is set. */
-function keyFromEnv(env: PhaseDeps["env"], vars: KeyVars): StorageKey | undefined {
+function keyFromEnv(env: PhaseDeps["env"], vars: KeyVars): StorageLogin | undefined {
   const accessKeyId = env[vars.accessKeyId]?.trim() ?? "";
   const secretAccessKey = env[vars.secretAccessKey]?.trim() ?? "";
   if (accessKeyId === "" && secretAccessKey === "") return undefined;
@@ -177,7 +170,7 @@ function keyFromEnv(env: PhaseDeps["env"], vars: KeyVars): StorageKey | undefine
 }
 
 /** `key` when both parts look like a key; never says what they hold. */
-function checkedKey(key: StorageKey, what: string): StorageKey {
+function checkedKey(key: StorageLogin, what: string): StorageLogin {
   if (KEY_PART.test(key.accessKeyId) && KEY_PART.test(key.secretAccessKey)) return key;
   throw new OpsCrewError(
     "INVALID_INPUT",
@@ -231,7 +224,7 @@ async function keepKeys(deps: Pick<PhaseDeps, "paths">, keys: readonly StoredKey
 async function storedKey(
   deps: PhaseDeps,
   bucket: UserKeyedBucket,
-): Promise<StorageKey | undefined> {
+): Promise<StorageLogin | undefined> {
   const kept = (await keptKeys(deps)).find((key) => sameBucket(key, bucket));
   if (kept === undefined) return undefined;
   return { accessKeyId: kept.accessKeyId, secretAccessKey: kept.secretAccessKey };
@@ -267,7 +260,7 @@ export async function requireStorageKey(
   plan: DeployPlan,
   services: Pick<ProvisionServices, "askStorageKey" | "objectStorage">,
   options: { command: string; already?: string; asks?: boolean; bucket?: ProviderBucket },
-): Promise<StorageKey> {
+): Promise<StorageLogin> {
   const bucket = options.bucket ?? providerBucket(plan);
   if (bucket === undefined) throw new Error("The plan has no bucket at a provider.");
   if (bucket.provider === "contabo") return orderedStorageKey(deps, bucket, services, options);
@@ -296,7 +289,7 @@ export async function requireOffsiteKey(
   plan: DeployPlan,
   services: Pick<ProvisionServices, "askStorageKey">,
   options: { command: string; already?: string },
-): Promise<StorageKey> {
+): Promise<StorageLogin> {
   const offsite = snapshotOffsiteOf(plan);
   if (offsite === undefined) throw new Error("The plan has no off-server copy.");
   return bucketKey(deps, services, options, {
@@ -316,7 +309,7 @@ async function bucketKey(
   services: Pick<ProvisionServices, "askStorageKey">,
   options: { command: string; already?: string; asks?: boolean },
   what: { bucket: UserKeyedBucket; vars: KeyVars; noun: string; keyName: string },
-): Promise<StorageKey> {
+): Promise<StorageLogin> {
   const { bucket, vars, noun } = what;
   const name = STORAGE_NAMES[bucket.provider];
   let key = keyFromEnv(deps.env, vars) ?? (await storedKey(deps, bucket));
@@ -390,14 +383,17 @@ async function readOrderedStorage(
   );
 }
 
-async function writeOrderedStorage(deps: PhaseDeps, record: Omit<OrderedStorageRecord, "at">) {
+async function writeOrderedStorage(
+  deps: PhaseDeps,
+  record: Omit<OrderedStorageRecord, "provider" | "at">,
+) {
   const at = deps.clock.now().toISOString();
-  await writeRecord(orderedStorageFile(deps.paths), { ...record, at });
+  await writeRecord(orderedStorageFile(deps.paths), { provider: "contabo", ...record, at });
 }
 
 /**
- * The object storage API of the bucket's provider: the run's (tests), else its connector's.
- * @throws OpsCrewError `CREDENTIALS_MISSING` when the provider's credentials are not set.
+ * Contabo's object storage API: the run's (tests), else its connector's.
+ * @throws OpsCrewError `CREDENTIALS_MISSING` when Contabo's credentials are not set.
  */
 function orderedStorageApi(
   deps: Pick<PhaseDeps, "env" | "fetch" | "redactor" | "version">,
@@ -405,12 +401,7 @@ function orderedStorageApi(
 ): ObjectStorageApi {
   const api = services.objectStorage ?? vpsConnector("contabo", deps).objectStorage;
   if (api !== undefined) return api;
-  const { credentials } = vpsConnector("contabo", deps);
-  throw new OpsCrewError(
-    "CREDENTIALS_MISSING",
-    `The app's bucket is in Contabo Object Storage, which OpsCrew reaches through Contabo's API, and its credentials (${credentials.envVars.join(", ")}) are not set.`,
-    { hint: "Set them, then run the command again." },
-  );
+  throw credentialsMissing("contabo");
 }
 
 /** Where the bucket's storage is, in words: `Contabo Object Storage in EU`. */
@@ -454,11 +445,7 @@ async function knownStorage(
     );
   }
   if (mine?.storageId !== found.id) {
-    await writeOrderedStorage(deps, {
-      provider: "contabo",
-      region: bucket.region,
-      storageId: found.id,
-    });
+    await writeOrderedStorage(deps, { region: bucket.region, storageId: found.id });
     deps.reporter.info(`The app's bucket goes into the ${storageWords(bucket)} (${found.id}).`);
   }
   return found;
@@ -472,7 +459,7 @@ async function storageKeyOf(
   deps: PhaseDeps,
   api: ObjectStorageApi,
   storage: ProviderObjectStorage,
-): Promise<StorageKey> {
+): Promise<StorageLogin> {
   const key = await api.key(storage.id);
   deps.redactor.addLiteral(key.accessKeyId, "storage-key");
   deps.redactor.addLiteral(key.secretAccessKey, "storage-key");
@@ -495,7 +482,7 @@ export async function orderedStorageKey(
   bucket: Bucket,
   services: Pick<ProvisionServices, "objectStorage">,
   options: { command: string; already?: string },
-): Promise<StorageKey> {
+): Promise<StorageLogin> {
   const api = orderedStorageApi(deps, services);
   const storage = await knownStorage(deps, bucket, api, options.command);
   if (storage === undefined) {
@@ -552,7 +539,7 @@ function orderPlanText(plan: StorageOrderPlan, hash: string): string[] {
 
 /** What {@link prepareOrderedStorage} found or did: the key (with the endpoint), or the plan. */
 export type OrderedStorage =
-  | { key: StorageKey }
+  | { key: StorageLogin }
   | {
       /** The order plan's hash, for `--approve`: nothing was ordered. */
       orderPlanHash: string;
@@ -624,7 +611,7 @@ export async function prepareOrderedStorage(
     );
   }
   await deps.approvals.assertApprovedPlan(hash);
-  await writeOrderedStorage(deps, { provider: "contabo", region: bucket.region });
+  await writeOrderedStorage(deps, { region: bucket.region });
   deps.reporter.step(`Ordering ${storageWords(bucket)} (Contabo makes it ready in a few minutes)`);
   const answer = await api.order({
     region: order.region,
@@ -640,11 +627,7 @@ export async function prepareOrderedStorage(
     );
   }
   const storage = answer.ordered;
-  await writeOrderedStorage(deps, {
-    provider: "contabo",
-    region: bucket.region,
-    storageId: storage.id,
-  });
+  await writeOrderedStorage(deps, { region: bucket.region, storageId: storage.id });
   await deps.audit.append({
     kind: "provider-call",
     actor: "opscrew",
@@ -689,7 +672,7 @@ export function requireR2Cloudflare(plan: DeployPlan, cloudflare: CloudflareSetu
  */
 export function storageLogin(
   plan: DeployPlan,
-  key: StorageKey,
+  key: StorageLogin,
   cloudflare: Pick<CloudflareSetup, "accountId"> | undefined,
 ): StorageLogin {
   if (providerBucket(plan)?.provider !== "r2" || cloudflare === undefined) return { ...key };
@@ -708,7 +691,7 @@ export function storageLogin(
 export function storageEngineEnv(
   env: Record<string, string | undefined>,
   plan: DeployPlan,
-  key: StorageKey | undefined,
+  key: StorageLogin | undefined,
   previousKeyFile?: string,
 ): Record<string, string | undefined> {
   if (providerBucket(plan)?.provider === "r2") return { ...env };
@@ -722,7 +705,7 @@ export function storageEngineEnv(
 export function backupsEngineEnv(
   env: Record<string, string | undefined>,
   plan: DeployPlan,
-  key: StorageKey | undefined,
+  key: StorageLogin | undefined,
 ): Record<string, string | undefined> {
   if (snapshotOffsiteOf(plan)?.provider === "r2") return { ...env };
   return s3EngineEnv(env, key);
@@ -734,7 +717,7 @@ export function backupsEngineEnv(
  */
 function s3EngineEnv(
   env: Record<string, string | undefined>,
-  key: StorageKey | undefined,
+  key: StorageLogin | undefined,
   credentials?: string,
 ): Record<string, string | undefined> {
   const out = Object.fromEntries(Object.entries(env).filter(([name]) => !name.startsWith("AWS_")));
@@ -758,7 +741,7 @@ function s3EngineEnv(
 export function offsiteValues(
   plan: DeployPlan,
   input: {
-    key: StorageKey;
+    key: StorageLogin;
     recipient: string;
     cloudflare: Pick<CloudflareSetup, "accountId"> | undefined;
   },
@@ -834,7 +817,7 @@ export async function offsitePreflight(
     planOnly?: boolean | undefined;
     recovery?: RecoveryAnswers | undefined;
   },
-): Promise<{ key?: StorageKey; recovery?: RecoveryAnswers }> {
+): Promise<{ key?: StorageLogin; recovery?: RecoveryAnswers }> {
   const { command } = options;
   const offsite = snapshotOffsiteOf(plan);
   const key =
@@ -868,7 +851,7 @@ export async function offsiteSetup(
     /** Where the recovery copy goes, when this run may make it. */
     github?: GitHubSetup;
     recovery?: RecoveryAnswers;
-    key: StorageKey | undefined;
+    key: StorageLogin | undefined;
     cloudflare: Pick<CloudflareSetup, "accountId"> | undefined;
     command: string;
     /** What is done already, said when it stops. */
@@ -925,7 +908,7 @@ export function previousBucketKeyFile(paths: Pick<ProjectPaths, "stateDir">): st
  */
 export async function withPreviousBucketKey<T>(
   deps: Pick<PhaseDeps, "paths">,
-  key: StorageKey,
+  key: StorageLogin,
   act: (file: string) => Promise<T>,
 ): Promise<T> {
   const file = previousBucketKeyFile(deps.paths);
@@ -1026,16 +1009,14 @@ async function markerNames(root: BucketRoot): Promise<boolean> {
 }
 
 /** Notes that the apply of `planHash` sets out to create the root's bucket. */
-async function writeMarker(deps: PhaseDeps, root: BucketRoot, planHash: string) {
-  await mkdir(dirname(root.markerFile), { recursive: true, mode: 0o700 });
-  const marker = {
+function writeMarker(deps: PhaseDeps, root: BucketRoot, planHash: string) {
+  return writeRecord(root.markerFile, {
     provider: root.bucket.provider,
     bucket: root.bucket.bucket,
     region: root.bucket.region,
     planHash,
     createdAt: deps.clock.now().toISOString(),
-  };
-  await writeFileAtomic(root.markerFile, `${JSON.stringify(marker)}\n`, { mode: 0o600 });
+  });
 }
 
 const removeMarker = (root: BucketRoot) => rm(root.markerFile, { force: true });
@@ -1054,7 +1035,7 @@ interface FailedBucketApply {
 }
 
 /** True when the bucket answers HEAD with the user's key (200); any other answer is not ours. */
-async function answersToKey(deps: PhaseDeps, bucket: Bucket, key: StorageKey) {
+async function answersToKey(deps: PhaseDeps, bucket: Bucket, key: StorageLogin) {
   const client = storageS3Client(bucket, key, { fetch: deps.fetch, now: () => deps.clock.now() });
   try {
     return await client.headBucket();
@@ -1119,7 +1100,7 @@ async function bucketFailure(
   deps: PhaseDeps,
   log: string,
   failed: FailedBucketApply,
-  key: StorageKey | undefined,
+  key: StorageLogin | undefined,
 ): Promise<OpsCrewError | undefined> {
   const { root, command } = failed;
   const { bucket, vars } = root;
@@ -1189,7 +1170,7 @@ interface BucketApplyInput {
   plan: DeployPlan;
   /** The rendered root. */
   files: readonly RenderedFile[];
-  key: StorageKey | undefined;
+  key: StorageLogin | undefined;
   approvePlanHash?: string;
   planOnly?: boolean;
   command: string;

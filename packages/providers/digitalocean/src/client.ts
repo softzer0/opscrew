@@ -1,6 +1,7 @@
 import type { FetchLike } from "@opscrew/contracts";
 import {
   CONNECTION_HINT,
+  changedApiHint,
   durationText,
   type JsonClient,
   jsonClient,
@@ -477,8 +478,8 @@ export class DigitalOceanClient {
           `DigitalOcean returned an unexpected response for ${path}: ${failure.issues}`,
           {
             hint: idempotent
-              ? "The DigitalOcean API may have changed; please report this to OpsCrew."
-              : `${MAYBE_DONE_HINT} The DigitalOcean API may have changed; please report this to OpsCrew.`,
+              ? changedApiHint("DigitalOcean")
+              : `${MAYBE_DONE_HINT} ${changedApiHint("DigitalOcean")}`,
           },
         );
       case "status":

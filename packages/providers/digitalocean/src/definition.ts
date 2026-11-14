@@ -124,6 +124,7 @@ export const definition: CloudProviderDefinition = {
     serverResourceType: "digitalocean_droplet",
     firewallResourceType: "digitalocean_firewall",
     connectorFirewall: false,
+    connectorBackups: false,
     connectorRemoval: false,
     homeCacheFiles: [],
     mirroredAttributes: {},

@@ -209,7 +209,7 @@ describe("uploads", () => {
     const cpanel = cpanelClient(ACCESS, { fetch });
     await cpanel.upload({
       dir: "/home/acct/x",
-      files: [{ name: ".env.tmp", content: new TextEncoder().encode("A=1\n") }],
+      file: { name: ".env.tmp", content: new TextEncoder().encode("A=1\n") },
       permissions: "0600",
       what: "upload x",
     });
@@ -229,7 +229,12 @@ describe("uploads", () => {
       }),
     });
     const error = await failure(
-      cpanel.upload({ dir: "/home/acct", files: [], permissions: "0644", what: "upload a" }),
+      cpanel.upload({
+        dir: "/home/acct",
+        file: { name: "a", content: new Uint8Array() },
+        permissions: "0644",
+        what: "upload a",
+      }),
     );
     expect(error.message).toBe("cPanel refused to upload a: Disk quota exceeded.");
   });
@@ -260,13 +265,38 @@ describe("HTTP failures", () => {
       call(client({ "/": { error: new Error(`socket ${TOKEN}`) } }).cpanel),
     );
     expect(lost.message).toBe(
-      "Could not reach cPanel to list the databases (the connection failed).",
+      "Could not reach cPanel at panel.example.com:2083 to list the databases.",
     );
+    expect(lost.hint).toBe("Check your internet connection and try again.");
     const slow = await failure(call(client({ "/": { hang: true } }, 20).cpanel));
     expect(slow.message).toBe(
-      "Could not reach cPanel to list the databases (the request timed out).",
+      "cPanel did not answer within 0 seconds when trying to list the databases.",
     );
     expect(slow.code).toBe("PROVIDER_ERROR");
+  });
+
+  it("says a change whose answer was lost may have been made", async () => {
+    const { cpanel } = client({ "/": { error: new Error("socket closed") } });
+    const change = { what: "make the change", schema: z.unknown() };
+    const errors = [
+      await failure(
+        cpanel.uapi({ ...change, module: "Mysql", func: "create_database", write: true }),
+      ),
+      await failure(cpanel.api2({ ...change, module: "Cron", func: "add_line", write: true })),
+      await failure(
+        cpanel.upload({
+          dir: "/home/acct",
+          file: { name: "a", content: new Uint8Array() },
+          permissions: "0600",
+          what: "upload a",
+        }),
+      ),
+    ];
+    for (const error of errors) {
+      expect(error.hint).toBe(
+        "The request may still have reached cPanel; check the current state before trying again.",
+      );
+    }
   });
 });
 
@@ -278,7 +308,7 @@ describe("access", () => {
       "https://panel.example.com:2083/cpsess1",
     ]) {
       expect(() => cpanelClient({ ...ACCESS, url })).toThrow(
-        "OPSCREW_HOSTING_URL isn't a cPanel address.",
+        "OPSCREW_HOSTING_URL isn't a panel's https:// address.",
       );
     }
   });

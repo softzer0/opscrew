@@ -1,6 +1,5 @@
 import { randomBytes } from "node:crypto";
 import type {
-  FetchLike,
   HostingCertificate,
   HostingCronJob,
   HostingDomain,
@@ -11,22 +10,21 @@ import type {
   PanelStep,
 } from "@opscrew/contracts";
 import {
+  certificateCoversHost,
+  changedApiHint,
+  checkHostName,
   errorMessage,
   normalizeHostName,
   OpsCrewError,
+  octalMode,
   orText,
-  type Redactor,
+  type PanelClientOptions,
+  parentDomain,
 } from "@opscrew/core";
 import { z } from "zod";
-import { type CpanelClient, CpanelRefusal, cpanelClient } from "./client";
+import { type CpanelClient, CpanelRefusal, cpanelClient, flag } from "./client";
 
-export interface CpanelPanelOptions {
-  /** Default: the global `fetch`. */
-  fetch?: FetchLike;
-  /** Per request (default 60 s). */
-  timeoutMs?: number;
-  /** Shared redactor; a private one is used when omitted. The token is always registered. */
-  redactor?: Redactor;
+export interface CpanelPanelOptions extends PanelClientOptions {
   /** A fresh random part for temporary file names (default: 8 random bytes as hex). */
   randomName?: () => string;
   /** Epoch milliseconds, to tell an expired certificate (default `Date.now`). */
@@ -52,7 +50,8 @@ const num = z
   .union([z.number(), z.string()])
   .transform(Number)
   .refine((value) => Number.isFinite(value), "a number");
-const flag = z.union([z.number(), z.string()]).transform(Number);
+/** A value cPanel answers as a string or a number, as a string. */
+const text = z.union([z.string(), z.number()]).transform(String);
 const anything = z.unknown();
 
 const ServerSchema = z.object({
@@ -94,22 +93,19 @@ const FilesSchema = z.array(z.object({ file: z.string(), type: z.string() }));
 const ContentSchema = z.object({ content: z.string().nullable() });
 
 const CronLineSchema = z.object({
-  linekey: z.union([z.string(), z.number()]).transform(String),
-  minute: z.union([z.string(), z.number()]).transform(String),
-  hour: z.union([z.string(), z.number()]).transform(String),
-  day: z.union([z.string(), z.number()]).transform(String),
-  month: z.union([z.string(), z.number()]).transform(String),
-  weekday: z.union([z.string(), z.number()]).transform(String),
+  linekey: text,
+  minute: text,
+  hour: text,
+  day: text,
+  month: text,
+  weekday: text,
   command: z.string(),
 });
 /** `listcron` ends with a `{count: N}` entry that is no line (R10). */
 const CronListSchema = z.array(
   z.union([CronLineSchema, z.strictObject({ count: num }).transform(() => undefined)]),
 );
-const CronAddSchema = z.tuple(
-  [z.object({ linekey: z.union([z.string(), z.number()]).transform(String) })],
-  z.unknown(),
-);
+const CronAddSchema = z.tuple([z.object({ linekey: text })], z.unknown());
 
 const KeyFields = {
   id: z.string(),
@@ -142,8 +138,6 @@ const MISSING_FILE = /no such file|does not exist/i;
 /** R10: a deleted database listed again answers this on `delete_database`. */
 const NOT_CONTROLLED = /does not control/i;
 
-const HOSTNAME =
-  /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
 const CRON_FIELD = /^[0-9*,/-]+$/;
 /** A backslash, a comma (`fileop` reads a list) or a control character in a path's name. */
 // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what it refuses
@@ -171,11 +165,7 @@ export class CpanelPanel implements HostingPanel {
   #home: string | undefined;
 
   constructor(access: HostingPanelAccess, options: CpanelPanelOptions = {}) {
-    this.#client = cpanelClient(access, {
-      ...(options.fetch && { fetch: options.fetch }),
-      ...(options.timeoutMs !== undefined && { timeoutMs: options.timeoutMs }),
-      ...(options.redactor && { redactor: options.redactor }),
-    });
+    this.#client = cpanelClient(access, options);
     this.#randomName = options.randomName ?? (() => randomBytes(8).toString("hex"));
     this.#now = options.now ?? Date.now;
   }
@@ -245,7 +235,7 @@ export class CpanelPanel implements HostingPanel {
   }
 
   async documentRoot(hostname: string): Promise<string | undefined> {
-    const name = checkHostname(hostname);
+    const name = checkHostName(hostname);
     const domain = (await this.#account()).domains.find((entry) => entry.name === name);
     return domain?.documentRoot;
   }
@@ -257,7 +247,7 @@ export class CpanelPanel implements HostingPanel {
    * account already serves, or a call without a root, is refused.
    */
   async addHostname(hostname: string, documentRoot?: string): Promise<string> {
-    const name = checkHostname(hostname);
+    const name = checkHostName(hostname);
     if (documentRoot === undefined) {
       throw new OpsCrewError(
         "INVALID_INPUT",
@@ -271,16 +261,17 @@ export class CpanelPanel implements HostingPanel {
         hint: "OpsCrew never takes over a hostname that exists: choose another one, or remove it in cPanel first.",
       });
     }
-    const root = account.domains
-      .filter((domain) => domain.kind !== "subdomain" && name.endsWith(`.${domain.name}`))
-      .sort((a, b) => b.name.length - a.name.length)[0];
+    const root = parentDomain(
+      name,
+      account.domains.filter((domain) => domain.kind !== "subdomain").map((domain) => domain.name),
+    );
     if (root !== undefined) {
       await this.#client.uapi({
         module: "SubDomain",
         func: "addsubdomain",
         params: {
-          domain: name.slice(0, -root.name.length - 1),
-          rootdomain: root.name,
+          domain: name.slice(0, -root.length - 1),
+          rootdomain: root,
           dir,
           disallowdot: "0",
         },
@@ -294,6 +285,7 @@ export class CpanelPanel implements HostingPanel {
       module: "AddonDomain",
       func: "addaddondomain",
       params: { newdomain: name, subdomain: addonLabel(name), dir },
+      write: true,
       what: `add the addon domain ${name}`,
       schema: anything,
     });
@@ -302,7 +294,7 @@ export class CpanelPanel implements HostingPanel {
 
   /** Removes a subdomain or an addon domain; nothing when the account doesn't serve it. */
   async removeHostname(hostname: string): Promise<void> {
-    const name = checkHostname(hostname);
+    const name = checkHostName(hostname);
     const account = await this.#account();
     const domain = account.domains.find((entry) => entry.name === name);
     if (domain === undefined) return;
@@ -311,6 +303,7 @@ export class CpanelPanel implements HostingPanel {
         module: "SubDomain",
         func: "delsubdomain",
         params: { domain: name },
+        write: true,
         what: `remove the subdomain ${name}`,
         schema: anything,
       });
@@ -319,6 +312,7 @@ export class CpanelPanel implements HostingPanel {
         module: "AddonDomain",
         func: "deladdondomain",
         params: { domain: name, subdomain: `${addonLabel(name)}_${account.main}` },
+        write: true,
         what: `remove the addon domain ${name}`,
         schema: anything,
       });
@@ -430,6 +424,7 @@ export class CpanelPanel implements HostingPanel {
       module: "Cron",
       func: "add_line",
       params: { command: input.command, minute, hour, day, month, weekday },
+      write: true,
       what: "add a cron job",
       schema: CronAddSchema,
     });
@@ -441,6 +436,7 @@ export class CpanelPanel implements HostingPanel {
       module: "Cron",
       func: "remove_line",
       params: { linekey: key },
+      write: true,
       what: "remove a cron job",
       schema: anything,
     });
@@ -455,15 +451,13 @@ export class CpanelPanel implements HostingPanel {
   async writeFile(path: string, content: Uint8Array, mode: number): Promise<void> {
     const parts = checkPath(path, "A file's path");
     const name = parts.pop() as string;
-    if (!Number.isInteger(mode) || mode < 0 || mode > 0o777) {
-      throw new OpsCrewError("INVALID_INPUT", `${mode} isn't a file mode.`);
-    }
+    const permissions = octalMode(mode);
     const dir = await this.#absolute(parts);
     const temporary = `.opscrew-${this.#randomName()}.tmp`;
     await this.#client.upload({
       dir,
-      files: [{ name: temporary, content }],
-      permissions: `0${mode.toString(8).padStart(3, "0")}`,
+      file: { name: temporary, content },
+      permissions,
       what: `upload ${path}`,
     });
     let replaced = false;
@@ -508,7 +502,7 @@ export class CpanelPanel implements HostingPanel {
     const archive = `${dir}/${name}`;
     await this.#client.upload({
       dir,
-      files: [{ name, content: tar }],
+      file: { name, content: tar },
       permissions: "0600",
       what: `upload the files for ${where}`,
     });
@@ -565,7 +559,7 @@ export class CpanelPanel implements HostingPanel {
   }
 
   async certificate(hostname: string): Promise<HostingCertificate> {
-    const name = checkHostname(hostname);
+    const name = checkHostName(hostname);
     const [hosts, inProgress, problems] = await Promise.all([
       this.#installedHosts(),
       this.#client.uapi({
@@ -585,7 +579,8 @@ export class CpanelPanel implements HostingPanel {
     const certificate = host?.certificate ?? undefined;
     const notAfter = certificate?.not_after ?? undefined;
     const installed =
-      certificate?.domains.some((domain) => covers(domain, name)) === true &&
+      certificate !== undefined &&
+      certificateCoversHost(name, certificate.domains) &&
       certificate.is_self_signed !== 1 &&
       notAfter !== undefined &&
       notAfter * 1000 > this.#now();
@@ -602,7 +597,7 @@ export class CpanelPanel implements HostingPanel {
 
   /** Starts an AutoSSL check of the account's domains (`SSL::start_autossl_check`). */
   async requestCertificate(hostname: string): Promise<void> {
-    checkHostname(hostname);
+    checkHostName(hostname);
     await this.#client.uapi({
       module: "SSL",
       func: "start_autossl_check",
@@ -666,7 +661,7 @@ export class CpanelPanel implements HostingPanel {
    * as `inspect()` lists it. Refused where the account has no `multiphp` feature.
    */
   async setPhpVersion(hostname: string, version: string): Promise<void> {
-    const name = checkHostname(hostname);
+    const name = checkHostName(hostname);
     const features = await this.#client.uapi({
       module: "Features",
       func: "list_features",
@@ -715,7 +710,7 @@ export class CpanelPanel implements HostingPanel {
       throw new OpsCrewError(
         "PROVIDER_ERROR",
         `cPanel named no main domain with its home folder when trying to ${what}.`,
-        { hint: "cPanel's API may have changed; please report this to OpsCrew." },
+        { hint: changedApiHint("cPanel") },
       );
     }
     this.#home = home;
@@ -775,6 +770,7 @@ export class CpanelPanel implements HostingPanel {
         ...(destination !== undefined && { destfiles: destination }),
         doubledecode: "0",
       },
+      write: true,
       what,
       schema: anything,
     });
@@ -836,13 +832,6 @@ function addonLabel(hostname: string): string {
   return hostname.replaceAll(".", "-");
 }
 
-/** Whether a certificate's name (`*.example.com` included) covers the hostname. */
-function covers(domain: string, hostname: string): boolean {
-  const name = normalizeHostName(domain);
-  if (name === hostname) return true;
-  return name.startsWith("*.") && hostname.slice(hostname.indexOf(".") + 1) === name.slice(2);
-}
-
 function sameKey(
   key: { modulus?: string | null; ecdsa_public?: string | null },
   certificate: { modulus?: string | null; ecdsa_public?: string | null },
@@ -861,18 +850,10 @@ function relativeTo(home: string, path: string): string {
     throw new OpsCrewError(
       "PROVIDER_ERROR",
       `cPanel gave a document root outside the account's home folder (${root}).`,
-      { hint: "cPanel's API may have changed; please report this to OpsCrew." },
+      { hint: changedApiHint("cPanel") },
     );
   }
   return root.slice(home.length + 1);
-}
-
-function checkHostname(hostname: string): string {
-  const name = normalizeHostName(hostname);
-  if (!HOSTNAME.test(name)) {
-    throw new OpsCrewError("INVALID_INPUT", `"${hostname}" isn't a hostname.`);
-  }
-  return name;
 }
 
 /**

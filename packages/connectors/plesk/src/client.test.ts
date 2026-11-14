@@ -52,10 +52,12 @@ describe("pleskClient", () => {
     expect(fake.requests[0]?.headers.HTTP_AUTH_PASSWD).toBeUndefined();
   });
 
-  it("refuses an address that is not https", () => {
-    expect(() =>
-      pleskClient({ url: "http://plesk.example.test:8443", user: "jdoe", token: PASSWORD }),
-    ).toThrow(/https/);
+  it("refuses an address that is not https, or no address at all", () => {
+    for (const url of ["http://plesk.example.test:8443", "plesk.example.test"]) {
+      expect(() => pleskClient({ url, user: "jdoe", token: PASSWORD })).toThrow(
+        "OPSCREW_HOSTING_URL isn't a panel's https:// address.",
+      );
+    }
   });
 
   it("turns a refused login into CREDENTIALS_INVALID without the password", async () => {

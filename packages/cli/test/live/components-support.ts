@@ -6,7 +6,7 @@
  * container's log). No network, no processes; unit-tested in `components-support.test.ts`.
  */
 import { createHash } from "node:crypto";
-import { plannedComponents, STORAGE_KEY_VARS, type StorageKey } from "@opscrew/agents";
+import { plannedComponents, STORAGE_KEY_VARS, type StorageLogin } from "@opscrew/agents";
 import { upperFirst } from "@opscrew/core";
 import { EDGE_PROJECT, IMAGES, pinnedVersion, serviceSpec } from "@opscrew/iac-templates";
 import { type DeployPlan, PlanServiceSchema } from "@opscrew/plan-schema";
@@ -37,7 +37,7 @@ const STORAGE_EXAMPLE = "s3-uploads";
 const SEARCH_EXAMPLE = "meili-search";
 
 /** Where the s3-uploads pass keeps the bucket (`OPSCREW_E2E_STORAGE`, default `r2`). */
-export type StorageChoice = { provider: "r2" } | { provider: "hetzner"; key: StorageKey };
+export type StorageChoice = { provider: "r2" } | { provider: "hetzner"; key: StorageLogin };
 
 /** What a Hetzner component pass does besides the checks every example gets. */
 export interface ComponentSettings {
@@ -116,7 +116,7 @@ export function storageChoice(
 }
 
 /** The variables OpsCrew reads the bucket's key from in a script, holding `key`. */
-export function storageKeyEnv(key: StorageKey): Record<string, string> {
+export function storageKeyEnv(key: StorageLogin): Record<string, string> {
   return {
     [STORAGE_KEY_VARS.accessKeyId]: key.accessKeyId,
     [STORAGE_KEY_VARS.secretAccessKey]: key.secretAccessKey,
@@ -127,7 +127,7 @@ export function storageKeyEnv(key: StorageKey): Record<string, string> {
  * Cloudflare's S3 credentials of an API token with an R2 permission: the token's id as the access
  * key ID, and the SHA-256 (hex) of the token's value as the secret.
  */
-export function r2KeyOfToken(tokenId: string, token: string): StorageKey {
+export function r2KeyOfToken(tokenId: string, token: string): StorageLogin {
   return {
     accessKeyId: tokenId,
     secretAccessKey: createHash("sha256").update(token).digest("hex"),

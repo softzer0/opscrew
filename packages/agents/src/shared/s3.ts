@@ -2,7 +2,7 @@ import { createHash, createHmac } from "node:crypto";
 import type { FetchLike } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
-import { STORAGE_ENDPOINTS, type StorageLogin } from "./app-env";
+import { type StorageLogin, storageEndpoint } from "./app-env";
 
 /** A bucket in `plan.yaml` (`storage.objectStorage`). */
 type ObjectStorage = NonNullable<NonNullable<DeployPlan["storage"]>["objectStorage"]>;
@@ -132,10 +132,10 @@ export function s3Client(
  */
 export function storageS3Client(
   bucket: Pick<ObjectStorage, "provider" | "region" | "bucket">,
-  key: Pick<StorageLogin, "accessKeyId" | "secretAccessKey" | "endpoint">,
+  key: StorageLogin,
   io: { fetch: FetchLike; now: () => Date },
 ): S3Client {
-  const at = STORAGE_ENDPOINTS[bucket.provider]?.(bucket.region) ?? key.endpoint;
+  const at = storageEndpoint(bucket, key);
   if (at === undefined) throw new Error(`No S3 endpoint is known for ${bucket.provider}.`);
   return s3Client(
     {

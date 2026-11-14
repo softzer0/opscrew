@@ -8,7 +8,12 @@
 import { isIPv6 } from "node:net";
 import type { GitHubClient, PagesHealth, PagesSite } from "@opscrew/connector-github";
 import type { CheckResult, FetchLike } from "@opscrew/contracts";
-import { isUserFacingError, toPosixRelative, errorText as userErrorText } from "@opscrew/core";
+import {
+  certificateCoversHost,
+  isUserFacingError,
+  toPosixRelative,
+  errorText as userErrorText,
+} from "@opscrew/core";
 import { renderSiteRunbook } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
@@ -21,7 +26,6 @@ import type { PhaseDeps } from "../context";
 import { checkResult, editCheckText, summarizeChecks, writeRenderedFiles } from "../shared";
 import {
   type CloudflareRanges,
-  certificateCoversHost,
   errorText,
   MIN_CERT_DAYS,
   rangeList,

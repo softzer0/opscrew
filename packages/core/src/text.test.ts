@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  certificateCoversHost,
+  checkHostName,
   durationText,
   escapeRegExp,
   formatMoney,
@@ -7,7 +9,9 @@ import {
   listText,
   lowerFirst,
   normalizeHostName,
+  octalMode,
   orText,
+  parentDomain,
   plural,
   taxLabel,
   upperFirst,
@@ -43,6 +47,44 @@ describe("normalizeHostName", () => {
   it("trims, lower-cases and drops one trailing dot", () => {
     expect(normalizeHostName("  App.Example.COM. ")).toBe("app.example.com");
     expect(normalizeHostName("example.com")).toBe("example.com");
+  });
+});
+
+describe("checkHostName", () => {
+  it("answers a hostname normalized, and refuses anything else", () => {
+    expect(checkHostName(" App.Example.com. ")).toBe("app.example.com");
+    for (const name of ["example", "-a.example.com", "a..example.com", "a_b.example.com"]) {
+      expect(() => checkHostName(name)).toThrow(`"${name}" isn't a hostname.`);
+    }
+  });
+});
+
+describe("parentDomain", () => {
+  it("answers the longest domain the name sits under, as given", () => {
+    const domains = ["example.com", "Shop.Example.com", "other.org"];
+    expect(parentDomain("app.shop.example.com", domains)).toBe("Shop.Example.com");
+    expect(parentDomain("app.example.com", domains)).toBe("example.com");
+    expect(parentDomain("example.com", domains)).toBeUndefined();
+    expect(parentDomain("app.example.net", domains)).toBeUndefined();
+  });
+});
+
+describe("certificateCoversHost", () => {
+  it("matches exact names and single-label wildcards", () => {
+    expect(certificateCoversHost("shop.example.com", ["SHOP.example.com."])).toBe(true);
+    expect(certificateCoversHost("shop.example.com", ["*.example.com"])).toBe(true);
+    expect(certificateCoversHost("a.shop.example.com", ["*.example.com"])).toBe(false);
+    expect(certificateCoversHost("example.com", ["*.example.com"])).toBe(false);
+    expect(certificateCoversHost("shop.example.com", ["example.com"])).toBe(false);
+  });
+});
+
+describe("octalMode", () => {
+  it("gives four octal digits, and refuses what isn't a mode", () => {
+    expect(octalMode(0o600)).toBe("0600");
+    expect(octalMode(0o44)).toBe("0044");
+    for (const mode of [-1, 0o1000, 1.5])
+      expect(() => octalMode(mode)).toThrow("isn't a file mode");
   });
 });
 

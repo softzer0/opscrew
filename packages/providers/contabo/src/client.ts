@@ -2,11 +2,14 @@ import { randomUUID } from "node:crypto";
 import type { FetchLike, ProviderRedactor } from "@opscrew/contracts";
 import {
   CONNECTION_HINT,
+  changedApiHint,
   durationText,
+  type ErrorCode,
   type JsonClient,
   jsonClient,
   listText,
   OpsCrewError,
+  type PollActionOptions,
   pollAction,
   RATE_LIMIT_HINT,
   type RequestFailure,
@@ -215,7 +218,7 @@ const credentialSchema = z.looseObject({
   secretKey: z.string().min(1),
 });
 /** An object storage's S3 key, as Contabo's API answers it. */
-export type ContaboCredential = z.infer<typeof credentialSchema>;
+type ContaboCredential = z.infer<typeof credentialSchema>;
 
 /** An inbound rule as OpsCrew writes it: it accepts, and each source list holds a network. */
 export interface FirewallRuleRequest {
@@ -309,13 +312,8 @@ export class ContaboClient {
   }
 
   /** One instance (`GET /v1/compute/instances/{id}`). */
-  async getInstance(instanceId: number): Promise<ContaboInstance> {
-    const body = await this.#request(
-      "GET",
-      `/v1/compute/instances/${instanceId}`,
-      z.looseObject({ data: z.array(instanceSchema).length(1) }),
-    );
-    return body.data[0] as ContaboInstance;
+  getInstance(instanceId: number): Promise<ContaboInstance> {
+    return this.#one("GET", `/v1/compute/instances/${instanceId}`, instanceSchema);
   }
 
   /** Every tag of the account, every page. */
@@ -338,17 +336,13 @@ export class ContaboClient {
    * description of up to 255). Contabo answers with the snapshot. A refusal that names the
    * snapshot limit says how to make room.
    */
-  async createSnapshot(
+  createSnapshot(
     instanceId: number,
     snapshot: { name: string; description: string },
   ): Promise<ContaboSnapshot> {
-    const body = await this.#request(
-      "POST",
-      `/v1/compute/instances/${instanceId}/snapshots`,
-      z.looseObject({ data: z.array(snapshotSchema).length(1) }),
-      { body: snapshot },
-    );
-    return body.data[0] as ContaboSnapshot;
+    return this.#one("POST", `/v1/compute/instances/${instanceId}/snapshots`, snapshotSchema, {
+      body: snapshot,
+    });
   }
 
   /** Deletes a snapshot (`DELETE …/snapshots/{id}`). */
@@ -391,15 +385,13 @@ export class ContaboClient {
    * calling it (research R8).
    */
   async cancelInstance(instanceId: number): Promise<string> {
-    const body = await this.#request(
+    const cancelled = await this.#one(
       "POST",
       `/v1/compute/instances/${instanceId}/cancel`,
-      z.looseObject({
-        data: z.array(z.looseObject({ cancelDate: z.string().min(1) })).length(1),
-      }),
+      z.looseObject({ cancelDate: z.string().min(1) }),
       { body: {} },
     );
-    return (body.data[0] as { cancelDate: string }).cancelDate;
+    return cancelled.cancelDate;
   }
 
   /**
@@ -422,7 +414,7 @@ export class ContaboClient {
     status: string,
     options: { timeoutMs: number },
   ): Promise<ContaboInstance> {
-    return pollAction({
+    return this.#poll({
       read: () => this.getInstance(instanceId),
       finished: (instance) => {
         if (instance.status === "error" && status !== "error") {
@@ -444,9 +436,6 @@ export class ContaboClient {
           { hint: "Check the instance in Contabo's Customer Control Panel." },
         ),
       timeoutMs: options.timeoutMs,
-      intervalMs: STATUS_INTERVAL_MS,
-      sleep: this.#http.sleep,
-      now: this.#http.now,
     });
   }
 
@@ -459,32 +448,21 @@ export class ContaboClient {
   }
 
   /** One firewall (`GET /v1/firewalls/{id}`). */
-  async getFirewall(firewallId: string): Promise<ContaboFirewall> {
-    const body = await this.#request(
-      "GET",
-      `/v1/firewalls/${encodeURIComponent(firewallId)}`,
-      z.looseObject({ data: z.array(firewallSchema).length(1) }),
-    );
-    return body.data[0] as ContaboFirewall;
+  getFirewall(firewallId: string): Promise<ContaboFirewall> {
+    return this.#one("GET", `/v1/firewalls/${encodeURIComponent(firewallId)}`, firewallSchema);
   }
 
   /**
    * Creates a firewall with its inbound rules (`POST /v1/firewalls`). Contabo answers with it,
    * its own "Block all traffic" rule appended.
    */
-  async createFirewall(firewall: {
+  createFirewall(firewall: {
     name: string;
     description: string;
     status: "active";
     rules: { inbound: readonly FirewallRuleRequest[] };
   }): Promise<ContaboFirewall> {
-    const body = await this.#request(
-      "POST",
-      "/v1/firewalls",
-      z.looseObject({ data: z.array(firewallSchema).length(1) }),
-      { body: firewall },
-    );
-    return body.data[0] as ContaboFirewall;
+    return this.#one("POST", "/v1/firewalls", firewallSchema, { body: firewall });
   }
 
   /** Sets a firewall's inbound rules (`PUT /v1/firewalls/{id}`); Contabo keeps its own rule. */
@@ -557,7 +535,7 @@ export class ContaboClient {
   ): Promise<ContaboFirewall> {
     const status = (firewall: ContaboFirewall, id: string) =>
       firewall.instanceStatus.find((entry) => entry.instanceId === id);
-    return pollAction({
+    return this.#poll({
       read: () => this.getFirewall(firewallId),
       finished: (firewall) => {
         for (const id of instanceIds) {
@@ -583,9 +561,6 @@ export class ContaboClient {
         );
       },
       timeoutMs: options.timeoutMs,
-      intervalMs: STATUS_INTERVAL_MS,
-      sleep: this.#http.sleep,
-      now: this.#http.now,
     });
   }
 
@@ -595,13 +570,12 @@ export class ContaboClient {
   }
 
   /** One object storage (`GET /v1/object-storages/{id}`). */
-  async getObjectStorage(objectStorageId: string): Promise<ContaboObjectStorage> {
-    const body = await this.#request(
+  getObjectStorage(objectStorageId: string): Promise<ContaboObjectStorage> {
+    return this.#one(
       "GET",
       `/v1/object-storages/${encodeURIComponent(objectStorageId)}`,
-      z.looseObject({ data: z.array(objectStorageSchema).length(1) }),
+      objectStorageSchema,
     );
-    return body.data[0] as ContaboObjectStorage;
   }
 
   /**
@@ -609,18 +583,12 @@ export class ContaboClient {
    * `region`. Contabo answers with it, still `PROVISIONING`: wait with
    * {@link waitForObjectStorage}. Billed from then on.
    */
-  async createObjectStorage(request: {
+  createObjectStorage(request: {
     region: string;
     totalPurchasedSpaceTB: number;
     displayName: string;
   }): Promise<ContaboObjectStorage> {
-    const body = await this.#request(
-      "POST",
-      "/v1/object-storages",
-      z.looseObject({ data: z.array(objectStorageSchema).length(1) }),
-      { body: request },
-    );
-    return body.data[0] as ContaboObjectStorage;
+    return this.#one("POST", "/v1/object-storages", objectStorageSchema, { body: request });
   }
 
   /**
@@ -632,7 +600,7 @@ export class ContaboClient {
     options: { timeoutMs: number },
   ): Promise<ContaboObjectStorage> {
     const hint = "Check the object storage in Contabo's Customer Control Panel.";
-    return pollAction({
+    return this.#poll({
       read: () => this.getObjectStorage(objectStorageId),
       finished: (storage) => {
         if (storage.status === "ERROR" || storage.status === "DISABLED") {
@@ -651,9 +619,6 @@ export class ContaboClient {
           { hint },
         ),
       timeoutMs: options.timeoutMs,
-      intervalMs: STATUS_INTERVAL_MS,
-      sleep: this.#http.sleep,
-      now: this.#http.now,
     });
   }
 
@@ -695,6 +660,29 @@ export class ContaboClient {
     }
     // The filter is a guess at a query parameter (the docs do not say where it goes): compared.
     return credentials.filter((credential) => credential.objectStorageId === objectStorageId);
+  }
+
+  /** {@link pollAction} every 5 seconds, on the client's clock. */
+  #poll<T>(
+    options: Pick<PollActionOptions<T>, "read" | "finished" | "timedOut" | "timeoutMs">,
+  ): Promise<T> {
+    return pollAction({
+      ...options,
+      intervalMs: STATUS_INTERVAL_MS,
+      sleep: this.#http.sleep,
+      now: this.#http.now,
+    });
+  }
+
+  /** The one item of an answer whose `data` is a list of one. */
+  async #one<T>(
+    method: "GET" | "POST",
+    path: string,
+    item: z.ZodType<T>,
+    options: { body?: unknown } = {},
+  ): Promise<T> {
+    const schema = z.looseObject({ data: z.tuple([item]) });
+    return (await this.#request(method, path, schema, options)).data[0];
   }
 
   async #listAll<T>(
@@ -846,18 +834,26 @@ export class ContaboClient {
         return this.#failure(
           "PROVIDER_ERROR",
           `Contabo returned an unexpected answer for ${path}: ${failure.issues}`,
-          { hint: "Contabo's API may have changed; please report this to OpsCrew." },
+          { hint: changedApiHint("Contabo") },
         );
       case "status":
-        return new ContaboStatusError(
-          await this.#statusError(failure.response, method, path),
-          failure.response.status,
-        );
+        return this.#statusError(failure.response, method, path);
     }
   }
 
-  async #statusError(response: Response, method: string, path: string): Promise<OpsCrewError> {
+  async #statusError(
+    response: Response,
+    method: string,
+    path: string,
+  ): Promise<ContaboStatusError> {
     const { status } = response;
+    const fail = (code: ErrorCode, message: string, hint: string) =>
+      new ContaboStatusError(
+        status,
+        code,
+        this.#redactor.redact(message),
+        this.#redactor.redact(hint),
+      );
     const body = errorBodySchema.safeParse(parseJson(await response.text().catch(() => "")));
     const message = body.success ? body.data.message : undefined;
     const detail =
@@ -868,31 +864,24 @@ export class ContaboClient {
     switch (status) {
       case 401:
       case 403:
-        return this.#failure(
+        return fail(
           "CREDENTIALS_INVALID",
           `Contabo refused the API credentials (HTTP ${status}, ${request}): ${detail}`,
-          {
-            hint:
-              status === 401
-                ? CONTABO_CREDENTIALS_HINT
-                : "Check in Contabo's Customer Control Panel that the API user may manage compute instances, snapshots, tags, firewalls and object storages, then try again.",
-          },
+          status === 401
+            ? CONTABO_CREDENTIALS_HINT
+            : "Check in Contabo's Customer Control Panel that the API user may manage compute instances, snapshots, tags, firewalls and object storages, then try again.",
         );
       case 402:
-        return this.#failure(
+        return fail(
           "PROVIDER_ERROR",
           `Contabo needs a paid service for this (HTTP 402, ${request}): ${detail}`,
-          {
-            hint: "Order or pay for the service in Contabo's Customer Control Panel, then try again.",
-          },
+          "Order or pay for the service in Contabo's Customer Control Panel, then try again.",
         );
       case 429:
-        return this.#failure(
+        return fail(
           "PROVIDER_ERROR",
           `Contabo's rate limit was reached (${request}): ${detail}`,
-          {
-            hint: RATE_LIMIT_HINT,
-          },
+          RATE_LIMIT_HINT,
         );
       default: {
         const snapshotLimit =
@@ -900,10 +889,10 @@ export class ContaboClient {
           method === "POST" &&
           path.endsWith("/snapshots") &&
           SNAPSHOT_LIMIT.test(detail);
-        return this.#failure(
+        return fail(
           "PROVIDER_ERROR",
           `Contabo answered HTTP ${status} to ${request}: ${detail}`,
-          { hint: snapshotLimit ? SNAPSHOT_LIMIT_HINT : statusHint(status) },
+          snapshotLimit ? SNAPSHOT_LIMIT_HINT : statusHint(status),
         );
       }
     }
@@ -922,16 +911,31 @@ export class ContaboClient {
   }
 }
 
-/**
- * An error of a request Contabo answered with an error `status`. Below 500 Contabo did nothing; a
- * 5xx may come after Contabo took a write.
- */
+/** An error of a request Contabo answered with an error `status`; see {@link unlessRefused}. */
 export class ContaboStatusError extends OpsCrewError {
-  readonly status: number;
+  constructor(
+    readonly status: number,
+    code: ErrorCode,
+    message: string,
+    hint: string,
+  ) {
+    super(code, message, { hint });
+  }
+}
 
-  constructor(error: OpsCrewError, status: number) {
-    super(error.code, error.message, error.hint === undefined ? {} : { hint: error.hint });
-    this.status = status;
+/**
+ * The answer of `call`, a paid order, or Contabo's refusal of it. Below 500 (429 included)
+ * Contabo did nothing, so its error is a refusal; a 5xx may follow a taken order, so its outcome
+ * is unknown and it is thrown, as every other error.
+ */
+export async function unlessRefused<T>(call: () => Promise<T>): Promise<T | { refused: string }> {
+  try {
+    return await call();
+  } catch (error) {
+    if (error instanceof ContaboStatusError && error.status < 500) {
+      return { refused: error.message };
+    }
+    throw error;
   }
 }
 

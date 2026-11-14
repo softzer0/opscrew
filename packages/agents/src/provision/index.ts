@@ -99,7 +99,6 @@ export {
   requireStorageKey,
   STORAGE_KEY_VARS,
   STORAGE_PLAN_SUFFIX,
-  type StorageKey,
   type StorageKeyQuestion,
   storageEngineEnv,
   storageKeyFile,

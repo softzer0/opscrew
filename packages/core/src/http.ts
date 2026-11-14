@@ -1,11 +1,16 @@
 import type { FetchLike } from "@opscrew/contracts";
 import type { z } from "zod";
 import { OpsCrewError } from "./errors";
+import type { Redactor } from "./redact";
+import { durationText } from "./text";
 import { realSleep } from "./time";
 import { zodIssues } from "./values";
 
 /** Longest wait after a 429, whatever the provider's `RateLimit-Reset` says. */
 const MAX_RATE_LIMIT_WAIT_MS = 60_000;
+
+/** How long one request to a hosting panel may take unless its client is given another time. */
+const PANEL_REQUEST_TIMEOUT_MS = 60_000;
 
 /** The next step when a provider's API could not be reached. */
 export const CONNECTION_HINT = "Check your internet connection and try again.";
@@ -23,10 +28,15 @@ export function maybeDoneHint(where: string): string {
   return `The request may still have reached ${where}; check the current state before trying again.`;
 }
 
+/** The next step after `provider` answered in a shape OpsCrew doesn't know: report it. */
+export function changedApiHint(provider: string): string {
+  return `The ${provider} API may have changed; please report this to OpsCrew.`;
+}
+
 /**
  * `value` (a provider's answer) validated against `schema`. An answer that does not match throws
- * `PROVIDER_ERROR` naming its first problems, with `hint` as the next step (by default: report
- * the changed API to OpsCrew).
+ * `PROVIDER_ERROR` naming its first problems, with `hint` as the next step (by default
+ * {@link changedApiHint}).
  */
 export function parseAnswer<S extends z.ZodType>(
   schema: S,
@@ -40,10 +50,87 @@ export function parseAnswer<S extends z.ZodType>(
     throw new OpsCrewError(
       "PROVIDER_ERROR",
       `${provider} returned an unexpected answer when trying to ${what}: ${zodIssues(parsed.error)}.`,
-      { hint: hint ?? `The ${provider} API may have changed; please report this to OpsCrew.` },
+      { hint: hint ?? changedApiHint(provider) },
     );
   }
   return parsed.data;
+}
+
+/** What a hosting panel's client is given besides the account's access. */
+export interface PanelClientOptions {
+  /** Default: the global `fetch`. */
+  fetch?: FetchLike;
+  /** Shared redactor; a private one is used when omitted. The token is always registered. */
+  redactor?: Redactor;
+  /** Per request (default 60 s). */
+  timeoutMs?: number;
+}
+
+/**
+ * The origin (`https://<host>:<port>`) of a hosting panel's address, which must be `https://` and
+ * name nothing else: no login, path, query or fragment.
+ * @throws OpsCrewError `INVALID_INPUT` naming `OPSCREW_HOSTING_URL`, with `example` as the
+ * address to set (`https://panel.example.com:2083`).
+ */
+export function httpsOrigin(address: string, example: string): string {
+  const url = URL.parse(address.trim());
+  if (
+    url?.protocol !== "https:" ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.search !== "" ||
+    url.hash !== "" ||
+    url.pathname !== "/"
+  ) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      "OPSCREW_HOSTING_URL isn't a panel's https:// address.",
+      {
+        hint: `Set OPSCREW_HOSTING_URL to the panel's address alone, such as ${example}.`,
+      },
+    );
+  }
+  return url.origin;
+}
+
+/** How {@link fetchText} names a request that got no answer. */
+export interface FetchTextOptions {
+  /** Who was asked, to start the error: `cPanel`. */
+  service: string;
+  /** What the request does, to end "… when trying to <what>". */
+  what: string;
+  /** A change: a lost answer says it may have been made, instead of checking the connection. */
+  write: boolean;
+  /** For the request and reading its answer (default 60 s). */
+  timeoutMs?: number | undefined;
+}
+
+/**
+ * Sends one request with `fetch` (default: the global one) and reads its answer as text, within
+ * the timeout. A timeout or a lost connection throws `PROVIDER_ERROR`, whose hint for a write is
+ * {@link maybeDoneHint} and for a read {@link CONNECTION_HINT}.
+ */
+export async function fetchText(
+  fetch: FetchLike | undefined,
+  url: string,
+  init: RequestInit,
+  options: FetchTextOptions,
+): Promise<{ status: number; ok: boolean; text: string }> {
+  const timeoutMs = options.timeoutMs ?? PANEL_REQUEST_TIMEOUT_MS;
+  const signal = AbortSignal.timeout(timeoutMs);
+  try {
+    const response = await (fetch ?? globalThis.fetch)(url, { ...init, signal });
+    return { status: response.status, ok: response.ok, text: await response.text() };
+  } catch {
+    const { service, what } = options;
+    throw new OpsCrewError(
+      "PROVIDER_ERROR",
+      signal.aborted
+        ? `${service} did not answer within ${durationText(timeoutMs)} when trying to ${what}.`
+        : `Could not reach ${service} at ${new URL(url).host} to ${what}.`,
+      { hint: options.write ? maybeDoneHint(service) : CONNECTION_HINT },
+    );
+  }
 }
 
 /** How a JSON API client retries; see {@link requestJson}. */

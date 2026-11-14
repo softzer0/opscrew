@@ -8,16 +8,16 @@ import type {
   HostingPanelAccess,
   PanelStep,
 } from "@opscrew/contracts";
-import { normalizeHostName, OpsCrewError, parseAnswer } from "@opscrew/core";
-import { z } from "zod";
 import {
-  PLESK_ERRORS,
-  type PleskClient,
-  type PleskClientOptions,
-  type PleskRequest,
-  type PleskResult,
-  pleskClient,
-} from "./client";
+  changedApiHint,
+  normalizeHostName,
+  OpsCrewError,
+  type PanelClientOptions,
+  parentDomain,
+  parseAnswer,
+} from "@opscrew/core";
+import { z } from "zod";
+import { PLESK_ERRORS, type PleskClient, type PleskRequest, pleskClient } from "./client";
 import { notInApi, PLESK_OPERATIONS, pleskPanelStep } from "./steps";
 
 /** An element that may come back empty (`<limits/>` parses as `""`). */
@@ -111,7 +111,7 @@ export class PleskPanel implements HostingPanel {
   readonly #client: PleskClient;
   readonly #user: string;
 
-  constructor(access: HostingPanelAccess, options: PleskClientOptions = {}) {
+  constructor(access: HostingPanelAccess, options: PanelClientOptions = {}) {
     this.#client = pleskClient(access, options);
     this.#user = access.user;
   }
@@ -172,15 +172,17 @@ export class PleskPanel implements HostingPanel {
   /** A site's document root relative to the subscription's folder, or undefined. */
   async #siteRoot(subscription: Subscription, hostname: string): Promise<string | undefined> {
     // https://docs.plesk.com/en-US/obsidian/api-rpc/about-xml-api/reference/managing-sites-domains/getting-information-about-sites.66583/
-    const what = `read the site ${hostname}`;
-    const results = await this.#client.call({
-      operator: "site",
-      operation: "get",
-      body: { filter: { name: hostname }, dataset: { gen_info: "", hosting: "" } },
-      what,
-      write: false,
-    });
-    const site = this.#found(results, SiteSchema, what)[0];
+    const [site] = await this.#all(
+      {
+        operator: "site",
+        operation: "get",
+        body: { filter: { name: hostname }, dataset: { gen_info: "", hosting: "" } },
+        what: `read the site ${hostname}`,
+        write: false,
+      },
+      SiteSchema,
+      { missingOk: true },
+    );
     const wwwRoot = site === undefined ? undefined : property(site.data.hosting, "www_root");
     return wwwRoot === undefined ? undefined : homeRelative(wwwRoot, subscription.folder);
   }
@@ -189,10 +191,10 @@ export class PleskPanel implements HostingPanel {
   async addHostname(hostname: string, documentRoot?: string): Promise<string> {
     if (documentRoot !== undefined) checkPath(documentRoot);
     const subscription = await this.#subscription();
-    const host = normalizeHostName(hostname);
-    const parent = [subscription.name, ...(await this.#sites(subscription)).map((s) => s.name)]
-      .filter((name) => host.endsWith(`.${normalizeHostName(name)}`))
-      .sort((a, b) => b.length - a.length)[0];
+    const parent = parentDomain(hostname, [
+      subscription.name,
+      ...(await this.#sites(subscription)).map((s) => s.name),
+    ]);
     // `site add` makes a site of the subscription, or a subdomain with `parent-site-name`;
     // `www_root` is relative to the subscription's folder.
     // https://docs.plesk.com/en-US/obsidian/api-rpc/about-xml-api/reference/managing-sites-domains/creating-a-site.66574/
@@ -246,15 +248,17 @@ export class PleskPanel implements HostingPanel {
       );
     }
     // https://docs.plesk.com/en-US/obsidian/api-rpc/about-xml-api/reference/managing-sites-domains/removing-sites.66609/
-    const what = `remove the hostname ${hostname}`;
-    const results = await this.#client.call({
-      operator: "site",
-      operation: "del",
-      body: { filter: { name: hostname } },
-      what,
-      write: true,
-    });
-    this.#found(results, z.looseObject({}), what);
+    await this.#all(
+      {
+        operator: "site",
+        operation: "del",
+        body: { filter: { name: hostname } },
+        what: `remove the hostname ${hostname}`,
+        write: true,
+      },
+      z.looseObject({}),
+      { missingOk: true },
+    );
   }
 
   async listDatabases(): Promise<string[]> {
@@ -308,31 +312,30 @@ export class PleskPanel implements HostingPanel {
     const db = (await this.#databases(subscription)).find((d) => d.name === input.name);
     if (db === undefined) return;
     // https://docs.plesk.com/en-US/obsidian/api-rpc/about-xml-api/reference/managing-databases/retrieving-database-users-info.34695/
-    const users = this.#found(
-      await this.#client.call({
+    const users = await this.#all(
+      {
         operator: "database",
         operation: "get-db-users",
         body: { filter: { "db-id": db.id } },
         what: `read the users of the database ${input.name}`,
         write: false,
-      }),
+      },
       DatabaseUserSchema,
-      `read the users of the database ${input.name}`,
+      { missingOk: true },
     );
     const user = users.find((u) => u.login === input.user);
     if (user !== undefined) {
       // https://docs.plesk.com/en-US/obsidian/api-rpc/about-xml-api/reference/managing-databases/deleting-database-users.34677/
-      const what = `remove the database user ${input.user}`;
-      this.#found(
-        await this.#client.call({
+      await this.#all(
+        {
           operator: "database",
           operation: "del-db-user",
           body: { filter: { id: user.id } },
-          what,
+          what: `remove the database user ${input.user}`,
           write: true,
-        }),
+        },
         z.looseObject({}),
-        what,
+        { missingOk: true },
       );
     }
     await this.#deleteDatabase(db.id, input.name);
@@ -396,17 +399,15 @@ export class PleskPanel implements HostingPanel {
 
   /** The login's one subscription. */
   async #subscription(): Promise<Subscription> {
-    const what = "read your subscription";
-    const subscriptions = this.#ok(
-      await this.#client.call({
+    const subscriptions = await this.#all(
+      {
         operator: "webspace",
         operation: "get",
         body: { filter: "", dataset: { gen_info: "", hosting: "", limits: "" } },
-        what,
+        what: "read your subscription",
         write: false,
-      }),
+      },
       WebspaceSchema,
-      what,
     );
     const [first, ...others] = subscriptions;
     if (first === undefined) {
@@ -441,19 +442,17 @@ export class PleskPanel implements HostingPanel {
 
   /** The subscription's sites and subdomains (the main site may be among them). */
   async #sites(subscription: Subscription): Promise<Site[]> {
-    const what = "read your sites";
     // `parent-id` matches the sites of one subscription.
     // https://docs.plesk.com/en-US/obsidian/api-rpc/about-xml-api/reference/managing-sites-domains/available-filters.66544/
-    const sites = this.#ok(
-      await this.#client.call({
+    const sites = await this.#all(
+      {
         operator: "site",
         operation: "get",
         body: { filter: { "parent-id": subscription.id }, dataset: { gen_info: "", hosting: "" } },
-        what,
+        what: "read your sites",
         write: false,
-      }),
+      },
       SiteSchema,
-      what,
     );
     return sites.map((site) => ({
       name: site.data.gen_info.name,
@@ -463,36 +462,32 @@ export class PleskPanel implements HostingPanel {
 
   /** The names of the login's subdomains, normalized. */
   async #subdomains(): Promise<Set<string>> {
-    const what = "read your subdomains";
     // https://docs.plesk.com/en-US/obsidian/api-rpc/about-xml-api/reference/managing-subdomains/available-filters.53472/
-    const subdomains = this.#ok(
-      await this.#client.call({
+    const subdomains = await this.#all(
+      {
         operator: "subdomain",
         operation: "get",
         body: { filter: "" },
-        what,
+        what: "read your subdomains",
         write: false,
-      }),
+      },
       SubdomainSchema,
-      what,
     );
     return new Set(subdomains.map((s) => normalizeHostName(s.data.name)));
   }
 
   async #databases(subscription: Subscription): Promise<{ id: string; name: string }[]> {
-    const what = "read your databases";
     // The filter's `webspace-id` matches a subscription's databases.
     // https://docs.plesk.com/en-US/obsidian/api-rpc/about-xml-api/reference/managing-databases/available-filters.34404/
-    return this.#ok(
-      await this.#client.call({
+    return this.#all(
+      {
         operator: "database",
         operation: "get-db",
         body: { filter: { "webspace-id": subscription.id } },
-        what,
+        what: "read your databases",
         write: false,
-      }),
+      },
       DatabaseSchema,
-      what,
     );
   }
 
@@ -503,23 +498,22 @@ export class PleskPanel implements HostingPanel {
    * https://docs.plesk.com/en-US/obsidian/api-rpc/about-xml-api/reference/managing-databases/available-filters.34404/
    */
   async #deleteDatabase(id: string, name: string): Promise<void> {
-    const what = `remove the database ${name}`;
-    this.#found(
-      await this.#client.call({
+    await this.#all(
+      {
         operator: "database",
         operation: "del-db",
         body: { filter: { id } },
-        what,
+        what: `remove the database ${name}`,
         write: true,
-      }),
+      },
       z.looseObject({}),
-      what,
+      { missingOk: true },
     );
   }
 
   /** The one result of a request, which must be ok. */
   async #one<T>(request: PleskRequest, schema: z.ZodType<T>): Promise<T> {
-    const [result] = this.#ok(await this.#client.call(request), schema, request.what);
+    const [result] = await this.#all(request, schema);
     if (result === undefined) {
       throw new OpsCrewError(
         "PROVIDER_ERROR",
@@ -532,21 +526,24 @@ export class PleskPanel implements HostingPanel {
     return result;
   }
 
-  /** Every result, each of which must be ok. */
-  #ok<T>(results: PleskResult[], schema: z.ZodType<T>, what: string): T[] {
-    return results.map((result) => {
-      if (result.status === "error") throw this.#client.failure(result, what);
-      return parseAnswer(schema, result, "Plesk", what);
-    });
-  }
-
-  /** {@link #ok}, where "does not exist" (1013) is no result rather than a failure. */
-  #found<T>(results: PleskResult[], schema: z.ZodType<T>, what: string): T[] {
-    return this.#ok(
-      results.filter((r) => !(r.status === "error" && r.errcode === PLESK_ERRORS.doesNotExist)),
-      schema,
-      what,
-    );
+  /**
+   * Every result of the request, each of which must be ok; with `missingOk`, "does not exist"
+   * (1013) is no result rather than a failure.
+   */
+  async #all<T>(
+    request: PleskRequest,
+    schema: z.ZodType<T>,
+    options: { missingOk?: boolean } = {},
+  ): Promise<T[]> {
+    const missingOk = options.missingOk === true;
+    return (await this.#client.call(request))
+      .filter(
+        (r) => !(missingOk && r.status === "error" && r.errcode === PLESK_ERRORS.doesNotExist),
+      )
+      .map((result) => {
+        if (result.status === "error") throw this.#client.failure(result, request.what);
+        return parseAnswer(schema, result, "Plesk", request.what);
+      });
   }
 }
 
@@ -590,7 +587,7 @@ function homeRelative(path: string, folder: string): string {
     throw new OpsCrewError(
       "PROVIDER_ERROR",
       `Plesk gave the document root ${path}, which is not in the subscription's folder ${folder}.`,
-      { hint: "The Plesk API may have changed; please report this to OpsCrew." },
+      { hint: changedApiHint("Plesk") },
     );
   }
   return parts.slice(at + 1).join("/") || ".";

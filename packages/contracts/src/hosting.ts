@@ -122,7 +122,8 @@ export interface HostingCertificate {
 /**
  * Files in a hosting account, by the panel's API or over SFTP (`@opscrew/connector-sftp`, for a
  * panel whose API has no file calls, such as Plesk's: one without `writeFile` in its `operations`
- * refuses every file call). Paths are relative to the account's home folder and never contain `..`.
+ * refuses every file call). Paths are relative to the account's home folder (`SftpFiles` also
+ * takes absolute ones) and never contain `..`.
  */
 export interface HostingFiles {
   /**

@@ -1,5 +1,13 @@
 import type { FetchLike, HostingPanelAccess } from "@opscrew/contracts";
-import { CONNECTION_HINT, maybeDoneHint, OpsCrewError, parseAnswer, Redactor } from "@opscrew/core";
+import {
+  changedApiHint,
+  fetchText,
+  httpsOrigin,
+  OpsCrewError,
+  type PanelClientOptions,
+  parseAnswer,
+  Redactor,
+} from "@opscrew/core";
 import { z } from "zod";
 
 /*
@@ -14,22 +22,9 @@ import { z } from "zod";
  *   documented shape, so the documented URL-encoded answers are what this client reads.
  */
 
-/** Time one request to DirectAdmin may take. */
-export const DIRECTADMIN_REQUEST_TIMEOUT_MS = 60_000;
-
 /** Where the user makes the login key OpsCrew uses, as a next step. */
-export const LOGIN_KEY_HINT =
+const LOGIN_KEY_HINT =
   "In DirectAdmin, open Login Keys, create a key for OpsCrew that may call the API, then set OPSCREW_HOSTING_TOKEN to it and OPSCREW_HOSTING_USER to the account's user name.";
-
-/** What a {@link DirectAdminClient} is given besides the access. */
-export interface DirectAdminClientDeps {
-  /** Default: the global `fetch`. */
-  fetch?: FetchLike;
-  /** Shared redactor; a private one is used when omitted. The login key is always registered. */
-  redactor?: Redactor;
-  /** Default {@link DIRECTADMIN_REQUEST_TIMEOUT_MS}. */
-  timeoutMs?: number;
-}
 
 /** A JSON API error answer: its HTTP status, its `type` and the file manager's reasons. */
 export class DirectAdminApiError extends OpsCrewError {
@@ -59,6 +54,9 @@ const errorBodySchema = z.object({
 
 type Method = "GET" | "POST" | "DELETE";
 
+/** An answer as {@link fetchText} reads it. */
+type Answer = Awaited<ReturnType<typeof fetchText>>;
+
 /** One JSON API request. */
 interface JsonCall<S extends z.ZodType> {
   /** What OpsCrew was doing, after "to" ("list the account's databases"). */
@@ -81,31 +79,18 @@ export class DirectAdminClient {
   readonly user: string;
   private readonly origin: string;
   private readonly authorization: string;
-  private readonly fetch: FetchLike;
+  private readonly fetch: FetchLike | undefined;
   private readonly redactor: Redactor;
-  private readonly timeoutMs: number;
+  private readonly timeoutMs: number | undefined;
 
-  constructor(access: HostingPanelAccess, deps: DirectAdminClientDeps = {}) {
-    let url: URL;
-    try {
-      url = new URL(access.url);
-    } catch {
-      throw new OpsCrewError("INVALID_INPUT", "OPSCREW_HOSTING_URL is not a valid address.", {
-        hint: "Set OPSCREW_HOSTING_URL to DirectAdmin's address, such as https://panel.example.com:2222.",
-      });
-    }
-    if (url.protocol !== "https:") {
-      throw new OpsCrewError("INVALID_INPUT", "OPSCREW_HOSTING_URL must start with https://.", {
-        hint: "Use DirectAdmin's HTTPS address, such as https://panel.example.com:2222: the login key must not travel unencrypted.",
-      });
-    }
-    this.origin = url.origin;
+  constructor(access: HostingPanelAccess, options: PanelClientOptions = {}) {
+    this.origin = httpsOrigin(access.url, "https://panel.example.com:2222");
     this.user = access.user;
-    this.redactor = deps.redactor ?? new Redactor();
+    this.redactor = options.redactor ?? new Redactor();
     this.redactor.addLiteral(access.token, "OPSCREW_HOSTING_TOKEN");
     this.authorization = `Basic ${Buffer.from(`${access.user}:${access.token}`).toString("base64")}`;
-    this.fetch = deps.fetch ?? ((input, init) => globalThis.fetch(input, init));
-    this.timeoutMs = deps.timeoutMs ?? DIRECTADMIN_REQUEST_TIMEOUT_MS;
+    this.fetch = options.fetch;
+    this.timeoutMs = options.timeoutMs;
   }
 
   /** Registers a secret sent in a request (a database password) so no error can show it. */
@@ -121,7 +106,7 @@ export class DirectAdminClient {
         : { body: JSON.stringify(call.body), contentType: "application/json" }),
       ...(call.timeoutMs === undefined ? {} : { timeoutMs: call.timeoutMs }),
     });
-    const text = await this.read(response, call.what, call.method);
+    const text = response.text;
     if (!response.ok) throw this.apiError(response.status, text, call.what);
     let json: unknown;
     try {
@@ -150,8 +135,7 @@ export class DirectAdminClient {
       { dir: target.dir, name: target.name, perm: target.perm, overwrite: "false" },
       { body: form },
     );
-    const text = await this.read(response, what, "POST");
-    if (!response.ok) throw this.apiError(response.status, text, what);
+    if (!response.ok) throw this.apiError(response.status, response.text, what);
   }
 
   /**
@@ -160,10 +144,9 @@ export class DirectAdminClient {
    */
   async download(what: string, path: string): Promise<string | undefined> {
     const response = await this.send(what, "GET", "/api/filemanager/download", { path });
-    const text = await this.read(response, what, "GET");
     if (response.status === 404) return undefined;
-    if (!response.ok) throw this.apiError(response.status, text, what);
-    return text;
+    if (!response.ok) throw this.apiError(response.status, response.text, what);
+    return response.text;
   }
 
   /**
@@ -183,7 +166,7 @@ export class DirectAdminClient {
             body: new URLSearchParams(params).toString(),
             contentType: "application/x-www-form-urlencoded",
           });
-    const text = await this.read(response, what, method);
+    const text = response.text;
     if (response.status === 401) throw this.rejected(what);
     if (!response.ok) {
       throw new OpsCrewError(
@@ -222,39 +205,20 @@ export class DirectAdminClient {
     path: string,
     query: Record<string, string> | undefined,
     options: { body?: string | FormData; contentType?: string; timeoutMs?: number } = {},
-  ): Promise<Response> {
+  ): Promise<Answer> {
     const url = new URL(path, this.origin);
     for (const [name, value] of Object.entries(query ?? {})) url.searchParams.set(name, value);
     const headers: Record<string, string> = { Authorization: this.authorization };
     if (options.contentType !== undefined) headers["Content-Type"] = options.contentType;
-    const signal = AbortSignal.timeout(options.timeoutMs ?? this.timeoutMs);
-    try {
-      return await this.fetch(url.toString(), {
-        method,
-        headers,
-        ...(options.body === undefined ? {} : { body: options.body }),
-        signal,
-      });
-    } catch (cause) {
-      throw this.unreachable(what, method, signal.aborted, cause);
-    }
-  }
-
-  private async read(response: Response, what: string, method: Method): Promise<string> {
-    try {
-      return await response.text();
-    } catch (cause) {
-      throw this.unreachable(what, method, false, cause);
-    }
-  }
-
-  private unreachable(what: string, method: Method, timedOut: boolean, cause: unknown) {
-    return new OpsCrewError(
-      "PROVIDER_ERROR",
-      `${timedOut ? "DirectAdmin did not answer in time" : `Could not reach DirectAdmin at ${this.origin}`} when trying to ${what}.`,
+    return fetchText(
+      this.fetch,
+      url.toString(),
+      { method, headers, ...(options.body === undefined ? {} : { body: options.body }) },
       {
-        hint: method === "GET" ? CONNECTION_HINT : maybeDoneHint("DirectAdmin"),
-        cause: timedOut ? undefined : cause,
+        service: "DirectAdmin",
+        what,
+        write: method !== "GET",
+        timeoutMs: options.timeoutMs ?? this.timeoutMs,
       },
     );
   }
@@ -274,7 +238,7 @@ export class DirectAdminClient {
     return new OpsCrewError(
       "PROVIDER_ERROR",
       `DirectAdmin returned ${problem} when trying to ${what}.`,
-      { hint: "The DirectAdmin API may have changed; please report this to OpsCrew." },
+      { hint: changedApiHint("DirectAdmin") },
     );
   }
 

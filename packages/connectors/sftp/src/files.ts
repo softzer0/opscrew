@@ -3,9 +3,8 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, posix } from "node:path";
 import type { CommandResult, CommandRunner, HostingFiles } from "@opscrew/contracts";
-import { OpsCrewError, Redactor } from "@opscrew/core";
+import { OpsCrewError, octalMode, Redactor, readTar } from "@opscrew/core";
 import { checkRemotePath, type ListedEntry, parseListing, quote } from "./batch";
-import { readTar } from "./tar";
 
 /** How OpsCrew logs in to an SFTP host. */
 export interface SftpLogin {
@@ -98,7 +97,7 @@ export class SftpFiles implements HostingFiles {
    */
   async writeFile(path: string, content: Uint8Array, mode: number): Promise<void> {
     checkRemotePath(path, "A file's path");
-    const octal = modeText(mode);
+    const octal = octalMode(mode);
     const temporary = posix.join(posix.dirname(path), `.opscrew-${this.#randomName()}.tmp`);
     await this.#session(async (dir) => {
       const local = join(dir, "upload");
@@ -127,7 +126,7 @@ export class SftpFiles implements HostingFiles {
         if (entry.type === "dir") {
           lines.push(
             line(`mkdir ${quote(path)}`, { tolerate: true }),
-            line(`chmod ${modeText(entry.mode)} ${quote(path)}`),
+            line(`chmod ${octalMode(entry.mode)} ${quote(path)}`),
           );
           continue;
         }
@@ -137,7 +136,7 @@ export class SftpFiles implements HostingFiles {
           await writeFile(local, entry.content, { mode: 0o600 });
           lines.push(
             line(`put ${quote(local)} ${quote(temporary)}`),
-            line(`chmod ${modeText(entry.mode)} ${quote(temporary)}`),
+            line(`chmod ${octalMode(entry.mode)} ${quote(temporary)}`),
           );
         } else {
           lines.push(line(`ln -s ${quote(entry.target)} ${quote(temporary)}`));
@@ -348,14 +347,6 @@ export class SftpFiles implements HostingFiles {
       { hint: "Check that the SFTP user may change that folder, then try again." },
     );
   }
-}
-
-/** `mode` in octal, as `chmod` takes it. */
-function modeText(mode: number): string {
-  if (!Number.isInteger(mode) || mode < 0 || mode > 0o777) {
-    throw new OpsCrewError("INVALID_INPUT", `${mode} isn't a file mode.`);
-  }
-  return mode.toString(8).padStart(3, "0");
 }
 
 /** Each level of `path` from the top: `a`, `a/b`, `a/b/c` (`/a`, `/a/b` for an absolute one). */

@@ -1,23 +1,21 @@
-import type { FetchLike, HostingPanelAccess } from "@opscrew/contracts";
+import type { HostingPanelAccess } from "@opscrew/contracts";
 import {
-  CONNECTION_HINT,
   type ErrorCode,
+  fetchText,
+  httpsOrigin,
   isRecord,
   OpsCrewError,
+  type PanelClientOptions,
+  parseAnswer,
   Redactor,
-  zodIssues,
 } from "@opscrew/core";
 import { z } from "zod";
-
-/** Default time one request to cPanel may take. */
-export const CPANEL_REQUEST_TIMEOUT_MS = 60_000;
 
 const TOKEN_HINT =
   "Make an API token in cPanel under Security → Manage API Tokens, then set OPSCREW_HOSTING_TOKEN to it.";
 const ADDRESS_HINT =
   "Check that OPSCREW_HOSTING_URL is the panel's address (https://<host>:2083), then try again.";
 const REFUSAL_HINT = "Fix what cPanel names, then run the command again.";
-const CHANGED_HINT = "cPanel's API may have changed; please report this to OpsCrew.";
 
 /**
  * A call cPanel refused, with its own reason. cPanel answers HTTP 200 for these: UAPI with
@@ -35,15 +33,6 @@ export class CpanelRefusal extends OpsCrewError {
   }
 }
 
-export interface CpanelClientOptions {
-  /** Default: the global `fetch`. */
-  fetch?: FetchLike;
-  /** Per request (default {@link CPANEL_REQUEST_TIMEOUT_MS}). */
-  timeoutMs?: number;
-  /** Shared redactor; a private one is used when omitted. The token is always registered. */
-  redactor?: Redactor;
-}
-
 /** One call: its module and function, its parameters and the schema of its answer's `data`. */
 export interface CpanelCall<S extends z.ZodType> {
   module: string;
@@ -51,28 +40,24 @@ export interface CpanelCall<S extends z.ZodType> {
   params?: Readonly<Record<string, string>>;
   /** What the call does, to end "… when trying to <what>" in errors. */
   what: string;
+  /** A change: a UAPI one is sent as a POST form, and a lost answer says it may have been made. */
+  write?: boolean;
   schema: S;
-}
-
-/** A file for {@link CpanelClient.upload}. */
-export interface CpanelUpload {
-  name: string;
-  content: Uint8Array;
 }
 
 /** Typed calls to one cPanel account; every answer is validated and no error shows the token. */
 export interface CpanelClient {
   /** UAPI (`/execute/<Module>/<function>`): a read by GET, a change (`write`) as a POST form. */
-  uapi<S extends z.ZodType>(call: CpanelCall<S> & { write?: boolean }): Promise<z.output<S>>;
+  uapi<S extends z.ZodType>(call: CpanelCall<S>): Promise<z.output<S>>;
   /** API2 (`/json-api/cpanel`, `cpanel_jsonapi_apiversion=2`), as a POST form. */
   api2<S extends z.ZodType>(call: CpanelCall<S>): Promise<z.output<S>>;
   /**
-   * `Fileman::upload_files`: the files into `dir` (an absolute path, made when missing), replacing
+   * `Fileman::upload_files`: the file into `dir` (an absolute path, made when missing), replacing
    * a file of the same name, with `permissions` (`0600`).
    */
   upload(input: {
     dir: string;
-    files: readonly CpanelUpload[];
+    file: { name: string; content: Uint8Array };
     permissions: string;
     what: string;
   }): Promise<void>;
@@ -80,7 +65,8 @@ export interface CpanelClient {
   registerSecret(value: string, label: string): void;
 }
 
-const flag = z.union([z.number(), z.string()]).transform(Number);
+/** cPanel's 0 or 1, as a number or a string. */
+export const flag = z.union([z.number(), z.string()]).transform(Number);
 
 const UapiResultSchema = z.object({
   status: flag,
@@ -108,8 +94,6 @@ const UploadSchema = z.object({
   failed: flag.default(0),
 });
 
-const FORM = { "Content-Type": "application/x-www-form-urlencoded" };
-
 /**
  * The client for one cPanel account, authenticated with `Authorization: cpanel <user>:<token>`.
  * The token is registered with the redactor before any request, and every error's text passes
@@ -117,9 +101,9 @@ const FORM = { "Content-Type": "application/x-www-form-urlencoded" };
  */
 export function cpanelClient(
   access: HostingPanelAccess,
-  options: CpanelClientOptions = {},
+  options: PanelClientOptions = {},
 ): CpanelClient {
-  const base = panelBase(access.url);
+  const base = httpsOrigin(access.url, "https://panel.example.com:2083");
   const user = access.user.trim();
   const token = access.token.trim();
   if (user === "") {
@@ -143,8 +127,6 @@ export function cpanelClient(
       },
     );
   }
-  const fetchFn = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
-  const timeoutMs = options.timeoutMs ?? CPANEL_REQUEST_TIMEOUT_MS;
   const authorization = `cpanel ${user}:${token}`;
 
   const fail = (code: ErrorCode, message: string, hint: string) =>
@@ -158,34 +140,31 @@ export function cpanelClient(
     );
   };
 
-  function parse<S extends z.ZodType>(schema: S, value: unknown, what: string): z.output<S> {
-    const parsed = schema.safeParse(value);
-    if (!parsed.success) {
-      throw fail(
-        "PROVIDER_ERROR",
-        `cPanel returned an unexpected answer when trying to ${what}: ${zodIssues(parsed.error)}.`,
-        CHANGED_HINT,
-      );
-    }
-    return parsed.data;
-  }
+  const parse = <S extends z.ZodType>(schema: S, value: unknown, what: string) =>
+    parseAnswer(schema, value, "cPanel", what);
 
-  /** Sends one request and answers its JSON. */
-  async function send(url: string, init: RequestInit, what: string): Promise<unknown> {
-    const signal = AbortSignal.timeout(timeoutMs);
-    let response: Response;
-    let text: string;
-    try {
-      response = await fetchFn(url, {
-        ...init,
-        headers: { ...(init.headers as Record<string, string>), Authorization: authorization },
-        signal,
-      });
-      text = await response.text();
-    } catch {
-      const why = signal.aborted ? "the request timed out" : "the connection failed";
-      throw fail("PROVIDER_ERROR", `Could not reach cPanel to ${what} (${why}).`, CONNECTION_HINT);
-    }
+  /** Sends one request (a POST with a `body`, else a GET) and answers its JSON. */
+  async function send(
+    url: string,
+    body: string | FormData | undefined,
+    what: string,
+    write: boolean,
+  ): Promise<unknown> {
+    const response = await fetchText(
+      options.fetch,
+      url,
+      {
+        method: body === undefined ? "GET" : "POST",
+        headers: {
+          Authorization: authorization,
+          ...(typeof body === "string" && {
+            "Content-Type": "application/x-www-form-urlencoded",
+          }),
+        },
+        ...(body !== undefined && { body }),
+      },
+      { service: "cPanel", what, write, timeoutMs: options.timeoutMs },
+    );
     if (response.status === 401 || response.status === 403) {
       throw fail(
         "CREDENTIALS_INVALID",
@@ -201,7 +180,7 @@ export function cpanelClient(
       );
     }
     try {
-      return JSON.parse(text);
+      return JSON.parse(response.text);
     } catch {
       throw fail(
         "PROVIDER_ERROR",
@@ -223,8 +202,8 @@ export function cpanelClient(
       const url = `${base}/execute/${call.module}/${call.func}`;
       const query = new URLSearchParams(call.params).toString();
       const json = call.write
-        ? await send(url, { method: "POST", headers: FORM, body: query }, call.what)
-        : await send(query === "" ? url : `${url}?${query}`, { method: "GET" }, call.what);
+        ? await send(url, query, call.what, true)
+        : await send(query === "" ? url : `${url}?${query}`, undefined, call.what, false);
       return parse(call.schema, uapiData(json, call.what), call.what);
     },
 
@@ -238,8 +217,9 @@ export function cpanelClient(
       });
       const json = await send(
         `${base}/json-api/cpanel`,
-        { method: "POST", headers: FORM, body: body.toString() },
+        body.toString(),
         call.what,
+        call.write === true,
       );
       const result = parse(Api2AnswerSchema, json, call.what).cpanelresult;
       const items = Array.isArray(result.data) ? result.data.filter(isRecord) : [];
@@ -256,14 +236,8 @@ export function cpanelClient(
       form.append("dir", input.dir);
       form.append("overwrite", "1");
       form.append("permissions", input.permissions);
-      input.files.forEach((file, index) => {
-        form.append(`file-${index + 1}`, new Blob([Buffer.from(file.content)]), file.name);
-      });
-      const json = await send(
-        `${base}/execute/Fileman/upload_files`,
-        { method: "POST", body: form },
-        input.what,
-      );
+      form.append("file-1", new Blob([Buffer.from(input.file.content)]), input.file.name);
+      const json = await send(`${base}/execute/Fileman/upload_files`, form, input.what, true);
       const data = parse(UploadSchema, uapiData(json, input.what), input.what);
       const failed = data.uploads.find((upload) => upload.status !== 1);
       if (failed !== undefined || data.failed > 0) {
@@ -275,28 +249,4 @@ export function cpanelClient(
       redactor.addLiteral(value, label);
     },
   };
-}
-
-/** The panel's address as `https://<host>:<port>`, without a trailing slash. */
-function panelBase(address: string): string {
-  let url: URL | undefined;
-  try {
-    url = new URL(address.trim());
-  } catch {
-    url = undefined;
-  }
-  if (
-    url === undefined ||
-    url.protocol !== "https:" ||
-    url.username !== "" ||
-    url.password !== "" ||
-    url.search !== "" ||
-    url.hash !== "" ||
-    url.pathname !== "/"
-  ) {
-    throw new OpsCrewError("INVALID_INPUT", "OPSCREW_HOSTING_URL isn't a cPanel address.", {
-      hint: "Set it to the panel's address, https://<host>:2083.",
-    });
-  }
-  return url.origin;
 }

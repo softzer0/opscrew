@@ -1,7 +1,13 @@
-import { type DeployPlan, isCloudProvider } from "@opscrew/plan-schema";
+import type { DeployPlan } from "@opscrew/plan-schema";
 import { cloudProvider } from "@opscrew/providers";
 import type { PhaseDeps } from "../context";
-import { readProviderBackups, wantedBackups } from "../shared/provider-backups";
+import {
+  connectorBackupsProvider,
+  label,
+  panel,
+  readProviderBackups,
+  wantedBackups,
+} from "../shared/provider-backups";
 
 /**
  * What OpsCrew knows of the automated backups the providers' connectors turn on (Contabo's Auto
@@ -17,13 +23,7 @@ export async function providerBackupsNotes(
 ): Promise<string[]> {
   const targets = [plan.target, ...(plan.servers ?? []).map((server) => server.target)];
   const providers = [
-    ...new Set(
-      targets.flatMap(({ provider }) =>
-        isCloudProvider(provider) && cloudProvider(provider).terraform.connectorBackups === true
-          ? [provider]
-          : [],
-      ),
-    ),
+    ...new Set(targets.map(({ provider }) => provider).filter(connectorBackupsProvider)),
   ];
   if (providers.length === 0) return [];
   const notes = providers.map((provider) => {
@@ -32,22 +32,21 @@ export async function providerBackupsNotes(
   });
   for (const wanted of wantedBackups((await outputs()) ?? {})) {
     const record = await readProviderBackups(deps, wanted);
-    const { name, texts } = cloudProvider(wanted.provider);
-    const panel = texts.destroy.console;
-    const what = `${name}'s automated backups of server ${wanted.serverId}`;
+    const what = label(wanted);
+    const where = panel(wanted);
     const note = wanted.on
       ? record === undefined
-        ? `The plan has ${what} on, and OpsCrew has no record of turning them on on this computer: check the server in ${panel}.`
+        ? `The plan has ${what} on, and OpsCrew has no record of turning them on on this computer: check the server in ${where}.`
         : record.state === "wanted"
           ? `The plan has ${what} on, and OpsCrew's order of them hasn't gone through yet: the next \`opscrew provision\` sends it again.`
           : record.state === "sent"
-            ? `The plan has ${what} on, and OpsCrew's order of them got no clear answer, so they may not be on: check the server in ${panel}.`
+            ? `The plan has ${what} on, and OpsCrew's order of them got no clear answer, so they may not be on: check the server in ${where}.`
             : undefined
       : record === undefined || record.state === "wanted"
         ? undefined
         : record.state === "sent"
-          ? `The plan has ${what} off, and OpsCrew's order of them got no clear answer, so they may be on: check the server in ${panel}, and cancel them there if they are.`
-          : `The plan has ${what} off, but OpsCrew turned them on: they stay on, and billed, until you cancel them in ${panel}.`;
+          ? `The plan has ${what} off, and OpsCrew's order of them got no clear answer, so they may be on: check the server in ${where}, and cancel them there if they are.`
+          : `The plan has ${what} off, but OpsCrew turned them on: they stay on, and billed, until you cancel them in ${where}.`;
     if (note !== undefined) notes.push(note);
   }
   return notes;

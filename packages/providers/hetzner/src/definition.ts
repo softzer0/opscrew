@@ -122,6 +122,7 @@ export const definition: CloudProviderDefinition = {
     serverResourceType: "hcloud_server",
     firewallResourceType: "hcloud_firewall",
     connectorFirewall: false,
+    connectorBackups: false,
     connectorRemoval: false,
     homeCacheFiles: [],
     mirroredAttributes: { hcloud_firewall: ["apply_to"] },

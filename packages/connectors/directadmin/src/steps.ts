@@ -12,24 +12,14 @@ import { OpsCrewError } from "@opscrew/core";
 
 type Details = Readonly<Record<string, string>>;
 
-function need(details: Details, key: string, operation: HostingOperation): string {
-  const value = details[key];
-  if (value === undefined || value === "") {
-    throw new OpsCrewError(
-      "INVALID_INPUT",
-      `The DirectAdmin step for ${operation} needs "${key}", which was not given.`,
-      { hint: "This is a bug in OpsCrew; please report it." },
-    );
-  }
-  return value;
-}
+/** A step without its operation, from `need(key)` (a detail that must be given) and the details. */
+type Step = (need: (key: string) => string, details: Details) => Omit<PanelStep, "operation">;
 
-const STEPS: { [O in HostingOperation]: (details: Details) => PanelStep } = {
-  addHostname: (d) => {
-    const hostname = need(d, "hostname", "addHostname");
+const STEPS: { [O in HostingOperation]: Step } = {
+  addHostname: (need, d) => {
+    const hostname = need("hostname");
     const root = d.documentRoot;
     return {
-      operation: "addHostname",
       what:
         root === undefined || root === ""
           ? `Add ${hostname} (a subdomain under Sub-Domains Setup; a domain under Domain Setup)`
@@ -38,67 +28,66 @@ const STEPS: { [O in HostingOperation]: (details: Details) => PanelStep } = {
       ...(root === undefined || root === "" ? {} : { value: root }),
     };
   },
-  removeHostname: (d) => ({
-    operation: "removeHostname",
-    what: `Delete the subdomain ${need(d, "hostname", "removeHostname")}, keeping its folder`,
+  removeHostname: (need) => ({
+    what: `Delete the subdomain ${need("hostname")}, keeping its folder`,
     where: "Sub-Domains Setup",
   }),
-  addDatabase: (d) => ({
-    operation: "addDatabase",
-    what: `Create the database ${need(d, "name", "addDatabase")} with the user ${need(d, "user", "addDatabase")} and every privilege on it, using the password OpsCrew shows`,
+  addDatabase: (need) => ({
+    what: `Create the database ${need("name")} with the user ${need("user")} and every privilege on it, using the password OpsCrew shows`,
     where: "MySQL Management",
   }),
-  removeDatabase: (d) => ({
-    operation: "removeDatabase",
-    what: `Delete the database ${need(d, "name", "removeDatabase")} and its user ${need(d, "user", "removeDatabase")}`,
+  removeDatabase: (need) => ({
+    what: `Delete the database ${need("name")} and its user ${need("user")}`,
     where: "MySQL Management",
   }),
-  addCron: (d) => ({
-    operation: "addCron",
+  addCron: (need) => ({
     what: "Add this cron job (minute, hour, day of month, month, day of week, then the command)",
     where: "Cron Jobs",
-    value: `${need(d, "schedule", "addCron")} ${need(d, "command", "addCron")}`,
+    value: `${need("schedule")} ${need("command")}`,
   }),
-  removeCron: (d) => ({
-    operation: "removeCron",
-    what: `Delete the cron job DirectAdmin numbers ${need(d, "key", "removeCron")}`,
+  removeCron: (need) => ({
+    what: `Delete the cron job DirectAdmin numbers ${need("key")}`,
     where: "Cron Jobs",
   }),
-  writeFile: (d) => ({
-    operation: "writeFile",
-    what: `Upload the file ${need(d, "path", "writeFile")} and set its permissions`,
+  writeFile: (need) => ({
+    what: `Upload the file ${need("path")} and set its permissions`,
     where: "File Manager",
-    value: need(d, "mode", "writeFile"),
+    value: need("mode"),
   }),
-  uploadTar: (d) => ({
-    operation: "uploadTar",
-    what: `Upload ${need(d, "file", "uploadTar")} into ${need(d, "folder", "uploadTar")}, extract it there, then delete ${need(d, "file", "uploadTar")}`,
+  uploadTar: (need) => ({
+    what: `Upload ${need("file")} into ${need("folder")}, extract it there, then delete ${need("file")}`,
     where: "File Manager",
   }),
-  remove: (d) => ({
-    operation: "remove",
-    what: `Delete ${need(d, "path", "remove")} and everything in it`,
+  remove: (need) => ({
+    what: `Delete ${need("path")} and everything in it`,
     where: "File Manager",
   }),
-  requestCertificate: (d) => ({
-    operation: "requestCertificate",
-    what: `Get a free certificate covering ${need(d, "hostname", "requestCertificate")}, keeping the names already ticked`,
+  requestCertificate: (need) => ({
+    what: `Get a free certificate covering ${need("hostname")}, keeping the names already ticked`,
     where: "SSL Certificates",
   }),
-  removeCertificate: (d) => ({
-    operation: "removeCertificate",
-    what: `Delete the certificate ${need(d, "id", "removeCertificate")} (domain/certificate)`,
+  removeCertificate: (need) => ({
+    what: `Delete the certificate ${need("id")} (domain/certificate)`,
     where: "SSL Certificates",
   }),
-  setPhpVersion: (d) => ({
-    operation: "setPhpVersion",
-    what: `Choose PHP ${need(d, "version", "setPhpVersion")} for ${need(d, "hostname", "setPhpVersion")} in its PHP Version Selector (for a subdomain: Sub-Domains Setup → Document Root Override)`,
+  setPhpVersion: (need) => ({
+    what: `Choose PHP ${need("version")} for ${need("hostname")} in its PHP Version Selector (for a subdomain: Sub-Domains Setup → Document Root Override)`,
     where: "Account Manager → Domain Setup, or Account Manager → PHP Settings",
-    value: need(d, "version", "setPhpVersion"),
+    value: need("version"),
   }),
 };
 
 /** The step the user takes in DirectAdmin for `operation`, with the values in `details`. */
 export function directAdminPanelStep(operation: HostingOperation, details: Details): PanelStep {
-  return STEPS[operation](details);
+  const need = (key: string): string => {
+    const value = details[key];
+    if (value === undefined || value === "") {
+      throw new OpsCrewError(
+        "INTERNAL",
+        `The DirectAdmin step for ${operation} needs "${key}", which was not given.`,
+      );
+    }
+    return value;
+  };
+  return { operation, ...STEPS[operation](need, details) };
 }

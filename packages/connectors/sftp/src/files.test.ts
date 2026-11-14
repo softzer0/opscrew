@@ -7,7 +7,6 @@ import { describe, expect, it } from "vitest";
 import { parseListing, quote } from "./batch";
 import { batchWords, FakeSftpHost } from "./fake";
 import { SftpFiles } from "./files";
-import { readTar } from "./tar";
 
 const LOGIN = {
   host: "sftp.example.com",
@@ -109,7 +108,7 @@ describe("SftpFiles", () => {
     expect(host.paths("app/shared")).toEqual(["app/shared", "app/shared/.env"]);
     expect(host.runs[0]?.lines).toEqual([
       expect.stringMatching(/^@put ".*upload" "app\/shared\/\.opscrew-r1\.tmp"$/),
-      '@chmod 600 "app/shared/.opscrew-r1.tmp"',
+      '@chmod 0600 "app/shared/.opscrew-r1.tmp"',
       '@rename "app/shared/.opscrew-r1.tmp" "app/shared/.env"',
     ]);
   });
@@ -183,9 +182,14 @@ describe("SftpFiles", () => {
     ]);
   });
 
-  it("refuses an archive entry that leaves its folder", () => {
-    expect(() => readTar(tar([{ name: "../x", type: "0" }]))).toThrow(/leaves its folder/);
-    expect(() => readTar(tar([{ name: "/etc/x", type: "0" }]))).toThrow(/leaves its folder/);
+  it("refuses an archive entry that leaves its folder", async () => {
+    const { host, files } = setup();
+    for (const name of ["../x", "/etc/x"]) {
+      await expect(files.uploadTar(".", tar([{ name, type: "0" }]))).rejects.toThrow(
+        /leaves its folder/,
+      );
+    }
+    expect(host.runs).toEqual([]);
   });
 
   it("switches a link in one rename, from a new link beside it", async () => {

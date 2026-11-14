@@ -31,12 +31,11 @@ import {
   forgetStorageKey,
   requireStorageKey,
   STORAGE_PLAN_SUFFIX,
-  type StorageKey,
   storageEngineEnv,
   storageStateFile,
   withPreviousBucketKey,
 } from "../provision/storage";
-import { writeRenderedFiles } from "../shared";
+import { type StorageLogin, writeRenderedFiles } from "../shared";
 import { STORAGE_ENDPOINTS } from "../shared/app-env";
 import { discardSaved, planBounded, quietly } from "./plans";
 import { auditMove, type MoveBase, type MoveSession, remoteFor, serverOf } from "./session";
@@ -55,8 +54,8 @@ export interface MovingBucket {
 
 /** The users' keys of both buckets. Never logged. */
 export interface BucketKeys {
-  old: StorageKey;
-  next: StorageKey;
+  old: StorageLogin;
+  next: StorageLogin;
 }
 
 /** A bucket's size, from `rclone size --json`. */
@@ -202,7 +201,7 @@ export function bucketSummaryLines(bucket: MovingBucket, size: BucketSize): stri
 }
 
 /** One `[name]` section of rclone's configuration for `bucket`'s service, with `key`. */
-function rcloneRemote(name: "old" | "new", bucket: ProviderBucket, key: StorageKey): string[] {
+function rcloneRemote(name: "old" | "new", bucket: ProviderBucket, key: StorageLogin): string[] {
   const endpoint = STORAGE_ENDPOINTS[bucket.provider];
   if (endpoint === undefined) throw new Error(`No S3 endpoint is known for ${bucket.provider}.`);
   return [
@@ -271,7 +270,7 @@ const RcloneSizeSchema = z.object({
 export async function measureBucket(
   session: MoveBase,
   bucket: MovingBucket,
-  key: StorageKey,
+  key: StorageLogin,
 ): Promise<BucketSize> {
   const { deps } = session;
   deps.reporter.step(`Measuring the bucket ${bucketWords(bucket.old)}`);
@@ -354,8 +353,8 @@ function bucketStop(what: string, command: string): { lead: string; hint: string
 interface StoragePlan {
   layout: MoveLayoutName;
   /** The default `aws` provider's key, and the `aws.previous` provider's when the layout has it. */
-  key: StorageKey;
-  previous?: StorageKey;
+  key: StorageLogin;
+  previous?: StorageLogin;
   check: (saved: Pick<SavedPlan, "changes" | "moves">) => void;
   /** The new bucket's creation, through `applyStorage` (which keeps a bucket shown late). */
   creates?: true;
@@ -546,7 +545,7 @@ export async function createBucket(session: MoveSession): Promise<RetargetResult
 async function afterDeletion(
   session: MoveSession,
   bucket: ProviderBucket,
-  key: StorageKey,
+  key: StorageLogin,
 ): Promise<string | undefined> {
   const { deps, services } = session;
   const still = await confirmBucketGone(deps, bucket, key, services.sleep ?? realSleep);

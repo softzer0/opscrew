@@ -26,10 +26,11 @@ async function failure(promise: Promise<unknown>): Promise<OpsCrewError> {
 
 describe("DirectAdminClient", () => {
   it("refuses an address that is not HTTPS", () => {
-    expect(
-      () => new DirectAdminClient({ ...access, url: "http://panel.example.test:2222" }),
-    ).toThrow(/https/);
-    expect(() => new DirectAdminClient({ ...access, url: "panel" })).toThrow(/not a valid address/);
+    for (const url of ["http://panel.example.test:2222", "panel"]) {
+      expect(() => new DirectAdminClient({ ...access, url })).toThrow(
+        "OPSCREW_HOSTING_URL isn't a panel's https:// address.",
+      );
+    }
   });
 
   it("sends JSON API calls with basic auth and the login key", async () => {
@@ -159,7 +160,7 @@ describe("DirectAdminClient", () => {
     const read = await failure(
       da.json({ what: "read a", method: "GET", path: "/api/a", schema: z.unknown() }),
     );
-    expect(read.message).toContain(`Could not reach DirectAdmin at ${BASE}`);
+    expect(read.message).toBe("Could not reach DirectAdmin at panel.example.test:2222 to read a.");
     expect(read.hint).toContain("internet connection");
     const write = await failure(
       da.json({ what: "write a", method: "POST", path: "/api/a", body: {}, schema: z.unknown() }),
