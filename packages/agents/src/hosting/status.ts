@@ -17,7 +17,7 @@ import { hostingAccountLines, readHostingAccount } from "./facts";
 import { connectPanel, hostingFiles, PANEL_NAMES } from "./panels";
 import { hostingFolder, hostingTarget, hostnameOf } from "./provision-plans";
 import { type HostingRecord, readHostingRecord } from "./record";
-import { keyValues } from "./requests";
+import { keyValues, RELEASE_ID } from "./requests";
 import { reachSftpHost, sftpFilesFromEnv } from "./sftp";
 
 /** What a test gives the hosting commands. */
@@ -58,7 +58,7 @@ export async function reachHostingAccount(
       "PHASE_PRECONDITION",
       "OpsCrew has no record of the hosting account's panel on this computer (.opscrew/hosting.json), so it can't reach the app there.",
       {
-        hint: "Run the command on the computer that ran `opscrew provision`, or on one where .opscrew/ was restored from OpsCrew's recovery copy.",
+        hint: "Run the command on the computer that ran `opscrew provision`, or on one where .opscrew/ was restored from OpsCrew's recovery copy. Before the app's first provision, run `opscrew interview`: it finds your panel and records the account in .opscrew/hosting.json.",
       },
     );
   }
@@ -88,9 +88,6 @@ export function requireFiles(reach: HostingReach, what: string): HostingFiles {
     },
   );
 }
-
-/** A release's id, `<run id>-<attempt>`. */
-const RELEASE_ID = /^[1-9][0-9]*-[1-9][0-9]*$/;
 
 const ReleaseOrNone = z.union([z.string().regex(RELEASE_ID), z.literal("")]);
 

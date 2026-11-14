@@ -98,7 +98,7 @@ describe("status on a hosting account", () => {
     await rm(hostingRecordFile(deps.paths));
     const { lines } = await hostingStatusReport(deps, app.plan);
     expect(lines).toEqual([
-      "OpsCrew could not read the hosting account. OpsCrew has no record of the hosting account's panel on this computer (.opscrew/hosting.json), so it can't reach the app there. Run the command on the computer that ran `opscrew provision`, or on one where .opscrew/ was restored from OpsCrew's recovery copy.",
+      "OpsCrew could not read the hosting account. OpsCrew has no record of the hosting account's panel on this computer (.opscrew/hosting.json), so it can't reach the app there. Run the command on the computer that ran `opscrew provision`, or on one where .opscrew/ was restored from OpsCrew's recovery copy. Before the app's first provision, run `opscrew interview`: it finds your panel and records the account in .opscrew/hosting.json.",
     ]);
   });
 });

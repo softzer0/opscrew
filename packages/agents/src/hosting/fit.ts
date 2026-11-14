@@ -10,6 +10,7 @@ import type { HostingDeployTarget, ProjectFacts, Requirements } from "@opscrew/p
 import { CLOUD_PROVIDERS } from "@opscrew/providers";
 import { languageName } from "../analyze/summary";
 import { selfHostedServices } from "../design/components";
+import { RUNTIME_NAMES } from "./apps";
 import { quotaLeftMb } from "./facts";
 
 /** Why an app doesn't fit a hosting account, and what to do besides choosing a server target. */
@@ -29,7 +30,6 @@ const DATABASES = new Set(["mysql", "mariadb", "postgres"]);
 
 /** The interpreter of each kind of app the panel's selectors run. */
 export const INTERPRETERS = { node: "nodejs", python: "python" } as const;
-const RUNTIME_NAMES = { node: "Node.js", python: "Python" } as const;
 
 /** What {@link hostingMisfit} looks at. */
 export interface HostingFitInput {
@@ -129,7 +129,7 @@ export function hostingMisfit(input: HostingFitInput): HostingMisfit | undefined
     if (misfit !== undefined) return misfit;
   } else if (app === "node" || app === "python") {
     return {
-      reason: `an SFTP host runs no ${RUNTIME_NAMES[app]} apps: OpsCrew only uploads files there`,
+      reason: `an SFTP host runs no ${RUNTIME_NAMES[INTERPRETERS[app]]} apps: OpsCrew only uploads files there`,
       fix: "Use a hosting account whose panel runs them (set OPSCREW_HOSTING_URL, OPSCREW_HOSTING_USER and OPSCREW_HOSTING_TOKEN, then run `opscrew interview` again).",
     };
   }
@@ -170,7 +170,7 @@ function databaseMisfit(
 function appsMisfit(input: HostingFitInput, account: HostingFacts): HostingMisfit | undefined {
   const { app } = input;
   if (app !== "node" && app !== "python") return undefined;
-  const name = RUNTIME_NAMES[app];
+  const name = RUNTIME_NAMES[INTERPRETERS[app]];
   if (!account.apps.selectors.includes(INTERPRETERS[app])) {
     return { reason: `the account's panel runs no ${name} apps` };
   }

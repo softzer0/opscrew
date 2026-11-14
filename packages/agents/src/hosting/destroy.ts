@@ -8,7 +8,6 @@
  */
 import { join, posix } from "node:path";
 import type {
-  ApprovalRecord,
   HostingFiles,
   HostingOperation,
   HostingPanel,
@@ -17,13 +16,11 @@ import type {
 import {
   canonicalJson,
   exists,
-  isPlanHash,
   OpsCrewError,
   plural,
   realSleep,
   sha256Hex,
   tfstateFile,
-  writeFileAtomic,
 } from "@opscrew/core";
 import { releaseBranch } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
@@ -45,7 +42,6 @@ import {
   requireInfraCode,
   resolveGitHub,
   setupEngine,
-  typeNameHint,
 } from "../destroy/common";
 import {
   type DeletionScope,
@@ -54,20 +50,28 @@ import {
   discardPlan,
 } from "../destroy/deletion";
 import type { DestroyOptions, DestroyResult } from "../destroy/types";
-import { type AdapterPlanItem, describeAdapterPlan, hasDeployment, refusalReason } from "../shared";
+import { type AdapterPlanItem, describeAdapterPlan, hasDeployment } from "../shared";
+import { requireApprovedHash } from "./apply";
 import { RUNTIME_NAMES, selectorApp } from "./apps";
+import { approveHostingDestroy, auditedDestroy, HostingDestroyError } from "./common";
 import { HOSTING_TOKEN_VAR, PANEL_NAMES } from "./panels";
-import { AGENT_SCHEDULE, agentCronCommand } from "./php";
-import { HostnameSchema, PanelStepSchema, PathSchema } from "./plan";
+import { agentCronLine, cronDetails } from "./php";
+import {
+  HostnameSchema,
+  hostingPlanFile,
+  PanelStepSchema,
+  PathSchema,
+  panelStepText,
+} from "./plan";
 import { environmentOf, hostingTarget } from "./provision-plans";
 import {
+  forgetObjects,
   type HostingObject,
   type HostingRecord,
   readHostingRecord,
   recordObject,
-  updateHostingRecord,
 } from "./record";
-import { sendRequest } from "./requests";
+import { SHARED_COPY, sendRequest } from "./requests";
 import { destroySftp } from "./sftp-destroy";
 import { type HostingAccountServices, reachHostingAccount } from "./status";
 
@@ -135,7 +139,7 @@ export const HostingDestroyPlanSchema = z.strictObject({
   steps: z.array(DestroyStepSchema),
 });
 
-export type HostingDestroyPlan = z.infer<typeof HostingDestroyPlanSchema>;
+type HostingDestroyPlan = z.infer<typeof HostingDestroyPlanSchema>;
 export type DestroyStep = HostingDestroyPlan["steps"][number];
 
 /** SHA-256 of the destroy plan's canonical JSON: the hash `hosting-apply` binds. */
@@ -221,7 +225,7 @@ function stepItem(plan: HostingDestroyPlan, step: DestroyStep): AdapterPlanItem 
       };
     case "panel-step":
       return {
-        title: `You, in ${panel}: ${step.step.what}${step.step.value === undefined ? "" : `: ${step.step.value}`}`,
+        title: `You, in ${panel}: ${panelStepText(step.step)}`,
         state: "change",
         reason: `Where: ${step.step.where}. ${panel}'s API can't do this, so OpsCrew lists it for you and forgets it.`,
       };
@@ -283,12 +287,6 @@ function appLeft(record: HostingRecord, plan: HostingDestroyPlan): string[] {
   ];
 }
 
-/** `<schedule> <command>` as a panel's cron step names it. */
-function cronDetails(line: string): Record<string, string> {
-  const [, schedule = "", command = ""] = /^(\S+(?: \S+){4}) (.+)$/.exec(line) ?? [];
-  return { key: line, schedule, command };
-}
-
 type DestroyStepObject = z.infer<typeof ObjectRefSchema>;
 
 /**
@@ -310,7 +308,7 @@ function buildHostingDestroyPlan(input: DestroyPlanInput): HostingDestroyPlan {
   ): DestroyStep => ({ kind: "panel-step", object, step: panel.panelStep(operation, details) });
   const steps: DestroyStep[] = [];
 
-  const agentLine = `${AGENT_SCHEDULE} ${agentCronCommand(folder)}`;
+  const agentLine = agentCronLine(folder);
   const agentCron = of("cron").find((o) => o.value === agentLine);
   const agentStep = of("panel-step").find((o) => o.key === "agent-cron");
   const database = of("database")[0];
@@ -393,7 +391,7 @@ function buildHostingDestroyPlan(input: DestroyPlanInput): HostingDestroyPlan {
 }
 
 /** What applying a destroy plan needs besides the plan. */
-export interface HostingDestroyContext {
+interface HostingDestroyContext {
   panel: HostingPanel;
   files: HostingFiles | undefined;
   github: GitHubTarget;
@@ -410,7 +408,7 @@ export interface HostingDestroyContext {
 }
 
 /** What an apply did besides its steps. */
-export interface HostingDestroyOutcome {
+interface HostingDestroyOutcome {
   applied: DestroyStep["kind"][];
   /** The final dumps kept in the app's `dumps/` folder, by name. */
   dumps: string[];
@@ -420,38 +418,12 @@ export interface HostingDestroyOutcome {
   left: string[];
 }
 
-/** A destroy that stopped at a failure: `applied` lists the steps taken before it. */
-class HostingDestroyError extends OpsCrewError {
-  readonly applied: DestroyStep["kind"][];
-
-  constructor(cause: unknown, applied: DestroyStep["kind"][]) {
-    const known = cause instanceof OpsCrewError;
-    super(
-      known ? cause.code : "PROVIDER_ERROR",
-      `${known ? cause.message : "The panel's answer was unexpected."} ${
-        applied.length === 0
-          ? "Nothing was removed before it."
-          : `OpsCrew took ${plural(applied.length, "step")} of the destroy plan before it; .opscrew/hosting.json lists what is left.`
-      }`,
-      {
-        hint: `${known && cause.hint !== undefined ? `${cause.hint} ` : ""}Then run \`${COMMAND}\` again: it continues with what is left.`,
-        cause,
-      },
-    );
-    this.name = "HostingDestroyError";
-    this.applied = applied;
-  }
-}
-
 /** How the connector refuses a certificate still installed for a site (`removeCertificate`). */
 const STILL_INSTALLED =
   /^The certificate is still installed for [a-z0-9.-]+; nothing was removed\.$/;
 
 /** A dump's name in `dumps/`, as the agent writes it. */
 const DUMP = /^[A-Za-z0-9][A-Za-z0-9._-]*\.sql\.gz$/;
-
-/** The name of a snapshot's copy of the shared files in `dumps/`, as the agent writes it. */
-const SHARED_COPY = /^[A-Za-z0-9][A-Za-z0-9_-]*\.shared\.tar\.gz$/;
 
 /** The account's files, which a plan step that uses them was only made with. */
 function filesOf(ctx: HostingDestroyContext): HostingFiles {
@@ -480,16 +452,12 @@ export async function applyHostingDestroy(
   plan: HostingDestroyPlan,
   ctx: HostingDestroyContext & { approvedHash: string },
 ): Promise<HostingDestroyOutcome> {
-  if (
-    !isPlanHash(ctx.approvedHash) ||
-    ctx.approvedHash.toLowerCase() !== hostingDestroyHash(plan)
-  ) {
-    throw new OpsCrewError(
-      "PLAN_HASH_MISMATCH",
-      "This hosting destroy plan is not the one that was approved, so OpsCrew removes nothing from the account.",
-      { hint: "Look at the current destroy plan and approve it by its hash." },
-    );
-  }
+  requireApprovedHash(
+    ctx.approvedHash,
+    hostingDestroyHash(plan),
+    "hosting destroy plan",
+    "OpsCrew removes nothing from the account",
+  );
   const outcome: HostingDestroyOutcome = { applied: [], dumps: [], kept: [], left: [] };
   const databases: { name: string; user: string }[] = [];
   let failure: { error: unknown } | undefined;
@@ -512,7 +480,9 @@ export async function applyHostingDestroy(
       failure ??= { error };
     }
   }
-  if (failure !== undefined) throw new HostingDestroyError(failure.error, outcome.applied);
+  if (failure !== undefined) {
+    throw new HostingDestroyError(failure.error, outcome.applied, "The panel");
+  }
   // Removals of cron lines the user was asked for at an earlier provision: nothing left to end.
   await ctx.forget((o) => o.kind === "panel-step" && o.key.startsWith("remove-cron:"));
   return outcome;
@@ -753,35 +723,15 @@ export async function destroyHosting(
     );
   }
   const hash = hostingDestroyHash(destroyPlan);
-  let approval: ApprovalRecord | undefined;
-  if (destroyPlan.steps.length > 0) {
-    const details = describeHostingDestroy(destroyPlan, hash);
-    deps.reporter.info(details);
-    await writeFileAtomic(
-      join(deps.paths.files.plansDir, `hosting-${destroyPlan.environment}-destroy.json`),
-      `${JSON.stringify(destroyPlan, null, 2)}\n`,
-    );
-    approval = await deps.approvals.request({
-      kind: "hosting-apply",
-      title: `Remove ${hostname} from the ${name} account ${account} (${plural(destroyPlan.steps.length, "step")})`,
-      details,
-      planHash: hash,
-      allowDestroy: true,
-      confirmPhrase: hostname,
-    });
-    if (!approval.approved) {
-      throw new OpsCrewError(
-        "APPROVAL_REFUSED",
-        `The teardown was not approved${refusalReason(approval)}. Nothing was changed.`,
-        { hint: typeNameHint(hostname) },
-      );
-    }
-    await deps.approvals.assertApprovedHostingPlan(hash, { allowDestroy: true });
-  } else {
-    deps.reporter.info(
-      "Nothing OpsCrew made is left on the hosting account; it finishes the cleanup.",
-    );
-  }
+  const approval = await approveHostingDestroy(deps, {
+    plan: destroyPlan,
+    hash,
+    details: describeHostingDestroy(destroyPlan, hash),
+    title: `Remove ${hostname} from the ${name} account ${account} (${plural(destroyPlan.steps.length, "step")})`,
+    file: hostingPlanFile(deps.paths, destroyPlan.environment, "destroy"),
+    hostname,
+    nothing: "Nothing OpsCrew made is left on the hosting account; it finishes the cleanup.",
+  });
 
   // 5. The DNS records' destroy plan, approved before anything changes.
   const removal =
@@ -795,65 +745,40 @@ export async function destroyHosting(
 
   // 6. The destroy plan, applied in its order.
   let destroyed: ResourceChange[] = [];
-  let outcome: HostingDestroyOutcome = { applied: [], dumps: [], kept: [], left: [] };
-  if (destroyPlan.steps.length > 0) {
-    deps.reporter.step(`Removing the app from the ${name} account`);
-    const audit = (action: string, decision: "approved" | "refused", detail: string) =>
-      deps.audit.append({
-        kind: "provider-call",
-        actor: "opscrew",
-        action,
-        phase: "provision",
-        target: hash,
-        decision,
-        detail,
-      });
-    await audit(
-      "hosting destroy started",
-      "approved",
-      destroyPlan.steps.map((step) => step.kind).join(", "),
-    );
-    let dnsDone = false;
-    try {
-      outcome = await applyHostingDestroy(destroyPlan, {
-        panel,
-        files,
-        github,
-        made: async (object) => {
-          await recordObject(deps.paths, object);
-        },
-        recorded: async () => (await readHostingRecord(deps.paths))?.objects ?? [],
-        forget: async (match) => {
-          await updateHostingRecord(deps.paths, (current) => ({
-            ...current,
-            objects: current.objects.filter((object) => !match(object)),
-          }));
-        },
-        dns: async () => {
-          if (dns === undefined || removal === undefined) return;
-          dnsDone = true;
-          destroyed = await applyCloudflareRemoval(dns.session, removal, sleep);
-        },
-        sleep,
-        now: () => deps.clock.now(),
-        approvedHash: hash,
-      });
-    } catch (error) {
-      if (removal !== undefined && !dnsDone) await discardPlan(removal.summary);
-      const done = error instanceof HostingDestroyError ? error.applied : [];
-      for (const kind of done) await audit(`hosting removal ${kind}`, "approved", "destroy");
-      await audit(
-        "hosting destroy failed",
-        "refused",
-        `steps taken before the failure: ${done.length > 0 ? done.join(", ") : "none"}`,
-      );
-      throw error;
-    }
-    for (const kind of outcome.applied) {
-      await audit(`hosting removal ${kind}`, "approved", "destroy");
-    }
-    deps.reporter.success(`Removed ${hostname} from the ${name} account.`);
-  }
+  let dnsDone = false;
+  const outcome: HostingDestroyOutcome = (await auditedDestroy(deps, {
+    plan: destroyPlan,
+    hash,
+    removing: `Removing the app from the ${name} account`,
+    removed: `Removed ${hostname} from the ${name} account.`,
+    apply: async () => {
+      try {
+        return await applyHostingDestroy(destroyPlan, {
+          panel,
+          files,
+          github,
+          made: async (object) => {
+            await recordObject(deps.paths, object);
+          },
+          recorded: async () => (await readHostingRecord(deps.paths))?.objects ?? [],
+          forget: async (match) => {
+            await forgetObjects(deps.paths, match);
+          },
+          dns: async () => {
+            if (dns === undefined || removal === undefined) return;
+            dnsDone = true;
+            destroyed = await applyCloudflareRemoval(dns.session, removal, sleep);
+          },
+          sleep,
+          now: () => deps.clock.now(),
+          approvedHash: hash,
+        });
+      } catch (error) {
+        if (removal !== undefined && !dnsDone) await discardPlan(removal.summary);
+        throw error;
+      }
+    },
+  })) ?? { applied: [], dumps: [], kept: [], left: [] };
 
   // 7. The release signing key in GitHub, and OpsCrew's record.
   const secretsRemoved = await removeDeploySecrets(deps, github, {
@@ -862,10 +787,7 @@ export async function destroyHosting(
     reach: "the agent on the hosting account",
   });
   if (github.api !== undefined) {
-    await updateHostingRecord(deps.paths, (current) => ({
-      ...current,
-      objects: current.objects.filter((object) => object.kind !== "signing-key"),
-    }));
+    await forgetObjects(deps.paths, (object) => object.kind === "signing-key");
   }
   await recordTeardown(deps, plan, [approval, removal?.approval], {
     summary: "app removed from the hosting account",
@@ -893,7 +815,7 @@ export async function destroyHosting(
     ...destroyPlan.steps.flatMap((step) =>
       step.kind === "panel-step"
         ? [
-            `In ${name}, unless you did it already: ${step.step.what}${step.step.value === undefined ? "" : `: ${step.step.value}`} (${step.step.where}).`,
+            `In ${name}, unless you did it already: ${panelStepText(step.step)} (${step.step.where}).`,
           ]
         : [],
     ),

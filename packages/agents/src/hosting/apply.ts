@@ -49,7 +49,7 @@ const FOLDERS: readonly [string, number][] = [
  * which the link to the release may replace. Anything else there stops provision. From
  * DirectAdmin's default domain skeleton; no account confirmed it yet.
  */
-export const PANEL_DEFAULT_PAGE: ReadonlySet<string> = new Set(["index.html", "logo.png"]);
+const PANEL_DEFAULT_PAGE: ReadonlySet<string> = new Set(["index.html", "logo.png"]);
 
 /** What an apply needs besides the plan. */
 export interface HostingApplyContext {
@@ -72,7 +72,7 @@ export interface HostingApplyContext {
   redactor: Redactor;
   /** Shows what a step left undone, such as the settings the selector refused (`app`). */
   warn?: (text: string) => void;
-  /** The agent's answer to a settings change. */
+  /** How a wait for the agent's answer sleeps: to a settings change (`env`) and to the selector's app (`app`). */
   sleep: (ms: number) => Promise<void>;
   now: () => Date;
   /** Random bytes for the database's password (default: Node's). */
@@ -86,15 +86,18 @@ export interface HostingApplyContext {
   newSigningKey?: () => SigningKeyPair;
 }
 
-/** An apply that stopped at a failure: `applied` lists the steps done before it. */
+/**
+ * An apply that stopped at a failure: `applied` lists the steps done before it; `who` answered
+ * what OpsCrew can't read (`The panel`, `The SFTP host`).
+ */
 export class HostingApplyError extends OpsCrewError {
-  readonly applied: HostingStep["kind"][];
+  readonly applied: readonly string[];
 
-  constructor(cause: unknown, applied: HostingStep["kind"][]) {
+  constructor(cause: unknown, applied: readonly string[], who: string) {
     const known = cause instanceof OpsCrewError;
     super(
       known ? cause.code : "PROVIDER_ERROR",
-      `${known ? cause.message : "The panel's answer was unexpected."} ${
+      `${known ? cause.message : `${who}'s answer was unexpected.`} ${
         applied.length === 0
           ? "Nothing was changed before it."
           : `OpsCrew made ${applied.length} of the plan's changes before it, each recorded in .opscrew/hosting.json.`
@@ -161,7 +164,7 @@ function mysqlCnf(database: { user: string; password: string }): string {
 }
 
 /** The archive's bytes. */
-async function tarBytes(entries: Parameters<typeof tarStream>[0]): Promise<Uint8Array> {
+export async function tarBytes(entries: Parameters<typeof tarStream>[0]): Promise<Uint8Array> {
   const chunks: Buffer[] = [];
   for await (const chunk of tarStream(entries)) chunks.push(chunk as Buffer);
   return new Uint8Array(Buffer.concat(chunks));
@@ -209,9 +212,13 @@ export async function requireEmptyPanelRoot(
   );
 }
 
-/** The content of file step `path`, checked against the plan's SHA-256. */
-function contentOf(ctx: HostingApplyContext, path: string, sha256: string): Uint8Array {
-  const text = ctx.contents.get(path);
+/** The content of file step `path` among `contents`, checked against the plan's SHA-256. */
+export function contentOf(
+  contents: ReadonlyMap<string, string>,
+  path: string,
+  sha256: string,
+): Uint8Array {
+  const text = contents.get(path);
   if (text === undefined || sha256Hex(text) !== sha256) {
     throw new OpsCrewError(
       "INTERNAL",
@@ -220,6 +227,48 @@ function contentOf(ctx: HostingApplyContext, path: string, sha256: string): Uint
     );
   }
   return new TextEncoder().encode(text);
+}
+
+/** Stops unless the app's `values` still have the values step's `digest`: they changed since. */
+export function requireValuesDigest(
+  values: Readonly<Record<string, string>>,
+  digest: string,
+): void {
+  if (valuesDigest(values) === digest) return;
+  throw new OpsCrewError(
+    "PHASE_PRECONDITION",
+    "The app's values changed after this hosting plan was made, so OpsCrew didn't write them.",
+    { hint: "Run `opscrew provision` again to make a plan with the values as they are now." },
+  );
+}
+
+/** The app's settings file: a {@link valuesLine} for each of `values`, by name. */
+export function settingsText(values: Readonly<Record<string, string>>): string {
+  return Object.keys(values)
+    .sort()
+    .map((name) => `${valuesLine(name, values[name] ?? "")}\n`)
+    .join("");
+}
+
+/**
+ * Stops with `PLAN_HASH_MISMATCH` before any change unless `approvedHash` is the plan's `hash`.
+ * `plan` names it (`hosting plan`, `hosting destroy plan`), `unchanged` what stays as it was
+ * (`OpsCrew changes nothing on the account`).
+ */
+export function requireApprovedHash(
+  approvedHash: string,
+  hash: string,
+  plan: "hosting plan" | "hosting destroy plan",
+  unchanged: string,
+): void {
+  if (isPlanHash(approvedHash) && approvedHash.toLowerCase() === hash) return;
+  throw new OpsCrewError(
+    "PLAN_HASH_MISMATCH",
+    `This ${plan} is not the one that was approved, so ${unchanged}.`,
+    {
+      hint: `Look at the current ${plan === "hosting plan" ? "hosting" : "destroy"} plan and approve it by its hash.`,
+    },
+  );
 }
 
 /** The database's password from `shared/mysql.cnf`, written before the database was made. */
@@ -249,20 +298,19 @@ export async function applyHostingPlan(
   plan: HostingPlan,
   ctx: HostingApplyContext & { approvedHash: string },
 ): Promise<{ applied: HostingStep["kind"][] }> {
-  if (!isPlanHash(ctx.approvedHash) || ctx.approvedHash.toLowerCase() !== hostingPlanHash(plan)) {
-    throw new OpsCrewError(
-      "PLAN_HASH_MISMATCH",
-      "This hosting plan is not the one that was approved, so OpsCrew changes nothing on the account.",
-      { hint: "Look at the current hosting plan and approve it by its hash." },
-    );
-  }
+  requireApprovedHash(
+    ctx.approvedHash,
+    hostingPlanHash(plan),
+    "hosting plan",
+    "OpsCrew changes nothing on the account",
+  );
   const applied: HostingStep["kind"][] = [];
   const state: { password?: string; root?: string } = {};
   for (const step of plan.steps) {
     try {
       await applyStep(plan, step, ctx, state);
     } catch (error) {
-      throw new HostingApplyError(error, applied);
+      throw new HostingApplyError(error, applied, "The panel");
     }
     applied.push(step.kind);
   }
@@ -293,7 +341,7 @@ async function applyStep(
             name: `${folder}/${file.path}`,
             type: "file" as const,
             mode: file.mode,
-            data: Buffer.from(contentOf(ctx, file.path, file.sha256)),
+            data: Buffer.from(contentOf(ctx.contents, file.path, file.sha256)),
           })),
         ].map((entry) => ({ ...entry, uid: 0, gid: 0 })),
       );
@@ -303,7 +351,7 @@ async function applyStep(
     case "file":
       return files.writeFile(
         `${folder}/${step.path}`,
-        contentOf(ctx, step.path, step.sha256),
+        contentOf(ctx.contents, step.path, step.sha256),
         step.mode,
       );
     case "signing-key": {
@@ -409,13 +457,7 @@ async function applyValues(
   state: { password?: string },
 ): Promise<void> {
   const values = ctx.values ?? {};
-  if (valuesDigest(values) !== step.digest) {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      "The app's values changed after this hosting plan was made, so OpsCrew didn't write them.",
-      { hint: "Run `opscrew provision` again to make a plan with the values as they are now." },
-    );
-  }
+  requireValuesDigest(values, step.digest);
   const { folder } = plan;
   let database: Record<string, string> = {};
   if (step.database.length > 0) {
@@ -428,11 +470,7 @@ async function applyValues(
     ctx.redactor.addLiteral(password, "the database's password");
     database = databaseValues(step.database, { ...ctx.database, password });
   }
-  const all = { ...values, ...database };
-  const text = Object.keys(all)
-    .sort()
-    .map((name) => `${valuesLine(name, all[name] ?? "")}\n`)
-    .join("");
+  const text = settingsText({ ...values, ...database });
   const path = `${folder}/shared/${step.file}`;
   await ctx.files.writeFile(path, new TextEncoder().encode(text), 0o600);
   if (step.file === ".env.next") {

@@ -72,7 +72,7 @@ const HostingObjectSchema = z.strictObject({
   value: z.string().min(1).optional(),
 });
 
-export const HostingRecordSchema = z.strictObject({
+const HostingRecordSchema = z.strictObject({
   schemaVersion: z.literal(1),
   panel: PanelSchema.optional(),
   sftp: SftpSchema.optional(),
@@ -175,14 +175,22 @@ export function replaceObjects(paths: ProjectPaths, object: HostingObject): Prom
   }));
 }
 
+/** Removes every recorded object `match` takes (those OpsCrew removed or replaced). */
+export function forgetObjects(
+  paths: ProjectPaths,
+  match: (object: HostingObject) => boolean,
+): Promise<HostingRecord> {
+  return updateHostingRecord(paths, (current) => ({
+    ...current,
+    objects: current.objects.filter((object) => !match(object)),
+  }));
+}
+
 /** Removes the recorded object of `kind` with `key` (one OpsCrew removed or replaced). */
 export function forgetObject(
   paths: ProjectPaths,
   kind: HostingObject["kind"],
   key: string,
 ): Promise<HostingRecord> {
-  return updateHostingRecord(paths, (current) => ({
-    ...current,
-    objects: current.objects.filter((o) => !(o.kind === kind && o.key === key)),
-  }));
+  return forgetObjects(paths, (o) => o.kind === kind && o.key === key);
 }

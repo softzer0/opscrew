@@ -192,7 +192,7 @@ export function phpRefusal(
   );
 }
 
-/** The folder of the app's environment on the account, from the home folder: `opscrew/<app>-<env>`. */
+/** `path` in the app's folder `folder` (from the home folder), quoted: `"$HOME/<folder>/<path>"`. */
 const home = (folder: string, path: string) => `"$HOME/${folder}/${path}"`;
 
 /**
@@ -223,3 +223,12 @@ export function agentCronCommand(folder: string): string {
 
 /** The agent's schedule: every minute (decision 6). */
 export const AGENT_SCHEDULE = "* * * * *";
+
+/** The agent's cron line, `<schedule> <command>`, as the record keeps it. */
+export const agentCronLine = (folder: string) => `${AGENT_SCHEDULE} ${agentCronCommand(folder)}`;
+
+/** A cron line `<schedule> <command>` as a panel's cron step names it. */
+export function cronDetails(line: string): Record<string, string> {
+  const [, schedule = "", command = ""] = /^(\S+(?: \S+){4}) (.+)$/.exec(line) ?? [];
+  return { key: line, schedule, command };
+}

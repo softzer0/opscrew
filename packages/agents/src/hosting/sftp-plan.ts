@@ -5,17 +5,13 @@
  * of the plan's canonical JSON (`hosting-apply`) and applied over SFTP. The hostname, its document
  * root, its certificate and any database stay the user's, named in the plan.
  */
-import { join, posix } from "node:path";
-import { tarStream } from "@opscrew/connector-docker";
+import { posix } from "node:path";
 import { isRemotePath } from "@opscrew/connector-sftp";
 import type { HostingFiles } from "@opscrew/contracts";
 import {
   canonicalJson,
   ENVIRONMENT_NAME_PATTERN,
-  isPlanHash,
   listText,
-  OpsCrewError,
-  type ProjectPaths,
   plural,
   type Redactor,
   sha256Hex,
@@ -27,16 +23,22 @@ import {
   type Ed25519KeyPair,
   generateEd25519KeyPair,
 } from "../shared";
-import { valuesDigest, valuesLine } from "./apply";
-import { HostnameSchema, PathSchema } from "./plan";
-import type { FileContents, PlannedValues } from "./provision-plans";
+import {
+  contentOf,
+  HostingApplyError,
+  requireApprovedHash,
+  requireValuesDigest,
+  settingsText,
+  tarBytes,
+} from "./apply";
+import { HostnameSchema, PathSchema, Sha256Schema } from "./plan";
+import { type FileContents, notOurs, type PlannedValues } from "./provision-plans";
 import { type HostingObject, type HostingRecord, recordedObject } from "./record";
 
 /** A path as SFTP shows it, by the SFTP connector's own rule (`isRemotePath`). */
 export const SftpPathSchema = z.string().refine(isRemotePath, {
   message: "must be a path on the SFTP host without empty parts, ., .. or line breaks",
 });
-const Sha256Schema = z.string().regex(/^[0-9a-f]{64}$/);
 
 const SftpStepSchema = z.discriminatedUnion("kind", [
   // The app's folder in one archive: `releases/` and `shared/` 0711, `state/` 0700, the empty
@@ -80,16 +82,11 @@ export const SftpPlanSchema = z.strictObject({
 });
 
 export type SftpPlan = z.infer<typeof SftpPlanSchema>;
-export type SftpStep = SftpPlan["steps"][number];
+type SftpStep = SftpPlan["steps"][number];
 
 /** SHA-256 of the plan's canonical JSON: the hash `hosting-apply` binds. */
 export function sftpPlanHash(plan: SftpPlan): string {
   return sha256Hex(canonicalJson(SftpPlanSchema.parse(plan)));
-}
-
-/** Where the plan is saved: `.opscrew/plans/hosting-<env>-sftp.json`. */
-export function sftpPlanFile(paths: Pick<ProjectPaths, "files">, environment: string): string {
-  return join(paths.files.plansDir, `hosting-${environment}-sftp.json`);
 }
 
 /** Why each file of the app's folder is written. */
@@ -164,17 +161,15 @@ export function sftpPlanTitle(plan: SftpPlan): string {
  */
 async function requireNoFolder(files: HostingFiles, folder: string): Promise<void> {
   if ((await files.list(folder)) === undefined) return;
-  throw new OpsCrewError(
-    "PHASE_PRECONDITION",
-    `Your SFTP host already has the folder ${folder}, and OpsCrew's record (.opscrew/hosting.json) doesn't list it as OpsCrew's. OpsCrew never changes or takes over what it didn't make: nothing was changed.`,
-    {
-      hint: "If it is OpsCrew's from another computer, copy that computer's .opscrew/hosting.json here (or restore the recovery copy). Otherwise run `opscrew interview` and choose another folder.",
-    },
+  throw notOurs(
+    `Your SFTP host already has the folder ${folder}`,
+    "nothing was changed.",
+    "run `opscrew interview` and choose another folder.",
   );
 }
 
 /** What {@link buildSftpPlan} reads. */
-export interface SftpPlanInput {
+interface SftpPlanInput {
   header: Omit<SftpPlan, "plan" | "steps">;
   files: HostingFiles;
   record: HostingRecord | undefined;
@@ -238,7 +233,7 @@ export const AUTHORIZED_KEYS = ".ssh/authorized_keys";
 export const CI_KEY_STEP = "ci-key";
 
 /** What applying an SFTP host's plan needs besides the plan. */
-export interface SftpApplyContext {
+interface SftpApplyContext {
   files: HostingFiles;
   /** The content of each file step, by its path in the app's folder (checked against the plan). */
   contents: ReadonlyMap<string, string>;
@@ -256,33 +251,6 @@ export interface SftpApplyContext {
   keyComment: string;
   /** A new Ed25519 pair (default: {@link generateEd25519KeyPair}). */
   newKeyPair?: (comment: string) => Ed25519KeyPair;
-}
-
-/** An apply that stopped at a failure: `applied` lists the steps done before it. */
-export class SftpApplyError extends OpsCrewError {
-  readonly applied: SftpStep["kind"][];
-
-  constructor(cause: unknown, applied: SftpStep["kind"][]) {
-    const known = cause instanceof OpsCrewError;
-    super(
-      known ? cause.code : "PROVIDER_ERROR",
-      `${known ? cause.message : "The SFTP host's answer was unexpected."} ${
-        applied.length === 0
-          ? "Nothing was changed before it."
-          : `OpsCrew made ${applied.length} of the plan's changes before it, each recorded in .opscrew/hosting.json.`
-      }`,
-      { ...(known && cause.hint !== undefined ? { hint: cause.hint } : {}), cause },
-    );
-    this.name = "SftpApplyError";
-    this.applied = applied;
-  }
-}
-
-/** The archive's bytes. */
-async function tarBytes(entries: Parameters<typeof tarStream>[0]): Promise<Uint8Array> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of tarStream(entries)) chunks.push(chunk as Buffer);
-  return new Uint8Array(Buffer.concat(chunks));
 }
 
 /** The app's folder as one archive, its paths from the folder it is in (027 plan 5's modes). */
@@ -314,27 +282,26 @@ function folderTar(name: string, placeholder: string): Promise<Uint8Array> {
 /**
  * Applies an approved SFTP host's plan: refuses with `PLAN_HASH_MISMATCH` before any change when
  * its hash isn't `approvedHash`. The steps then run in order, each object made recorded at once,
- * and the first failure stops with an {@link SftpApplyError}. The key's private half goes only to
+ * and the first failure stops with a {@link HostingApplyError}. The key's private half goes only to
  * `ctx.storeKey`. Answers the steps applied, and the key's line when the user adds it in the panel.
  */
 export async function applySftpPlan(
   plan: SftpPlan,
   ctx: SftpApplyContext & { approvedHash: string },
 ): Promise<{ applied: SftpStep["kind"][]; keyLine?: string }> {
-  if (!isPlanHash(ctx.approvedHash) || ctx.approvedHash.toLowerCase() !== sftpPlanHash(plan)) {
-    throw new OpsCrewError(
-      "PLAN_HASH_MISMATCH",
-      "This hosting plan is not the one that was approved, so OpsCrew changes nothing on the SFTP host.",
-      { hint: "Look at the current hosting plan and approve it by its hash." },
-    );
-  }
+  requireApprovedHash(
+    ctx.approvedHash,
+    sftpPlanHash(plan),
+    "hosting plan",
+    "OpsCrew changes nothing on the SFTP host",
+  );
   const applied: SftpStep["kind"][] = [];
   let keyLine: string | undefined;
   for (const step of plan.steps) {
     try {
       keyLine = (await applyStep(plan, step, ctx)) ?? keyLine;
     } catch (error) {
-      throw new SftpApplyError(error, applied);
+      throw new HostingApplyError(error, applied, "The SFTP host");
     }
     applied.push(step.kind);
   }
@@ -358,32 +325,17 @@ async function applyStep(
       await ctx.made({ kind: "folder", key: folder });
       return undefined;
     }
-    case "file": {
-      const text = ctx.contents.get(step.path);
-      if (text === undefined || sha256Hex(text) !== step.sha256) {
-        throw new OpsCrewError(
-          "INTERNAL",
-          `OpsCrew has no content for ${step.path} that matches the approved plan.`,
-          { hint: "This is a bug in OpsCrew; please report it." },
-        );
-      }
-      await files.writeFile(`${folder}/${step.path}`, encode(text), step.mode);
+    case "file":
+      await files.writeFile(
+        `${folder}/${step.path}`,
+        contentOf(ctx.contents, step.path, step.sha256),
+        step.mode,
+      );
       return undefined;
-    }
     case "values": {
       const values = ctx.values ?? {};
-      if (valuesDigest(values) !== step.digest) {
-        throw new OpsCrewError(
-          "PHASE_PRECONDITION",
-          "The app's values changed after this hosting plan was made, so OpsCrew didn't write them.",
-          { hint: "Run `opscrew provision` again to make a plan with the values as they are now." },
-        );
-      }
-      const text = Object.keys(values)
-        .sort()
-        .map((name) => `${valuesLine(name, values[name] ?? "")}\n`)
-        .join("");
-      await files.writeFile(`${folder}/shared/.env`, encode(text), 0o600);
+      requireValuesDigest(values, step.digest);
+      await files.writeFile(`${folder}/shared/.env`, encode(settingsText(values)), 0o600);
       await ctx.made({ kind: "file", key: `${folder}/shared/.env`, value: step.digest });
       return undefined;
     }

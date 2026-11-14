@@ -100,7 +100,7 @@ export function panelAccess(env: Env, redactor: Redactor): HostingPanelAccess {
 }
 
 /** The host of a panel's address, lower-case, or a plain error naming the variable. */
-function panelHost(url: string): string {
+export function panelHost(url: string): string {
   let parsed: URL | undefined;
   try {
     parsed = new URL(url);

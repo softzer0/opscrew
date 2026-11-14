@@ -333,6 +333,22 @@ describe("an SFTP host", () => {
     expect(deps.reporter.text()).toContain("The key stays in the file OPSCREW_SFTP_KEY names");
   });
 
+  it("records the folder and PHP's path without a trailing slash, as every command joins them", async () => {
+    const deps = await project(SFTP_ENV, { runner: keyscan() });
+    await runInterview(deps, {
+      answers: {
+        ...SFTP_ANSWERS,
+        "hosting.folder": "opscrew/",
+        "hosting.phpPath": "/home/deploy/opscrew//",
+        "hosting.hostKey": FINGERPRINT,
+      },
+    });
+    expect((await readHostingRecord(deps.paths))?.sftp).toMatchObject({
+      folder: "opscrew",
+      phpPath: "/home/deploy/opscrew",
+    });
+  });
+
   it("asks for the folder and PHP's path, and has the key confirmed in a terminal", async () => {
     const approvals = new ScriptedApprovalHandler([true]);
     const deps = await project(SFTP_ENV, {

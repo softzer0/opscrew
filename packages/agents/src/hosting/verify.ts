@@ -23,14 +23,12 @@ import type { VerifyResult } from "../verify/run";
 import { PANEL_NAMES } from "./panels";
 import { hostingTarget, hostnameOf } from "./provision-plans";
 import { type HostingRecord, readHostingRecord } from "./record";
+import { RELEASE_ID } from "./requests";
 import { sftpFilesFromEnv } from "./sftp";
 import { type HostingAccountServices, reachHostingAccount } from "./status";
 
 /** How long each request may take. */
 const TIMEOUT_MS = 10_000;
-
-/** A release's id, `<run id>-<attempt>`, as the agent's `.htaccess` sends it. */
-const RELEASE = /^[1-9][0-9]*-[1-9][0-9]*$/;
 
 /** What the hosting checks after provision reach: the account's record, panel and files. */
 export interface CheckedAccount {
@@ -152,7 +150,7 @@ async function httpsCheck(ctx: SiteContext, plan: DeployPlan): Promise<HttpsAnsw
   const release = response.headers.get("x-opscrew-release") ?? undefined;
   const poweredBy = response.headers.get("x-powered-by");
   const answered = response.status >= 200 && response.status < 400;
-  if (answered && release !== undefined && RELEASE.test(release)) {
+  if (answered && release !== undefined && RELEASE_ID.test(release)) {
     return {
       check: checkResult(
         id,

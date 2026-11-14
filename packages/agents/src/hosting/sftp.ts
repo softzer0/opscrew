@@ -11,19 +11,24 @@ import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { HostSchema } from "../interview/own-server";
 import { hostKeyFingerprint, keysFor, knownHostsName } from "../shared";
-import { HOSTING_VARS_HINT, SFTP_HOST_VAR, SFTP_KEY_VAR, SFTP_USER_VAR } from "./panels";
-import { hostingFolder, hostingTarget, hostnameOf } from "./provision-plans";
+import {
+  HOSTING_VARS_HINT,
+  SFTP_HOST_VAR,
+  SFTP_KEY_VAR,
+  SFTP_USER_VAR,
+  SFTP_VARS,
+  unsetVars,
+} from "./panels";
+import { currentRoot, hostingFolder, hostingTarget, hostnameOf } from "./provision-plans";
 import { type HostingRecord, readHostingRecord, type SftpRecord } from "./record";
 
 type SftpDeps = Pick<PhaseDeps, "env" | "runner" | "paths" | "redactor">;
-
-const VARS = [SFTP_HOST_VAR, SFTP_USER_VAR, SFTP_KEY_VAR] as const;
 
 /** An SFTP user: no blanks, never starting with `-`. */
 const SFTP_USER = /^[^\s-]\S*$/;
 
 /** How OpsCrew logs in over SFTP: the host, the user, and the path of the user's key file. */
-export interface SftpEnvLogin {
+interface SftpEnvLogin {
   host: string;
   user: string;
   keyFile: string;
@@ -35,7 +40,7 @@ export interface SftpEnvLogin {
  * @throws OpsCrewError `INVALID_INPUT` for a host, user or key path OpsCrew can't use.
  */
 export function sftpLogin(env: PhaseDeps["env"]): SftpEnvLogin | undefined {
-  const [host = "", user = "", keyFile = ""] = VARS.map((name) => (env[name] ?? "").trim());
+  const [host = "", user = "", keyFile = ""] = SFTP_VARS.map((name) => (env[name] ?? "").trim());
   if (host === "" || user === "" || keyFile === "") return undefined;
   if (!HostSchema.safeParse(host).success) {
     throw new OpsCrewError("INVALID_INPUT", `${SFTP_HOST_VAR} isn't a host's address.`, {
@@ -64,7 +69,7 @@ export function sftpLogin(env: PhaseDeps["env"]): SftpEnvLogin | undefined {
 export function requireSftpLogin(env: PhaseDeps["env"]): SftpEnvLogin {
   const login = sftpLogin(env);
   if (login !== undefined) return login;
-  const missing = VARS.filter((name) => (env[name] ?? "").trim() === "");
+  const missing = unsetVars(env, SFTP_VARS);
   throw new OpsCrewError(
     "CREDENTIALS_MISSING",
     `${listText(missing)} ${missing.length === 1 ? "isn't" : "aren't"} set, so OpsCrew can't reach your SFTP host.`,
@@ -91,7 +96,7 @@ export function sftpFilesFromEnv(deps: SftpDeps, port = 22): SftpFiles | undefin
 }
 
 /** An SFTP-only host as the commands reach it. */
-export interface SftpReach {
+interface SftpReach {
   record: HostingRecord;
   sftp: SftpRecord;
   files: SftpFiles;
@@ -147,18 +152,15 @@ export async function reachSftpHost(deps: SftpDeps, plan: DeployPlan): Promise<S
       { hint: "Run `opscrew interview` to confirm the host's key again." },
     );
   }
-  const trimmed = (path: string) => path.replace(/(.)\/+$/, "$1");
-  const phpFolder = trimmed(sftp.phpPath);
-  const { webRoot } = hostingTarget(plan);
   return {
     record,
     sftp,
     files: connector(deps, login, sftp.port),
     account: `${sftp.user} at ${sftp.host}`,
-    folder: trimmed(sftp.folder),
-    phpFolder,
+    folder: sftp.folder,
+    phpFolder: sftp.phpPath,
     name: posix.basename(hostingFolder(plan)),
-    documentRoot: `${phpFolder}/current${webRoot === "." ? "" : `/${webRoot}`}`,
+    documentRoot: currentRoot(sftp.phpPath, hostingTarget(plan).webRoot),
     hostname: hostnameOf(plan),
     knownHosts: `${name} ${pinned}\n`,
   };

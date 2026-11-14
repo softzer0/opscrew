@@ -35,7 +35,9 @@ import {
   type ServiceKind,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { RUNTIME_NAMES } from "../hosting/apps";
 import {
+  ENGINE_NAMES,
   type HostingAccount,
   hostingAccountLines,
   quotaLeftMb,
@@ -43,6 +45,7 @@ import {
 } from "../hosting/facts";
 import { hostingMisfit, hostingRefusal, INTERPRETERS, SCHEDULER } from "../hosting/fit";
 import { connectPanel, PANEL_NAMES } from "../hosting/panels";
+import { currentRoot, hostingHostnameTaken } from "../hosting/provision-plans";
 import { readHostingRecord, type SftpRecord } from "../hosting/record";
 import { appDirOf } from "./code-changes";
 import { appNameFor, selfHostedServices } from "./components";
@@ -59,7 +62,7 @@ export interface HostingDesignChoice {
 }
 
 /** Said of every hosting account (US1 scenario 2). */
-export const HOSTING_PRICE_NOTE = "No price: you already pay for this account.";
+const HOSTING_PRICE_NOTE = "No price: you already pay for this account.";
 
 /** The startup file CloudLinux's Python selector runs (Passenger's WSGI file). */
 const PYTHON_STARTUP = "passenger_wsgi.py";
@@ -192,13 +195,7 @@ export async function designHosting(
       account === undefined || account.facts.documentRoots === "anywhere" ? "direct" : "link",
   };
   if (account !== undefined) {
-    const served = account.facts.domains.some(
-      (domain) => domain.name === normalizeHostName(hostname),
-    );
-    const made = record.objects.some(
-      (object) => object.kind === "hostname" && object.key === normalizeHostName(hostname),
-    );
-    if (served && !made) {
+    if (hostingHostnameTaken(account.facts.domains, record, normalizeHostName(hostname))) {
       input.warn(
         `The account already serves ${hostname}, and OpsCrew never takes over a hostname it didn't make: \`opscrew provision\` stops before changing anything. Choose a new hostname with \`opscrew interview\`.`,
       );
@@ -216,7 +213,7 @@ export async function designHosting(
     ...(runtime === undefined
       ? []
       : [
-          `Runtime: ${runtime.interpreter === "nodejs" ? "Node.js" : "Python"} ${runtime.version} through the panel's selector, started from ${runtime.startup}.`,
+          `Runtime: ${RUNTIME_NAMES[runtime.interpreter]} ${runtime.version} through the panel's selector, started from ${runtime.startup}.`,
         ]),
     ...(needs === undefined ? [] : [phpLine(needs, account === undefined)]),
     HOSTING_PRICE_NOTE,
@@ -379,7 +376,7 @@ function hostnameLine(
 ): string {
   const release = "the release OpsCrew switches";
   if (account === undefined) {
-    return `Hostname: ${hostname}. Point its document root at ${sftp?.folder}/current${target.webRoot === "." ? "" : `/${target.webRoot}`}, ${release}.`;
+    return `Hostname: ${hostname}. Point its document root at ${currentRoot(sftp?.folder ?? "", target.webRoot)}, ${release}.`;
   }
   const name = normalizeHostName(hostname);
   const parent = account.facts.domains
@@ -414,7 +411,7 @@ function databaseLines(
   const { engine, name } = target.database;
   const full = `${account.facts.databases.prefix ?? ""}${name}`;
   return [
-    `Database: ${engine === "mariadb" ? "MariaDB" : "MySQL"}, ${full} with a user of its own. Its password is generated at provision and kept only in the app's settings on the account, outside the web root.`,
+    `Database: ${ENGINE_NAMES[engine]}, ${full} with a user of its own. Its password is generated at provision and kept only in the app's settings on the account, outside the web root.`,
   ];
 }
 

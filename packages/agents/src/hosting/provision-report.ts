@@ -18,7 +18,7 @@ const YesNo = z.enum(["yes", "no"]).transform((value) => value === "yes");
 const PUBLIC_KEY = /^ssh-ed25519 [A-Za-z0-9+/]+={0,2}(?: \S+)?$/;
 
 /** The agent's report as OpsCrew uses it. */
-export interface AgentReport {
+interface AgentReport {
   /** The agent's read-only GitHub key's public half; empty without `ssh-keygen`. */
   publicKey: string;
   php: PhpBinary[];
@@ -68,7 +68,7 @@ const ReportSchema = z.record(z.string(), z.string()).transform((values, ctx): A
  * The report in `text` (`state/report`).
  * @throws OpsCrewError `PROVIDER_ERROR` for one OpsCrew can't read.
  */
-export function parseAgentReport(text: string, path: string): AgentReport {
+function parseAgentReport(text: string, path: string): AgentReport {
   const parsed = ReportSchema.safeParse(keyValues(text));
   if (parsed.success) return parsed.data;
   throw new OpsCrewError(
@@ -81,7 +81,7 @@ export function parseAgentReport(text: string, path: string): AgentReport {
 }
 
 /** Why the account can't run the agent, and what to do. */
-export interface ReportMisfit {
+interface ReportMisfit {
   reason: string;
   fix: string;
 }
@@ -119,7 +119,7 @@ export function reportMisfit(
 }
 
 /** How long OpsCrew waits for the agent's first report: 3 minutes, three runs of its cron line. */
-export const REPORT_WAIT_MS = 3 * 60 * 1000;
+const REPORT_WAIT_MS = 3 * 60 * 1000;
 const POLL_MS = 10_000;
 
 /**

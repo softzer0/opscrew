@@ -6,15 +6,12 @@
  * then the deploy workflow goes into the provision pull request. The hostname, its document root,
  * its certificate and any database are the user's, in the host's panel.
  */
-import type { ApprovalRecord } from "@opscrew/contracts";
-import { OpsCrewError, plural, writeFileAtomic } from "@opscrew/core";
+import { OpsCrewError } from "@opscrew/core";
 import { detectPhpNeeds } from "@opscrew/detect";
 import {
   HOSTING_PHP_VERSIONS,
-  type RenderedFile,
   renderEnvPhp,
   renderSftpPhpLines,
-  renderWorkflow,
   SFTP_DEPLOY_SECRETS,
   sftpUrl,
 } from "@opscrew/iac-templates";
@@ -22,20 +19,14 @@ import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
 import { setupGitHub } from "../provision/credentials";
-import { approveLaterHint } from "../provision/plan-apply";
-import { deploymentRenderContext } from "../provision/render";
-import { buildAppEnvironment, placeDeploySecrets, setDeploySecrets } from "../provision/secrets";
-import { deployBranchFor, deploymentRecord, publishDeployment } from "../provision/steps";
+import { buildAppEnvironment } from "../provision/secrets";
+import { deployBranchFor, deploymentRecord } from "../provision/steps";
 import type { ProvisionOptions, ProvisionResult, ProvisionServices } from "../provision/types";
-import {
-  approvalEntry,
-  approveAndWriteRenderedFiles,
-  type Ed25519KeyPair,
-  PlanRefusedError,
-  writePlanIfChanged,
-} from "../shared";
+import { approvalEntry, type Ed25519KeyPair, writePlanIfChanged } from "../shared";
 import { valuesDigest } from "./apply";
+import { hostingPlanStep, publishHostingWorkflow, storeHostingSecrets } from "./common";
 import { constraintAllows } from "./php";
+import { hostingPlanFile } from "./plan";
 import type { HostingProvisionInput } from "./provision";
 import { environmentOf, type FileContents, hostingTarget, hostnameOf } from "./provision-plans";
 import { recordObject } from "./record";
@@ -44,9 +35,6 @@ import {
   applySftpPlan,
   buildSftpPlan,
   describeSftpPlan,
-  SftpApplyError,
-  type SftpPlan,
-  sftpPlanFile,
   sftpPlanHash,
   sftpPlanTitle,
 } from "./sftp-plan";
@@ -158,11 +146,20 @@ export async function provisionSftp(
     contents,
     values,
   });
-  const outcome = await sftpPlanStep(deps, {
+  const hash = sftpPlanHash(sftpPlan);
+  const outcome = await hostingPlanStep(deps, {
     plan: sftpPlan,
+    hash,
+    details: describeSftpPlan(sftpPlan, hash),
+    title: sftpPlanTitle(sftpPlan),
+    file: hostingPlanFile(deps.paths, environment, "sftp"),
+    which: "the hosting plan",
+    place: "SFTP host",
+    changing: "SFTP host",
+    auditLabel: "sftp",
     planOnly,
     command,
-    apply: (hash) =>
+    apply: (approvedHash) =>
       applySftpPlan(sftpPlan, {
         files: reach.files,
         contents,
@@ -174,27 +171,19 @@ export async function provisionSftp(
         keyComment: `opscrew-${reach.name}`,
         ...(sftpServices.newKeyPair !== undefined ? { newKeyPair: sftpServices.newKeyPair } : {}),
         storeKey: async (privateKey) => {
-          plan = (
-            await placeDeploySecrets(deps, github, plan, { command, phase: "provision", planOnly })
-          ).plan;
-          await setDeploySecrets(
-            deps,
-            github,
-            plan,
-            {
+          plan = await storeHostingSecrets(deps, github, plan, {
+            command,
+            planOnly,
+            secrets: {
               [SFTP_DEPLOY_SECRETS.url]: sftpUrl(reach.sftp, reach.folder),
               [SFTP_DEPLOY_SECRETS.privateKey]: privateKey,
               [SFTP_DEPLOY_SECRETS.knownHosts]: reach.knownHosts,
             },
-            [],
-            "provision",
-            {
-              about: `Where the SFTP host is, the app's folder there, its host key, and the SSH key GitHub Actions uploads the releases with, which can change every file of the SFTP user ${reach.account}.`,
-              refusedState: "Nothing on the SFTP host was changed by it.",
-            },
-          );
+            about: `Where the SFTP host is, the app's folder there, its host key, and the SSH key GitHub Actions uploads the releases with, which can change every file of the SFTP user ${reach.account}.`,
+            refusedState: "Nothing on the SFTP host was changed by it.",
+          });
         },
-        approvedHash: hash,
+        approvedHash,
       }),
   });
   // As a panel account's: the plan's hash, so the CLI and the MCP tool name the --approve to run.
@@ -202,19 +191,19 @@ export async function provisionSftp(
     return {
       applied: false,
       outputs: {},
-      ...(sftpPlan.steps.length > 0 ? { hostingPlanHashes: [sftpPlanHash(sftpPlan)] } : {}),
+      ...(sftpPlan.steps.length > 0 ? { hostingPlanHashes: [hash] } : {}),
     };
   }
 
   // 4. The key, in the host's panel; the host is set up either way.
-  const approvals = outcome.approval === undefined ? [] : [approvalEntry(outcome.approval)];
+  const approvals = outcome === undefined ? [] : [approvalEntry(outcome.approval)];
   plan = deploymentRecord(deps, {
     plan,
     url: `https://${hostname}`,
     iac: { applied: false },
     approvals,
-  })(outcome.applied.length > 0);
-  if (outcome.keyLine !== undefined) {
+  })((outcome?.applied.length ?? 0) > 0);
+  if (outcome?.keyLine !== undefined) {
     await writePlanIfChanged(deps, plan);
     deps.reporter.warn(
       [
@@ -227,126 +216,24 @@ export async function provisionSftp(
   }
 
   // 5. The workflow and the pull request.
-  const ctx = await deploymentRenderContext(deps, {
+  const published = await publishHostingWorkflow(deps, options, {
     plan,
     requirements: input.requirements,
-    github,
-    deployPublicKey: "",
-    cloudflare: undefined,
-  });
-  const rendered: RenderedFile[] = [renderWorkflow(plan, ctx)];
-  await approveAndWriteRenderedFiles(deps, deps.paths.root, rendered, {
-    refused:
-      "The SFTP host is set up, but the workflow wasn't written, so nothing deploys yet. Run `opscrew provision` again to write it.",
-  });
-  const published = await publishDeployment(deps, {
     git: input.git,
     github,
-    plan,
-    files: rendered.map((file) => file.path),
-    push: options.push !== false,
-    secretsStored: true,
-    phase: "provision",
+    cloudflare: undefined,
     branch: deployBranch,
-    dependabot: undefined,
-    ...(options.recovery !== undefined ? { recovery: options.recovery } : {}),
+    files: [],
+    refused:
+      "The SFTP host is set up, but the workflow wasn't written, so nothing deploys yet. Run `opscrew provision` again to write it.",
   });
   deps.reporter.info(
     `In your host's panel, point ${hostname} at ${documentRoot} and give it a certificate: each deploy checks that the hostname serves the new release, and switches back when it doesn't.`,
   );
-  if (published.published.prUrl) {
+  if (published.prUrl) {
     deps.reporter.info(
-      `Merging ${published.published.prUrl} deploys the app: GitHub Actions builds each release, uploads it over SFTP and switches ${hostname} to it.`,
+      `Merging ${published.prUrl} deploys the app: GitHub Actions builds each release, uploads it over SFTP and switches ${hostname} to it.`,
     );
   }
-  return {
-    applied: true,
-    outputs: { url: `https://${hostname}` },
-    branch: published.published.branch,
-    base: published.published.base,
-    ...(published.published.prUrl ? { prUrl: published.published.prUrl } : {}),
-    published: published.published.published,
-    pushed: published.published.pushed,
-  };
-}
-
-/**
- * The plan shown, saved in `.opscrew/plans/hosting-<env>-sftp.json` when it changes something,
- * approved by its hash (`hosting-apply`; `--yes` never grants it), then applied, with an audit
- * entry for the start, each change and a failure. With `planOnly` it is only shown and saved.
- */
-async function sftpPlanStep(
-  deps: PhaseDeps,
-  input: {
-    plan: SftpPlan;
-    planOnly: boolean;
-    command: string;
-    apply: (hash: string) => ReturnType<typeof applySftpPlan>;
-  },
-): Promise<Awaited<ReturnType<typeof applySftpPlan>> & { approval?: ApprovalRecord }> {
-  const { plan, command } = input;
-  const hash = sftpPlanHash(plan);
-  const details = describeSftpPlan(plan, hash);
-  deps.reporter.info(details);
-  if (plan.steps.length === 0) {
-    deps.reporter.success("The hosting plan has nothing to change: the SFTP host is as planned.");
-    return { applied: [] };
-  }
-  await writeFileAtomic(
-    sftpPlanFile(deps.paths, plan.environment),
-    `${JSON.stringify(plan, null, 2)}\n`,
-  );
-  if (input.planOnly) {
-    deps.reporter.info(
-      `Saved the hosting plan (hash ${hash}); nothing on the SFTP host was changed.`,
-    );
-    return { applied: [] };
-  }
-  const approval = await deps.approvals.request({
-    kind: "hosting-apply",
-    title: sftpPlanTitle(plan),
-    details,
-    planHash: hash,
-  });
-  if (!approval.approved) {
-    throw new PlanRefusedError({
-      plan: "hosting plan",
-      ...(approval.reason ? { reason: approval.reason } : {}),
-      unchanged: "Nothing on the SFTP host was changed by it.",
-      hint: approveLaterHint(command, hash),
-    });
-  }
-  await deps.approvals.assertApprovedHostingPlan(hash);
-  deps.reporter.step(`Changing the SFTP host (${plural(plan.steps.length, "change")})`);
-  const audit = (action: string, decision: "approved" | "refused", detail: string) =>
-    deps.audit.append({
-      kind: "provider-call",
-      actor: "opscrew",
-      action,
-      phase: "provision",
-      target: hash,
-      decision,
-      detail,
-    });
-  await audit(
-    "hosting apply started",
-    "approved",
-    `sftp: ${plan.steps.map((s) => s.kind).join(", ")}`,
-  );
-  let result: Awaited<ReturnType<typeof applySftpPlan>>;
-  try {
-    result = await input.apply(hash);
-  } catch (error) {
-    const done = error instanceof SftpApplyError ? error.applied : [];
-    for (const kind of done) await audit(`hosting change ${kind}`, "approved", "sftp");
-    await audit(
-      "hosting apply failed",
-      "refused",
-      `steps applied before the failure: ${done.length > 0 ? done.join(", ") : "none"}`,
-    );
-    throw error;
-  }
-  for (const kind of result.applied) await audit(`hosting change ${kind}`, "approved", "sftp");
-  deps.reporter.success(`Applied the hosting plan (${plural(result.applied.length, "change")}).`);
-  return { ...result, approval };
+  return published;
 }

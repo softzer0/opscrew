@@ -45,7 +45,7 @@ function fakeNet(): { fetch: FetchLike; hosts: string[] } {
 }
 
 /** A plan for notes.example.com on a hosting account reached through `panel`. */
-function hostingPlan(panel: "cpanel" | "sftp"): DeployPlan {
+function hostingPlan(panel: "cpanel" | "plesk" | "sftp"): DeployPlan {
   return DeployPlanSchema.parse({
     schemaVersion: 1,
     createdAt: "2026-11-12T12:00:00.000Z",
@@ -78,7 +78,7 @@ function hostingPlan(panel: "cpanel" | "sftp"): DeployPlan {
 interface Setup {
   env?: Record<string, string>;
   /** The plan's panel; without one, only the interview's answers (a hosting account). */
-  plan?: "cpanel" | "sftp";
+  plan?: "cpanel" | "plesk" | "sftp";
   /** Neither a plan nor answers: the target is not chosen yet. */
   unchosen?: boolean;
   tools?: string[];
@@ -129,17 +129,51 @@ function find(list: InitCheck[], id: InitCheck["id"]): InitCheck {
 }
 
 describe("opscrew init for an app on a hosting account", () => {
-  it("checks the panel's variables, needs no SSH tools, and calls no cloud provider or panel", async () => {
+  it("checks the panel's variables, and calls no cloud provider or panel", async () => {
     for (const plan of [undefined, "cpanel"] as const) {
       const { checks: list, hosts } = await checks(plan === undefined ? {} : { plan });
       const provider = find(list, "provider");
       expect(provider.title).toBe("Your hosting account");
       expect(provider.status).toBe("pass");
       expect(provider.message).toContain("OPSCREW_HOSTING_TOKEN are set");
-      expect(find(list, "ssh").status).toBe("skip");
       expect(hosts).toEqual(["api.github.com"]);
       expect(JSON.stringify(list)).not.toContain(TOKEN);
     }
+  });
+
+  it("needs no SSH tools for cPanel, whose API writes the account's files", async () => {
+    const { checks: list } = await checks({ plan: "cpanel", tools: ["git", "tofu"] });
+    expect(find(list, "ssh")).toMatchObject({
+      status: "skip",
+      message:
+        "Not needed: OpsCrew changes your hosting account through its panel's API and never connects over SSH.",
+    });
+  });
+
+  it("needs sftp and ssh-keyscan for Plesk, whose files go over SFTP", async () => {
+    const { checks: list } = await checks({ plan: "plesk" });
+    expect(find(list, "ssh")).toMatchObject({
+      status: "pass",
+      message: "sftp and ssh-keyscan found.",
+    });
+    const { checks: noTools } = await checks({ plan: "plesk", tools: ["git", "tofu", "sftp"] });
+    expect(find(noTools, "ssh")).toMatchObject({
+      status: "fail",
+      message:
+        "ssh-keyscan is not installed, and OpsCrew writes a Plesk account's files over SFTP, which needs it.",
+    });
+    expect(find(noTools, "ssh").fix).toContain("OpenSSH Client");
+  });
+
+  it("before design, only warns of missing SSH tools, as only a Plesk account needs them", async () => {
+    const { checks: found } = await checks();
+    expect(find(found, "ssh")).toMatchObject({ status: "pass" });
+    const { checks: list } = await checks({ tools: ["git", "tofu"] });
+    expect(find(list, "ssh")).toMatchObject({
+      status: "warn",
+      message:
+        "sftp and ssh-keyscan are not installed. A Plesk account needs them, as OpsCrew writes its files over SFTP; cPanel and DirectAdmin don't.",
+    });
   });
 
   it("fails naming each missing panel variable, and an address that isn't https://", async () => {

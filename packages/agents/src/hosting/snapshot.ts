@@ -16,7 +16,7 @@ import { NOTHING_TAKEN, type SnapshotRun } from "../snapshot/run";
 import type { TakenSnapshot, TakeSnapshotOptions } from "../snapshot/types";
 import { hostingFolder, hostingTarget } from "./provision-plans";
 import { recordedObject } from "./record";
-import { type RequestResult, sendRequest } from "./requests";
+import { type RequestResult, SNAPSHOT_ID, sendRequest } from "./requests";
 import {
   type HostingAccountServices,
   type HostingReach,
@@ -25,16 +25,16 @@ import {
 } from "./status";
 
 /** What the snapshot commands reach the account with, each replaceable in tests. */
-export interface HostingSnapshotServices extends HostingAccountServices {
+interface HostingSnapshotServices extends HostingAccountServices {
   /** How a wait for the agent's answer sleeps (default: real time). */
   sleep?: (ms: number) => Promise<void>;
 }
 
-/** A snapshot's id on the account: its files' name without `.sql.gz` or `.shared.tar.gz`. */
-const SNAPSHOT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+/** The end of a snapshot's files' names: its database's dump, its copy of the shared files. */
+const SNAPSHOT_FILE = /\.sql\.gz$|\.shared\.tar\.gz$/;
 
 /** A snapshot's id from one of its files' names. */
-const idOf = (file: string) => file.replace(/\.sql\.gz$|\.shared\.tar\.gz$/, "");
+const idOf = (file: string) => file.replace(SNAPSHOT_FILE, "");
 
 /** Where the snapshots stay, and how to keep one elsewhere. */
 function downloadNote(folder: string): string {
@@ -213,9 +213,7 @@ export async function restoreHostingSnapshot(
   }
   const { files, folder, database, hostname } = await reachDumps(run, services, NOTHING_CHANGED);
   const names = (await files.list(`${folder}/dumps`)) ?? [];
-  const kept = [
-    ...new Set(names.filter((name) => /\.sql\.gz$|\.shared\.tar\.gz$/.test(name)).map(idOf)),
-  ].sort();
+  const kept = [...new Set(names.filter((name) => SNAPSHOT_FILE.test(name)).map(idOf))].sort();
   if (!kept.includes(id)) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",

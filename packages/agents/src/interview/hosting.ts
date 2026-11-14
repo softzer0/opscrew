@@ -17,6 +17,7 @@ import {
 import { FqdnSchema, type Question } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { connectPanel, HOSTING_VARS_HINT, hostingReach, SFTP_HOST_VAR } from "../hosting/panels";
+import { hostingHostnameTaken } from "../hosting/provision-plans";
 import {
   type HostingRecord,
   readHostingRecord,
@@ -168,10 +169,7 @@ function hostnameAnswer(
     );
   }
   if (account === undefined) return hostname;
-  const made = (previous?.objects ?? []).some(
-    (object) => object.kind === "hostname" && object.key === hostname,
-  );
-  if (!made && account.domains.some((domain) => domain.name === hostname)) {
+  if (hostingHostnameTaken(account.domains, previous, hostname)) {
     throw new OpsCrewError(
       "INVALID_INPUT",
       `hosting.hostname: the account already serves ${hostname}, and OpsCrew never takes over a hostname it didn't make.`,
@@ -229,15 +227,19 @@ async function panelAnswers(
   };
 }
 
+/** What is wrong with `hosting.hostKey`'s answer `fingerprint`, unless it is none or a SHA-256 one. */
+function fingerprintProblem(fingerprint: string | undefined): string | undefined {
+  return fingerprint === undefined || HOST_KEY_FINGERPRINT.test(fingerprint)
+    ? undefined
+    : "hosting.hostKey: write the host key's SHA-256 fingerprint, such as SHA256: followed by 43 letters, digits, + or /";
+}
+
 /** `hosting.hostKey`, checked: a SHA-256 fingerprint, or undefined when not answered. */
 function fingerprintAnswer(value: unknown): string | undefined {
   const fingerprint = text(value);
-  if (fingerprint !== undefined && !HOST_KEY_FINGERPRINT.test(fingerprint)) {
-    throw new OpsCrewError(
-      "INVALID_INPUT",
-      "hosting.hostKey: write the host key's SHA-256 fingerprint, such as SHA256: followed by 43 letters, digits, + or /.",
-      { hint: FIX_ANSWERS_HINT },
-    );
+  const problem = fingerprintProblem(fingerprint);
+  if (problem !== undefined) {
+    throw new OpsCrewError("INVALID_INPUT", `${problem}.`, { hint: FIX_ANSWERS_HINT });
   }
   return fingerprint;
 }
@@ -313,20 +315,18 @@ async function sftpAnswers(
   const problems: string[] = [];
   const port = values.port === undefined ? (before?.port ?? 22) : portAnswer(values.port);
   if (port === undefined) problems.push("hosting.port: write a port number from 1 to 65535");
-  const folder = text(values.folder) ?? before?.folder;
+  // Recorded without a trailing `/`: every command joins them with what is inside.
+  const folder = text(values.folder)?.replace(/(.)\/+$/, "$1") ?? before?.folder;
   if (folder === undefined || !SFTP_FOLDER.test(folder)) {
     problems.push("hosting.folder: write the folder as SFTP shows it, such as opscrew, without ..");
   }
-  const phpPath = text(values.phpPath) ?? before?.phpPath;
+  const phpPath = text(values.phpPath)?.replace(/(.)\/+$/, "$1") ?? before?.phpPath;
   if (phpPath === undefined || !PHP_PATH.test(phpPath)) {
     problems.push("hosting.phpPath: write the folder's full path, starting with /, without ..");
   }
   const fingerprint = text(values.hostKey);
-  if (fingerprint !== undefined && !HOST_KEY_FINGERPRINT.test(fingerprint)) {
-    problems.push(
-      "hosting.hostKey: write the host key's SHA-256 fingerprint, such as SHA256: followed by 43 letters, digits, + or /",
-    );
-  }
+  const keyProblem = fingerprintProblem(fingerprint);
+  if (keyProblem !== undefined) problems.push(keyProblem);
   if (problems.length > 0 || port === undefined || folder === undefined || phpPath === undefined) {
     throw new OpsCrewError(
       "INVALID_INPUT",

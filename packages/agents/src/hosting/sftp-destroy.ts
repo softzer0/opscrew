@@ -6,39 +6,26 @@
  * through their usual removal. The hostname, its document root and its certificate are the
  * user's, in the host's panel.
  */
-import { join, posix } from "node:path";
-import type { ApprovalRecord } from "@opscrew/contracts";
-import {
-  canonicalJson,
-  isPlanHash,
-  OpsCrewError,
-  plural,
-  sha256Hex,
-  writeFileAtomic,
-} from "@opscrew/core";
+import { posix } from "node:path";
+import { canonicalJson, plural, sha256Hex } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import {
-  COMMAND,
   deploymentFiles,
   deploySecretsLeft,
   nothingDeployed,
   recordTeardown,
   removeDeploySecrets,
   resolveGitHub,
-  typeNameHint,
 } from "../destroy/common";
 import type { DestroyOptions, DestroyResult } from "../destroy/types";
-import { type AdapterPlanItem, describeAdapterPlan, hasDeployment, refusalReason } from "../shared";
-import { HostnameSchema } from "./plan";
+import { type AdapterPlanItem, describeAdapterPlan, hasDeployment } from "../shared";
+import { requireApprovedHash } from "./apply";
+import { approveHostingDestroy, auditedDestroy, HostingDestroyError } from "./common";
+import { HostnameSchema, hostingPlanFile } from "./plan";
 import { environmentOf } from "./provision-plans";
-import {
-  type HostingObject,
-  type HostingRecord,
-  readHostingRecord,
-  updateHostingRecord,
-} from "./record";
+import { forgetObjects, type HostingObject, type HostingRecord, readHostingRecord } from "./record";
 import { reachSftpHost } from "./sftp";
 import { AUTHORIZED_KEYS, CI_KEY_STEP, SftpPathSchema } from "./sftp-plan";
 
@@ -57,7 +44,7 @@ const SftpDestroyStepSchema = z.discriminatedUnion("kind", [
 ]);
 
 /** An SFTP-only host's destroy plan, as saved in `.opscrew/plans/hosting-<env>-destroy.json`. */
-export const SftpDestroyPlanSchema = z.strictObject({
+const SftpDestroyPlanSchema = z.strictObject({
   plan: z.literal("sftp-destroy"),
   /** The SFTP login: `<user> at <host>`. */
   account: z.string().min(1),
@@ -131,52 +118,56 @@ interface SftpDestroyContext {
   files: Awaited<ReturnType<typeof reachSftpHost>>["files"];
   /** Forgets every recorded object `match` takes, once it is gone. */
   forget: (match: (object: HostingObject) => boolean) => Promise<void>;
-  /** Each step's kind once it is taken, so a failure later still says what was. */
-  taken: SftpDestroyStep["kind"][];
 }
 
 /**
  * Applies an approved destroy plan: refuses with `PLAN_HASH_MISMATCH` before any change when its
  * hash isn't `approvedHash`, then takes the steps in order, each recorded object forgotten once it
- * is gone (`ctx.taken`). A key line already gone, or a folder already removed, counts as removed.
+ * is gone; the first failure stops with a {@link HostingDestroyError}. A key line already gone, or
+ * a folder already removed, counts as removed. Answers the steps taken.
  */
 export async function applySftpDestroy(
   plan: SftpDestroyPlan,
   ctx: SftpDestroyContext & { approvedHash: string },
-): Promise<void> {
-  if (!isPlanHash(ctx.approvedHash) || ctx.approvedHash.toLowerCase() !== sftpDestroyHash(plan)) {
-    throw new OpsCrewError(
-      "PLAN_HASH_MISMATCH",
-      "This hosting destroy plan is not the one that was approved, so OpsCrew removes nothing from the SFTP host.",
-      { hint: "Look at the current destroy plan and approve it by its hash." },
-    );
-  }
+): Promise<{ applied: SftpDestroyStep["kind"][] }> {
+  requireApprovedHash(
+    ctx.approvedHash,
+    sftpDestroyHash(plan),
+    "hosting destroy plan",
+    "OpsCrew removes nothing from the SFTP host",
+  );
   const { files } = ctx;
-  for (const step of plan.steps) {
-    if (step.kind === "key") {
-      const keys = await files.readFile(AUTHORIZED_KEYS);
-      const lines = (keys ?? "").split("\n");
-      if (lines.some((line) => line.trim() === step.line)) {
-        const kept = lines.filter((line) => line.trim() !== step.line).join("\n");
-        await files.writeFile(AUTHORIZED_KEYS, new TextEncoder().encode(kept), 0o600);
+  const applied: SftpDestroyStep["kind"][] = [];
+  try {
+    for (const step of plan.steps) {
+      if (step.kind === "key") {
+        const keys = await files.readFile(AUTHORIZED_KEYS);
+        const lines = (keys ?? "").split("\n");
+        if (lines.some((line) => line.trim() === step.line)) {
+          const kept = lines.filter((line) => line.trim() !== step.line).join("\n");
+          await files.writeFile(AUTHORIZED_KEYS, new TextEncoder().encode(kept), 0o600);
+        }
+        await ctx.forget((o) => o.kind === "file" && o.key === AUTHORIZED_KEYS);
+      } else if (step.kind === "panel-step") {
+        await ctx.forget((o) => o.kind === "panel-step" && o.key === CI_KEY_STEP);
+      } else {
+        await files.remove(step.path);
+        const { parent } = step;
+        if (parent !== undefined && (await files.list(parent))?.length === 0) {
+          await files.remove(parent);
+        }
+        await ctx.forget(
+          (o) =>
+            (o.kind === "folder" && (o.key === step.path || o.key === parent)) ||
+            (o.kind === "file" && o.key.startsWith(`${step.path}/`)),
+        );
       }
-      await ctx.forget((o) => o.kind === "file" && o.key === AUTHORIZED_KEYS);
-    } else if (step.kind === "panel-step") {
-      await ctx.forget((o) => o.kind === "panel-step" && o.key === CI_KEY_STEP);
-    } else {
-      await files.remove(step.path);
-      const { parent } = step;
-      if (parent !== undefined && (await files.list(parent))?.length === 0) {
-        await files.remove(parent);
-      }
-      await ctx.forget(
-        (o) =>
-          (o.kind === "folder" && (o.key === step.path || o.key === parent)) ||
-          (o.kind === "file" && o.key.startsWith(`${step.path}/`)),
-      );
+      applied.push(step.kind);
     }
-    ctx.taken.push(step.kind);
+  } catch (error) {
+    throw new HostingDestroyError(error, applied, "The SFTP host");
   }
+  return { applied };
 }
 
 /**
@@ -209,84 +200,36 @@ export async function destroySftp(
     folder,
   );
   const hash = sftpDestroyHash(destroyPlan);
-  let approval: ApprovalRecord | undefined;
-  const taken: SftpDestroyStep["kind"][] = [];
-  if (destroyPlan.steps.length > 0) {
-    const details = describeAdapterPlan({
+  const approval = await approveHostingDestroy(deps, {
+    plan: destroyPlan,
+    hash,
+    details: describeAdapterPlan({
       heading: `Hosting destroy plan for ${hostname} on the SFTP host ${account}`,
       items: destroyPlan.steps.map(stepItem),
       findings: [],
       note: "OpsCrew removes only what .opscrew/hosting.json lists as made by OpsCrew; everything else on the host stays as it is.",
       hashLabel: "Hosting plan hash",
       hash,
-    });
-    deps.reporter.info(details);
-    await writeFileAtomic(
-      join(deps.paths.files.plansDir, `hosting-${destroyPlan.environment}-destroy.json`),
-      `${JSON.stringify(destroyPlan, null, 2)}\n`,
-    );
-    approval = await deps.approvals.request({
-      kind: "hosting-apply",
-      title: `Remove ${hostname} from the SFTP host ${account} (${plural(destroyPlan.steps.length, "step")})`,
-      details,
-      planHash: hash,
-      allowDestroy: true,
-      confirmPhrase: hostname,
-    });
-    if (!approval.approved) {
-      throw new OpsCrewError(
-        "APPROVAL_REFUSED",
-        `The teardown was not approved${refusalReason(approval)}. Nothing was changed.`,
-        { hint: typeNameHint(hostname) },
-      );
-    }
-    await deps.approvals.assertApprovedHostingPlan(hash, { allowDestroy: true });
-    deps.reporter.step("Removing the app from the SFTP host");
-    const audit = (action: string, decision: "approved" | "refused", detail: string) =>
-      deps.audit.append({
-        kind: "provider-call",
-        actor: "opscrew",
-        action,
-        phase: "provision",
-        target: hash,
-        decision,
-        detail,
-      });
-    await audit(
-      "hosting destroy started",
-      "approved",
-      destroyPlan.steps.map((s) => s.kind).join(", "),
-    );
-    try {
-      await applySftpDestroy(destroyPlan, {
+    }),
+    title: `Remove ${hostname} from the SFTP host ${account} (${plural(destroyPlan.steps.length, "step")})`,
+    file: hostingPlanFile(deps.paths, destroyPlan.environment, "destroy"),
+    hostname,
+    nothing: "Nothing OpsCrew made is left on the SFTP host; it finishes the cleanup.",
+  });
+  const taken = await auditedDestroy(deps, {
+    plan: destroyPlan,
+    hash,
+    removing: "Removing the app from the SFTP host",
+    removed: `Removed ${hostname} from the SFTP host.`,
+    apply: () =>
+      applySftpDestroy(destroyPlan, {
         files: reach.files,
         forget: async (match) => {
-          await updateHostingRecord(deps.paths, (current) => ({
-            ...current,
-            objects: current.objects.filter((object) => !match(object)),
-          }));
+          await forgetObjects(deps.paths, match);
         },
-        taken,
         approvedHash: hash,
-      });
-    } catch (error) {
-      for (const kind of taken) await audit(`hosting removal ${kind}`, "approved", "destroy");
-      await audit(
-        "hosting destroy failed",
-        "refused",
-        `steps taken before the failure: ${taken.length > 0 ? taken.join(", ") : "none"}`,
-      );
-      if (!(error instanceof OpsCrewError)) throw error;
-      throw new OpsCrewError(error.code, error.message, {
-        hint: `${error.hint ?? "Fix the cause shown above."} Then run \`${COMMAND}\` again: it continues with what is left.`,
-        cause: error,
-      });
-    }
-    for (const kind of taken) await audit(`hosting removal ${kind}`, "approved", "destroy");
-    deps.reporter.success(`Removed ${hostname} from the SFTP host.`);
-  } else {
-    deps.reporter.info("Nothing OpsCrew made is left on the SFTP host; it finishes the cleanup.");
-  }
+      }),
+  });
   const secretsRemoved = await removeDeploySecrets(deps, github, {
     plan,
     done: `${hostname} is removed from the SFTP host.`,
@@ -302,7 +245,7 @@ export async function destroySftp(
     action: "destroy",
     phase: "provision",
     target: plan.app.name,
-    detail: `app removed from the SFTP host: ${plural(taken.length, "step")} taken, ${plural(secretsRemoved.length, "deploy secret")} removed`,
+    detail: `app removed from the SFTP host: ${plural(taken?.applied.length ?? 0, "step")} taken, ${plural(secretsRemoved.length, "deploy secret")} removed`,
   });
   const repoFiles = await deploymentFiles(deps, plan);
   const remaining = [

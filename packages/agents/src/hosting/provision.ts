@@ -7,42 +7,24 @@
  */
 import { join } from "node:path";
 import { type GitClient, type GitHubClient, githubConnector } from "@opscrew/connector-github";
-import type {
-  ApprovalRecord,
-  HostingCertificate,
-  HostingFiles,
-  HostingPanel,
-} from "@opscrew/contracts";
-import { exists, OpsCrewError, plural, writeFileAtomic } from "@opscrew/core";
+import type { ApprovalRecord, HostingCertificate, HostingPanel } from "@opscrew/contracts";
+import { exists, OpsCrewError, realSleep } from "@opscrew/core";
 import { detectPhpNeeds } from "@opscrew/detect";
-import {
-  AGENT_SH,
-  RELEASE_SIGNING_KEY_SECRET,
-  type RenderedFile,
-  renderEnvPhp,
-  renderWorkflow,
-} from "@opscrew/iac-templates";
+import { AGENT_SH, RELEASE_SIGNING_KEY_SECRET, renderEnvPhp } from "@opscrew/iac-templates";
 import { type DeployPlan, type Requirements, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { hostingDatabaseVariables } from "../design/hosting";
 import { commandFlags } from "../environments/choice";
 import { missing, setupCloudflare, setupGitHub } from "../provision/credentials";
-import { approveLaterHint } from "../provision/plan-apply";
-import { deploymentRenderContext } from "../provision/render";
-import { buildAppEnvironment, placeDeploySecrets, setDeploySecrets } from "../provision/secrets";
-import { deployBranchFor, deploymentRecord, publishDeployment } from "../provision/steps";
+import { buildAppEnvironment } from "../provision/secrets";
+import { deployBranchFor, deploymentRecord } from "../provision/steps";
 import type { ProvisionOptions, ProvisionResult, ProvisionServices } from "../provision/types";
-import {
-  approvalEntry,
-  approveAndWriteRenderedFiles,
-  githubClientFromToken,
-  PlanRefusedError,
-  writePlanIfChanged,
-} from "../shared";
-import { applyHostingPlan, HostingApplyError, type SigningKeyPair, valuesDigest } from "./apply";
+import { approvalEntry, githubClientFromToken, writePlanIfChanged } from "../shared";
+import { applyHostingPlan, type SigningKeyPair, valuesDigest } from "./apply";
+import { hostingPlanStep, publishHostingWorkflow, storeHostingSecrets } from "./common";
 import { applyHostingDns } from "./dns";
 import { type HostingAccount, readHostingAccount } from "./facts";
-import { connectPanel, hostingFiles, PANEL_NAMES } from "./panels";
+import { PANEL_NAMES } from "./panels";
 import { choosePhp, type PhpChoice, phpRefusal } from "./php";
 import {
   describeHostingPlan,
@@ -53,6 +35,7 @@ import {
   hostingPlanTitle,
   type PanelStepStep,
   panelSteps,
+  panelStepText,
 } from "./plan";
 import {
   agentContents,
@@ -63,9 +46,7 @@ import {
   databaseNames,
   environmentOf,
   type FileContents,
-  hostingFolder,
   hostingTarget,
-  hostnameOf,
   type PlannedValues,
   removedByUser,
   requireNewHostname,
@@ -78,16 +59,11 @@ import {
   recordObject,
   replaceObjects,
 } from "./record";
-import { sftpFilesFromEnv } from "./sftp";
 import { provisionSftp, type SftpProvisionServices } from "./sftp-provision";
+import { type HostingAccountServices, reachHostingAccount, requireFiles } from "./status";
 
 /** Collaborators a test replaces. */
-export interface HostingProvisionServices extends SftpProvisionServices {
-  /**
-   * The account's files where the panel's API has none (Plesk's); by default the SFTP connector
-   * when the user gives SFTP access (`sftpFilesFromEnv`).
-   */
-  files?: HostingFiles;
+export interface HostingProvisionServices extends SftpProvisionServices, HostingAccountServices {
   /** Random bytes for the database's password (default: Node's). */
   randomBytes?: (size: number) => Uint8Array;
   /** A new release signing key pair (default: a new ECDSA P-256 pair from Node). */
@@ -104,9 +80,6 @@ export interface HostingProvisionInput {
 /** How long the panel may take to issue the hostname's certificate (plan 2): 5 minutes. */
 const CERTIFICATE_WAIT_MS = 5 * 60 * 1000;
 const CERTIFICATE_POLL_MS = 15_000;
-
-/** Waits `ms` (default: a timer). */
-const timer = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /** What one hosting plan's step of provision did. */
 interface PlanOutcome {
@@ -145,30 +118,19 @@ export async function provisionHosting(
   hostingServices: HostingProvisionServices = {},
 ): Promise<ProvisionResult> {
   const services: ProvisionServices = options.services ?? {};
-  const sleep = services.sleep ?? timer;
+  const sleep = services.sleep ?? realSleep;
   const planOnly = options.planOnly === true;
   let plan = input.plan;
   const target = hostingTarget(plan);
   if (target.panel === "sftp") return provisionSftp(deps, options, input, hostingServices);
-  const hostname = hostnameOf(plan);
   const environment = environmentOf(plan);
-  const folder = hostingFolder(plan);
   const { root } = deps.paths;
   const command = `opscrew provision${await commandFlags(root, deps.paths.environment, deps.paths.app)}`;
 
   // 1. The checks, before any change.
   deps.reporter.step("Checking your hosting account, GitHub and Cloudflare access");
-  const record = await readHostingRecord(deps.paths);
-  if (record?.panel === undefined) {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      "opscrew/plan.yaml deploys the app to a hosting account, but OpsCrew has no record of the account's panel on this computer. Nothing was changed.",
-      {
-        hint: "Run `opscrew interview`: it finds your panel and records the account in .opscrew/hosting.json. Then run `opscrew design` and `opscrew provision` again.",
-      },
-    );
-  }
-  const { panel, url, user } = await connectPanel(deps, record.panel);
+  const reach = await reachHostingAccount(deps, plan, hostingServices);
+  const { panel, record, folder, hostname } = reach;
   const github = await setupGitHub(deps, input.git, services);
   const client = await githubClientFromToken(deps);
   if (client === undefined) {
@@ -177,16 +139,7 @@ export async function provisionHosting(
   const cloudflare = await setupCloudflare(deps, plan, services);
   const account = await readHostingAccount(panel, deps.fetch);
   requireNewHostname(account.facts, record, hostname);
-  const files = hostingFiles(panel, hostingServices.files ?? sftpFilesFromEnv(deps));
-  if (files === undefined) {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      `${PANEL_NAMES[panel.kind]}'s API can't write files, so OpsCrew installs its agent on the account over SFTP, and OPSCREW_SFTP_HOST, OPSCREW_SFTP_USER and OPSCREW_SFTP_KEY aren't set. Nothing was changed.`,
-      {
-        hint: "Set them to the account's SFTP login (OPSCREW_SFTP_KEY is your key file's path), then run `opscrew provision` again.",
-      },
-    );
-  }
+  const files = requireFiles(reach, "install its agent on the account");
   const deployBranch = await deployBranchFor(deps, {
     git: input.git,
     github,
@@ -198,7 +151,7 @@ export async function provisionHosting(
   const repository = `${github.owner}/${github.repo}`;
   const header = {
     panel: panel.kind,
-    account: `${user} at ${new URL(url).hostname}`,
+    account: reach.account,
     environment,
     hostname,
     folder,
@@ -239,7 +192,7 @@ export async function provisionHosting(
     await client.githubSshHostKeys(),
   );
   const agentPlan = await buildAgentPlan({ header, panel, files, record, contents: agentFiles });
-  const a = await hostingPlanStep(deps, {
+  const a = await panelPlanStep(deps, {
     plan: agentPlan,
     planOnly,
     command,
@@ -317,7 +270,7 @@ export async function provisionHosting(
           address: accountAddress(account),
           command,
         });
-  const b = await hostingPlanStep(deps, {
+  const b = await panelPlanStep(deps, {
     plan: appPlan,
     planOnly,
     command,
@@ -327,22 +280,14 @@ export async function provisionHosting(
         contents: appFiles,
         ...(values !== undefined ? { values: values.values } : {}),
         storeSigningKey: async (privatePem: string) => {
-          plan = (
-            await placeDeploySecrets(deps, github, plan, { command, phase: "provision", planOnly })
-          ).plan;
-          await setDeploySecrets(
-            deps,
-            github,
-            plan,
-            { [RELEASE_SIGNING_KEY_SECRET]: privatePem },
-            [],
-            "provision",
-            {
-              about:
-                "The key that signs the app's releases (ECDSA P-256): the agent on the account deploys only releases signed with it.",
-              refusedState: "The account's key and the releases it accepts are as they were.",
-            },
-          );
+          plan = await storeHostingSecrets(deps, github, plan, {
+            command,
+            planOnly,
+            secrets: { [RELEASE_SIGNING_KEY_SECRET]: privatePem },
+            about:
+              "The key that signs the app's releases (ECDSA P-256): the agent on the account deploys only releases signed with it.",
+            refusedState: "The account's key and the releases it accepts are as they were.",
+          });
         },
         approvedHash: hash,
       }),
@@ -385,51 +330,31 @@ export async function provisionHosting(
     iac: dns ?? { applied: false },
     approvals,
   })(a.applied.length > 0 || b.applied.length > 0);
-  const ctx = await deploymentRenderContext(deps, {
+  const committed = committedHostingFolder(plan);
+  const published = await publishHostingWorkflow(deps, options, {
     plan,
     requirements: input.requirements,
+    git: input.git,
     github,
-    deployPublicKey: "",
     cloudflare,
-  });
-  const committed = committedHostingFolder(plan);
-  const rendered: RenderedFile[] = [
-    renderWorkflow(plan, ctx),
-    { path: `${committed}/agent.sh`, content: AGENT_SH, kind: "runtime", mode: 0o755 },
-    { path: `${committed}/${environment}.sh`, content: settings, kind: "runtime" },
-    ...(dns?.files ?? []),
-  ];
-  await approveAndWriteRenderedFiles(deps, root, rendered, {
+    branch: deployBranch,
+    files: [
+      { path: `${committed}/agent.sh`, content: AGENT_SH, kind: "runtime", mode: 0o755 },
+      { path: `${committed}/${environment}.sh`, content: settings, kind: "runtime" },
+      ...(dns?.files ?? []),
+    ],
     refused:
       "The account is set up, but the workflow wasn't written, so nothing deploys yet. Run `opscrew provision` again to write it.",
   });
-  const published = await publishDeployment(deps, {
-    git: input.git,
-    github,
-    plan,
-    files: rendered.map((file) => file.path),
-    push: options.push !== false,
-    secretsStored: true,
-    phase: "provision",
-    branch: deployBranch,
-    dependabot: undefined,
-    ...(options.recovery !== undefined ? { recovery: options.recovery } : {}),
-  });
-  if (published.published.prUrl) {
+  if (published.prUrl) {
     deps.reporter.info(
-      `Merging ${published.published.prUrl} deploys the app: GitHub Actions builds each release and the agent on the account switches to it within about a minute.`,
+      `Merging ${published.prUrl} deploys the app: GitHub Actions builds each release and the agent on the account switches to it within about a minute.`,
     );
   }
   return {
     ...(dns?.planHash ? { planHash: dns.planHash } : {}),
     ...changingPlans(a, b),
-    applied: true,
-    outputs: { url: `https://${hostname}` },
-    branch: published.published.branch,
-    base: published.published.base,
-    ...(published.published.prUrl ? { prUrl: published.published.prUrl } : {}),
-    published: published.published.published,
-    pushed: published.published.pushed,
+    ...published,
   };
 }
 
@@ -442,11 +367,9 @@ function changingPlans(...outcomes: PlanOutcome[]): Pick<ProvisionResult, "hosti
 }
 
 /**
- * A hosting plan shown, saved in `.opscrew/plans/hosting-<env>-{agent,app}.json` when it changes
- * something, approved by its hash (`hosting-apply`; `--yes` never grants it), then applied, with an
- * audit entry for the start, each change and a failure. With `planOnly` it is only shown and saved.
+ * Plan A or B through {@link hostingPlanStep}, saved in `.opscrew/plans/hosting-<env>-{agent,app}.json`.
  */
-async function hostingPlanStep(
+async function panelPlanStep(
   deps: PhaseDeps,
   input: {
     plan: HostingPlan;
@@ -455,84 +378,26 @@ async function hostingPlanStep(
     apply: (hash: string) => ReturnType<typeof applyHostingPlan>;
   },
 ): Promise<PlanOutcome> {
-  const { plan, command } = input;
+  const { plan } = input;
   const hash = hostingPlanHash(plan);
-  const details = describeHostingPlan(plan, hash);
-  const which = plan.plan === "agent" ? "Hosting plan A (the agent)" : "Hosting plan B (the app)";
-  deps.reporter.info(details);
-  if (plan.steps.length === 0) {
-    deps.reporter.success(`${which} has nothing to change: the account is as planned.`);
-    return { plan, hash, applied: [] };
-  }
-  await writeFileAtomic(
-    hostingPlanFile(deps.paths, plan.environment, plan.plan),
-    `${JSON.stringify(plan, null, 2)}\n`,
-  );
-  if (input.planOnly) {
-    deps.reporter.info(`Saved ${which} (hash ${hash}); nothing on the account was changed.`);
-    return { plan, hash, applied: [] };
-  }
-  const approval = await deps.approvals.request({
-    kind: "hosting-apply",
+  const done = await hostingPlanStep(deps, {
+    ...input,
+    hash,
+    details: describeHostingPlan(plan, hash),
     title: hostingPlanTitle(plan),
-    details,
-    planHash: hash,
+    file: hostingPlanFile(deps.paths, plan.environment, plan.plan),
+    which: plan.plan === "agent" ? "Hosting plan A (the agent)" : "Hosting plan B (the app)",
+    place: "account",
+    changing: `${PANEL_NAMES[plan.panel]} account`,
+    auditLabel: plan.plan,
   });
-  if (!approval.approved) {
-    throw new PlanRefusedError({
-      plan: which,
-      ...(approval.reason ? { reason: approval.reason } : {}),
-      unchanged: "Nothing on the account was changed by it.",
-      hint: approveLaterHint(command, hash),
-    });
-  }
-  await deps.approvals.assertApprovedHostingPlan(hash);
-  deps.reporter.step(
-    `Changing the ${PANEL_NAMES[plan.panel]} account (${plural(plan.steps.length, "change")})`,
-  );
-  const audit = (action: string, decision: "approved" | "refused", detail: string) =>
-    deps.audit.append({
-      kind: "provider-call",
-      actor: "opscrew",
-      action,
-      phase: "provision",
-      target: hash,
-      decision,
-      detail,
-    });
-  await audit(
-    "hosting apply started",
-    "approved",
-    `${plan.plan}: ${plan.steps.map((step) => step.kind).join(", ")}`,
-  );
-  let result: Awaited<ReturnType<typeof applyHostingPlan>>;
-  try {
-    result = await input.apply(hash);
-  } catch (error) {
-    const done = error instanceof HostingApplyError ? error.applied : [];
-    for (const kind of changed(done)) await audit(`hosting change ${kind}`, "approved", plan.plan);
-    await audit(
-      "hosting apply failed",
-      "refused",
-      `steps applied before the failure: ${done.length > 0 ? done.join(", ") : "none"}`,
-    );
-    throw error;
-  }
-  for (const kind of changed(result.applied)) {
-    await audit(`hosting change ${kind}`, "approved", plan.plan);
-  }
-  deps.reporter.success(`Applied ${which} (${plural(result.applied.length, "change")}).`);
   return {
     plan,
     hash,
-    applied: result.applied,
-    approval,
+    applied: done?.applied ?? [],
+    ...(done !== undefined ? { approval: done.approval } : {}),
   };
 }
-
-/** The steps that changed the account: a panel step is the user's to take. */
-const changed = (kinds: readonly HostingStep["kind"][]) =>
-  kinds.filter((kind) => kind !== "panel-step");
 
 /**
  * When `steps` (the panel's API can't take them) were listed: says what the user does in the panel
@@ -549,10 +414,7 @@ function stopsForPanelSteps(
   deps.reporter.warn(
     [
       `${name}'s API can't do ${steps.length === 1 ? "this step" : "these steps"}, so do ${steps.length === 1 ? "it" : "them"} in ${name}, then run \`${command}\` again to continue:`,
-      ...steps.map(
-        ({ step }) =>
-          `  - ${step.what}${step.value === undefined ? "" : `: ${step.value}`} (${step.where})`,
-      ),
+      ...steps.map(({ step }) => `  - ${panelStepText(step)} (${step.where})`),
     ].join("\n"),
   );
   return true;
@@ -700,11 +562,6 @@ async function addDeployKey(
 }
 
 /**
- * The hostname's certificate: with `sleep`, waited for up to 5 minutes (the panel issues it once
- * the hostname points at the account); what is left is said either way. `undefined` where the
- * panel's API can't read it.
- */
-/**
  * The installed certificate's id when OpsCrew may count it as its own: it names nothing but the
  * hostname and `www.` of it (R13). A wildcard, a certificate shared with other hosts, or one whose
  * names the panel doesn't give is the account's, never recorded, so never removed.
@@ -720,6 +577,11 @@ export function ownCertificateId(
   return names.length > 0 && own ? certificate.id : undefined;
 }
 
+/**
+ * The hostname's certificate: with `sleep`, waited for up to 5 minutes (the panel issues it once
+ * the hostname points at the account); what is left is said either way. `undefined` where the
+ * panel's API can't read it.
+ */
 async function certificateOf(
   deps: PhaseDeps,
   panel: HostingPanel,

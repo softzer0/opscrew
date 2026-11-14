@@ -20,8 +20,8 @@ import type { DriftReport, HostingDifference } from "../drift/types";
 import { commandFlags } from "../environments/choice";
 import { gitClient, githubClientFromToken, githubCoordinates } from "../shared";
 import { PANEL_NAMES } from "./panels";
-import { AGENT_SCHEDULE, agentCronCommand } from "./php";
-import { committedHostingFolder, environmentOf } from "./provision-plans";
+import { agentCronLine } from "./php";
+import { cleanPath, committedHostingFolder, environmentOf } from "./provision-plans";
 import type { HostingRecord } from "./record";
 import type { HostingAccountServices } from "./status";
 import { type CheckedAccount, reachCheckedAccount } from "./verify";
@@ -31,9 +31,6 @@ export interface HostingDriftServices extends HostingAccountServices {
   /** GitHub's deploy keys (default: the client of the user's token); `null` means no token. */
   github?: Pick<GitHubClient, "listDeployKeys"> | null;
 }
-
-/** A path from the home folder, without `./` or a trailing `/`. */
-const clean = (path: string) => path.replace(/^\.?\/+|\/+$/g, "");
 
 /** What the drift found and what it couldn't look at. */
 interface Found {
@@ -56,10 +53,10 @@ async function hostnameDifferences(
         title: `${key} is gone from the account`,
         detail: `The app doesn't answer there. OpsCrew's record still lists it, so \`opscrew provision${flag}\` doesn't add it again: add it in ${name}${value === undefined ? "" : ` with the document root ~/${value}`}, or run \`opscrew destroy${flag}\` and provision anew.`,
       });
-    } else if (value !== undefined && clean(root) !== clean(value)) {
+    } else if (value !== undefined && cleanPath(root) !== cleanPath(value)) {
       differences.push({
-        title: `${key}'s document root is ~/${clean(root)}, not ~/${clean(value)}`,
-        detail: `It no longer serves the app's running release. Set it back to ~/${clean(value)} in ${name}.`,
+        title: `${key}'s document root is ~/${cleanPath(root)}, not ~/${cleanPath(value)}`,
+        detail: `It no longer serves the app's running release. Set it back to ~/${cleanPath(value)} in ${name}.`,
       });
     }
   }
@@ -93,7 +90,7 @@ async function cronDifferences(
   folder: string,
 ): Promise<Found> {
   const name = PANEL_NAMES[panel.kind];
-  const agent = `${AGENT_SCHEDULE} ${agentCronCommand(folder)}`;
+  const agent = agentCronLine(folder);
   const made = record.objects.flatMap((o) =>
     o.kind === "cron" && o.value !== undefined ? [{ key: o.key, line: o.value }] : [],
   );

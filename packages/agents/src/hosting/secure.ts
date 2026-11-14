@@ -12,7 +12,7 @@ import { PHP_BRANCHES_READ, PHP_SUPPORTED_VERSIONS_URL, phpSupport } from "@opsc
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
 import { checkResult, editCheckText } from "../shared";
-import { hostingTarget, hostnameOf } from "./provision-plans";
+import { cleanPath, currentRoot, hostingTarget, hostnameOf } from "./provision-plans";
 import { recordedObject } from "./record";
 import { type HostingAccountServices, readAgentStatus } from "./status";
 import { type CheckedAccount, httpRedirectCheck, reachCheckedAccount } from "./verify";
@@ -114,7 +114,7 @@ async function settingsPlaceCheck(account: CheckedAccount): Promise<CheckResult>
       remediation: "`opscrew drift` says what changed in the panel.",
     });
   }
-  const clean = root.replace(/^\.?\/+|\/+$/g, "");
+  const clean = cleanPath(root);
   if (clean === "" || clean === shared || shared.startsWith(`${clean}/`)) {
     return checkResult(
       id,
@@ -176,8 +176,7 @@ async function htaccessChecks(
     );
   if ("skipped" in reach) return all("skip", reach.skipped);
   const { folder, files } = reach;
-  const { webRoot } = hostingTarget(plan);
-  const path = `${folder}/current${webRoot === "." ? "" : `/${webRoot}`}/.htaccess`;
+  const path = `${currentRoot(folder, hostingTarget(plan).webRoot)}/.htaccess`;
   const text = await files.readFile(path);
   const deploy = "Deploy again: the agent writes OpsCrew's block into each release's .htaccess.";
   if (text === undefined) {

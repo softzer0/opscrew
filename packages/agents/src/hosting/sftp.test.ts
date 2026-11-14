@@ -41,6 +41,7 @@ import { hostingGitHub, hostingTestPlan, pleskAccount, REPOSITORY } from "./__fi
 import { hostingDrift } from "./drift";
 import { hostingLogs } from "./logs";
 import { hostingFiles, panelConnector } from "./panels";
+import { hostingPlanFile } from "./plan";
 import { provisionHosting } from "./provision";
 import {
   type HostingRecord,
@@ -50,13 +51,7 @@ import {
 } from "./record";
 import { sftpFilesFromEnv } from "./sftp";
 import { applySftpDestroy, type SftpDestroyPlan, sftpDestroyHash } from "./sftp-destroy";
-import {
-  applySftpPlan,
-  type SftpPlan,
-  SftpPlanSchema,
-  sftpPlanFile,
-  sftpPlanHash,
-} from "./sftp-plan";
+import { applySftpPlan, type SftpPlan, SftpPlanSchema, sftpPlanHash } from "./sftp-plan";
 
 const EXAMPLES = fileURLToPath(new URL("../../../../examples/", import.meta.url));
 const HOSTNAME = "notes.example.com";
@@ -476,7 +471,6 @@ describe("the safety gate on an SFTP-only host", () => {
         applySftpDestroy(candidate as SftpDestroyPlan, {
           files: new SftpFiles(login, { runner: host }),
           forget: async () => {},
-          taken: [],
           approvedHash,
         }),
       ).rejects.toMatchObject({ code: "PLAN_HASH_MISMATCH" });
@@ -690,7 +684,7 @@ describe("provision on an SFTP-only host", () => {
 
     // The plan: what OpsCrew makes, and what stays the user's.
     const plan = SftpPlanSchema.parse(
-      JSON.parse(await readFile(sftpPlanFile(deps.paths, "prod"), "utf8")),
+      JSON.parse(await readFile(hostingPlanFile(deps.paths, "prod", "sftp"), "utf8")),
     );
     expect(plan).toMatchObject({
       account: `web at ${HOST}`,
@@ -785,7 +779,7 @@ describe("provision on an SFTP-only host", () => {
     const { deps, handler, error, result } = await p.run(undefined, { planOnly: true });
     expect(error).toBeUndefined();
     const plan = SftpPlanSchema.parse(
-      JSON.parse(await readFile(sftpPlanFile(deps.paths, "prod"), "utf8")),
+      JSON.parse(await readFile(hostingPlanFile(deps.paths, "prod", "sftp"), "utf8")),
     );
     expect(result).toMatchObject({ applied: false, hostingPlanHashes: [sftpPlanHash(plan)] });
     expect(kinds(handler.requests)).not.toContain("hosting-apply");

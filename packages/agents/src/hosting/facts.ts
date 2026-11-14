@@ -5,6 +5,7 @@
  */
 import type { FetchLike, HostingFacts, HostingPanel } from "@opscrew/contracts";
 import { listText } from "@opscrew/core";
+import { RUNTIME_NAMES } from "./apps";
 import { PANEL_NAMES } from "./panels";
 
 /** The account as design sees it. */
@@ -91,8 +92,8 @@ export function quotaLeftMb(facts: Pick<HostingFacts, "quota">): number | undefi
   return Math.max(0, quota.limitMb - quota.usedMb);
 }
 
-const ENGINE_NAMES = { mariadb: "MariaDB", mysql: "MySQL", postgres: "PostgreSQL" } as const;
-const SELECTOR_NAMES = { nodejs: "Node.js", python: "Python" } as const;
+/** Each database engine's name in a sentence. */
+export const ENGINE_NAMES = { mariadb: "MariaDB", mysql: "MySQL", postgres: "PostgreSQL" } as const;
 
 const mb = (value: number) => `${value.toLocaleString("en-US")} MB`;
 
@@ -123,7 +124,7 @@ export function hostingAccountLines(account: HostingAccount): string[] {
   const apps =
     selectors.length === 0
       ? "the panel runs no Node.js or Python apps"
-      : `${listText(selectors.map((selector) => SELECTOR_NAMES[selector]))} through the panel, ${slotsLeft === undefined ? "with no limit given" : `${slotsLeft} ${slotsLeft === 1 ? "slot" : "slots"} left`}`;
+      : `${listText(selectors.map((selector) => RUNTIME_NAMES[selector]))} through the panel, ${slotsLeft === undefined ? "with no limit given" : `${slotsLeft} ${slotsLeft === 1 ? "slot" : "slots"} left`}`;
   return [
     `The account: ${panel}. Web server: ${server}.`,
     `Databases: ${databases}. Disk: ${disk}. Apps: ${apps}.`,

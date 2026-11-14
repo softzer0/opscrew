@@ -27,7 +27,8 @@ export const PathSchema = z
   .refine((path) => path.split("/").every((part) => part !== "." && part !== ".."), {
     message: "must not contain . or ..",
   });
-const Sha256Schema = z.string().regex(/^[0-9a-f]{64}$/);
+/** A SHA-256 digest in lower-case hex. */
+export const Sha256Schema = z.string().regex(/^[0-9a-f]{64}$/);
 const ModeSchema = z.int().min(0).max(0o777);
 /** A hostname, lower-case. */
 export const HostnameSchema = z.string().regex(/^[a-z0-9.-]+$/);
@@ -66,7 +67,10 @@ export const PanelStepSchema = z.strictObject({
 /** A step the panel's API can't take: the user takes it, and provision stops after listing it. */
 const PanelStepStep = z.strictObject({
   kind: z.literal("panel-step"),
-  /** What it is, stable across runs: `agent-cron`, `php`, `cron:<schedule> <command>`. */
+  /**
+   * What it is, stable across runs: `agent-cron`, `php:<version>`, `cron:<schedule> <command>`,
+   * `remove-cron:<schedule> <command>`.
+   */
   id: z.string().min(1),
   step: PanelStepSchema,
 });
@@ -176,13 +180,21 @@ export function hostingPlanHash(plan: HostingPlan): string {
   return sha256Hex(canonicalJson(HostingPlanSchema.parse(plan)));
 }
 
-/** Where a hosting plan is saved: `.opscrew/plans/hosting-<env>-agent.json` or `-app.json`. */
+/**
+ * Where a hosting plan is saved: `.opscrew/plans/hosting-<env>-<plan>.json`, `<plan>` provision's
+ * `agent` and `app` on a panel's account, `sftp` on an SFTP host, or `destroy`.
+ */
 export function hostingPlanFile(
   paths: Pick<ProjectPaths, "files">,
   environment: string,
-  plan: HostingPlan["plan"],
+  plan: HostingPlan["plan"] | "sftp" | "destroy",
 ): string {
   return join(paths.files.plansDir, `hosting-${environment}-${plan}.json`);
+}
+
+/** A step the user takes in the panel, in words: what to do, and its value. */
+export function panelStepText(step: { what: string; value?: string | undefined }): string {
+  return `${step.what}${step.value === undefined ? "" : `: ${step.value}`}`;
 }
 
 /** A mode as `0600`. */
@@ -280,7 +292,7 @@ function stepItem(plan: HostingPlan, step: HostingStep): AdapterPlanItem {
       return { title: `Ask ${panel} for ${step.hostname}'s free certificate`, state: "change" };
     case "panel-step":
       return {
-        title: `You, in ${panel}: ${step.step.what}${step.step.value === undefined ? "" : `: ${step.step.value}`}`,
+        title: `You, in ${panel}: ${panelStepText(step.step)}`,
         state: "change",
         reason: `Where: ${step.step.where}. ${panel}'s API can't do this, so OpsCrew stops after this plan; run \`opscrew provision\` again once you did it.`,
       };

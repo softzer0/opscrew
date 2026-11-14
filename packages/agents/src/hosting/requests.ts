@@ -26,7 +26,7 @@ export type HostingRequest =
   | { kind: "app"; action: "create" | "destroy" };
 
 /** How long a request stays valid after it is written: 30 minutes. */
-export const REQUEST_TTL_SECONDS = 30 * 60;
+const REQUEST_TTL_SECONDS = 30 * 60;
 
 /**
  * How long OpsCrew waits for the agent's answer: 5 minutes. They cover cron's next run of the
@@ -34,7 +34,7 @@ export const REQUEST_TTL_SECONDS = 30 * 60;
  * then the request itself: a rollback's carry and PHP restart, and its check, which counts a PHP
  * app's answer on Apache only from 130 s after the switch and gives up at 135 s (research R16).
  */
-export const REQUEST_WAIT_MS = 5 * 60 * 1000;
+const REQUEST_WAIT_MS = 5 * 60 * 1000;
 
 /** How often the answer is looked for. */
 const POLL_MS = 5000;
@@ -42,12 +42,24 @@ const POLL_MS = 5000;
 /** A value the agent accepts: letters, digits, `.`, `_` and `-`. */
 const VALUE = /^[A-Za-z0-9._-]+$/;
 
+/** A release's id, `<run id>-<attempt>`. */
+export const RELEASE_ID = /^[1-9][0-9]*-[1-9][0-9]*$/;
+
+const SNAPSHOT_NAME = "[A-Za-z0-9][A-Za-z0-9_-]*";
+/**
+ * A snapshot's id in `dumps/`: its files' name without `.sql.gz` or `.shared.tar.gz`, such as
+ * `snapshot-20261112T120000Z`.
+ */
+export const SNAPSHOT_ID = new RegExp(`^${SNAPSHOT_NAME}$`);
+/** A snapshot's copy of the shared files in `dumps/`, `<id>.shared.tar.gz`, as the agent names it. */
+export const SHARED_COPY = new RegExp(`^${SNAPSHOT_NAME}\\.shared\\.tar\\.gz$`);
+
 /** What the agent takes for each field (`AGENT_SH`'s `read_request`), and how a message names it. */
 const FIELDS: Readonly<Record<string, { pattern: RegExp; what: string }>> = {
   hash: { pattern: /^[0-9a-f]{64}$/, what: "a plan's SHA-256 hash" },
-  release: { pattern: /^[1-9][0-9]*-[1-9][0-9]*$/, what: "a release's id, <run id>-<attempt>" },
+  release: { pattern: RELEASE_ID, what: "a release's id, <run id>-<attempt>" },
   snapshot: {
-    pattern: /^[A-Za-z0-9][A-Za-z0-9_-]*$/,
+    pattern: SNAPSHOT_ID,
     what: "a snapshot's id in dumps/, such as snapshot-20261112T120000Z",
   },
 };
@@ -85,7 +97,7 @@ export function requestText(request: HostingRequest, hash: string, now: Date): s
 }
 
 /** The agent's answer to a request (`state/<name>.result`). */
-export const RequestResultSchema = z.strictObject({
+const RequestResultSchema = z.strictObject({
   result: z.enum(["done", "refused", "failed"]),
   reason: z.string().min(1).optional(),
   /** A snapshot's dump of the database, in `dumps/`; none for an app without one. */

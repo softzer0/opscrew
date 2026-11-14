@@ -35,7 +35,7 @@ import type { VersionMark, VersionView } from "../rollback/types";
 import { deployPauseOf, setDeployPause } from "../shared/deploy-pause";
 import { errorText } from "../verify/checks";
 import { hostingTarget } from "./provision-plans";
-import { sendRequest } from "./requests";
+import { RELEASE_ID, sendRequest } from "./requests";
 import { reachSftpHost } from "./sftp";
 import {
   type AgentStatus,
@@ -45,9 +45,6 @@ import {
   readAgentStatus,
   requireFiles,
 } from "./status";
-
-/** A release's id, `<run id>-<attempt>`. */
-const RELEASE_ID = /^[1-9][0-9]*-[1-9][0-9]*$/;
 
 /**
  * On an SFTP-only host (027 plan 10): points `current` at release `target` with `ln -s` and

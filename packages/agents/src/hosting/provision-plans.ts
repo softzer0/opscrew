@@ -18,7 +18,14 @@ import {
 } from "@opscrew/plan-schema";
 import { signingKeyId } from "./apply";
 import { appStep } from "./apps";
-import { AGENT_SCHEDULE, agentCronCommand, appCronCommand, type PhpChoice } from "./php";
+import {
+  AGENT_SCHEDULE,
+  agentCronCommand,
+  agentCronLine,
+  appCronCommand,
+  cronDetails,
+  type PhpChoice,
+} from "./php";
 import type { AgentPlan, AgentStep, AppPlan, AppStep } from "./plan";
 import { type HostingRecord, recordedObject } from "./record";
 
@@ -37,6 +44,14 @@ function appBase(plan: DeployPlan): string {
 export function hostingFolder(plan: DeployPlan): string {
   return `opscrew/${appBase(plan)}-${environmentOf(plan)}`;
 }
+
+/** The document root a hostname serves: `<folder>/current`, and the web root inside a release. */
+export function currentRoot(folder: string, webRoot: string): string {
+  return `${folder}/current${webRoot === "." ? "" : `/${webRoot}`}`;
+}
+
+/** A path from the home folder as a panel gives it, without `./` or `/` at its start or end. */
+export const cleanPath = (path: string) => path.replace(/^\.?\/+|\/+$/g, "");
 
 /** The hosting target of `plan`. */
 export function hostingTarget(plan: DeployPlan): HostingDeployTarget {
@@ -57,14 +72,6 @@ export function hostnameOf(plan: DeployPlan): string {
   const domain = plan.dns.domain;
   if (domain === undefined) throw new Error("A hosting account's plan has no hostname.");
   return domain.toLowerCase();
-}
-
-/**
- * The snapshot before each release (ADR 0028 D7): `deploy.snapshots` when set, else on in every
- * environment but previews.
- */
-export function hostingSnapshots(plan: DeployPlan): boolean {
-  return plan.deploy.snapshots ?? snapshotsByDefault(plan);
 }
 
 /** The database's full names, the account's prefix included; the user is named the same. */
@@ -114,7 +121,9 @@ export function agentSettingsText(
     ...(plan.app.releaseCommand !== undefined ? { releaseCommand: plan.app.releaseCommand } : {}),
     sharedPaths: sharedPaths(plan, input.laravel),
     keep: 3,
-    snapshots: hostingSnapshots(plan) && input.database !== undefined,
+    // The snapshot before each release (ADR 0028 D7): `deploy.snapshots` when set, else on in
+    // every environment but previews.
+    snapshots: (plan.deploy.snapshots ?? snapshotsByDefault(plan)) && input.database !== undefined,
     ...(input.database !== undefined ? { database: input.database } : {}),
     ...(target.runtime !== undefined
       ? { runtimeVersion: target.runtime.version, startupFile: target.runtime.startup }
@@ -131,36 +140,53 @@ function fileStep(path: string, mode: number, content: string) {
 }
 
 /**
- * The stop for something on the account OpsCrew didn't make and won't take over; `stopped` says
- * what was left as it was.
+ * The stop for something OpsCrew didn't make and won't take over; `stopped` says what was left as
+ * it was, `otherwise` what to do when it isn't OpsCrew's (by default: remove it in the panel or
+ * choose another hostname).
  */
-function notOurs(what: string, stopped: string): OpsCrewError {
+export function notOurs(
+  what: string,
+  stopped: string,
+  otherwise = "remove it in the panel, or choose another hostname with `opscrew interview`; then run `opscrew provision` again.",
+): OpsCrewError {
   return new OpsCrewError(
     "PHASE_PRECONDITION",
     `${what}, and OpsCrew's record (.opscrew/hosting.json) doesn't list it as OpsCrew's. OpsCrew never changes or takes over what it didn't make: ${stopped}`,
     {
-      hint: "If it is OpsCrew's from another computer, copy that computer's .opscrew/hosting.json here (or restore the recovery copy). Otherwise remove it in the panel, or choose another hostname with `opscrew interview`; then run `opscrew provision` again.",
+      hint: `If it is OpsCrew's from another computer, copy that computer's .opscrew/hosting.json here (or restore the recovery copy). Otherwise ${otherwise}`,
     },
   );
 }
 
 /**
- * Stops when the account serves `hostname` and OpsCrew didn't make it: a hostname is never taken
- * over (FR-2705).
+ * True when the account serves `hostname` (among `domains`) and OpsCrew's record doesn't list it
+ * as OpsCrew's: a hostname OpsCrew never takes over (FR-2705). Names compare lower-case.
  */
+export function hostingHostnameTaken(
+  domains: HostingFacts["domains"],
+  record: Pick<HostingRecord, "objects"> | undefined,
+  hostname: string,
+): boolean {
+  const host = hostname.toLowerCase();
+  return (
+    domains.some((domain) => domain.name.toLowerCase() === host) &&
+    recordedObject(record, "hostname", host) === undefined
+  );
+}
+
+/** Stops when the account serves `hostname` and OpsCrew didn't make it ({@link hostingHostnameTaken}). */
 export function requireNewHostname(
   facts: Pick<HostingFacts, "domains">,
   record: Pick<HostingRecord, "objects"> | undefined,
   hostname: string,
 ): void {
-  const served = facts.domains.some((domain) => domain.name.toLowerCase() === hostname);
-  if (served && recordedObject(record, "hostname", hostname) === undefined) {
+  if (hostingHostnameTaken(facts.domains, record, hostname)) {
     throw notOurs(`The account already serves ${hostname}`, "nothing was changed.");
   }
 }
 
 /** What {@link buildAgentPlan} reads. */
-export interface AgentPlanInput {
+interface AgentPlanInput {
   header: Omit<AgentPlan, "plan" | "steps">;
   panel: HostingPanel;
   files: HostingFiles;
@@ -202,7 +228,7 @@ export async function buildAgentPlan(input: AgentPlanInput): Promise<AgentPlan> 
     }
   }
   const command = agentCronCommand(folder);
-  const line = `${AGENT_SCHEDULE} ${command}`;
+  const line = agentCronLine(folder);
   const cron = record?.objects.some((o) => o.kind === "cron" && o.value === line) === true;
   if (!cron && recordedObject(record, "panel-step", "agent-cron") === undefined) {
     steps.push(
@@ -230,7 +256,7 @@ export interface PlannedValues {
 }
 
 /** What {@link buildAppPlan} reads. */
-export interface AppPlanInput {
+interface AppPlanInput {
   header: Omit<AppPlan, "plan" | "steps">;
   plan: DeployPlan;
   panel: HostingPanel;
@@ -299,7 +325,7 @@ export async function buildAppPlan(input: AppPlanInput): Promise<AppPlan> {
       steps.push({ kind: "file", ...fileStep(path, 0o600, content) });
     }
   }
-  const served = `${folder}/current${target.webRoot === "." ? "" : `/${target.webRoot}`}`;
+  const served = currentRoot(folder, target.webRoot);
   const made = recordedObject(record, "hostname", hostname);
   if (made === undefined) {
     if (facts.documentRoots === "anywhere") {
@@ -364,7 +390,7 @@ function cronSteps(input: {
   envPhp: boolean;
 }): AppStep[] {
   const { folder, panel, record, target } = input;
-  const agent = `${AGENT_SCHEDULE} ${agentCronCommand(folder)}`;
+  const agent = agentCronLine(folder);
   const wanted = target.cron.map((job) => ({
     schedule: job.schedule,
     command: appCronCommand({
@@ -396,11 +422,10 @@ function cronSteps(input: {
   for (const id of listed) {
     const line = id.startsWith("cron:") ? id.slice("cron:".length) : undefined;
     if (line === undefined || lines.includes(line) || listed.has(`remove-cron:${line}`)) continue;
-    const [, schedule = "", command = ""] = /^(\S+(?: \S+){4}) (.+)$/.exec(line) ?? [];
     steps.push({
       kind: "panel-step",
       id: `remove-cron:${line}`,
-      step: panel.panelStep("removeCron", { key: line, schedule, command }),
+      step: panel.panelStep("removeCron", cronDetails(line)),
     });
   }
   return steps;

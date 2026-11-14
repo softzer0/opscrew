@@ -50,7 +50,7 @@ import {
   registrarFor,
   registrarLinks,
 } from "../domain/registrars";
-import { HOSTING_TOKEN_VAR } from "../hosting/panels";
+import { HOSTING_TOKEN_VAR, hostingReach } from "../hosting/panels";
 import {
   PORTAINER_TOKEN_VAR,
   planProvider,
@@ -306,7 +306,9 @@ export async function runInitChecks(
     guard("repository", "GitHub repository", true, async () => checkRepository(await repoInfo)),
     guard("engine", "OpenTofu or Terraform", true, () => checkEngine(deps, which)),
     provider === "hosting"
-      ? guard("ssh", "sftp and ssh-keyscan", true, async () => checkHostingTools(which, reach))
+      ? guard("ssh", "sftp and ssh-keyscan", true, async () =>
+          checkHostingTools(which, reach, artifacts.plan),
+        )
       : guard("ssh", "ssh and ssh-keyscan", true, async () =>
           portainer !== undefined
             ? {
@@ -590,8 +592,7 @@ function providerChoice(
     };
   }
   const provider =
-    providerFromTokens(env) ??
-    (hostingReachOf(undefined, env) !== undefined ? "hosting" : undefined);
+    providerFromTokens(env) ?? (hostingReach(env) !== undefined ? "hosting" : undefined);
   return provider ? { provider, source: "token" } : { source: "none" };
 }
 
