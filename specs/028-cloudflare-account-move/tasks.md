@@ -116,7 +116,7 @@ Accept / Verify / Effort`. Implementers never edit `tasks.md`, specs, root confi
   - Verify: `pnpm turbo run typecheck --filter=@opscrew/connector-cloudflare && npx vitest run --root packages/connectors/cloudflare && pnpm lint`
   - Effort: high
 
-- [ ] T2805 [P] [US1] [US2] The two-account Cloudflare fake, and the shared adapter on a pending zone
+- [x] T2805 [P] [US1] [US2] The two-account Cloudflare fake, and the shared adapter on a pending zone
   - Owns: `packages/connectors/cloudflare/src/testing/**`, `packages/connectors/cloudflare/src/shared.ts` (+ its tests)
   - Reads: plan 3., 4.4, 5., 6.; `testing/{index,fake-zone}.ts`; Cloudflare's API reference for each endpoint the fake answers
   - Depends: T2801
