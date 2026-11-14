@@ -16,6 +16,7 @@ import { buildReads } from "./build";
 import { afterDeployJobs, deployJob, jobsBeforeDeploy } from "./jobs";
 import { pushPaths } from "./paths";
 import {
+  appFlag,
   DIGEST_REF_PATTERN,
   healthPath,
   imageOutput,
@@ -325,7 +326,12 @@ export function renderPortainerWorkflow(
         'case "$code" in',
         '  2[0-9][0-9]) echo "Portainer accepted the redeploy." ;;',
         "  401|403)",
-        `    echo "::error::Cloudflare Access refused the deploy workflow's service token (HTTP $code). Run \\\`${provisionCommand(plan)}\\\` again to set the deploy secrets."`,
+        // During a move to another Cloudflare account provision is refused; the move sets them.
+        '    if [[ -n "$ACCESS_CLIENT_ID_NEW" ]]; then',
+        `      echo "::error::Cloudflare Access refused the deploy workflow's service token in both Cloudflare accounts, the one the app moves from and the one it moves to (HTTP $code). Run \\\`opscrew cloudflare move${appFlag(plan)}\\\` again to set the new account's, then run the workflow again."`,
+        "    else",
+        `      echo "::error::Cloudflare Access refused the deploy workflow's service token (HTTP $code). Run \\\`${provisionCommand(plan)}\\\` again to set the deploy secrets."`,
+        "    fi",
         "    exit 1 ;;",
         "  404)",
         `    echo "::error::Portainer does not know this stack's webhook (HTTP 404). Run \\\`${provisionCommand(plan)}\\\` again to repair the stack's redeploy setting."`,

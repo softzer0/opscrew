@@ -374,6 +374,12 @@ describe.skipIf(!bashWorks())("the Portainer deploy job's scripts (bash + git)",
       const both = sh(steps.redeploy ?? "", { ...env, CURL_CODE: "403 403" });
       expect(both.status).toBe(1);
       expect(calls()).toHaveLength(2);
+      // Provision is refused during the move, so the move's own command is the way on.
+      expect(both.output).toContain(
+        "::error::Cloudflare Access refused the deploy workflow's service token in both Cloudflare accounts",
+      );
+      expect(both.output).toContain("Run `opscrew cloudflare move` again");
+      expect(both.output).not.toContain("opscrew provision");
     },
     timeout,
   );

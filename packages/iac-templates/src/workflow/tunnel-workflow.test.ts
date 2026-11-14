@@ -216,9 +216,10 @@ describe.skipIf(!bashWorks())("cloudflared install script", { timeout: 180_000 }
 /*
  * Runs the generated SSH setup in bash with its home in a temp folder, then the ProxyCommand it
  * wrote as ssh runs it (`exec <command>` in a shell, `%h` filled in), with stubs: curl logs its
- * arguments and the header file it sends, and answers 401 (Access's refusal of a service token)
- * for a client id in REFUSED, else 200; cloudflared logs the service token it gets, fails for one
- * in REFUSED and otherwise passes the connection through.
+ * arguments and the header file it sends, and answers a client id's code from ANSWERS (`<id>=<code>`,
+ * `fail` for a curl failure: 000 and exit 6), else 401 (Access's refusal of a service token) for
+ * one in REFUSED, else 200; cloudflared logs the service token it gets, fails for one in REFUSED
+ * and otherwise passes the connection through.
  */
 describe.skipIf(!bashWorks())("the tunnel's ProxyCommand", { timeout: 180_000 }, () => {
   const configure =
@@ -250,9 +251,12 @@ describe.skipIf(!bashWorks())("the tunnel's ProxyCommand", { timeout: 180_000 },
         'for arg in "$@"; do case "$arg" in @*) headers="${arg#@}" ;; esac; done',
         'cat "$headers" >> "$WORK/headers.log"',
         'id="$(sed -n "s/^CF-Access-Client-Id: //p" "$headers")"',
-        'case " $REFUSED " in *" $id "*) printf 401 ;; *) printf 200 ;; esac',
+        'case " $REFUSED " in *" $id "*) answer=401 ;; *) answer=200 ;; esac',
+        'for pair in $ANSWERS; do case "$pair" in "$id="*) answer="${pair#*=}" ;; esac; done',
+        'if [ "$answer" = fail ]; then printf 000; exit 6; fi',
+        'printf "%s" "$answer"',
       ]);
-      mkdirSync(`${work}/tmp`);
+      mkdirSync(`${work}/runner`);
       // Git for Windows' install cannot set a folder's mode on every drive; the paths are the point.
       const install = 'install() { mkdir -p "${@: -1}"; }';
       const script = configure
@@ -269,7 +273,7 @@ describe.skipIf(!bashWorks())("the tunnel's ProxyCommand", { timeout: 180_000 },
         "bash",
         ["-c", `exec ${proxy.replace("%h", "ssh-shop.example.com")}`],
         {
-          env: { ...process.env, HOME: work, WORK: work, TMPDIR: `${work}/tmp`, ...env },
+          env: { ...process.env, HOME: work, WORK: work, RUNNER_TEMP: `${work}/runner`, ...env },
           input: `${BANNER}\n`,
           encoding: "utf8",
         },
@@ -285,8 +289,8 @@ describe.skipIf(!bashWorks())("the tunnel's ProxyCommand", { timeout: 180_000 },
         probes: lines("curl.log"),
         headers: lines("headers.log"),
         connections: lines("cloudflared.log"),
-        // The header files the probes wrote, none of them left behind.
-        left: readdirSync(`${work}/tmp`),
+        // The header files the probes wrote in the job's temp folder, none of them left behind.
+        left: readdirSync(`${work}/runner`),
       };
     } finally {
       rmSync(work, { recursive: true, force: true });
@@ -295,7 +299,7 @@ describe.skipIf(!bashWorks())("the tunnel's ProxyCommand", { timeout: 180_000 },
 
   const HOST = "access ssh --hostname ssh-shop.example.com";
   const PROBE =
-    /^curl -sS --max-time 15 -o \/dev\/null -w %\{http_code\} -H @\S+ https:\/\/ssh-shop\.example\.com$/;
+    /^curl -sS --max-time 5 -o \/dev\/null -w %\{http_code\} -H @\S+ https:\/\/ssh-shop\.example\.com$/;
 
   it("connects with the deploy's service token while Access takes it, after one probe", () => {
     const result = connect({ ...OLD, ...NEW, REFUSED: "" });
@@ -303,6 +307,8 @@ describe.skipIf(!bashWorks())("the tunnel's ProxyCommand", { timeout: 180_000 },
     expect(result.stdout).toBe(`${BANNER}\n`);
     expect(result.probes).toHaveLength(1);
     expect(result.probes[0]).toMatch(PROBE);
+    // The header file is in the job's own temp folder.
+    expect(result.probes[0]).toContain("/runner/opscrew-access.");
     expect(result.headers).toEqual([
       "CF-Access-Client-Id: old-id",
       "CF-Access-Client-Secret: old-secret",
@@ -327,6 +333,22 @@ describe.skipIf(!bashWorks())("the tunnel's ProxyCommand", { timeout: 180_000 },
     ]);
     expect(result.connections).toEqual([`new-id new-secret ${HOST}`]);
     expect(result.left).toEqual([]);
+  });
+
+  it("takes an answer that is not Access's refusal as the old token's, and a redirect as one", () => {
+    // curl could not reach Access (it prints 000), or something else answered: cloudflared says why.
+    for (const answer of ["fail", "502"]) {
+      const result = connect({ ...OLD, ...NEW, REFUSED: "", ANSWERS: `old-id=${answer}` });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.probes).toHaveLength(1);
+      expect(result.connections).toEqual([`old-id old-secret ${HOST}`]);
+      expect(result.left).toEqual([]);
+    }
+    // A redirect to Access's login is a refusal: the new account's token is tried.
+    const redirected = connect({ ...OLD, ...NEW, REFUSED: "", ANSWERS: "old-id=302" });
+    expect(redirected.status, redirected.stderr).toBe(0);
+    expect(redirected.probes).toHaveLength(2);
+    expect(redirected.connections).toEqual([`new-id new-secret ${HOST}`]);
   });
 
   it("connects as before, with no probe, when no new token is set", () => {

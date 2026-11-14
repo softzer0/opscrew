@@ -49,6 +49,7 @@ import {
 } from "./portainer";
 import { publicSshClosed, serverDeploySecrets } from "./servers";
 import {
+  appFlag,
   block,
   CHECK_IMAGE,
   DEPLOY_SECRETS,
@@ -335,23 +336,26 @@ const ACCESS_SSH = "opscrew-access-ssh";
  * set (during a move to another Cloudflare account, whose Access takes over at the switch), Access
  * is first asked over HTTPS which token it takes, since cloudflared may wait for a browser login
  * instead of failing on a refused one: the deploy's, else the new account's, else neither (a 401,
- * 403 or redirect each time) and the connection fails. The tokens reach curl only in a header
- * file only the runner user reads, removed right after; the script names the variables, never
- * their values.
+ * 403 or redirect each time) and the connection fails. Each probe takes at most 5 s, so both and
+ * cloudflared fit in ssh's 20 s `ConnectTimeout`. The tokens reach curl only in a header file in
+ * the job's temp folder that only the runner user reads, removed right after (also when ssh stops
+ * the script); the script names the variables, never their values.
  */
-function accessSshScript(cloudflared: string, file: string): string[] {
+function accessSshScript(plan: DeployPlan, cloudflared: string, file: string): string[] {
   const script = [
     "#!/bin/sh",
+    "headers=",
+    `trap 'rm -f "$headers"; exit 1' HUP INT TERM`,
     "accepted() {",
-    '  headers="$(mktemp)"',
+    '  headers="$(mktemp "$RUNNER_TEMP/opscrew-access.XXXXXX")"',
     `  (umask 077 && printf 'CF-Access-Client-Id: %s\\nCF-Access-Client-Secret: %s\\n' "$1" "$2" > "$headers")`,
-    `  code="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' -H @"$headers" "https://$3" || true)"`,
+    `  code="$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' -H @"$headers" "https://$3" || true)"`,
     '  rm -f "$headers"',
     '  case "$code" in 401 | 403 | 3??) return 1 ;; esac',
     "}",
     'if [ -n "$TUNNEL_SERVICE_TOKEN_ID_NEW" ] && ! accepted "$TUNNEL_SERVICE_TOKEN_ID" "$TUNNEL_SERVICE_TOKEN_SECRET" "$1"; then',
     '  if ! accepted "$TUNNEL_SERVICE_TOKEN_ID_NEW" "$TUNNEL_SERVICE_TOKEN_SECRET_NEW" "$1"; then',
-    `    echo "::error::Cloudflare Access refused the deploy's service token in both Cloudflare accounts, the one the app moves from and the one it moves to. Run opscrew cloudflare move again to set the new account's token, then run the workflow again." >&2`,
+    `    echo "::error::Cloudflare Access refused the deploy's service token in both Cloudflare accounts, the one the app moves from and the one it moves to. Run opscrew cloudflare move${appFlag(plan)} again to set the new account's token, then run the workflow again." >&2`,
     "    exit 1",
     "  fi",
     '  TUNNEL_SERVICE_TOKEN_ID="$TUNNEL_SERVICE_TOKEN_ID_NEW"',
@@ -913,7 +917,7 @@ function sshDeploy(plan: DeployPlan, ctx: RuntimeContext, upload: Upload): Deplo
           `      echo ${machine ? `"${proxyCommand}"` : `'${proxyCommand}'`}`,
           `    } > ${file("config")}`,
           `    chmod 600 ${file("config")}`,
-          ...accessSshScript(cloudflaredPath(machine), file(ACCESS_SSH)),
+          ...accessSshScript(plan, cloudflaredPath(machine), file(ACCESS_SSH)),
         ]
       : machine
         ? [`    : > ${file("config")}`]

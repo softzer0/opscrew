@@ -42,22 +42,11 @@ interface SiteHost {
 }
 
 /**
- * The Workers root's switch for the Worker's custom domains, `true` in its values: a move to
- * another Cloudflare account plans the root there with `-var custom_domains=false`, so the new
- * account's Worker gets them only at the switch.
- */
-const CUSTOM_DOMAINS_VARIABLE: VariableSpec = {
-  name: "custom_domains",
-  type: "bool",
-  description:
-    "Give the Worker its custom domains; false while a move to another Cloudflare account prepares the Worker there.",
-};
-
-/**
  * `module "worker"` (`cloudflare-workers`) for `target`: the Worker's shell and, unless `shell`,
  * one custom domain per hostname (the domain, and `www.` when on), which bring their own DNS
- * records and certificates, behind the root's {@link CUSTOM_DOMAINS_VARIABLE}. Needs
- * `ctx.cloudflare.accountId`.
+ * records and certificates, behind the root's `custom_domains` (`true` in its values; a move to
+ * another Cloudflare account plans the root there with `-var custom_domains=false`, so the new
+ * account's Worker gets them only at the switch). Needs `ctx.cloudflare.accountId`.
  */
 function workerHost(
   target: CloudflareWorkersDeployTarget,
@@ -112,7 +101,16 @@ function workerHost(
         type: "bool",
         description: "Give each version of the Worker its own preview URL.",
       },
-      ...(shell ? [] : [CUSTOM_DOMAINS_VARIABLE]),
+      ...(shell
+        ? []
+        : [
+            {
+              name: "custom_domains",
+              type: "bool",
+              description:
+                "Give the Worker its custom domains; false while a move to another Cloudflare account prepares the Worker there.",
+            },
+          ]),
     ],
     tfvars: {
       cloudflare_account_id: accountId(ctx),

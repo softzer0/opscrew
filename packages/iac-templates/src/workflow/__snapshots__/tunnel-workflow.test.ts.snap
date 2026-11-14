@@ -288,10 +288,12 @@ jobs:
           chmod 600 ~/.ssh/config
           cat > ~/.ssh/opscrew-access-ssh <<'ACCESS_SSH'
           #!/bin/sh
+          headers=
+          trap 'rm -f "$headers"; exit 1' HUP INT TERM
           accepted() {
-            headers="$(mktemp)"
+            headers="$(mktemp "$RUNNER_TEMP/opscrew-access.XXXXXX")"
             (umask 077 && printf 'CF-Access-Client-Id: %s\\nCF-Access-Client-Secret: %s\\n' "$1" "$2" > "$headers")
-            code="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' -H @"$headers" "https://$3" || true)"
+            code="$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' -H @"$headers" "https://$3" || true)"
             rm -f "$headers"
             case "$code" in 401 | 403 | 3??) return 1 ;; esac
           }
