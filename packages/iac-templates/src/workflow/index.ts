@@ -106,6 +106,7 @@ export {
   environmentTag,
   filesFolder,
   githubEnvironment,
+  healthPath,
   ROLLBACK_INPUTS,
   runnerLabel,
   serviceEnvSecret,

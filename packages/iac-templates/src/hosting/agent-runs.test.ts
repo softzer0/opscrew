@@ -470,20 +470,24 @@ describe.skipIf(reason !== undefined)("the hosting agent", { timeout: 180_000 },
   switching(
     "keeps the newest releases besides the running one, and the dumps filed under them",
     () => {
-      const a = account({ keep: 2 });
+      const a = account();
       a.run();
-      for (const run of [801, 802, 803, 804, 805]) {
+      for (const run of [801, 802, 803, 804, 805, 806]) {
         a.publish(laravelRelease(`r${run}`), { run });
         expect(a.run().output).toContain(`Release ${run}-1 serves.`);
       }
-      expect(a.releases()).toEqual(["803-1", "804-1", "805-1"]);
-      expect(current(a)).toBe("releases/805-1");
-      expect(readdirSync(`${a.dir}/dumps`).sort()).toEqual(["803-1.sql.gz", "804-1.sql.gz"]);
-      expect(dumpOf(a, "804-1.sql.gz")).toContain("state=r804");
+      expect(a.releases()).toEqual(["803-1", "804-1", "805-1", "806-1"]);
+      expect(current(a)).toBe("releases/806-1");
+      expect(readdirSync(`${a.dir}/dumps`).sort()).toEqual([
+        "803-1.sql.gz",
+        "804-1.sql.gz",
+        "805-1.sql.gz",
+      ]);
+      expect(dumpOf(a, "805-1.sql.gz")).toContain("state=r805");
       expect(a.keyValues("state/status")).toMatchObject({
-        running: "805-1",
-        previous: "804-1",
-        kept: "804-1,803-1",
+        running: "806-1",
+        previous: "805-1",
+        kept: "805-1,804-1,803-1",
       });
     },
   );

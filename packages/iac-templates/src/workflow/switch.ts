@@ -26,6 +26,7 @@ import {
   LETSENCRYPT,
   RELOAD_DIR,
 } from "../edge/nginx";
+import { OPENLITESPEED_SITE_FILES } from "../edge/openlitespeed";
 import { hostSettingsServices, siteHosts } from "../runtime";
 import { shellQuote } from "../runtime/services";
 import { runtimeDir } from "../runtime-dir";
@@ -605,11 +606,6 @@ function takeEdgeLock(plan: DeployPlan): string {
     : "flock 9";
 }
 
-/** Shown when OpenLiteSpeed did not empty the cache or restart after the switch. */
-function afterSwitchFailed(plan: DeployPlan): string {
-  return `::error::The new version of ${plan.app.name} serves, but OpenLiteSpeed did not empty the app's page cache or did not restart after the switch, so it keeps its running configuration. The reason is above: fix its cause and deploy again.`;
-}
-
 /**
  * On OpenLiteSpeed, once the new copy serves, under the edge's lock (so another app's deploy is
  * never halfway through copying its site files): the app's page cache emptied, so nobody gets a
@@ -624,7 +620,7 @@ function afterSwitch(plan: DeployPlan): string[] {
     "(",
     `  ${takeEdgeLock(plan)}`,
     `  if ! ${purge} || ! ${RELOAD.openlitespeed}; then`,
-    `    echo ${shellQuote(afterSwitchFailed(plan))}`,
+    `    echo ${shellQuote(`::error::The new version of ${plan.app.name} serves, but OpenLiteSpeed did not empty the app's page cache or did not restart after the switch, so it keeps its running configuration. The reason is above: fix its cause and deploy again.`)}`,
     "  fi",
     `) 9> ${EDGE}/.lock`,
   ];
@@ -689,12 +685,6 @@ function healthFailed(plan: DeployPlan): string {
 
 /** The app's site as the server had it before this deploy, while the edge takes the new one. */
 const PREVIOUS_SITE = ".site.previous";
-
-/**
- * OpenLiteSpeed's other site files (`<app>.vhost` and `<app>.map`), which its site before
- * certbot's first certificate shares: kept as the server had them as `.site.previous.<file>`.
- */
-const OPENLITESPEED_SHARED = ["vhost", "map"] as const;
 
 /** The app's additions as the server had them before this deploy, as {@link PREVIOUS_SITE}. */
 const PREVIOUS_ADDITIONS = ".additions.previous";
@@ -821,7 +811,7 @@ export interface EdgeFiles {
  *    gid to `/srv/edge/.env`, which the edge's Compose file runs nginx and certbot as (on
  *    OpenLiteSpeed certbot only, on a server);
  * 2. puts the uploaded edge Compose file (`edge/compose.yaml` in the app's folder) in `/srv/edge`
- *    when the server's runs the other proxy (the switch, offered only while the server holds this
+ *    when the server's runs another proxy (the switch, offered only while the server holds this
  *    one OpsCrew app), when its {@link EDGE_VERSION_KEY} is larger than the server's, so an app
  *    with an older OpsCrew never downgrades the edge, or when it is the same version with other
  *    content (the ports of another access mode, or Cloudflare's addresses, which all the server's
@@ -834,7 +824,7 @@ export interface EdgeFiles {
  * 5. puts the app's site and its additions in `/srv/edge/sites`, or takes old additions out
  *    (OpenLiteSpeed's site is three files, `<app>.vhconf`, `.vhost` and `.map`); with certbot's
  *    hostnames, the site before the first certificate until certbot has it;
- * 6. starts the edge (Compose recreates only what changed, and removes the other proxy's
+ * 6. starts the edge (Compose recreates only what changed, and removes the replaced proxy's
  *    containers after a switch) and reloads the proxy;
  * 7. with certbot's hostnames, certbot gets or renews the app's certificate (the first one, and
  *    hostnames added since; once more when another certbot held its lock), then the HTTPS site
@@ -855,8 +845,11 @@ function edgeCommands(plan: DeployPlan, o: EdgeFiles): string[] {
   const { site: ext } = EDGE_PROXIES[proxy];
   const app = plan.app.name;
   const site = `${EDGE}/sites/${app}.${ext}`;
-  /** OpenLiteSpeed's other site files, the same before and after certbot's first certificate. */
-  const shared = proxy === "openlitespeed" ? OPENLITESPEED_SHARED.join(" ") : undefined;
+  /**
+   * OpenLiteSpeed's other site files, the same before and after certbot's first certificate: kept
+   * as the server had them as `.site.previous.<file>`.
+   */
+  const shared = proxy === "openlitespeed" ? OPENLITESPEED_SITE_FILES.join(" ") : undefined;
   const additions = `${EDGE}/sites/${app}.additions`;
   const tls = `${EDGE}/tls/${app}`;
   const local = plan.target.provider === "localhost";
@@ -1023,7 +1016,7 @@ function edgeCommands(plan: DeployPlan, o: EdgeFiles): string[] {
           `    rm -f ${PREVIOUS_SITE}.$f`,
           `    if [ -f ${EDGE}/sites/${app}.$f ]; then cp ${EDGE}/sites/${app}.$f ${PREVIOUS_SITE}.$f; fi`,
           "  done",
-          `  cp ${OPENLITESPEED_SHARED.map((f) => `edge/sites/${app}.${f}`).join(" ")} ${EDGE}/sites/`,
+          `  cp ${OPENLITESPEED_SITE_FILES.map((f) => `edge/sites/${app}.${f}`).join(" ")} ${EDGE}/sites/`,
         ]),
     `  if [ -f ${additions} ]; then cp ${additions} ${PREVIOUS_ADDITIONS}; fi`,
     ...installSite,
@@ -1111,7 +1104,7 @@ export function approvalExpiry(refuse: readonly string[]): string[] {
 /**
  * Runs `refuse` (lines that stop the script) when the approval's `$kept` names anything but the
  * app's queues ({@link queueServices}), comma-joined: only those a rollback keeps as they are. None
- * without queues, whose restore reads no `$kept`.
+ * without queues, whose restore reads no `$kept`. Indented by 4 spaces, as its callers' blocks.
  */
 function keptCheck(plan: DeployPlan, refuse: readonly string[]): string[] {
   const queues = queueServices(plan);
@@ -1124,7 +1117,7 @@ function keptCheck(plan: DeployPlan, refuse: readonly string[]): string[] {
     "  ;; esac",
     '  case "$kept_rest" in *,*) kept_rest="${kept_rest#*,}" ;; *) kept_rest="" ;; esac',
     "done",
-  ];
+  ].map((line) => `    ${line}`);
 }
 
 /** True when `server` holds a part of one of the app's queues, which a rollback may keep. */
@@ -1198,7 +1191,7 @@ function approvalCheck(plan: DeployPlan, others: boolean): string[] {
     ...keptCheck(plan, [
       `echo ${shellQuote(`::error::The one-time approval to change the database on this rollback (${file} on the server) keeps a service that isn't one of the app's queues, so nothing was changed. Run opscrew rollback again.`)}`,
       "exit 1",
-    ]).map((line) => `    ${line}`),
+    ]),
     ...approvalExpiry([
       `echo ${shellQuote("::error::The one-time approval to restore or migrate the database on this rollback expired before the run started, so nothing was changed. Run opscrew rollback again.")}`,
       "exit 1",
@@ -1711,7 +1704,7 @@ export function serverRollbackCommands(plan: DeployPlan, server: string): string
     ...keptCheck(plan, [
       `echo ${shellQuote(`::error::The one-time approval on ${where} (${file}) keeps a service that isn't one of the app's queues, so nothing was changed. Run opscrew rollback again.`)} >&2`,
       "exit 1",
-    ]).map((line) => `    ${line}`),
+    ]),
     ...approvalExpiry([
       `echo ${shellQuote(`::error::The one-time approval to change the data on ${where} on this rollback expired before the run started, so nothing was changed. Run opscrew rollback again.`)} >&2`,
       "exit 1",
@@ -1745,7 +1738,7 @@ export function serverRollbackCommands(plan: DeployPlan, server: string): string
           ...keptCheck(plan, [
             `echo ${shellQuote(`::error::The queues the rollback keeps on ${where} (${ROLLBACK_KEPT_FILE}) name a service that isn't one of the app's queues, so nothing was changed there. Run opscrew rollback again.`)} >&2`,
             "exit 1",
-          ]).map((line) => `    ${line}`),
+          ]),
         ]
       : []),
     '    case "$2" in',

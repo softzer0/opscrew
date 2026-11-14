@@ -120,7 +120,6 @@ export function agentSettingsText(
     ...(input.php?.handler !== undefined ? { phpHandler: input.php.handler } : {}),
     ...(plan.app.releaseCommand !== undefined ? { releaseCommand: plan.app.releaseCommand } : {}),
     sharedPaths: sharedPaths(plan, input.laravel),
-    keep: 3,
     // The snapshot before each release (ADR 0028 D7): `deploy.snapshots` when set, else on in
     // every environment but previews.
     snapshots: (plan.deploy.snapshots ?? snapshotsByDefault(plan)) && input.database !== undefined,

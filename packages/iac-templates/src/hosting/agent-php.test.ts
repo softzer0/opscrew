@@ -110,7 +110,7 @@ describe.skipIf(reason !== undefined)("the agent's PHP blocks", () => {
  */
 function healthCheck(appKind: string, server: string, code = 200): string {
   return inAppFolder(
-    ["line_of", "site_url", "fetch", "header_of", "health_check"],
+    ["one_line", "site_url", "header_of", "health_check"],
     [
       `curl() { printf 'HTTP/1.1 ${code} Answer\\r\\nServer: ${server}\\r\\nX-OpsCrew-Release: 7-1\\r\\n\\r\\n'; }`,
       "slept=0",

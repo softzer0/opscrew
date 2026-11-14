@@ -169,18 +169,24 @@ jobs:
           q() {
             printf '"%s"' "$(printf '%s' "$1" | sed 's/[\\\\"]/\\\\&/g')"
           }
-          # $1 on one line.
+          # $1 on one line: carriage returns and newlines become spaces.
           one_line() {
             printf '%s' "$1" | tr '\\r\\n' '  '
           }
-          # The releases on the host, newest first: <run id>-<attempt> folders, by run id then attempt.
+          # The names on standard input that are a release's id, <run id>-<attempt>, newest first: by run
+          # id, then attempt.
+          newest_first() {
+            grep -E '^[1-9][0-9]*-[1-9][0-9]*$' | sort -t - -k 1,1nr -k 2,2nr || true
+          }
+          # The releases on the host, newest first.
           release_ids() {
             local listing
             listing=$(printf '@ls -1a %s\\n' "$(q "$FOLDER/releases")" | on_host) || return 1
-            printf '%s\\n' "$listing" | sed 's|.*/||' | grep -E '^[1-9][0-9]*-[1-9][0-9]*$' | sort -t - -k 1,1nr -k 2,2nr || true
+            printf '%s\\n' "$listing" | sed 's|.*/||' | newest_first
           }
-          # True when release $1 is newer than release $2.
+          # True when release $1 is newer than release $2; any release is newer than none.
           newer() {
+            [ -n "$2" ] || return 0
             local r1=\${1%-*} a1=\${1#*-} r2=\${2%-*} a2=\${2#*-}
             ((10#$r1 > 10#$r2 || (10#$r1 == 10#$r2 && 10#$a1 > 10#$a2)))
           }
@@ -208,19 +214,27 @@ jobs:
               for ((i = \${#folders[@]} - 1; i >= 0; i--)); do printf '@rmdir %s\\n' "$(q "\${folders[i]}")"; done
             } | on_host > /dev/null
           }
-          # Writes state/status: the running release $1, the newest kept one older than it, the others kept,
-          # and the attempt (release $2, its result $3, its reason $4), as the opscrew CLI reads it.
-          write_status() {
-            local previous="" kept="" id ids
-            ids=$(release_ids) || return 1
-            for id in $ids; do
-              [ "$id" != "$1" ] || continue
+          # The lines of state/status, as the opscrew CLI reads them: the running release $1 (empty before
+          # the first), the newest release kept that is older than it (rollback's default), the others kept,
+          # and the last attempt: its release $2, its result $3 (deployed, refused or failed), its reason $4
+          # and its time $5 (UTC). The releases there follow, newest first.
+          status_lines() {
+            local running=$1 attempt=$2 result=$3 reason=$4 at=$5 previous="" kept="" id
+            shift 5
+            for id in "$@"; do
+              [ "$id" != "$running" ] || continue
               kept=\${kept:+$kept,}$id
-              if [ -z "$previous" ] && [ -n "$1" ] && newer "$1" "$id"; then previous=$id; fi
+              if [ -z "$previous" ] && [ -n "$running" ] && newer "$running" "$id"; then previous=$id; fi
             done
             printf 'running=%s\\nprevious=%s\\nkept=%s\\nattempt=%s\\nresult=%s\\nreason=%s\\nat=%s\\n' \\
-              "$1" "$previous" "$kept" "$2" "$3" "$(one_line "$4")" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$work/status.next"
-            local next="$FOLDER/state/status.next"
+              "$running" "$previous" "$kept" "$attempt" "$result" "$(one_line "$reason")" "$at"
+          }
+          # Writes state/status (status_lines) for the running release $1 and the attempt: release $2, its
+          # result $3 and its reason $4.
+          write_status() {
+            local ids next="$FOLDER/state/status.next"
+            ids=$(release_ids) || return 1
+            status_lines "$1" "$2" "$3" "$4" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" $ids > "$work/status.next"
             printf '@put %s %s\\n@chmod 600 %s\\n@rename %s %s\\n' "$(q "$work/status.next")" "$(q "$next")" "$(q "$next")" "$(q "$next")" "$(q "$FOLDER/state/status")" | on_host > /dev/null
           }
           # Ends an attempt that failed ($2 refused): says why ($1), records it, and fails the job.
@@ -291,16 +305,19 @@ jobs:
             failed "the switch over SFTP failed; \${running:-nothing} still runs unless the rename went through"
           fi
 
-          # 4. The hostname asked every 5 seconds, for up to 135 seconds, until it answers 2xx or 3xx with
-          # the release: behind LiteSpeed the first such answer counts, as does a static site's; a PHP app's
-          # elsewhere only from try 27, 130 seconds after the switch, as PHP may run the release before until
-          # its path cache expires (120 seconds, with the PHP lines' opcache.revalidate_path; research R16).
-          # CHECK_SAID holds the last answer.
+          # 4. The check on the hostname, with the PHP lines' opcache.revalidate_path for a PHP app.
           scheme=http; if [ "$https" = yes ]; then scheme=https; fi
+          # The value of header $2 in the answer $1, without its carriage return.
           header_of() {
             printf '%s\\n' "$1" | tr -d '\\r' | sed -n "s/^$2:[[:space:]]*//Ip" | tail -n 1
           }
-          check() {
+          # Asks the health path every 5 seconds, for up to 135 seconds, until it answers 2xx or 3xx with
+          # release $1. The first such answer counts for any app but a PHP app, and for a PHP app behind
+          # LiteSpeed, whose restart makes every PHP process follow at once; elsewhere a PHP app's counts
+          # only from try 27, 130 seconds after the switch, as PHP may run the release before until its
+          # path cache expires (120 s, with opcache.revalidate_path on; research R16). CHECK_SAID holds the
+          # last answer.
+          health_check() {
             local try answer code served
             CHECK_SAID="no answer"
             for ((try = 1; try <= 28; try++)); do
@@ -309,7 +326,7 @@ jobs:
                 code=$(printf '%s\\n' "$answer" | head -n 1 | cut -d ' ' -f 2)
                 served=$(header_of "$answer" X-OpsCrew-Release)
                 CHECK_SAID="it answered $code with release \${served:-none}"
-                if [[ $code =~ ^[23][0-9][0-9]$ ]] && [ "$served" = "$release" ]; then
+                if [[ $code =~ ^[23][0-9][0-9]$ ]] && [ "$served" = "$1" ]; then
                   case $(header_of "$answer" Server) in LiteSpeed*) return 0 ;; esac
                   if [ "$try" -ge 27 ]; then return 0; fi
                 fi
@@ -319,7 +336,7 @@ jobs:
             done
             return 1
           }
-          if ! check; then
+          if ! health_check "$release"; then
             before="releases/\${running:-0-0}"
             if switch_to "$before"; then
               remove_tree "$FOLDER/releases/$release" || true
@@ -496,18 +513,24 @@ jobs:
           q() {
             printf '"%s"' "$(printf '%s' "$1" | sed 's/[\\\\"]/\\\\&/g')"
           }
-          # $1 on one line.
+          # $1 on one line: carriage returns and newlines become spaces.
           one_line() {
             printf '%s' "$1" | tr '\\r\\n' '  '
           }
-          # The releases on the host, newest first: <run id>-<attempt> folders, by run id then attempt.
+          # The names on standard input that are a release's id, <run id>-<attempt>, newest first: by run
+          # id, then attempt.
+          newest_first() {
+            grep -E '^[1-9][0-9]*-[1-9][0-9]*$' | sort -t - -k 1,1nr -k 2,2nr || true
+          }
+          # The releases on the host, newest first.
           release_ids() {
             local listing
             listing=$(printf '@ls -1a %s\\n' "$(q "$FOLDER/releases")" | on_host) || return 1
-            printf '%s\\n' "$listing" | sed 's|.*/||' | grep -E '^[1-9][0-9]*-[1-9][0-9]*$' | sort -t - -k 1,1nr -k 2,2nr || true
+            printf '%s\\n' "$listing" | sed 's|.*/||' | newest_first
           }
-          # True when release $1 is newer than release $2.
+          # True when release $1 is newer than release $2; any release is newer than none.
           newer() {
+            [ -n "$2" ] || return 0
             local r1=\${1%-*} a1=\${1#*-} r2=\${2%-*} a2=\${2#*-}
             ((10#$r1 > 10#$r2 || (10#$r1 == 10#$r2 && 10#$a1 > 10#$a2)))
           }
@@ -535,19 +558,27 @@ jobs:
               for ((i = \${#folders[@]} - 1; i >= 0; i--)); do printf '@rmdir %s\\n' "$(q "\${folders[i]}")"; done
             } | on_host > /dev/null
           }
-          # Writes state/status: the running release $1, the newest kept one older than it, the others kept,
-          # and the attempt (release $2, its result $3, its reason $4), as the opscrew CLI reads it.
-          write_status() {
-            local previous="" kept="" id ids
-            ids=$(release_ids) || return 1
-            for id in $ids; do
-              [ "$id" != "$1" ] || continue
+          # The lines of state/status, as the opscrew CLI reads them: the running release $1 (empty before
+          # the first), the newest release kept that is older than it (rollback's default), the others kept,
+          # and the last attempt: its release $2, its result $3 (deployed, refused or failed), its reason $4
+          # and its time $5 (UTC). The releases there follow, newest first.
+          status_lines() {
+            local running=$1 attempt=$2 result=$3 reason=$4 at=$5 previous="" kept="" id
+            shift 5
+            for id in "$@"; do
+              [ "$id" != "$running" ] || continue
               kept=\${kept:+$kept,}$id
-              if [ -z "$previous" ] && [ -n "$1" ] && newer "$1" "$id"; then previous=$id; fi
+              if [ -z "$previous" ] && [ -n "$running" ] && newer "$running" "$id"; then previous=$id; fi
             done
             printf 'running=%s\\nprevious=%s\\nkept=%s\\nattempt=%s\\nresult=%s\\nreason=%s\\nat=%s\\n' \\
-              "$1" "$previous" "$kept" "$2" "$3" "$(one_line "$4")" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$work/status.next"
-            local next="$FOLDER/state/status.next"
+              "$running" "$previous" "$kept" "$attempt" "$result" "$(one_line "$reason")" "$at"
+          }
+          # Writes state/status (status_lines) for the running release $1 and the attempt: release $2, its
+          # result $3 and its reason $4.
+          write_status() {
+            local ids next="$FOLDER/state/status.next"
+            ids=$(release_ids) || return 1
+            status_lines "$1" "$2" "$3" "$4" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" $ids > "$work/status.next"
             printf '@put %s %s\\n@chmod 600 %s\\n@rename %s %s\\n' "$(q "$work/status.next")" "$(q "$next")" "$(q "$next")" "$(q "$next")" "$(q "$FOLDER/state/status")" | on_host > /dev/null
           }
           # Ends an attempt that failed ($2 refused): says why ($1), records it, and fails the job.
@@ -618,16 +649,19 @@ jobs:
             failed "the switch over SFTP failed; \${running:-nothing} still runs unless the rename went through"
           fi
 
-          # 4. The hostname asked every 5 seconds, for up to 135 seconds, until it answers 2xx or 3xx with
-          # the release: behind LiteSpeed the first such answer counts, as does a static site's; a PHP app's
-          # elsewhere only from try 27, 130 seconds after the switch, as PHP may run the release before until
-          # its path cache expires (120 seconds, with the PHP lines' opcache.revalidate_path; research R16).
-          # CHECK_SAID holds the last answer.
+          # 4. The check on the hostname, with the PHP lines' opcache.revalidate_path for a PHP app.
           scheme=http; if [ "$https" = yes ]; then scheme=https; fi
+          # The value of header $2 in the answer $1, without its carriage return.
           header_of() {
             printf '%s\\n' "$1" | tr -d '\\r' | sed -n "s/^$2:[[:space:]]*//Ip" | tail -n 1
           }
-          check() {
+          # Asks the health path every 5 seconds, for up to 135 seconds, until it answers 2xx or 3xx with
+          # release $1. The first such answer counts for any app but a PHP app, and for a PHP app behind
+          # LiteSpeed, whose restart makes every PHP process follow at once; elsewhere a PHP app's counts
+          # only from try 27, 130 seconds after the switch, as PHP may run the release before until its
+          # path cache expires (120 s, with opcache.revalidate_path on; research R16). CHECK_SAID holds the
+          # last answer.
+          health_check() {
             local try answer code served
             CHECK_SAID="no answer"
             for ((try = 1; try <= 28; try++)); do
@@ -636,7 +670,7 @@ jobs:
                 code=$(printf '%s\\n' "$answer" | head -n 1 | cut -d ' ' -f 2)
                 served=$(header_of "$answer" X-OpsCrew-Release)
                 CHECK_SAID="it answered $code with release \${served:-none}"
-                if [[ $code =~ ^[23][0-9][0-9]$ ]] && [ "$served" = "$release" ]; then
+                if [[ $code =~ ^[23][0-9][0-9]$ ]] && [ "$served" = "$1" ]; then
                   return 0
                 fi
               else
@@ -645,7 +679,7 @@ jobs:
             done
             return 1
           }
-          if ! check; then
+          if ! health_check "$release"; then
             before="releases/\${running:-0-0}"
             if switch_to "$before"; then
               remove_tree "$FOLDER/releases/$release" || true

@@ -1,26 +1,39 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are bash and GitHub Actions syntax, not JavaScript templates.
-import { OpsCrewError } from "@opscrew/core";
+import { escapeRegExp, OpsCrewError } from "@opscrew/core";
 import { cleanRepoPath, type DeployPlan, isHostingTarget } from "@opscrew/plan-schema";
-import { ACTIONS } from "../pins";
 import { wrongTarget } from "../providers";
-import { BASELINE_HEADERS, HSTS, shellQuote } from "../runtime/services";
+import { shellQuote } from "../runtime/services";
 import type { RenderContext, RenderedFile } from "../types";
-import { pushPaths } from "../workflow/paths";
-import { pausedJob, unpaused } from "../workflow/pause";
+import { unpaused } from "../workflow/pause";
 import {
-  DISPATCH_BY_HAND,
   deploySecretName,
   environmentName,
   githubEnvironment,
+  healthPath,
   job,
   opscrew,
-  promoted,
   provisionCommand,
   run,
   secret,
-  workflowStart,
 } from "../workflow/shared";
-import { RELEASE_ARTIFACT, releaseBuildJob } from "./workflow";
+import {
+  FALLBACK,
+  HEADER_OF,
+  HOSTING_KEEP,
+  HSTS_LINE,
+  HTACCESS_RULES,
+  healthCheck,
+  NEWER,
+  NEWEST_FIRST,
+  ONE_LINE,
+  PACKAGES_REFUSED,
+  PHP_MODULES,
+  printLines,
+  REVALIDATE_PATH,
+  REWRITE_RULE,
+  STATUS_LINES,
+} from "./shell";
+import { DOWNLOAD_RELEASE, hostingDomain, hostingWorkflowFile } from "./workflow";
 
 /**
  * The GitHub Actions secrets (before `deploySecretName`) of an app on an SFTP-only host, which
@@ -48,9 +61,6 @@ export function sftpUrl(
   const path = folder.split("/").map(encodeURIComponent).join("/");
   return `sftp://${encodeURIComponent(login.user)}@${host}:${login.port}/${path}`;
 }
-
-/** How many releases the host keeps besides the running one. */
-const KEEP = 3;
 
 /**
  * The app's kept folders on a hosting account, relative to its release: the plan's
@@ -81,29 +91,13 @@ export function renderSftpPhpLines(envPhp: string): { htaccess: string; userIni:
     );
   }
   return {
-    htaccess: ["LiteSpeed", "lsapi_module", "php_module"]
-      .map(
-        (module) =>
-          `<IfModule ${module}>\nphp_flag opcache.revalidate_path on\nphp_value auto_prepend_file "${envPhp}"\n</IfModule>\n`,
-      )
-      .join(""),
-    userIni: `; BEGIN OpsCrew\nopcache.revalidate_path = 1\nauto_prepend_file = "${envPhp}"\n; END OpsCrew\n`,
+    htaccess: PHP_MODULES.map(
+      (module) =>
+        `<IfModule ${module}>\n${REVALIDATE_PATH.htaccess}\nphp_value auto_prepend_file "${envPhp}"\n</IfModule>\n`,
+    ).join(""),
+    userIni: `; BEGIN OpsCrew\n${REVALIDATE_PATH.userIni}\nauto_prepend_file = "${envPhp}"\n; END OpsCrew\n`,
   };
 }
-
-/** A `.htaccess` line that rewrites, comments aside (grep -iE). */
-const REWRITE_RULE = "^[[:space:]]*RewriteRule([[:space:]]|$)";
-
-/** A PHP app's routing where its `.htaccess` has none, as a server's php_fastcgi (research R13). */
-const FALLBACK = [
-  "RewriteCond %{REQUEST_FILENAME} !-f",
-  "RewriteCond %{REQUEST_FILENAME} !-d",
-  "RewriteRule ^ index.php [L]",
-];
-
-/** `printf '%s\n'` of each line, shell-quoted. */
-const printLines = (lines: readonly string[]) =>
-  `printf '%s\\n' ${lines.map((line) => shellQuote(line)).join(" ")}`;
 
 /**
  * The deploy step's lines for the app's kept folders ({@link hostingKeptFolders}), none without
@@ -167,35 +161,27 @@ function keptFolderLines(kept: readonly string[]): { prepare: string[]; link: st
  * composed; the release uploaded into `releases/<run id>-<attempt>/`, with the app's kept folders
  * ({@link keptFolderLines}) linked from `shared/`; `current` switched to it
  * with `ln -s` and `rename` (OpenSSH's posix-rename, one step); the hostname asked until it serves
- * the release; then the newest {@link KEEP} other releases kept, or on a failure `current`
- * switched back and the release removed; `state/status` written either way.
+ * the release ({@link healthCheck}); then the newest {@link HOSTING_KEEP} other releases kept, or on
+ * a failure `current` switched back and the release removed; `state/status` written either way.
  */
-function deployScript(plan: DeployPlan, webRoot: string, app: "static" | "php"): string[] {
-  const host = plan.dns.domain as string;
-  const hostPattern = host.replaceAll(".", "\\.");
-  const path = plan.app.healthPath.startsWith("/")
-    ? plan.app.healthPath
-    : `/${plan.app.healthPath}`;
+function deployScript(
+  plan: DeployPlan,
+  host: string,
+  webRoot: string,
+  app: "static" | "php",
+): string[] {
+  const url = shellQuote(`${host}${healthPath(plan)}`);
   const head = [
     "# BEGIN OpsCrew",
     "RewriteEngine On",
-    `RewriteCond %{HTTP_HOST} !^${hostPattern}(:[0-9]+)?$ [NC]`,
+    `RewriteCond %{HTTP_HOST} !^${escapeRegExp(host)}(:[0-9]+)?$ [NC]`,
     "RewriteRule ^ - [F]",
   ];
   const https = [
     "RewriteCond %{HTTPS} !=on",
     `RewriteRule ^ https://${host}%{REQUEST_URI} [R=301,L]`,
   ];
-  const rules = [
-    ...(webRoot === "."
-      ? ["RewriteRule ^(vendor|storage|composer\\.json|composer\\.lock)(/|$) - [F]"]
-      : []),
-    "Options -Indexes",
-    '<FilesMatch "^\\.">',
-    "Require all denied",
-    "</FilesMatch>",
-    ...BASELINE_HEADERS.map(([name, value]) => `Header always set ${name} "${value}"`),
-  ];
+  const rules = [...(webRoot === "." ? [PACKAGES_REFUSED] : []), ...HTACCESS_RULES];
   const status = opscrew(plan, "status");
   const kept = keptFolderLines(hostingKeptFolders(plan));
   return [
@@ -228,21 +214,15 @@ function deployScript(plan: DeployPlan, webRoot: string, app: "static" | "php"):
     "q() {",
     '  printf \'"%s"\' "$(printf \'%s\' "$1" | sed \'s/[\\\\"]/\\\\&/g\')"',
     "}",
-    "# $1 on one line.",
-    "one_line() {",
-    "  printf '%s' \"$1\" | tr '\\r\\n' '  '",
-    "}",
-    "# The releases on the host, newest first: <run id>-<attempt> folders, by run id then attempt.",
+    ...ONE_LINE.split("\n"),
+    ...NEWEST_FIRST.split("\n"),
+    "# The releases on the host, newest first.",
     "release_ids() {",
     "  local listing",
     '  listing=$(printf \'@ls -1a %s\\n\' "$(q "$FOLDER/releases")" | on_host) || return 1',
-    "  printf '%s\\n' \"$listing\" | sed 's|.*/||' | grep -E '^[1-9][0-9]*-[1-9][0-9]*$' | sort -t - -k 1,1nr -k 2,2nr || true",
+    "  printf '%s\\n' \"$listing\" | sed 's|.*/||' | newest_first",
     "}",
-    "# True when release $1 is newer than release $2.",
-    "newer() {",
-    "  local r1=${1%-*} a1=${1#*-} r2=${2%-*} a2=${2#*-}",
-    "  ((10#$r1 > 10#$r2 || (10#$r1 == 10#$r2 && 10#$a1 > 10#$a2)))",
-    "}",
+    ...NEWER.split("\n"),
     "# Points current at $1 (from the app's folder) in one rename of a new link beside it.",
     "switch_to() {",
     '  local link="$FOLDER/.opscrew-$release.link"',
@@ -267,19 +247,13 @@ function deployScript(plan: DeployPlan, webRoot: string, app: "static" | "php"):
     '    for ((i = ${#folders[@]} - 1; i >= 0; i--)); do printf \'@rmdir %s\\n\' "$(q "${folders[i]}")"; done',
     "  } | on_host > /dev/null",
     "}",
-    "# Writes state/status: the running release $1, the newest kept one older than it, the others kept,",
-    "# and the attempt (release $2, its result $3, its reason $4), as the opscrew CLI reads it.",
+    ...STATUS_LINES.split("\n"),
+    "# Writes state/status (status_lines) for the running release $1 and the attempt: release $2, its",
+    "# result $3 and its reason $4.",
     "write_status() {",
-    '  local previous="" kept="" id ids',
+    '  local ids next="$FOLDER/state/status.next"',
     "  ids=$(release_ids) || return 1",
-    "  for id in $ids; do",
-    '    [ "$id" != "$1" ] || continue',
-    "    kept=${kept:+$kept,}$id",
-    '    if [ -z "$previous" ] && [ -n "$1" ] && newer "$1" "$id"; then previous=$id; fi',
-    "  done",
-    "  printf 'running=%s\\nprevious=%s\\nkept=%s\\nattempt=%s\\nresult=%s\\nreason=%s\\nat=%s\\n' \\",
-    '    "$1" "$previous" "$kept" "$2" "$3" "$(one_line "$4")" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$work/status.next"',
-    '  local next="$FOLDER/state/status.next"',
+    '  status_lines "$1" "$2" "$3" "$4" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" $ids > "$work/status.next"',
     '  printf \'@put %s %s\\n@chmod 600 %s\\n@rename %s %s\\n\' "$(q "$work/status.next")" "$(q "$next")" "$(q "$next")" "$(q "$next")" "$(q "$FOLDER/state/status")" | on_host > /dev/null',
     "}",
     "# Ends an attempt that failed ($2 refused): says why ($1), records it, and fails the job.",
@@ -313,7 +287,7 @@ function deployScript(plan: DeployPlan, webRoot: string, app: "static" | "php"):
     `  ${printLines(head)}`,
     `  if [ "$https" = yes ]; then ${printLines(https)}; fi`,
     `  ${printLines(rules)}`,
-    `  if [ "$https" = yes ]; then ${printLines([`Header always set Strict-Transport-Security "${HSTS}"`])}; fi`,
+    `  if [ "$https" = yes ]; then ${printLines([HSTS_LINE])}; fi`,
     '  printf \'Header always set X-OpsCrew-Release "%s"\\n\' "$release"',
     '  if [ -f "$work/env.htaccess" ]; then cat "$work/env.htaccess"; fi',
     "  # A PHP app without rewrite rules of its own: a path that is no file goes to index.php.",
@@ -352,60 +326,32 @@ function deployScript(plan: DeployPlan, webRoot: string, app: "static" | "php"):
     '  failed "the switch over SFTP failed; ${running:-nothing} still runs unless the rename went through"',
     "fi",
     "",
-    "# 4. The hostname asked every 5 seconds, for up to 135 seconds, until it answers 2xx or 3xx with",
-    "# the release: behind LiteSpeed the first such answer counts, as does a static site's; a PHP app's",
-    "# elsewhere only from try 27, 130 seconds after the switch, as PHP may run the release before until",
-    "# its path cache expires (120 seconds, with the PHP lines' opcache.revalidate_path; research R16).",
-    "# CHECK_SAID holds the last answer.",
+    "# 4. The check on the hostname, with the PHP lines' opcache.revalidate_path for a PHP app.",
     'scheme=http; if [ "$https" = yes ]; then scheme=https; fi',
-    "header_of() {",
-    "  printf '%s\\n' \"$1\" | tr -d '\\r' | sed -n \"s/^$2:[[:space:]]*//Ip\" | tail -n 1",
-    "}",
-    "check() {",
-    "  local try answer code served",
-    '  CHECK_SAID="no answer"',
-    "  for ((try = 1; try <= 28; try++)); do",
-    '    if [ "$try" -gt 1 ]; then sleep 5; fi',
-    `    if answer=$(curl -sS -o /dev/null -D - --max-time 30 "$scheme://"${shellQuote(`${host}${path}`)} 2>&1); then`,
-    "      code=$(printf '%s\\n' \"$answer\" | head -n 1 | cut -d ' ' -f 2)",
-    '      served=$(header_of "$answer" X-OpsCrew-Release)',
-    '      CHECK_SAID="it answered $code with release ${served:-none}"',
-    '      if [[ $code =~ ^[23][0-9][0-9]$ ]] && [ "$served" = "$release" ]; then',
-    ...(app === "static"
-      ? ["        return 0"]
-      : [
-          '        case $(header_of "$answer" Server) in LiteSpeed*) return 0 ;; esac',
-          '        if [ "$try" -ge 27 ]; then return 0; fi',
-        ]),
-    "      fi",
-    "    else",
-    '      CHECK_SAID=$(one_line "$answer")',
-    "    fi",
-    "  done",
-    "  return 1",
-    "}",
-    "if ! check; then",
+    ...HEADER_OF.split("\n"),
+    ...healthCheck(`"$scheme://"${url}`, app === "php").split("\n"),
+    'if ! health_check "$release"; then',
     '  before="releases/${running:-0-0}"',
     '  if switch_to "$before"; then',
     '    remove_tree "$FOLDER/releases/$release" || true',
     "  else",
     '    echo "::warning::OpsCrew couldn\'t switch back to $before, so release $release stays on the host."',
     "  fi",
-    `  failed ${shellQuote(`${host}${path}`)}" didn't answer 2xx or 3xx with it ($CHECK_SAID); switched back to \${running:-nothing}"`,
+    `  failed ${url}" didn't answer 2xx or 3xx with it ($CHECK_SAID); switched back to \${running:-nothing}"`,
     "fi",
     "",
     "# The release serves: recorded first, so nothing after it can leave the status behind.",
     'write_status "$release" "$release" deployed ""',
     'echo "::notice::Release $release serves on the host."',
     "",
-    `# 5. The ${KEEP} newest releases kept besides the running one; after the first, the placeholder goes.`,
+    `# 5. The ${HOSTING_KEEP} newest releases kept besides the running one; after the first, the placeholder goes.`,
     "# One the SFTP user can't remove stays, with a warning; the status then lists what is left.",
     "kept=0",
     "removed=no",
     "for id in $(release_ids); do",
     '  [ "$id" != "$release" ] || continue',
     "  kept=$((kept + 1))",
-    `  [ "$kept" -gt ${KEEP} ] || continue`,
+    `  [ "$kept" -gt ${HOSTING_KEEP} ] || continue`,
     '  if remove_tree "$FOLDER/releases/$id"; then',
     "    removed=yes",
     "  else",
@@ -421,7 +367,7 @@ function deployScript(plan: DeployPlan, webRoot: string, app: "static" | "php"):
 
 /**
  * `cicd.workflowPath` for an app on an SFTP-only host (027 plan 10, ADR 0030 D6): on each push to
- * the deploy branch, and by hand. The build job is a panel account's ({@link releaseBuildJob});
+ * the deploy branch, and by hand. The build job is a panel account's ({@link hostingWorkflowFile});
  * the deploy job, in the deploy environment with no token permission, uploads the release and
  * switches to it over SFTP ({@link deployScript}) with the key and the host's reach from
  * {@link SFTP_DEPLOY_SECRETS}. While the environment's deploys are paused (ADR 0023), the deploy
@@ -441,35 +387,17 @@ export function renderSftpWorkflow(
   ) {
     throw wrongTarget("This step only applies to a static site or a PHP app on an SFTP-only host.");
   }
-  if (promoted(plan)) {
-    throw new OpsCrewError(
-      "INVALID_INPUT",
-      "An app on an SFTP-only host cannot be promoted: each environment builds its own release.",
-      {
-        hint: `Set environment.deploySource to { from: main } in the environment's plan, then run \`${provisionCommand(plan)}\` again.`,
-      },
-    );
-  }
-  if (plan.dns.domain === undefined) {
-    throw new OpsCrewError(
-      "INTERNAL",
-      "OpsCrew rendered an SFTP host's workflow without the app's hostname.",
-      { hint: "This is a bug in OpsCrew; please report it." },
-    );
-  }
+  const domain = hostingDomain(plan, "an SFTP-only host");
   const environment = githubEnvironment(plan);
   const deploy = job({
     id: "deploy",
-    name: `Upload the release over SFTP and switch ${plan.dns.domain} to it`,
+    name: `Upload the release over SFTP and switch ${domain} to it`,
     needs: "build",
     if: `\${{ ${unpaused(plan)} }}`,
     ...(environment === undefined ? {} : { environment }),
     permissions: [],
     steps: [
-      `- uses: ${ACTIONS.downloadArtifact}`,
-      "  with:",
-      `    name: ${RELEASE_ARTIFACT}`,
-      "    path: ${{ runner.temp }}",
+      ...DOWNLOAD_RELEASE,
       "- name: Upload, switch and check the release",
       // The check waits up to about 2 minutes, a switch back and the removals a few more.
       "  timeout-minutes: 30",
@@ -477,26 +405,18 @@ export function renderSftpWorkflow(
       `    SFTP_URL: ${secret(plan, SFTP_DEPLOY_SECRETS.url)}`,
       `    SFTP_KEY: ${secret(plan, SFTP_DEPLOY_SECRETS.privateKey)}`,
       `    KNOWN_HOSTS: ${secret(plan, SFTP_DEPLOY_SECRETS.knownHosts)}`,
-      ...run(deployScript(plan, target.webRoot, target.app)),
+      ...run(deployScript(plan, domain, target.webRoot, target.app)),
     ],
   });
-  const lines = [
-    ...workflowStart(
-      plan,
-      [
-        `# Builds the app and uploads each release over SFTP to its own folder on your host, switches`,
-        `# ${plan.dns.domain} to it in one step, checks it, and switches back on a failure. The SFTP key is`,
-        `# a secret of the ${environmentName(plan)} environment's deploys, which can change every file of that SFTP user.`,
-      ],
-      pushPaths(plan, [], ctx),
-      DISPATCH_BY_HAND,
-    ),
-    ...pausedJob(plan),
-    "",
-    ...releaseBuildJob(plan, target),
-    "",
-    ...deploy,
-    "",
-  ];
-  return { path: plan.cicd.workflowPath, content: lines.join("\n"), kind: "workflow" };
+  return hostingWorkflowFile(
+    plan,
+    ctx,
+    [
+      `# Builds the app and uploads each release over SFTP to its own folder on your host, switches`,
+      `# ${domain} to it in one step, checks it, and switches back on a failure. The SFTP key is`,
+      `# a secret of the ${environmentName(plan)} environment's deploys, which can change every file of that SFTP user.`,
+    ],
+    target,
+    [deploy],
+  );
 }

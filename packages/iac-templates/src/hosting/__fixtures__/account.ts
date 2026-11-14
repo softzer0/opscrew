@@ -165,7 +165,6 @@ export class Account {
       phpCli: bashPath(`${this.bin}/php`),
       releaseCommand: "php artisan migrate --force",
       sharedPaths: [".env", "storage"],
-      keep: 3,
       snapshots: true,
       database: "acct_notes",
       ...settings,

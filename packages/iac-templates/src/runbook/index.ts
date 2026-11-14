@@ -67,12 +67,9 @@ function money(plan: DeployPlan, provider: CloudProviderDefinition): string {
       : "";
   // Backups only the provider's order page prices are never in the cost (Contabo's Auto Backup).
   const servers = [plan.target, ...(plan.servers ?? []).map((server) => server.target)];
-  const unpriced = orderPageProviders(
-    servers.map((target) => ({
-      provider: target.provider,
-      backups: "backups" in target ? target.backups : false,
-    })),
-  ).map((id) => ` ${orderPageBackupsText(id, "this cost")}`);
+  const unpriced = orderPageProviders(servers).map(
+    (id) => ` ${orderPageBackupsText(id, "this cost")}`,
+  );
   return `${formatMoney(monthly)} per month (${tax}${source})${unpriced.join("")}`;
 }
 

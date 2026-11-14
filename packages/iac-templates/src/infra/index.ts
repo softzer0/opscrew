@@ -21,18 +21,17 @@ import {
 } from "./cloudflare";
 import {
   APP_NAME_VARIABLE,
-  besideInfraDir,
   CLOUDFLARE_PROVIDER,
   CLOUDFLARE_PROVIDER_BLOCK,
   moduleBlock,
   output,
   type RootFiles,
   rootHeader,
+  rootModuleFiles,
   type VariableSpec,
   variablesTf,
   versionsTf,
 } from "./hcl";
-import { MODULE_FILES } from "./modules";
 import { ownRoot } from "./own";
 import { managesPortainerRecords, portainerRoot } from "./portainer";
 import { siteRootModule } from "./serverless";
@@ -649,27 +648,5 @@ export function renderInfra(plan: DeployPlan, ctx: RenderContext): RenderedFile[
     throw new Error("A Cloudflare zone id is required to render DNS for this plan.");
   }
   const root = rootModule(plan, ctx);
-  if (root === undefined) return [];
-  const dir = plan.infra.dir.replace(/\\/g, "/").replace(/\/+$/, "");
-  const modulesDir = besideInfraDir(plan, "modules");
-  const files: RenderedFile[] = [
-    { path: `${dir}/versions.tf`, content: root.versions, kind: "infra" },
-    { path: `${dir}/main.tf`, content: root.main, kind: "infra" },
-    { path: `${dir}/variables.tf`, content: root.variables, kind: "infra" },
-    { path: `${dir}/outputs.tf`, content: root.outputs, kind: "infra" },
-    {
-      path: `${dir}/terraform.tfvars.json`,
-      content: `${JSON.stringify(root.tfvars, null, 2)}\n`,
-      kind: "infra",
-    },
-  ];
-  for (const [path, content] of Object.entries(MODULE_FILES).sort(([a], [b]) =>
-    a.localeCompare(b),
-  )) {
-    // A module's own files only: the GitHub Pages mode of `cloudflare-dns` is a folder inside it.
-    if (root.modules.includes(path.slice(0, path.lastIndexOf("/")))) {
-      files.push({ path: `${modulesDir}/${path}`, content, kind: "infra" });
-    }
-  }
-  return files;
+  return root === undefined ? [] : rootModuleFiles(plan, root);
 }

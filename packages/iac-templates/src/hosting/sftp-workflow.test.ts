@@ -231,7 +231,10 @@ describe("renderSftpWorkflow", () => {
     const script = deployStep(doc(target)).run ?? "";
     const start = script.indexOf("one_line() {");
     const oneLine = script.slice(start, script.indexOf("\n}\n", start) + 3);
-    const check = script.slice(script.indexOf("# 4. "), script.indexOf("if ! check; then"));
+    const check = script.slice(
+      script.indexOf("# 4. "),
+      script.indexOf('if ! health_check "$release"; then'),
+    );
     const ran = spawnSync("bash", ["-s"], {
       input: [
         `curl() { printf 'HTTP/1.1 ${code} Answer\\r\\nServer: ${server}\\r\\nX-OpsCrew-Release: 7-1\\r\\n\\r\\n'; }`,
@@ -241,7 +244,7 @@ describe("renderSftpWorkflow", () => {
         "https=no",
         oneLine,
         check,
-        'if check; then printf "passed %s" "$slept"; else printf "failed %s: %s" "$slept" "$CHECK_SAID"; fi',
+        'if health_check "$release"; then printf "passed %s" "$slept"; else printf "failed %s: %s" "$slept" "$CHECK_SAID"; fi',
       ].join("\n"),
       encoding: "utf8",
     });

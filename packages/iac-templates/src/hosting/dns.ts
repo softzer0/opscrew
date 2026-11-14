@@ -2,16 +2,15 @@ import { isIP } from "node:net";
 import { type DeployPlan, isHostingTarget } from "@opscrew/plan-schema";
 import { zoneTfvars, zoneVariables } from "../infra/cloudflare";
 import {
-  besideInfraDir,
   CLOUDFLARE_PROVIDER,
   CLOUDFLARE_PROVIDER_BLOCK,
   moduleBlock,
   output,
   rootHeader,
+  rootModuleFiles,
   variablesTf,
   versionsTf,
 } from "../infra/hcl";
-import { MODULE_FILES } from "../infra/modules";
 import { wrongTarget } from "../providers";
 import type { RenderContext, RenderedFile } from "../types";
 
@@ -40,8 +39,6 @@ export function renderHostingDns(
     throw new Error("A Cloudflare zone id is required to render DNS for this plan.");
   }
   if (isIP(address) !== 4) throw new Error(`${address} isn't an IPv4 address.`);
-  const dir = plan.infra.dir.replace(/\\/g, "/").replace(/\/+$/, "");
-  const modules = besideInfraDir(plan, "modules");
   const main = [
     rootHeader(plan),
     "",
@@ -63,35 +60,19 @@ export function renderHostingDns(
       ],
     }),
   ].join("\n");
-  const variables = variablesTf(plan, [
-    ...zoneVariables("domain"),
-    {
-      name: "account_ipv4",
-      type: "string",
-      description: "The hosting account's public IPv4 address, which its sites answer on.",
-    },
-  ]);
-  const outputs = [rootHeader(plan), "", ...output("url", "module.dns.url")].join("\n");
-  const tfvars = {
-    ...zoneTfvars(plan, ctx, "domain"),
-    account_ipv4: address,
-  };
-  const vendored = Object.entries(MODULE_FILES)
-    .filter(([path]) => path.slice(0, path.lastIndexOf("/")) === DNS_MODULE)
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(
-      ([path, content]): RenderedFile => ({ path: `${modules}/${path}`, content, kind: "infra" }),
-    );
-  return [
-    { path: `${dir}/versions.tf`, content: versionsTf(plan, [CLOUDFLARE_PROVIDER]), kind: "infra" },
-    { path: `${dir}/main.tf`, content: main, kind: "infra" },
-    { path: `${dir}/variables.tf`, content: variables, kind: "infra" },
-    { path: `${dir}/outputs.tf`, content: outputs, kind: "infra" },
-    {
-      path: `${dir}/terraform.tfvars.json`,
-      content: `${JSON.stringify(tfvars, null, 2)}\n`,
-      kind: "infra",
-    },
-    ...vendored,
-  ];
+  return rootModuleFiles(plan, {
+    versions: versionsTf(plan, [CLOUDFLARE_PROVIDER]),
+    main,
+    variables: variablesTf(plan, [
+      ...zoneVariables("domain"),
+      {
+        name: "account_ipv4",
+        type: "string",
+        description: "The hosting account's public IPv4 address, which its sites answer on.",
+      },
+    ]),
+    outputs: [rootHeader(plan), "", ...output("url", "module.dns.url")].join("\n"),
+    tfvars: { ...zoneTfvars(plan, ctx, "domain"), account_ipv4: address },
+    modules: [DNS_MODULE],
+  });
 }

@@ -11,6 +11,7 @@ import {
 } from "../edge";
 import { LOCALHOST_TLS } from "../edge/localhost";
 import { LETSENCRYPT } from "../edge/nginx";
+import { OPENLITESPEED_SITE_FILES } from "../edge/openlitespeed";
 import { shellQuote } from "../runtime/services";
 import { runtimeDir } from "../runtime-dir";
 import {
@@ -98,7 +99,8 @@ export function edgeCheckStep(plan: DeployPlan, o: EdgeFiles): string[] {
   const certbot = beside && o.certbot !== undefined && o.certbot.hosts.length > 0;
   const files = [`${app}.${site}`, ...(certbot ? [`${app}.http.${site}`] : [])];
   /** OpenLiteSpeed's site files that both of its sites share. */
-  const shared = proxy === "openlitespeed" ? [`${app}.vhost`, `${app}.map`] : [];
+  const shared =
+    proxy === "openlitespeed" ? OPENLITESPEED_SITE_FILES.map((file) => `${app}.${file}`) : [];
   return [
     `- name: Validate the edge's configuration with ${label}`,
     "  run: |",

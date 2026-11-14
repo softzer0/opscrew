@@ -16,6 +16,7 @@ import {
 import { localhostSite } from "../edge/localhost";
 import { type NginxSite, nginxAdditionsFile, nginxSite } from "../edge/nginx";
 import {
+  OPENLITESPEED_SITE_FILES,
   type OpenLiteSpeedSite,
   openlitespeedAdditionsFile,
   openlitespeedSite,
@@ -475,7 +476,10 @@ function openlitespeedSiteFiles(
           redirects: redirectedHosts(plan),
         };
   const files = openlitespeedSite(site);
-  const names = before ? [`${app}.vhconf`] : [`${app}.vhconf`, `${app}.vhost`, `${app}.map`];
+  const names = [
+    `${app}.vhconf`,
+    ...(before ? [] : OPENLITESPEED_SITE_FILES.map((file) => `${app}.${file}`)),
+  ];
   return names.map((name) => ({
     path: `${runtimeDir(plan)}/edge/sites/${before ? `${app}.http.vhconf` : name}`,
     content: [

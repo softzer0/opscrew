@@ -9,6 +9,7 @@
  * read-only files the edge mounts in `/etc/opscrew` into its own folder first, and OpenLiteSpeed
  * loads those copies.
  */
+import { escapeRegExp } from "@opscrew/core";
 import { BASELINE_HEADERS, HSTS, shellQuote, splitByOrigin } from "../runtime/services";
 import { httpsPortSuffix, LOCALHOST_TLS } from "./localhost";
 import { ACME_WEBROOT, certbotLive, MOZILLA_CIPHERS, RELOAD_DIR } from "./nginx";
@@ -101,6 +102,12 @@ export const OPENLITESPEED_CAPABILITIES = [
  * additions, send the app's traffic to `handler kamal-proxy`.
  */
 export const OPENLITESPEED_UPSTREAM = "kamal-proxy";
+
+/**
+ * The extensions of the app's site files besides `<app>.vhconf`: `<app>.vhost` and `<app>.map`,
+ * which its site before certbot's first certificate shares.
+ */
+export const OPENLITESPEED_SITE_FILES = ["vhost", "map"] as const;
 
 /** The app's additions as OpenLiteSpeed loads them: `conf/sites/<app>.additions`. */
 export function openlitespeedAdditionsFile(app: string): string {
@@ -254,7 +261,7 @@ function rewrite(rules: readonly string[]): string[] {
   return block("rewrite", [
     set("enable", 1),
     set("autoLoadHtaccess", 0),
-    ...heredoc("rules", [`RewriteRule ^${literal(ERROR_PAGE)}$ - [L]`, ...rules]),
+    ...heredoc("rules", [`RewriteRule ^${escapeRegExp(ERROR_PAGE)}$ - [L]`, ...rules]),
   ]);
 }
 
@@ -362,11 +369,6 @@ function serving(site: OpenLiteSpeedSite): Serving {
   };
 }
 
-/** `text` as a regular expression that matches only itself. */
-function literal(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 /**
  * The rewrite rules of the app's virtual host, before anything reaches the app: a hostname it does
  * not serve (OpenLiteSpeed maps `www.<name>` with `<name>` and the other way round) gets a 403,
@@ -377,7 +379,7 @@ function rewriteRules(site: OpenLiteSpeedSite, how: Serving): string[] {
   const acme = how.acme ? ["RewriteCond %{REQUEST_URI} !^/\\.well-known/acme-challenge/"] : [];
   const rules: string[] = [];
   if (site.hosts.length > 0) {
-    const names = site.hosts.map(literal).join("|");
+    const names = site.hosts.map(escapeRegExp).join("|");
     rules.push(`RewriteCond %{HTTP_HOST} !^(${names})(:[0-9]+)?$ [NC]`, "RewriteRule ^ - [F]");
   }
   if (how.httpOnly) rules.push("RewriteCond %{HTTPS} on", "RewriteRule ^ - [F]");
@@ -401,7 +403,7 @@ function rewriteRules(site: OpenLiteSpeedSite, how: Serving): string[] {
     const scheme = how.httpOnly ? "http" : "https";
     for (const host of redirects.filter((h) => site.hosts.includes(h))) {
       rules.push(
-        `RewriteCond %{HTTP_HOST} ^${literal(host)}(:[0-9]+)?$ [NC]`,
+        `RewriteCond %{HTTP_HOST} ^${escapeRegExp(host)}(:[0-9]+)?$ [NC]`,
         ...acme,
         `RewriteRule ^(.*)$ ${scheme}://${to}$1 [R=308,L]`,
       );

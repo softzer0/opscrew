@@ -16,7 +16,6 @@ const LARAVEL: AgentSettings = {
   phpHandler: "application/x-httpd-alt-php85___lsphp",
   releaseCommand: "php artisan migrate --force",
   sharedPaths: [".env", "storage"],
-  keep: 3,
   snapshots: false,
   database: "acct_notes",
 };
@@ -31,7 +30,6 @@ const STATIC_SITE: AgentSettings = {
   healthPath: "/",
   appKind: "static",
   sharedPaths: [],
-  keep: 3,
   snapshots: true,
 };
 
@@ -104,8 +102,6 @@ describe("renderAgentSettings", () => {
     ["releaseCommand", "php artisan migrate\nrm -rf ~"],
     ["sharedPaths", [".env", ".env"]],
     ["sharedPaths", ["storage dir"]],
-    ["keep", 0],
-    ["keep", 1.5],
     ["database", "notes-db"],
   ])("refuses %s %j, naming the field", (field, value) => {
     expect(() => renderAgentSettings({ ...LARAVEL, [field]: value })).toThrow(

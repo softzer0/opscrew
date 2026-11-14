@@ -20,6 +20,7 @@ import {
   deploySecretName,
   environmentName,
   githubEnvironment,
+  healthPath,
   job,
   opscrew,
   promoted,
@@ -76,7 +77,7 @@ function phpImage(plan: DeployPlan, target: HostingDeployTarget): ImagePin {
   if (image !== undefined) return image;
   throw new OpsCrewError(
     "INVALID_INPUT",
-    `OpsCrew builds PHP apps for a hosting account with PHP ${Object.keys(PHP_CLI_IMAGES).join(", ")}; the plan's PHP version is ${version ?? "not set"}.`,
+    `OpsCrew builds PHP apps for a hosting account with PHP ${HOSTING_PHP_VERSIONS.join(", ")}; the plan's PHP version is ${version ?? "not set"}.`,
     {
       hint: `Choose one of these versions for the app, then run \`${provisionCommand(plan)}\` again.`,
     },
@@ -252,6 +253,63 @@ export function releaseBuildJob(plan: DeployPlan, target: HostingDeployTarget): 
   });
 }
 
+/** The step that gets the build's release tar ({@link RELEASE_ARTIFACT}) into the runner's temp folder. */
+export const DOWNLOAD_RELEASE = [
+  `- uses: ${ACTIONS.downloadArtifact}`,
+  "  with:",
+  `    name: ${RELEASE_ARTIFACT}`,
+  "    path: ${{ runner.temp }}",
+];
+
+/**
+ * The app's hostname, for the workflow of an app on `where` (`a hosting account`).
+ * @throws OpsCrewError `INVALID_INPUT` for a promoted environment, as each environment builds its
+ * own release; `INTERNAL` without a hostname.
+ */
+export function hostingDomain(plan: DeployPlan, where: string): string {
+  if (promoted(plan)) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `An app on ${where} cannot be promoted: each environment builds its own release.`,
+      {
+        hint: `Set environment.deploySource to { from: main } in the environment's plan, then run \`${provisionCommand(plan)}\` again.`,
+      },
+    );
+  }
+  const domain = plan.dns.domain;
+  if (domain === undefined) {
+    throw new OpsCrewError(
+      "INTERNAL",
+      `OpsCrew rendered the workflow of an app on ${where} without the app's hostname.`,
+      { hint: "This is a bug in OpsCrew; please report it." },
+    );
+  }
+  return domain;
+}
+
+/**
+ * A hosting workflow's file at `cicd.workflowPath`: its start with the `header` comment lines, on
+ * each push to the deploy branch and by hand, the `paused` job, the build job
+ * ({@link releaseBuildJob}), then `jobs`.
+ */
+export function hostingWorkflowFile(
+  plan: DeployPlan,
+  ctx: Pick<RenderContext, "otherAppDirs">,
+  header: readonly string[],
+  target: HostingDeployTarget,
+  jobs: readonly (readonly string[])[],
+): RenderedFile {
+  const lines = [
+    ...workflowStart(plan, header, pushPaths(plan, [], ctx), DISPATCH_BY_HAND),
+    ...pausedJob(plan),
+    "",
+    ...releaseBuildJob(plan, target),
+    "",
+    ...jobs.flatMap((one) => [...one, ""]),
+  ];
+  return { path: plan.cicd.workflowPath, content: lines.join("\n"), kind: "workflow" };
+}
+
 /**
  * The publish step's script: the release tree from the build's tar goes into an orphan commit
  * through a temporary index (`git add --force`, so the app's `.gitignore` can't drop `vendor/` or
@@ -331,10 +389,11 @@ function waitScript(plan: DeployPlan): string[] {
  * the deploy branch, and by hand. The build job builds the release ({@link buildSteps}) with
  * `contents: read` and keeps it as a tar; the publish job, in the deploy environment and the only
  * one with `contents: write`, signs it and force-pushes it to {@link releaseBranch}
- * ({@link publishScript}); the wait job waits up to 10 minutes for `https://<hostname>/` to
- * answer with the published release's `X-OpsCrew-Release` (`<run id>-<attempt>`), which the agent on the
- * account sets once it has switched to it. While the environment's deploys are paused
- * (ADR 0023), the publish job is skipped and the `paused` job says why.
+ * ({@link publishScript}); the wait job waits up to 10 minutes for the app's health path on the
+ * hostname to answer 2xx or 3xx with the published release's `X-OpsCrew-Release`
+ * (`<run id>-<attempt>`), which the agent on the account sets once it has switched to it. While the
+ * environment's deploys are paused (ADR 0023), the publish job is skipped and the `paused` job says
+ * why.
  * @throws OpsCrewError `INVALID_INPUT` for a promoted environment or a PHP version OpsCrew has no
  * image of; `PHASE_PRECONDITION` for any target but a hosting account with a panel.
  */
@@ -346,26 +405,9 @@ export function renderHostingWorkflow(
   if (!isHostingTarget(target) || target.panel === "sftp") {
     throw wrongTarget("This step only applies to an app on a hosting account with a panel.");
   }
-  if (promoted(plan)) {
-    throw new OpsCrewError(
-      "INVALID_INPUT",
-      "An app on a hosting account cannot be promoted: each environment builds its own release.",
-      {
-        hint: "Set environment.deploySource to { from: main } in the environment's plan, then run `opscrew provision` for it again.",
-      },
-    );
-  }
-  const domain = plan.dns.domain;
-  if (domain === undefined) {
-    throw new OpsCrewError(
-      "INTERNAL",
-      "OpsCrew rendered a hosting account's workflow without the app's hostname.",
-      { hint: "This is a bug in OpsCrew; please report it." },
-    );
-  }
+  const domain = hostingDomain(plan, "a hosting account");
   const env = environmentName(plan);
   const branch = releaseBranch(plan);
-  const build = releaseBuildJob(plan, target);
   const environment = githubEnvironment(plan);
   const publish = job({
     id: "publish",
@@ -376,10 +418,7 @@ export function renderHostingWorkflow(
     permissions: ["contents: write"],
     outputs: ["release: ${{ steps.publish.outputs.release }}"],
     steps: [
-      `- uses: ${ACTIONS.downloadArtifact}`,
-      "  with:",
-      `    name: ${RELEASE_ARTIFACT}`,
-      "    path: ${{ runner.temp }}",
+      ...DOWNLOAD_RELEASE,
       "- id: publish",
       "  name: Sign the release and push it",
       "  env:",
@@ -405,31 +444,21 @@ export function renderHostingWorkflow(
       "  timeout-minutes: 12",
       "  env:",
       // The path the agent's health check asks (R13: the site's root may answer otherwise).
-      `    URL: https://${domain}${plan.app.healthPath.startsWith("/") ? "" : "/"}${plan.app.healthPath}`,
+      `    URL: https://${domain}${healthPath(plan)}`,
       // The release the publish job made, also after "Re-run failed jobs" of this job.
       "    RELEASE: ${{ needs.publish.outputs.release }}",
       ...run(waitScript(plan)),
     ],
   });
-  const lines = [
-    ...workflowStart(
-      plan,
-      [
-        `# Builds the app and publishes each release, signed, on the branch ${branch}. The OpsCrew agent`,
-        "# on the hosting account checks the signature and deploys it; the last job waits for the account",
-        "# to serve it. The signing key is the only secret here: no credential of the account is in GitHub.",
-      ],
-      pushPaths(plan, [], ctx),
-      DISPATCH_BY_HAND,
-    ),
-    ...pausedJob(plan),
-    "",
-    ...build,
-    "",
-    ...publish,
-    "",
-    ...wait,
-    "",
-  ];
-  return { path: plan.cicd.workflowPath, content: lines.join("\n"), kind: "workflow" };
+  return hostingWorkflowFile(
+    plan,
+    ctx,
+    [
+      `# Builds the app and publishes each release, signed, on the branch ${branch}. The OpsCrew agent`,
+      "# on the hosting account checks the signature and deploys it; the last job waits for the account",
+      "# to serve it. The signing key is the only secret here: no credential of the account is in GitHub.",
+    ],
+    target,
+    [publish, wait],
+  );
 }

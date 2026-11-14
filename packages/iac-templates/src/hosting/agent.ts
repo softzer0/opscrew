@@ -35,8 +35,6 @@ export interface AgentSettings {
   releaseCommand?: string;
   /** Paths in each release linked to `shared/`: `.env`, Laravel's `storage` and the plan's kept folders. */
   sharedPaths: readonly string[];
-  /** How many releases are kept besides the running one. */
-  keep: number;
   /** A dump of the database before each release (ADR 0028 D7). */
   snapshots: boolean;
   /** The database's full name, the account's prefix included; absent without one. */
@@ -105,11 +103,6 @@ function problemOf(s: AgentSettings): [field: string, rule: string] | undefined 
       "distinct relative paths without . or ..",
     ],
     [
-      "keep",
-      Number.isInteger(s.keep) && s.keep >= 1 && s.keep <= 10,
-      "a whole number from 1 to 10",
-    ],
-    [
       "database",
       s.database === undefined || DATABASE.test(s.database),
       "a database's name, or absent",
@@ -157,7 +150,6 @@ export function renderAgentSettings(settings: AgentSettings): string {
     ["PHP_HANDLER", settings.phpHandler ?? ""],
     ["RELEASE_COMMAND", settings.releaseCommand ?? ""],
     ["SHARED_PATHS", settings.sharedPaths.join(" ")],
-    ["KEEP", String(settings.keep)],
     ["SNAPSHOTS", settings.snapshots ? "yes" : "no"],
     ["DATABASE", settings.database ?? ""],
     ["RUNTIME_VERSION", settings.runtimeVersion ?? ""],

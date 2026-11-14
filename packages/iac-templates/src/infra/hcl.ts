@@ -1,7 +1,9 @@
 import type { ProviderRequirement } from "@opscrew/contracts";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { AppEnvironment } from "../runtime-dir";
+import type { RenderedFile } from "../types";
 import { planFilePath } from "../workflow/shared";
+import { MODULE_FILES } from "./modules";
 
 /** The folder `name` beside `plan.infra.dir` (in its parent folder), with forward slashes. */
 export function besideInfraDir(plan: Pick<DeployPlan, "infra">, name: string): string {
@@ -114,6 +116,35 @@ export interface RootFiles {
   tfvars: Record<string, unknown>;
   /** Vendored module directories the root uses. */
   modules: readonly string[];
+}
+
+/**
+ * The files of `root` in `plan.infra.dir`, then the vendored modules it uses in the `modules`
+ * folder beside it.
+ */
+export function rootModuleFiles(plan: Pick<DeployPlan, "infra">, root: RootFiles): RenderedFile[] {
+  const dir = plan.infra.dir.replace(/\\/g, "/").replace(/\/+$/, "");
+  const modulesDir = besideInfraDir(plan, "modules");
+  const files: RenderedFile[] = [
+    { path: `${dir}/versions.tf`, content: root.versions, kind: "infra" },
+    { path: `${dir}/main.tf`, content: root.main, kind: "infra" },
+    { path: `${dir}/variables.tf`, content: root.variables, kind: "infra" },
+    { path: `${dir}/outputs.tf`, content: root.outputs, kind: "infra" },
+    {
+      path: `${dir}/terraform.tfvars.json`,
+      content: `${JSON.stringify(root.tfvars, null, 2)}\n`,
+      kind: "infra",
+    },
+  ];
+  for (const [path, content] of Object.entries(MODULE_FILES).sort(([a], [b]) =>
+    a.localeCompare(b),
+  )) {
+    // A module's own files only: the GitHub Pages mode of `cloudflare-dns` is a folder inside it.
+    if (root.modules.includes(path.slice(0, path.lastIndexOf("/")))) {
+      files.push({ path: `${modulesDir}/${path}`, content, kind: "infra" });
+    }
+  }
+  return files;
 }
 
 /**

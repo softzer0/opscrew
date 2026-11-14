@@ -1,9 +1,21 @@
-import { BASELINE_HEADERS, HSTS } from "../../runtime/services";
-
-/** The security headers of OpsCrew's `.htaccess` block (FR-1442's), as `printf` arguments. */
-const HEADER_LINES = BASELINE_HEADERS.map(
-  ([name, value]) => `'Header always set ${name} "${value}"'`,
-).join(" ");
+import { shellQuote } from "../../runtime/services";
+import {
+  FALLBACK,
+  HEADER_OF,
+  HOSTING_KEEP,
+  HSTS_LINE,
+  HTACCESS_RULES,
+  healthCheck,
+  NEWER,
+  NEWEST_FIRST,
+  ONE_LINE,
+  PACKAGES_REFUSED,
+  PHP_MODULES,
+  printLines,
+  REVALIDATE_PATH,
+  REWRITE_RULE,
+  STATUS_LINES,
+} from "../shell";
 
 /**
  * The agent (027 plan 3, ADR 0030): a bash script, the same for every app, that cron runs every
@@ -98,10 +110,7 @@ fail() {
   exit 1
 }
 
-# $1 on one line: carriage returns and newlines become spaces.
-line_of() {
-  printf '%s' "$1" | tr '\\r\\n' '  '
-}
+${ONE_LINE}
 
 # Writes standard input to the file $1 through a temporary file beside it, renamed over it only
 # when the whole input was written; fails otherwise, leaving $1 as it was.
@@ -175,7 +184,7 @@ first_run() {
       [ -x "$bin" ] || continue
       n=$((n + 1))
       printf 'php.%s.path=%s\\n' "$n" "$bin"
-      printf 'php.%s.version=%s\\n' "$n" "$(line_of "$("$bin" -v 2>&1 | head -n 1)")"
+      printf 'php.%s.version=%s\\n' "$n" "$(one_line "$("$bin" -v 2>&1 | head -n 1)")"
       printf 'php.%s.modules=%s\\n' "$n" "$("$bin" -m 2>/dev/null | tr -d '\\r' | grep -v -e '^\\[' -e '^$' | paste -s -d , -)"
     done
     for tool in git openssl flock mysqldump tar curl ssh ssh-keygen; do
@@ -194,38 +203,25 @@ running_id() {
   case $target in releases/*) printf '%s' "\${target#releases/}" ;; esac
 }
 
-# The releases kept, newest first: <run id>-<attempt> folders, by run id then attempt.
-releases_newest_first() {
-  ls releases | grep -E '^[1-9][0-9]*-[1-9][0-9]*$' | sort -t - -k 1,1nr -k 2,2nr || true
-}
+${NEWEST_FIRST}
 
-# True when release $1 is newer than release $2; any release is newer than none.
-newer() {
-  [ -n "$2" ] || return 0
-  local r1=\${1%-*} a1=\${1#*-} r2=\${2%-*} a2=\${2#*-}
-  ((10#$r1 > 10#$r2 || (10#$r1 == 10#$r2 && 10#$a1 > 10#$a2)))
-}
+${NEWER}
 
-# Writes state/status: the running release, the one before it (rollback's default), the others
-# kept, and the last attempt (its release, its result, deployed, refused or failed, its reason and
-# when). Without arguments the last attempt stays as it was.
+${STATUS_LINES}
+
+# Writes state/status (status_lines) for the running release and the attempt $1, its result $2
+# and its reason $3, at the time now. Without arguments the last attempt stays as it was.
 write_status() {
-  local running previous="" kept="" id attempt result reason at
+  local running attempt result reason at
   if [ $# -gt 0 ]; then
-    attempt=$1 result=$2 reason=$(line_of "$3") at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    attempt=$1 result=$2 reason=$3 at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   else
     attempt=$(value_of state/status attempt) result=$(value_of state/status result)
     reason=$(value_of state/status reason) at=$(value_of state/status at)
   fi
   running=$(running_id)
   [ "$running" != 0-0 ] || running=""
-  for id in $(releases_newest_first); do
-    [ "$id" != "$running" ] || continue
-    kept=\${kept:+$kept,}$id
-    if [ -z "$previous" ] && [ -n "$running" ] && newer "$running" "$id"; then previous=$id; fi
-  done
-  printf 'running=%s\\nprevious=%s\\nkept=%s\\nattempt=%s\\nresult=%s\\nreason=%s\\nat=%s\\n' \\
-    "$running" "$previous" "$kept" "$attempt" "$result" "$reason" "$at" | put state/status
+  status_lines "$running" "$attempt" "$result" "$reason" "$at" $(ls releases | newest_first) | put state/status
 }
 
 # The address the agent asks the hostname on: HTTPS once its certificate verifies, HTTP before.
@@ -239,10 +235,7 @@ fetch() {
   curl -sS -o /dev/null -D - --max-time 30 "$1"
 }
 
-# The value of header $2 in the answer $1, without its carriage return.
-header_of() {
-  printf '%s\\n' "$1" | tr -d '\\r' | sed -n "s/^$2:[[:space:]]*//Ip" | tail -n 1
-}
+${HEADER_OF}
 
 # OpsCrew's .htaccess block for release $1 (plan 5): every other hostname refused, HTTPS forced
 # once the certificate verifies, no listings, dotfiles refused (and with the web root ".", the
@@ -258,29 +251,21 @@ htaccess_block() {
   if [ -f state/https ]; then
     printf '%s\\n' 'RewriteCond %{HTTPS} !=on' "RewriteRule ^ https://$HOST_NAME%{REQUEST_URI} [R=301,L]"
   fi
-  if [ "$WEB_ROOT" = . ]; then
-    printf '%s\\n' 'RewriteRule ^(vendor|storage|composer\\.json|composer\\.lock)(/|$) - [F]'
-  fi
-  printf '%s\\n' 'Options -Indexes' '<FilesMatch "^\\.">' 'Require all denied' '</FilesMatch>' \\
-    ${HEADER_LINES}
-  if [ -f state/https ]; then
-    printf '%s\\n' 'Header always set Strict-Transport-Security "${HSTS}"'
-  fi
+  if [ "$WEB_ROOT" = . ]; then ${printLines([PACKAGES_REFUSED])}; fi
+  ${printLines(HTACCESS_RULES)}
+  if [ -f state/https ]; then ${printLines([HSTS_LINE])}; fi
   printf 'Header always set X-OpsCrew-Release "%s"\\n' "$1"
   if [ -n "$PHP_HANDLER" ]; then printf 'AddHandler %s .php\\n' "$PHP_HANDLER"; fi
   if [ "$APP_KIND" = php ]; then
-    for module in LiteSpeed lsapi_module php_module; do
-      printf '<IfModule %s>\\nphp_flag opcache.revalidate_path on\\n' "$module"
+    for module in ${PHP_MODULES.join(" ")}; do
+      printf '%s\\n' "<IfModule $module>" ${shellQuote(REVALIDATE_PATH.htaccess)}
       if [ -f shared/env.php ]; then
         printf 'php_value auto_prepend_file "%s"\\n' "$DIR/shared/env.php"
       fi
       printf '%s\\n' '</IfModule>'
     done
   fi
-  if fallback_needed "$1"; then
-    printf '%s\\n' 'RewriteCond %{REQUEST_FILENAME} !-f' 'RewriteCond %{REQUEST_FILENAME} !-d' \\
-      'RewriteRule ^ index.php [L]'
-  fi
+  if fallback_needed "$1"; then ${printLines(FALLBACK)}; fi
   printf '%s\\n' '# END OpsCrew'
 }
 
@@ -288,7 +273,7 @@ htaccess_block() {
 # folder has index.php, and the app's own .htaccess there has no RewriteRule outside comments.
 # The app's own is the whole file until compose has run, then its part between the markers.
 fallback_needed() {
-  local file="releases/$1/$WEB_ROOT/.htaccess" rule='^[[:space:]]*RewriteRule([[:space:]]|$)'
+  local file="releases/$1/$WEB_ROOT/.htaccess" rule=${shellQuote(REWRITE_RULE)}
   [ -f "releases/$1/$WEB_ROOT/index.php" ] || return 1
   [ -f "$file" ] || return 0
   if grep -qxF '# BEGIN OpsCrew' "$file"; then
@@ -305,7 +290,7 @@ fallback_needed() {
 # reaches each PHP process once its path cache (realpath_cache_ttl, 120 s) expires (research R16).
 user_ini_block() {
   [ "$APP_KIND" = php ] || return 0
-  printf '%s\\n' '; BEGIN OpsCrew' 'opcache.revalidate_path = 1'
+  printf '%s\\n' '; BEGIN OpsCrew' ${shellQuote(REVALIDATE_PATH.userIni)}
   if [ -f shared/env.php ]; then printf 'auto_prepend_file = "%s"\\n' "$DIR/shared/env.php"; fi
   printf '%s\\n' '; END OpsCrew'
 }
@@ -483,7 +468,7 @@ selector() {
   shift
   if [ "$APP_KIND" = python ]; then interpreter=python; fi
   SELECTOR_SAID=$(cloudlinux-selector "$command" --json --interpreter "$interpreter" "$@" 2>&1) || code=$?
-  SELECTOR_SAID=$(line_of "$SELECTOR_SAID")
+  SELECTOR_SAID=$(one_line "$SELECTOR_SAID")
   [ "$code" -eq 0 ] && [[ $SELECTOR_SAID =~ $success ]]
 }
 
@@ -506,21 +491,30 @@ app_packages() {
   done
 }
 
+# True when folder $1 has the app's package files (its first, package.json or requirements.txt)
+# and they differ from folder $2's: one is in only one of the two, or they aren't the same.
+packages_differ() {
+  local files file
+  files=$(package_files)
+  [ -n "$files" ] && [ -e "$1/\${files%% *}" ] || return 1
+  for file in $files; do
+    if [ -e "$1/$file" ] || [ -e "$2/$file" ]; then
+      cmp -s "$1/$file" "$2/$file" || return 0
+    fi
+  done
+  return 1
+}
+
 # When app/ holds package files other than the running release's, a run stopped while the selector
 # installed another release's packages, which the environment may hold: the selector installs the
 # running release's again (with its files back in app/).
 running_packages() {
-  local running files file
+  local running
   running=$(running_id)
-  files=$(package_files)
-  if [ ! -d app ] || [ -z "$running" ] || [ ! -e "releases/$running/\${files%% *}" ]; then return 0; fi
-  for file in $files; do
-    if { [ -e "releases/$running/$file" ] || [ -e "app/$file" ]; } && ! cmp -s "releases/$running/$file" "app/$file"; then
-      say "app/ holds another release's package files, left by a run that stopped while installing them: CloudLinux's selector installs release $running's again."
-      selector_install "$running" || say "Installing release $running's packages again failed ($SELECTOR_SAID), so the app's environment may still hold another release's."
-      return 0
-    fi
-  done
+  if [ -d app ] && [ -n "$running" ] && packages_differ "releases/$running" app; then
+    say "app/ holds another release's package files, left by a run that stopped while installing them: CloudLinux's selector installs release $running's again."
+    selector_install "$running" || say "Installing release $running's packages again failed ($SELECTOR_SAID), so the app's environment may still hold another release's."
+  fi
 }
 
 # CloudLinux's selector's install-modules for the app's root, the options after it. An error that
@@ -551,15 +545,7 @@ selector_install() {
 # selector installs them into the app's one environment, which the running release shares
 # (INSTALLED names the release then). INSTALL_SAID says what failed.
 install_modules() {
-  local release=releases/$1 files file changed=""
-  files=$(package_files)
-  [ -n "$files" ] || return 0
-  for file in $files; do
-    if [ -e "$release/$file" ] || [ -e "current/$file" ]; then
-      cmp -s "$release/$file" "current/$file" || changed=yes
-    fi
-  done
-  if [ -z "$changed" ] || [ ! -e "$release/\${files%% *}" ]; then return 0; fi
+  packages_differ "releases/$1" current || return 0
   say "Release $1's packages changed: CloudLinux's selector installs them before the switch."
   if selector_install "$1"; then
     INSTALLED=$1
@@ -569,16 +555,16 @@ install_modules() {
   return 1
 }
 
-# After an attempt whose packages were installed (INSTALLED) didn't become the running release:
-# the selector installs the running release's again. REINSTALL_SAID says when that failed.
+# After an attempt whose packages were installed (INSTALLED, so app/ holds its package files) didn't
+# become the running release: the selector installs the running release's again. REINSTALL_SAID
+# says when that failed.
 reinstall_running() {
-  local running files
+  local running
   REINSTALL_SAID=""
   [ -n "\${INSTALLED:-}" ] || return 0
   INSTALLED=""
   running=$(running_id)
-  files=$(package_files)
-  if [ -z "$running" ] || [ ! -e "releases/$running/\${files%% *}" ]; then return 0; fi
+  [ -n "$running" ] && packages_differ "releases/$running" app || return 0
   say "CloudLinux's selector installs release $running's packages again."
   if ! selector_install "$running"; then
     REINSTALL_SAID="; installing release $running's packages again failed too (\${SELECTOR_SAID:-no answer}), so the app's environment may hold the failed release's"
@@ -595,37 +581,14 @@ purge() {
   rm -f "current/$WEB_ROOT/$name"
 }
 
-# Step 8: makes release $1, just switched to, serve.
+# Step 8: makes the release just switched to serve.
 serve() {
-  restart "$1"
+  restart
   if [ "$APP_KIND" = php ]; then purge; fi
 }
 
-# Step 9: asks the hostname for the health path every 5 seconds, for up to 135 seconds, until it
-# answers 2xx or 3xx with release $1. The first such answer counts behind LiteSpeed, whose restart
-# makes every PHP process follow at once, and for any app but a PHP app; elsewhere a PHP app's
-# counts only from try 27, 130 seconds after the switch, as PHP may run the release before until
-# its path cache expires (120 s, user_ini_block; research R16). CHECK_SAID holds the last answer.
-health_check() {
-  local try answer code release
-  CHECK_SAID="no answer"
-  for ((try = 1; try <= 28; try++)); do
-    if [ "$try" -gt 1 ]; then sleep 5; fi
-    if answer=$(fetch "$(site_url)$HEALTH_PATH" 2>&1); then
-      code=$(printf '%s\\n' "$answer" | head -n 1 | cut -d ' ' -f 2)
-      release=$(header_of "$answer" X-OpsCrew-Release)
-      CHECK_SAID="it answered $code with release \${release:-none}"
-      if [[ $code =~ ^[23][0-9][0-9]$ ]] && [ "$release" = "$1" ]; then
-        if [ "$APP_KIND" != php ]; then return 0; fi
-        case $(header_of "$answer" Server) in LiteSpeed*) return 0 ;; esac
-        if [ "$try" -ge 27 ]; then return 0; fi
-      fi
-    else
-      CHECK_SAID=$(line_of "$answer")
-    fi
-  done
-  return 1
-}
+# Step 9, on the hostname (user_ini_block turns opcache.revalidate_path on):
+${healthCheck('"$(site_url)$HEALTH_PATH"', '[ "$APP_KIND" = php ]')}
 
 # Dumps the app's database into file $1 (gzip), 0600; fails without leaving a partial file.
 dump() {
@@ -687,7 +650,7 @@ switch_back() {
   if [ -n "$BEFORE" ]; then
     switch_to "$BEFORE"
     reinstall_running
-    serve "$BEFORE"
+    serve
   else
     rm -f current
   fi
@@ -721,7 +684,7 @@ deploy() {
     return 0
   fi
   switch_to "$id"
-  serve "$id"
+  serve
   if health_check "$id"; then
     ATTEMPT=""
     prune
@@ -744,7 +707,7 @@ deploy() {
 # after, so the next failure's lines aren't mixed with these. Its content is never logged: it may
 # hold the app's secrets.
 keep_stderr() {
-  local file from
+  local id from
   STDERR_SAID=""
   case $APP_KIND in node | python) ;; *) return 0 ;; esac
   if [ -s app/stderr.log ]; then
@@ -757,8 +720,8 @@ keep_stderr() {
   (umask 077 && tail -n 100 "$from" > "state/$1.stderr.log")
   if [ "$from" = app/stderr.log ]; then { : > app/stderr.log; } 2> /dev/null || true; fi
   STDERR_SAID="; the app's own errors are in ~/opscrew/$APP-$ENVIRONMENT/state/$1.stderr.log"
-  for file in $(ls state | grep -E '^[1-9][0-9]*-[1-9][0-9]*\\.stderr\\.log$' | sort -t - -k 1,1nr -k 2,2nr | tail -n +4 || true); do
-    rm -f "state/$file"
+  for id in $(ls state | sed -n 's/\\.stderr\\.log$//p' | newest_first | tail -n +4); do
+    rm -f "state/$id.stderr.log"
   done
 }
 
@@ -819,7 +782,7 @@ new_release() {
       return 0
     fi
   done
-  fail "GitHub can't be reached over SSH on port 22 or 443: $(line_of "$(cat state/ls-remote.err)")"
+  fail "GitHub can't be reached over SSH on port 22 or 443: $(one_line "$(cat state/ls-remote.err)")"
 }
 
 # Forces HTTPS once curl verifies the hostname's certificate: later releases get the redirect, and
@@ -839,15 +802,15 @@ https_check() {
   } | put "$served"
 }
 
-# Step 10: keeps the KEEP newest releases besides the running one, and the dumps filed under a
-# release still kept; a request's snapshots stay.
+# Step 10: keeps the ${HOSTING_KEEP} newest releases besides the running one, and the dumps filed
+# under a release still kept; a request's snapshots stay.
 prune() {
   local running id kept=0 file
   running=$(running_id)
-  for id in $(releases_newest_first); do
+  for id in $(ls releases | newest_first); do
     [ "$id" != "$running" ] || continue
     kept=$((kept + 1))
-    if [ "$kept" -gt "$KEEP" ]; then rm -rf "releases/$id"; fi
+    if [ "$kept" -gt ${HOSTING_KEEP} ]; then rm -rf "releases/$id"; fi
   done
   if [ "$running" != 0-0 ]; then rm -rf releases/0-0; fi
   for file in dumps/*.sql.gz; do
@@ -864,7 +827,7 @@ answer() {
   shift 3
   {
     printf 'result=%s\\n' "$result"
-    if [ -n "$reason" ]; then printf 'reason=%s\\n' "$(line_of "$reason")"; fi
+    if [ -n "$reason" ]; then printf 'reason=%s\\n' "$(one_line "$reason")"; fi
     if [ $# -gt 0 ]; then printf '%s\\n' "$@"; fi
   } | put "state/$name.result"
   say "Request $name: $result\${reason:+: $reason}."
@@ -984,7 +947,7 @@ do_rollback() {
   fi
   carry "$target"
   switch_to "$target"
-  serve "$target"
+  serve
   write_status
   if health_check "$target"; then
     answer "$name" done ""
@@ -1014,7 +977,7 @@ do_env() {
     answer "$name" failed "the settings changed, but CloudLinux's selector refused them, so the app's environment still holds the earlier ones (the app's own file has the new ones)"
     return 0
   fi
-  restart "$(running_id)"
+  restart
   answer "$name" done ""
 }
 
