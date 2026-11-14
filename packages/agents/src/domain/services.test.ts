@@ -69,16 +69,16 @@ const registration = {
 describe("domainZonesFrom", () => {
   it("makes the zone calls with the given client's token only (another account's)", async () => {
     const tokenB = fakeSecret("cloudflare-token", "account-b");
+    const zoneB = {
+      id: "zb",
+      name: "shopapp.com",
+      status: "pending",
+      name_servers: ["kim.ns.cloudflare.com"],
+    };
     const api = fakeApi({
-      "GET /zones?name=shopapp.com&per_page=1": ok([
-        {
-          id: "zb",
-          name: "shopapp.com",
-          status: "pending",
-          name_servers: ["kim.ns.cloudflare.com"],
-        },
-      ]),
-      "GET /zones?name=app.shopapp.com&per_page=1": ok([]),
+      "GET /zones?name=shopapp.com&page=1&per_page=50": ok([zoneB]),
+      // Cloudflare answering with the parent zone for the subdomain's name
+      "GET /zones?name=app.shopapp.com&page=1&per_page=50": ok([zoneB]),
       "GET /zones/zb/dns_records?page=1&per_page=100": ok([
         { id: "r1", type: "TXT", name: "shopapp.com", content: '"v=spf1 -all"', ttl: 1 },
       ]),

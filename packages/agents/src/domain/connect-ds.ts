@@ -175,7 +175,9 @@ async function removeDsRecords(
  * when the nameservers may switch: the wait after the public DNS's copy expires, plus an hour. A
  * note is written before the first removal, so an interrupted run still waits. The caller asks
  * for the approval first. Stops before any change when the API cannot remove them. Returns the
- * note written.
+ * note written. DS records only the public DNS shows (the API does not list them) are the
+ * caller's to handle, as `domain connect` does: removed in the registrar's dashboard before
+ * anything changes, or, after a removal, a later switch time while the public DNS still shows them.
  */
 export async function removeDsAndWait(
   ctx: DsRemovalContext,
@@ -212,16 +214,39 @@ export async function removeDsAndWait(
 }
 
 /**
- * The wait `stateFile`'s note says (see `removeDsAndWait`) at `now`; undefined when there is no
- * note. An unreadable note stops (see `readConnectState`).
+ * Starts the noted wait at `now` for old DS records a run sees gone (they were seen, or removed by
+ * a run interrupted before it noted the switch time): resolvers may hold them for the whole wait
+ * from now on. Writes the note and returns the switch time (never earlier than noted).
+ */
+export async function startDsWait(
+  stateFile: string,
+  state: ConnectState,
+  now: Date,
+): Promise<string> {
+  const switchAfter = laterSwitch(state, now.getTime() + state.waitSeconds * 1000);
+  await writeConnectState(stateFile, { ...state, dsSeen: undefined, switchAfter });
+  return switchAfter;
+}
+
+/**
+ * The wait `stateFile`'s note says (see `removeDsAndWait`) at `now`, given the DS records read
+ * now (`readDs`); undefined when there is no note. A note that saw old DS records but holds no
+ * switch time (a removal interrupted before it noted one) starts its wait once the registrar's
+ * API lists none (`startDsWait`, the note is updated); while the API still lists one, it waits
+ * without a time. An unreadable note stops (see `readConnectState`).
  */
 export async function dsWaitStatus(
   stateFile: string,
   now: Date,
+  ds: DsReading,
 ): Promise<DsWaitStatus | undefined> {
   const state = await readConnectState(stateFile);
   if (state === undefined) return undefined;
-  const { switchAfter, waitSeconds } = state;
-  if (switchAfter === undefined) return { waiting: true, waitSeconds };
+  const { waitSeconds } = state;
+  let { switchAfter } = state;
+  if (state.dsSeen !== undefined || switchAfter === undefined) {
+    if ((ds.api ?? []).length > 0) return { waiting: true, waitSeconds };
+    switchAfter = await startDsWait(stateFile, state, now);
+  }
   return { waiting: now.getTime() < Date.parse(switchAfter), switchAfter, waitSeconds };
 }

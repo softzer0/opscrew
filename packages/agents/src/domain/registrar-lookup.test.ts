@@ -98,6 +98,26 @@ describe("findDomainRegistrar", () => {
     expect(await find()).toEqual({ kind: "cloudflare" });
   });
 
+  it("passes a Cloudflare Registrar failure to the caller with its code and hint, without the token", async () => {
+    const { deps, find } = await lookup((cp) => {
+      cp.other("porkbun");
+      cp.project.cf.failures.getDomain = () =>
+        new OpsCrewError("CREDENTIALS_INVALID", `Cloudflare refused the token ${TOKEN}.`, {
+          hint: "Give the token Account → Registrar: Read, then try again.",
+        });
+    });
+
+    const error = await caught(find());
+
+    expect(error.code).toBe("CREDENTIALS_INVALID");
+    expect(error.message).toContain(
+      `OpsCrew could not check whether Cloudflare Registrar holds ${DOMAIN} in the account acc-1`,
+    );
+    expect(error.message).toMatch(/Nothing was changed\.$/);
+    expect(error.hint).toBe("Give the token Account → Registrar: Read, then try again.");
+    noLeak(deps, error);
+  });
+
   it("stops when two registrar accounts both hold the domain", async () => {
     const { find } = await lookup((cp) => {
       cp.other("porkbun").own(DOMAIN);

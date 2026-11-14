@@ -62,8 +62,8 @@ describe("readDs", () => {
 describe("removeDsAndWait and dsWaitStatus", () => {
   it("removes the listed DS records, notes the wait in the given file and audits each removal", async () => {
     const { cp, pb, deps, registrar, stateFile } = await porkbunWithDs();
-    expect(await dsWaitStatus(stateFile, new Date(RUN_NOW))).toBeUndefined();
     const ds = await readDs({ deps, domain: DOMAIN, registrar });
+    expect(await dsWaitStatus(stateFile, new Date(RUN_NOW), ds)).toBeUndefined();
 
     const note = await removeDsAndWait(
       {
@@ -97,12 +97,15 @@ describe("removeDsAndWait and dsWaitStatus", () => {
       ],
     ]);
 
-    expect(await dsWaitStatus(stateFile, new Date("2026-10-12T13:59:59.000Z"))).toEqual({
+    const after = await readDs({ deps, domain: DOMAIN, registrar });
+    expect(await dsWaitStatus(stateFile, new Date("2026-10-12T13:59:59.000Z"), after)).toEqual({
       waiting: true,
       switchAfter: "2026-10-12T14:00:00.000Z",
       waitSeconds: 86400,
     });
-    expect(await dsWaitStatus(stateFile, new Date("2026-10-12T14:00:00.000Z"))).toMatchObject({
+    expect(
+      await dsWaitStatus(stateFile, new Date("2026-10-12T14:00:00.000Z"), after),
+    ).toMatchObject({
       waiting: false,
     });
     expect(visibleText(deps)).not.toContain(TOKEN);
@@ -153,24 +156,74 @@ describe("removeDsAndWait and dsWaitStatus", () => {
     );
     expect(error.hint).toContain("key tag 4012");
     expect(cp.project.cf.events.some((e) => e.includes("removeDsRecord"))).toBe(false);
-    expect(await dsWaitStatus(stateFile, new Date(RUN_NOW))).toBeUndefined();
+    expect(await dsWaitStatus(stateFile, new Date(RUN_NOW), ds)).toBeUndefined();
     expect(deps.audit.entries).toEqual([]);
   });
 
-  it("waits while a note has seen old records but noted no switch time, and stops on an unreadable note", async () => {
-    const { stateFile } = await porkbunWithDs();
-    await mkdir(dirname(stateFile), { recursive: true });
-    await writeFile(
-      stateFile,
-      JSON.stringify({ domain: DOMAIN, registrar: "porkbun", dsSeen: RUN_NOW, waitSeconds: 86400 }),
-    );
-    expect(await dsWaitStatus(stateFile, new Date("2030-01-01T00:00:00.000Z"))).toEqual({
+  it("starts the wait once the API lists no DS record after an interrupted removal, and only once", async () => {
+    const { pb, deps, registrar, stateFile } = await porkbunWithDs();
+    const ds = await readDs({ deps, domain: DOMAIN, registrar });
+    // The removal goes through, then the run is interrupted before it notes the switch time.
+    const remove = registrar.removeDsRecord?.bind(registrar);
+    const interrupted: Registrar = {
+      ...registrar,
+      removeDsRecord: async (domain, keyTag) => {
+        await remove?.(domain, keyTag);
+        throw new Error("connection reset");
+      },
+    };
+    await expect(
+      removeDsAndWait(
+        {
+          deps,
+          domain: DOMAIN,
+          registrarId: "porkbun",
+          registrar: interrupted,
+          state: undefined,
+          ds,
+          zoneId: ZONE,
+        },
+        stateFile,
+      ),
+    ).rejects.toThrow("connection reset");
+    expect(pb.dsRecords.get(DOMAIN)).toEqual([]);
+    expect(JSON.parse(await readFile(stateFile, "utf8"))).toMatchObject({ dsSeen: RUN_NOW });
+
+    // While the API still lists a DS record, the wait has not started.
+    pb.dsRecords.set(DOMAIN, [{ ...OLD_DS }]);
+    const listed = await readDs({ deps, domain: DOMAIN, registrar });
+    expect(await dsWaitStatus(stateFile, new Date("2026-10-11T13:00:00.000Z"), listed)).toEqual({
       waiting: true,
       waitSeconds: 86400,
     });
+    expect(JSON.parse(await readFile(stateFile, "utf8"))).toMatchObject({ dsSeen: RUN_NOW });
 
+    // The next run finds none listed: the wait starts then, and the note keeps that time.
+    pb.dsRecords.set(DOMAIN, []);
+    const gone = await readDs({ deps, domain: DOMAIN, registrar });
+    const started = { waiting: true, switchAfter: "2026-10-12T14:00:00.000Z", waitSeconds: 86400 };
+    expect(await dsWaitStatus(stateFile, new Date("2026-10-11T14:00:00.000Z"), gone)).toEqual(
+      started,
+    );
+    const note = JSON.parse(await readFile(stateFile, "utf8"));
+    expect(note.dsSeen).toBeUndefined();
+    expect(note.switchAfter).toBe(started.switchAfter);
+    expect(await dsWaitStatus(stateFile, new Date("2026-10-12T10:00:00.000Z"), gone)).toEqual(
+      started,
+    );
+    expect(await dsWaitStatus(stateFile, new Date("2026-10-12T14:00:00.000Z"), gone)).toMatchObject(
+      { waiting: false },
+    );
+  });
+
+  it("stops on an unreadable note", async () => {
+    const { deps, registrar, stateFile } = await porkbunWithDs();
+    const ds = await readDs({ deps, domain: DOMAIN, registrar });
+    await mkdir(dirname(stateFile), { recursive: true });
     await writeFile(stateFile, "{");
-    const error = await caught(dsWaitStatus(stateFile, new Date(RUN_NOW)));
+
+    const error = await caught(dsWaitStatus(stateFile, new Date(RUN_NOW), ds));
+
     expect(error.code).toBe("PHASE_PRECONDITION");
   });
 });

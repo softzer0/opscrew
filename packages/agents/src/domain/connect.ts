@@ -22,6 +22,7 @@ import {
   readDs,
   removeDsAndWait,
   seenState,
+  startDsWait,
   switchAfterRemoval,
   unionDs,
   waitFor,
@@ -38,7 +39,6 @@ import {
 import {
   type ConnectState,
   connectStatePath,
-  laterSwitch,
   readConnectState,
   removeConnectState,
   writeConnectState,
@@ -459,8 +459,7 @@ async function waitForOldDs(
   let switchAfter = state.switchAfter;
   if (state.dsSeen !== undefined || switchAfter === undefined) {
     // Gone since the last run: resolvers may hold them for the whole wait from now on.
-    switchAfter = laterSwitch(state, now.getTime() + state.waitSeconds * 1000);
-    await writeConnectState(ctx.stateFile, { ...state, dsSeen: undefined, switchAfter });
+    switchAfter = await startDsWait(ctx.stateFile, state, now);
     deps.reporter.info(
       `The old DNSSEC (DS) records of ${domain} are gone from the registry and the public DNS.`,
     );

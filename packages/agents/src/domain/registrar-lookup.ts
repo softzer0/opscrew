@@ -1,5 +1,5 @@
 import type { Registrar } from "@opscrew/contracts";
-import { listText, OpsCrewError } from "@opscrew/core";
+import { type ErrorCode, isUserFacingError, listText, OpsCrewError } from "@opscrew/core";
 import type { PhaseDeps } from "../context";
 import { errorText } from "./common";
 import { type OtherRegistrarId, REGISTRAR_NAMES } from "./registrars";
@@ -64,11 +64,39 @@ export async function askRegistrars(
 }
 
 /**
+ * Whether Cloudflare Registrar holds `domain` in the account. A failed read stops the run with the
+ * cause's code and hint, made safe to show.
+ */
+async function cloudflareHolds(
+  deps: PhaseDeps,
+  services: Pick<ResolvedDomainServices, "registrar">,
+  domain: string,
+  accountId: string,
+): Promise<boolean> {
+  try {
+    return (await services.registrar(accountId).getDomain(domain)) !== undefined;
+  } catch (error) {
+    const known = isUserFacingError(error);
+    throw new OpsCrewError(
+      known ? (error.code as ErrorCode) : "PROVIDER_ERROR",
+      `OpsCrew could not check whether Cloudflare Registrar holds ${domain} in the account ${accountId}: ${errorText(deps, error)}. Nothing was changed.`,
+      {
+        hint:
+          known && error.hint
+            ? deps.redactor.redact(error.hint)
+            : "Check the Cloudflare token and the internet connection, then run the command again.",
+        cause: error,
+      },
+    );
+  }
+}
+
+/**
  * Where `domain` is registered: the one configured Porkbun, Namecheap or GoDaddy account that
  * holds it (`api`); else Cloudflare Registrar in `cloudflareAccount` (an account id); else another
  * registrar (`other`). Not finding it is never an error; a registrar account that cannot be
- * checked (when Cloudflare does not hold the domain either), or two accounts that both hold it,
- * stop the run before any change.
+ * checked (when Cloudflare does not hold the domain either), two accounts that both hold it, or a
+ * failed Cloudflare Registrar read stop the run before any change.
  */
 export async function findDomainRegistrar(
   deps: PhaseDeps,
@@ -94,7 +122,7 @@ export async function findDomainRegistrar(
       },
     );
   }
-  if ((await services.registrar(cloudflareAccount).getDomain(domain)) !== undefined) {
+  if (await cloudflareHolds(deps, services, domain, cloudflareAccount)) {
     return { kind: "cloudflare" };
   }
   const failed = answers.flatMap((a) =>
