@@ -233,6 +233,11 @@ export interface SharedFacts {
   };
   /** The token permissions a TLS read was refused for (HTTP 403), as the token builder names them. */
   deniedTls?: string[];
+  /**
+   * The zone is pending (its nameservers not switched yet): Cloudflare deploys origin pull
+   * settings only once it is active, so one still `pending_deployment` counts as on.
+   */
+  pendingZone?: true;
 }
 
 export interface SharedDesired {
@@ -507,6 +512,8 @@ export async function inspectShared(
     tls?: { proxied: readonly string[]; record: SharedRecord | undefined };
     /** Read what the decision on the zone's minimum TLS needs (`desired.minTls`). */
     minTls?: boolean;
+    /** The zone is pending, as the caller read it (`SharedFacts.pendingZone`). */
+    pendingZone?: boolean;
     /** Default: this computer's clock. */
     clock?: Clock;
   },
@@ -526,6 +533,7 @@ export async function inspectShared(
     accountId: opts.accountId,
     ...(zonePlan ? { zonePlan } : {}),
     entrypoints,
+    ...(opts.pendingZone ? { pendingZone: true } : {}),
   };
   if (deniedPhases.length > 0) facts.deniedPhases = deniedPhases;
   const denied: string[] = [];
@@ -740,7 +748,9 @@ function planTls(facts: SharedFacts, want: DesiredTls, previous: TlsRecord | und
   }
   const uploading = changes.length > 0;
   if (sha256 !== undefined) {
-    const enable = pulled.filter((h) => uploading || !isOn(read.aop, h, client?.id));
+    const enable = pulled.filter(
+      (h) => uploading || !isOn(read.aop, h, client?.id, facts.pendingZone === true),
+    );
     if (enable.length > 0) {
       changes.push({ kind: "enable-client-certificate", hostnames: enable, sha256 });
     }
@@ -820,11 +830,21 @@ function heldBy(settings: readonly HostnameAop[], hostname: string): string | un
   return setting?.enabled === true ? setting.certId : undefined;
 }
 
-/** True when the hostname's origin pull setting is on and active with the certificate `certId`. */
-function isOn(settings: readonly HostnameAop[], hostname: string, certId: string | undefined) {
-  const setting = settings.find((s) => s.hostname === hostname);
+/**
+ * True when the hostname's origin pull setting is on and active with the certificate `certId`
+ * (or, with `deploying`, still `pending_deployment`: on a pending zone).
+ */
+function isOn(
+  settings: readonly HostnameAop[],
+  hostname: string,
+  certId: string | undefined,
+  deploying = false,
+) {
+  const status = settings.find((s) => s.hostname === hostname)?.status;
   return (
-    certId !== undefined && heldBy(settings, hostname) === certId && setting?.status === "active"
+    certId !== undefined &&
+    heldBy(settings, hostname) === certId &&
+    (status === "active" || (deploying && status === "pending_deployment"))
   );
 }
 

@@ -8,7 +8,7 @@ import {
 import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
 import { CLOUDFLARE_API, CloudflareClient, CloudflareError } from "../client";
-import { applyShared, inspectShared, planShared } from "../shared";
+import { applyShared, inspectShared, planShared, type SharedRecord } from "../shared";
 import {
   type FakeCloudflareAccounts,
   type FakeCloudflarePermission,
@@ -444,13 +444,15 @@ describe("fakeCloudflareAccounts: rules and origin TLS", () => {
         client: { sha256: fingerprintSha256(clientCertificate) },
       },
     };
-    const facts = await inspectShared(clientB, {
-      zoneId: created.id,
-      accountId: b.id,
-      access: false,
-      tls: { proxied: hosts, record: undefined },
-    });
-    const plan = planShared(facts, desired, undefined);
+    const inspect = (record: SharedRecord | undefined, pendingZone: boolean) =>
+      inspectShared(clientB, {
+        zoneId: created.id,
+        accountId: b.id,
+        access: false,
+        tls: { proxied: hosts, record },
+        pendingZone,
+      });
+    const plan = planShared(await inspect(undefined, true), desired, undefined);
     const sleeps: number[] = [];
     const applied = await applyShared(clientB, plan, {
       approvedHash: plan.hash,
@@ -475,8 +477,22 @@ describe("fakeCloudflareAccounts: rules and origin TLS", () => {
       ...(await clientB.listHostnameAopSettings(created.id, hosts)).map((s) => s.status),
     ];
     expect(await status()).toEqual(Array(3).fill("pending_deployment"));
+    // The pending zone's plan settles: its deploying settings count as on.
+    const again = planShared(await inspect(applied.record, true), desired, applied.record);
+    expect(again).toMatchObject({ changes: [], findings: [], record: applied.record });
+    // Not on an active zone: a setting still deploying there is turned on again and waited for.
+    const active = planShared(await inspect(applied.record, false), desired, applied.record);
+    expect(active.changes).toEqual([
+      {
+        kind: "enable-client-certificate",
+        hostnames: hosts,
+        sha256: fingerprintSha256(clientCertificate),
+      },
+    ]);
     fake.activate(zoneB);
     expect(await status()).toEqual(Array(3).fill("active"));
+    const deployed = planShared(await inspect(applied.record, false), desired, applied.record);
+    expect(deployed).toMatchObject({ changes: [], findings: [], record: applied.record });
 
     // The origin certificate is B's zone's: A's token neither lists nor revokes it.
     const [origin] = await clientB.listOriginCertificates(created.id);
