@@ -12,8 +12,9 @@ import { ok, only, paged, refuse } from "./replies";
 /**
  * The account-scoped pieces of {@link fakeCloudflareAccounts}' accounts: tunnels, Zero Trust
  * Access, R2 buckets and Workers. OpsCrew makes most of them through the IaC engine, so a test
- * usually seeds them as plain data; the fake answers the calls OpsCrew's client and its
- * permission probes make, and the API's own create and delete calls.
+ * seeds them as plain data; the fake answers the reads OpsCrew's client and its permission probes
+ * make, and the client's own writes (the Zero Trust organization and login method, a tunnel's
+ * secret, a Worker's subdomain, custom domains). Any other request throws.
  */
 
 /** A connection of a tunnel's connector, as Cloudflare lists it (it names the server's address). */
@@ -29,22 +30,18 @@ export interface FakeTunnelConnection {
 export interface FakeTunnel {
   id: string;
   name: string;
-  created_at?: string;
-  /** Set once deleted: the tunnel is still listed and read, with this time. */
+  /** Set once deleted: the tunnel is still read, with this time. */
   deleted_at?: string;
-  config_src?: "cloudflare" | "local";
   /** Base64; part of the tunnel's token, so a secret (made from the id when not set). */
   secret?: string;
-  /** The configuration last sent (a remotely managed tunnel's ingress). */
-  config?: unknown;
   /** Its connectors' connections: a test connects and disconnects them by changing this list. */
   connections: FakeTunnelConnection[];
 }
 
-/** An Access application or policy: what was sent, with the fields Cloudflare adds. */
+/** An Access application or reusable policy, as a test seeds it. */
 export type FakeAccessItem = Record<string, unknown> & { id: string; name: string };
 
-/** An Access service token; its `client_secret` is answered only when it is created. */
+/** An Access service token; its `client_secret` is never listed. */
 export interface FakeServiceToken {
   id: string;
   name: string;
@@ -58,9 +55,8 @@ export interface FakeServiceToken {
 /** An R2 bucket, as Cloudflare lists it. */
 export interface FakeBucket {
   name: string;
-  creation_date: string;
-  location: string;
-  storage_class: string;
+  creation_date?: string;
+  location?: string;
 }
 
 /** A Worker script of the account (uploaded by Wrangler or the IaC engine, so seeded here). */
@@ -113,7 +109,6 @@ export interface PieceContext {
   zones: FakeCloudflareZone[];
   /** Whether the call's token lacks `permission`. */
   denied: (permission: FakeCloudflarePermission) => boolean;
-  now: Date;
   hex: () => string;
   uuid: () => string;
   addRecord: (zone: FakeCloudflareZone, record: FakeRecordInput) => FakeDnsRecord;
@@ -121,11 +116,15 @@ export interface PieceContext {
 
 const DENIED = refuse(403, 10000, "Authentication error");
 const NO_WORKER = refuse(404, 10007, "This Worker does not exist on your account.");
-const R2_NAME = /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/;
-const sha256 = (text: string, encoding: "hex" | "base64") =>
-  createHash("sha256").update(text).digest(encoding);
 
-/** Answers `/accounts/{id}` + `rest` for the account (`rest` not empty). */
+/** The request the fake does not answer: a test's mistake, not Cloudflare's answer. */
+function unanswered(ctx: PieceContext, method: string, path: string): never {
+  throw new Error(`fake cloudflare: no route for ${method} /accounts/${ctx.account.id}${path}`);
+}
+
+type Route = (method: string, rest: string, url: URL, body: unknown) => FakeReply;
+
+/** Answers `/accounts/{id}` + `rest` for the account. */
 export function accountReply(
   ctx: PieceContext,
   method: string,
@@ -133,36 +132,27 @@ export function accountReply(
   url: URL,
   body: unknown,
 ): FakeReply {
-  const area = (prefix: string, permission: FakeCloudflarePermission) =>
-    rest === prefix || rest.startsWith(`${prefix}/`)
-      ? { permission, rest: rest.slice(prefix.length) }
-      : undefined;
-  const routes: [
-    ReturnType<typeof area>,
-    (method: string, rest: string, url: URL, body: unknown) => FakeReply,
-  ][] = [
-    [area("/cfd_tunnel", "tunnel"), (...a) => tunnels(ctx, ...a)],
-    [area("/access/apps", "access-apps"), (...a) => accessItems(ctx, ctx.account.accessApps, ...a)],
+  const routes: [string, FakeCloudflarePermission, Route][] = [
+    ["/cfd_tunnel", "tunnel", (...a) => tunnels(ctx, ...a)],
+    ["/access/apps", "access-apps", (m, r, u) => accessItems(ctx, ctx.account.accessApps, m, r, u)],
     [
-      area("/access/policies", "access-apps"),
-      (...a) => accessItems(ctx, ctx.account.accessPolicies, ...a),
+      "/access/policies",
+      "access-apps",
+      (m, r, u) => accessItems(ctx, ctx.account.accessPolicies, m, r, u),
     ],
-    [area("/access/service_tokens", "access-service-tokens"), (...a) => serviceTokens(ctx, ...a)],
-    [area("/access/organizations", "access-organization"), (...a) => organization(ctx, ...a)],
-    [
-      area("/access/identity_providers", "access-organization"),
-      (...a) => identityProviders(ctx, ...a),
-    ],
-    [area("/r2/buckets", "r2"), (...a) => buckets(ctx, ...a)],
-    [area("/workers/scripts", "workers"), (...a) => scripts(ctx, ...a)],
-    [area("/workers/domains", "workers"), (...a) => workerDomains(ctx, ...a)],
+    ["/access/service_tokens", "access-service-tokens", (m, r, u) => serviceTokens(ctx, m, r, u)],
+    ["/access/organizations", "access-organization", (...a) => organization(ctx, ...a)],
+    ["/access/identity_providers", "access-organization", (...a) => identityProviders(ctx, ...a)],
+    ["/r2/buckets", "r2", (m, r, u) => buckets(ctx, m, r, u)],
+    ["/workers/scripts", "workers", (...a) => scripts(ctx, ...a)],
+    ["/workers/domains", "workers", (...a) => workerDomains(ctx, ...a)],
   ];
-  for (const [match, handle] of routes) {
-    if (!match) continue;
-    if (ctx.denied(match.permission)) return DENIED;
-    return handle(method, match.rest, url, body);
+  for (const [prefix, permission, route] of routes) {
+    if (rest !== prefix && !rest.startsWith(`${prefix}/`)) continue;
+    if (ctx.denied(permission)) return DENIED;
+    return route(method, rest.slice(prefix.length), url, body);
   }
-  throw new Error(`fake cloudflare: no route for ${method} /accounts/${ctx.account.id}${rest}`);
+  return unanswered(ctx, method, rest);
 }
 
 // --- Tunnels -------------------------------------------------------------------------------------
@@ -174,25 +164,23 @@ function tunnelView(account: FakeCloudflareAccount, tunnel: FakeTunnel) {
     id: tunnel.id,
     account_tag: account.id,
     name: tunnel.name,
-    created_at: tunnel.created_at ?? null,
     deleted_at: tunnel.deleted_at ?? null,
     connections: tunnel.connections.map((c) => ({ is_pending_reconnect: false, ...c })),
     conns_active_at: live ? tunnel.connections[0]?.opened_at : null,
     conns_inactive_at: null,
     status: live ? "healthy" : "inactive",
     tun_type: "cfd_tunnel",
-    config_src: tunnel.config_src ?? "cloudflare",
-    remote_config: (tunnel.config_src ?? "cloudflare") === "cloudflare",
-    metadata: {},
   };
 }
 
 /** The connector's token: the account, the tunnel and its secret, base64-encoded JSON. */
 function tunnelToken(account: FakeCloudflareAccount, tunnel: FakeTunnel): string {
-  const secret = tunnel.secret ?? sha256(`tunnel secret ${tunnel.id}`, "base64");
+  const secret =
+    tunnel.secret ?? createHash("sha256").update(`tunnel secret ${tunnel.id}`).digest("base64");
   return Buffer.from(JSON.stringify({ a: account.id, t: tunnel.id, s: secret })).toString("base64");
 }
 
+/** The list, a tunnel, its token, and the change of its secret (`rotateTunnelSecret`). */
 function tunnels(
   ctx: PieceContext,
   method: string,
@@ -202,202 +190,96 @@ function tunnels(
 ): FakeReply {
   const { account } = ctx;
   if (rest === "" && method === "GET") {
-    only(url, ["name", "is_deleted", "page", "per_page"]);
-    const name = url.searchParams.get("name");
-    const deleted = url.searchParams.get("is_deleted");
-    const listed = account.tunnels.filter(
-      (t) =>
-        (name === null || t.name === name) &&
-        (deleted === null || (deleted === "true") === (t.deleted_at !== undefined)),
-    );
+    only(url, ["page", "per_page"]);
     return paged(
-      listed.map((t) => tunnelView(account, t)),
+      account.tunnels.map((t) => tunnelView(account, t)),
       url,
       20,
     );
   }
-  if (rest === "" && method === "POST") {
-    const sent = body as { name?: unknown; config_src?: unknown; tunnel_secret?: unknown };
-    if (typeof sent.name !== "string" || sent.name === "") {
-      return refuse(400, 1003, "a tunnel needs a name");
-    }
-    if (account.tunnels.some((t) => t.name === sent.name && t.deleted_at === undefined)) {
-      return refuse(409, 1013, "You already have a tunnel with this name.");
-    }
-    const tunnel: FakeTunnel = {
-      id: ctx.uuid(),
-      name: sent.name,
-      created_at: ctx.now.toISOString(),
-      config_src: sent.config_src === "local" ? "local" : "cloudflare",
-      ...(typeof sent.tunnel_secret === "string" ? { secret: sent.tunnel_secret } : {}),
-      connections: [],
-    };
-    account.tunnels.push(tunnel);
-    return ok(tunnelView(account, tunnel));
+  const match = /^\/([^/]+)(\/token)?$/.exec(rest);
+  const answered = match && (match[2] ? method === "GET" : method === "GET" || method === "PATCH");
+  if (!match || !answered) return unanswered(ctx, method, `/cfd_tunnel${rest}`);
+  const tunnel = account.tunnels.find((t) => t.id === match[1]);
+  // The words of this refusal are the fake's own.
+  if (!tunnel) return refuse(404, 1003, "Tunnel not found");
+  if (match[2]) return ok(tunnelToken(account, tunnel));
+  if (method === "PATCH") {
+    const sent = body as { tunnel_secret?: unknown };
+    if (typeof sent.tunnel_secret === "string") tunnel.secret = sent.tunnel_secret;
   }
-  const match = /^\/([^/]+)(\/token|\/configurations|\/connections)?$/.exec(rest);
-  const tunnel = account.tunnels.find((t) => t.id === match?.[1]);
-  if (!match || !tunnel) return refuse(404, 1003, "Tunnel not found");
-  const view = () => ok(tunnelView(account, tunnel));
-  switch (`${method} ${match[2] ?? ""}`) {
-    case "GET ":
-      return view();
-    case "PATCH ": {
-      const sent = body as { name?: unknown; tunnel_secret?: unknown };
-      if (typeof sent.name === "string") tunnel.name = sent.name;
-      if (typeof sent.tunnel_secret === "string") tunnel.secret = sent.tunnel_secret;
-      return view();
-    }
-    case "DELETE ":
-      if (tunnel.connections.length > 0 && url.searchParams.get("cascade") !== "true") {
-        return refuse(
-          400,
-          1022,
-          "Cannot delete tunnel because it has active connections. Use cascade to delete connections first.",
-        );
-      }
-      tunnel.connections = [];
-      tunnel.deleted_at = ctx.now.toISOString();
-      return view();
-    case "GET /token":
-      return ok(tunnelToken(account, tunnel));
-    case "GET /configurations":
-    case "PUT /configurations": {
-      if (method === "PUT") tunnel.config = (body as { config?: unknown }).config;
-      return ok({
-        tunnel_id: tunnel.id,
-        account_id: account.id,
-        config: tunnel.config ?? null,
-        source: "cloudflare",
-      });
-    }
-    case "GET /connections":
-      return ok(
-        tunnel.connections.map((c) => ({
-          id: c.client_id ?? c.id,
-          conns: [{ is_pending_reconnect: false, ...c }],
-          run_at: c.opened_at,
-        })),
-      );
-    default:
-      throw new Error(`fake cloudflare: ${method} on the tunnel ${tunnel.id}${match[2] ?? ""}`);
-  }
+  return ok(tunnelView(account, tunnel));
 }
 
 // --- Zero Trust Access ---------------------------------------------------------------------------
 
-const ACCESS_NOT_FOUND = refuse(404, 12130, "access.api.error.not_found");
-
-/** Access applications or reusable policies: list, create, read, replace, delete. */
+/** Access applications or reusable policies: the list. */
 function accessItems(
   ctx: PieceContext,
   items: FakeAccessItem[],
   method: string,
   rest: string,
   url: URL,
-  body: unknown,
 ): FakeReply {
-  const now = ctx.now.toISOString();
-  const apps = items === ctx.account.accessApps;
-  if (rest === "" && method === "GET") return paged(items, url, 25);
-  if (rest === "" && method === "POST") {
-    const item: FakeAccessItem = {
-      ...(body as FakeAccessItem),
-      id: ctx.uuid(),
-      ...(apps ? { aud: `${ctx.hex()}${ctx.hex()}` } : { reusable: true }),
-      created_at: now,
-      updated_at: now,
-    };
-    items.push(item);
-    return ok(item);
-  }
-  const at = items.findIndex((i) => `/${i.id}` === rest);
-  const item = items[at];
-  if (!item) return ACCESS_NOT_FOUND;
-  if (method === "GET") return ok(item);
-  if (method === "PUT") {
-    const { id, created_at, aud, reusable } = item;
-    items[at] = {
-      ...(body as FakeAccessItem),
-      id,
-      ...(aud === undefined ? {} : { aud }),
-      ...(reusable === undefined ? {} : { reusable }),
-      created_at,
-      updated_at: now,
-    };
-    return ok(items[at]);
-  }
-  if (method === "DELETE") {
-    items.splice(at, 1);
-    return ok({ id: item.id });
-  }
-  throw new Error(`fake cloudflare: ${method} on the Access item ${item.id}`);
+  if (rest !== "" || method !== "GET") return unanswered(ctx, method, `/access${rest}`);
+  only(url, ["page", "per_page"]);
+  return paged(items, url, 25);
 }
 
-function serviceTokens(
+/** The service tokens, listed without their secrets. */
+function serviceTokens(ctx: PieceContext, method: string, rest: string, url: URL): FakeReply {
+  if (rest !== "" || method !== "GET") {
+    return unanswered(ctx, method, `/access/service_tokens${rest}`);
+  }
+  only(url, ["page", "per_page"]);
+  return paged(
+    ctx.account.serviceTokens.map(({ client_secret: _secret, ...token }) => token),
+    url,
+    25,
+  );
+}
+
+/** The Zero Trust organization: read, and created when missing (as FakeZone answers it). */
+function organization(
   ctx: PieceContext,
   method: string,
   rest: string,
   url: URL,
   body: unknown,
 ): FakeReply {
-  const tokens = ctx.account.serviceTokens;
-  const listed = ({ client_secret: _secret, ...token }: FakeServiceToken) => token;
-  if (rest === "" && method === "GET") return paged(tokens.map(listed), url, 25);
-  if (rest === "" && method === "POST") {
-    const sent = body as { name?: unknown; duration?: unknown };
-    const id = ctx.uuid();
-    const expires = new Date(ctx.now);
-    expires.setUTCFullYear(expires.getUTCFullYear() + 1);
-    const token: FakeServiceToken = {
-      id,
-      name: String(sent.name ?? ""),
-      client_id: `${ctx.hex()}.access`,
-      client_secret: sha256(`service token secret ${id}`, "hex"),
-      duration: typeof sent.duration === "string" ? sent.duration : "8760h",
-      created_at: ctx.now.toISOString(),
-      expires_at: expires.toISOString(),
-    };
-    tokens.push(token);
-    return ok(token);
-  }
-  const at = tokens.findIndex((t) => `/${t.id}` === rest);
-  const token = tokens[at];
-  if (!token) return ACCESS_NOT_FOUND;
-  if (method === "GET") return ok(listed(token));
-  if (method === "DELETE") {
-    tokens.splice(at, 1);
-    return ok(listed(token));
-  }
-  throw new Error(`fake cloudflare: ${method} on the service token ${token.id}`);
-}
-
-function organization(ctx: PieceContext, method: string, rest: string, _url: URL, body: unknown) {
   const { account } = ctx;
-  if (rest !== "") throw new Error(`fake cloudflare: ${method} on the organization ${rest}`);
-  if (method === "GET") {
+  if (rest === "" && method === "GET") {
+    only(url, []);
     return account.organization
       ? ok(account.organization)
       : refuse(404, 12130, "access.api.error.not_found: organization not found");
   }
-  if (method !== "POST") throw new Error(`fake cloudflare: ${method} on the organization`);
+  if (rest !== "" || method !== "POST") {
+    return unanswered(ctx, method, `/access/organizations${rest}`);
+  }
+  // The words of this refusal are the fake's own.
   if (account.organization) return refuse(400, 12000, "organization already exists");
   const sent = body as { name: string; auth_domain: string };
   account.organization = { name: sent.name, auth_domain: sent.auth_domain };
   return ok(account.organization);
 }
 
+/** The login methods: listed, and one added. */
 function identityProviders(
   ctx: PieceContext,
   method: string,
   rest: string,
-  _url: URL,
+  url: URL,
   body: unknown,
-) {
+): FakeReply {
   const providers = ctx.account.identityProviders;
-  if (rest !== "") throw new Error(`fake cloudflare: ${method} on the login method ${rest}`);
-  if (method === "GET") return ok(providers);
-  if (method !== "POST") throw new Error(`fake cloudflare: ${method} on the login methods`);
+  if (rest === "" && method === "GET") {
+    only(url, []);
+    return ok(providers);
+  }
+  if (rest !== "" || method !== "POST") {
+    return unanswered(ctx, method, `/access/identity_providers${rest}`);
+  }
   const sent = body as { name: string; type: string };
   const provider = { id: ctx.uuid(), name: sent.name, type: sent.type };
   providers.push(provider);
@@ -406,95 +288,55 @@ function identityProviders(
 
 // --- R2 ------------------------------------------------------------------------------------------
 
-const NO_BUCKET = refuse(404, 10006, "The specified bucket does not exist.");
+/** The buckets, `per_page` at a time from `cursor`. */
+function buckets(ctx: PieceContext, method: string, rest: string, url: URL): FakeReply {
+  if (rest !== "" || method !== "GET") return unanswered(ctx, method, `/r2/buckets${rest}`);
+  only(url, ["per_page", "cursor"]);
+  const list = ctx.account.buckets;
+  const from = Number(url.searchParams.get("cursor") || 0);
+  const size = Number(url.searchParams.get("per_page") ?? 20);
+  return {
+    body: {
+      success: true,
+      errors: [],
+      messages: [],
+      result: { buckets: list.slice(from, from + size) },
+      result_info: { cursor: from + size < list.length ? String(from + size) : "", per_page: size },
+    },
+  };
+}
 
-function buckets(
+// --- Workers -------------------------------------------------------------------------------------
+
+/** The scripts, and a script's `workers.dev` subdomain. */
+function scripts(
   ctx: PieceContext,
   method: string,
   rest: string,
   url: URL,
   body: unknown,
 ): FakeReply {
-  const list = ctx.account.buckets;
-  if (rest === "" && method === "GET") {
-    only(url, ["name_contains", "per_page", "cursor"]);
-    const part = url.searchParams.get("name_contains") ?? "";
-    const matching = list.filter((b) => b.name.includes(part));
-    const from = Number(url.searchParams.get("cursor") || 0);
-    const size = Number(url.searchParams.get("per_page") ?? 20);
-    const next = from + size < matching.length ? String(from + size) : "";
-    return {
-      body: {
-        success: true,
-        errors: [],
-        messages: [],
-        result: { buckets: matching.slice(from, from + size) },
-        result_info: { cursor: next, per_page: size },
-      },
-    };
-  }
-  if (rest === "" && method === "POST") {
-    const sent = body as { name?: unknown; locationHint?: unknown; storageClass?: unknown };
-    const name = String(sent.name ?? "");
-    if (!R2_NAME.test(name)) return refuse(400, 10005, "The specified bucket name is not valid.");
-    if (list.some((b) => b.name === name)) {
-      return refuse(409, 10004, "The bucket you tried to create already exists, and you own it.");
-    }
-    const bucket: FakeBucket = {
-      name,
-      creation_date: ctx.now.toISOString(),
-      location: typeof sent.locationHint === "string" ? sent.locationHint.toUpperCase() : "WEUR",
-      storage_class: typeof sent.storageClass === "string" ? sent.storageClass : "Standard",
-    };
-    list.push(bucket);
-    return ok(bucket);
-  }
-  const at = list.findIndex((b) => `/${b.name}` === rest);
-  const bucket = list[at];
-  if (!bucket) return NO_BUCKET;
-  if (method === "GET") return ok(bucket);
-  if (method === "DELETE") {
-    list.splice(at, 1);
-    return ok({});
-  }
-  throw new Error(`fake cloudflare: ${method} on the bucket ${bucket.name}`);
-}
-
-// --- Workers -------------------------------------------------------------------------------------
-
-function scripts(
-  ctx: PieceContext,
-  method: string,
-  rest: string,
-  _url: URL,
-  body: unknown,
-): FakeReply {
   const { workers } = ctx.account;
   if (rest === "" && method === "GET") {
+    only(url, []);
     return ok(
       [...workers].map(([id, s]) => ({ id, created_on: s.created_on, modified_on: s.created_on })),
     );
   }
-  const match = /^\/([^/]+)(\/subdomain)?$/.exec(rest);
-  const name = decodeURIComponent(match?.[1] ?? "");
-  const script = workers.get(name);
-  if (!match || !script) return NO_WORKER;
-  if (!match[2] && method === "DELETE") {
-    workers.delete(name);
-    return ok(null);
+  const match = /^\/([^/]+)\/subdomain$/.exec(rest);
+  if (!match?.[1] || (method !== "GET" && method !== "POST")) {
+    return unanswered(ctx, method, `/workers/scripts${rest}`);
   }
-  if (match[2] && method === "GET") {
-    return ok(script.subdomain ?? { enabled: false, previews_enabled: false });
-  }
-  if (match[2] && method === "POST") {
+  const script = workers.get(decodeURIComponent(match[1]));
+  if (!script) return NO_WORKER;
+  if (method === "POST") {
     const sent = body as { enabled?: unknown; previews_enabled?: unknown };
     script.subdomain = {
       enabled: sent.enabled === true,
       previews_enabled: sent.previews_enabled === true,
     };
-    return ok(script.subdomain);
   }
-  throw new Error(`fake cloudflare: ${method} on the Worker ${name}${match[2] ?? ""}`);
+  return ok(script.subdomain ?? { enabled: false, previews_enabled: false });
 }
 
 const inZone = (hostname: string, zone: string) =>
@@ -513,6 +355,7 @@ const domainView = (d: FakeWorkerDomain) => ({
 const workerRecord = (zone: FakeCloudflareZone, hostname: string) =>
   zone.records.find((r) => r.name === hostname && r.meta.read_only === true);
 
+/** The custom domains: listed, attached, detached. */
 function workerDomains(
   ctx: PieceContext,
   method: string,
@@ -545,12 +388,13 @@ function workerDomains(
     };
   }
   if (rest === "" && method === "PUT") return attachDomain(ctx, body);
+  if (!/^\/[^/]+$/.test(rest) || method !== "DELETE") {
+    return unanswered(ctx, method, `/workers/domains${rest}`);
+  }
   const at = domains.findIndex((d) => `/${d.id}` === rest);
   const domain = domains[at];
   // The words of this refusal are the fake's own.
   if (!domain) return refuse(404, 100114, "No custom domain with this id.");
-  if (method === "GET") return ok(domainView(domain));
-  if (method !== "DELETE") throw new Error(`fake cloudflare: ${method} on a custom domain`);
   domains.splice(at, 1);
   const zone = ctx.zones.find((z) => z.id === domain.zone_id);
   const record = zone && workerRecord(zone, domain.hostname);

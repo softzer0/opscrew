@@ -2395,6 +2395,19 @@ describe("inspectShared", () => {
     expect(await inspectShared(clientFor(zone), opts)).not.toHaveProperty("zonePlan");
   });
 
+  it("records a pending zone as the caller says, so its deploying settings count as on", async () => {
+    const zone = new FakeZone();
+    const opts = { zoneId: ZONE_ID, accountId: ACCOUNT_ID, access: false };
+    expect(await inspectShared(clientFor(zone), { ...opts, pendingZone: true })).toMatchObject({
+      pendingZone: true,
+    });
+    for (const pendingZone of [false, undefined]) {
+      expect(await inspectShared(clientFor(zone), { ...opts, pendingZone })).not.toHaveProperty(
+        "pendingZone",
+      );
+    }
+  });
+
   it("treats only Cloudflare's 'no entrypoint' answer as a missing ruleset", async () => {
     const zone = new FakeZone();
     zone.faults.push({

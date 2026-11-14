@@ -7,7 +7,13 @@ import {
 } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
-import { CLOUDFLARE_API, CloudflareClient, CloudflareError } from "../client";
+import {
+  type AccountPermissionNeed,
+  CLOUDFLARE_API,
+  CloudflareClient,
+  CloudflareError,
+  type ZonePermissionNeed,
+} from "../client";
 import { applyShared, inspectShared, planShared, type SharedRecord } from "../shared";
 import {
   type FakeCloudflareAccounts,
@@ -18,6 +24,7 @@ import {
 const TOKEN_A = fakeSecret("cloudflare-token", "account-a");
 const TOKEN_B = fakeSecret("cloudflare-token", "account-b");
 const ZONE = "example.com";
+const TUNNEL = "00000000-0000-4000-8000-0000000000aa";
 
 /** Account A holds example.com, active; account B is empty. */
 function setup(denied: FakeCloudflarePermission[] = []) {
@@ -28,17 +35,18 @@ function setup(denied: FakeCloudflarePermission[] = []) {
     ],
     zones: [{ name: ZONE, account: "Old" }],
   });
-  const client = (token: string) =>
-    new CloudflareClient({ token, fetch: fake.fetch, sleep: async () => {} });
   return {
     fake,
     a: fake.account("Old"),
     b: fake.account("New"),
     zoneA: fake.zone(ZONE, "Old"),
-    clientA: client(TOKEN_A),
-    clientB: client(TOKEN_B),
+    clientA: clientOf(fake, TOKEN_A),
+    clientB: clientOf(fake, TOKEN_B),
   };
 }
+
+const clientOf = (fake: FakeCloudflareAccounts, token: string) =>
+  new CloudflareClient({ token, fetch: fake.fetch, sleep: async () => {} });
 
 interface Answer {
   status: number;
@@ -48,7 +56,7 @@ interface Answer {
   result_info?: Record<string, unknown>;
 }
 
-/** A request with `token` as Cloudflare's API gets it; the answer's JSON (null for none). */
+/** A request with `token` as Cloudflare's API gets it, and the answer's JSON. */
 async function call(
   fake: FakeCloudflareAccounts,
   token: string,
@@ -81,6 +89,15 @@ async function rejection(promise: Promise<unknown>): Promise<OpsCrewError> {
   return error as OpsCrewError;
 }
 
+/** A request the fake does not answer: it throws rather than answer "not found". */
+const unanswered = (fake: FakeCloudflareAccounts, token: string, method: string, path: string) =>
+  expect(
+    fake.fetch(`${CLOUDFLARE_API}${path}`, {
+      method,
+      headers: { Authorization: `Bearer ${token}` },
+    }),
+  ).rejects.toThrow("fake cloudflare");
+
 describe("fakeCloudflareAccounts: tokens and accounts", () => {
   it("reaches each account with its own token and refuses another account's, as Cloudflare does", async () => {
     const { fake, a, b, zoneA, clientA, clientB } = setup();
@@ -99,25 +116,33 @@ describe("fakeCloudflareAccounts: tokens and accounts", () => {
     expect(zoneB).toMatchObject({ name: ZONE, status: "pending", accountId: b.id });
     expect(zoneB.nameServers).toHaveLength(2);
     expect(zoneB.nameServers).not.toEqual(zoneA.nameServers);
+    expect(await clientB.getZone(zoneB.id)).toEqual(zoneB);
 
-    // A's token on B's zone, on B's account, and adding a zone to B.
-    expect(await rejection(clientA.listDnsRecords(zoneB.id))).toBeInstanceOf(CloudflareError);
-    const zoneCall = await call(fake, TOKEN_A, "GET", `/zones/${zoneB.id}/dns_records`);
-    expect([zoneCall.status, ...codes(zoneCall)]).toEqual([403, 9109]);
-    const accountCall = await call(fake, TOKEN_A, "GET", `/accounts/${b.id}/workers/scripts`);
-    expect([accountCall.status, ...codes(accountCall)]).toEqual([404, 7003]);
+    // A's token on B's zone, on B's account pieces, and adding a zone to B: refused, never absent.
+    b.tunnels.push({ id: TUNNEL, name: "example-app", connections: [] });
+    expect(await rejection(clientA.getZone(zoneB.id))).toBeInstanceOf(CloudflareError);
+    expect(await rejection(clientA.listZoneRecords(zoneB.id))).toBeInstanceOf(CloudflareError);
+    expect(await rejection(clientA.tunnelConnections(b.id, TUNNEL))).toBeInstanceOf(
+      CloudflareError,
+    );
+    expect(await rejection(clientA.accessOrganization(b.id))).toBeInstanceOf(CloudflareError);
     expect((await rejection(clientA.createZone(b.id, "example.org"))).code).toBe(
       "CREDENTIALS_INVALID",
     );
+    for (const path of [`/zones/${zoneB.id}/dns_records`, `/accounts/${b.id}/cfd_tunnel`]) {
+      const refused = await call(fake, TOKEN_A, "GET", path);
+      expect([refused.status, ...codes(refused)]).toEqual([403, 9109]);
+    }
+    // Workers paths as feature 016's spike saw them for another account.
+    const workers = await call(fake, TOKEN_A, "GET", `/accounts/${b.id}/workers/scripts`);
+    expect([workers.status, ...codes(workers)]).toEqual([404, 7003]);
     expect(fake.zones.map((z) => z.name)).toEqual([ZONE, ZONE]);
 
     // A token Cloudflare does not know.
     const unknown = fakeSecret("cloudflare-token", "unknown");
     const refused = await call(fake, unknown, "GET", "/zones");
     expect([refused.status, ...codes(refused)]).toEqual([401, 1000]);
-    expect(
-      await new CloudflareClient({ token: unknown, fetch: fake.fetch }).verifyToken(),
-    ).toMatchObject({ ok: false });
+    expect(await clientOf(fake, unknown).verifyToken()).toMatchObject({ ok: false });
     expect(await clientB.verifyToken()).toMatchObject({ ok: true, status: "active" });
 
     // Every call recorded, with the account it named and its status, never with a token.
@@ -132,19 +157,20 @@ describe("fakeCloudflareAccounts: tokens and accounts", () => {
     for (const token of [TOKEN_A, TOKEN_B, unknown]) expect(recorded).not.toContain(token);
   });
 
-  it("lists the zones a token sees by name, account and status, page by page", async () => {
+  it("lists the zones a token sees by name and account, page by page", async () => {
     const { fake, a, b, clientB } = setup();
     const both = fakeSecret("cloudflare-token", "both");
     fake.tokens.set(both, { accounts: [a.id, b.id], denied: new Set() });
+    const clientBoth = clientOf(fake, both);
     const zoneB = await clientB.createZone(b.id, ZONE);
-    const ids = (answer: Answer) => result<{ id: string }[]>(answer).map((z) => z.id);
     const zoneA = fake.zone(ZONE, a.id);
 
-    expect(ids(await call(fake, both, "GET", `/zones?name=${ZONE}`))).toEqual([zoneA.id, zoneB.id]);
-    expect(ids(await call(fake, both, "GET", `/zones?name=${ZONE}&account.id=${b.id}`))).toEqual([
-      zoneB.id,
-    ]);
-    expect(ids(await call(fake, both, "GET", `/zones?status=pending`))).toEqual([zoneB.id]);
+    expect(await clientBoth.findZone(`shop.${ZONE}`)).toMatchObject({ id: zoneA.id });
+    expect(await clientBoth.findZone(`shop.${ZONE}`, { accountId: b.id })).toMatchObject({
+      id: zoneB.id,
+      status: "pending",
+    });
+    const ids = (answer: Answer) => result<{ id: string }[]>(answer).map((z) => z.id);
     const second = await call(fake, both, "GET", `/zones?name=${ZONE}&page=2&per_page=1`);
     expect(ids(second)).toEqual([zoneB.id]);
     expect(second.result_info).toEqual({
@@ -155,21 +181,16 @@ describe("fakeCloudflareAccounts: tokens and accounts", () => {
       total_pages: 2,
     });
     expect(ids(await call(fake, TOKEN_B, "GET", `/zones?account.id=${a.id}`))).toEqual([]);
-    const zone = result(await call(fake, both, "GET", `/zones/${zoneB.id}`));
-    expect(zone).toMatchObject({
-      id: zoneB.id,
-      name: ZONE,
-      status: "pending",
-      name_servers: zoneB.nameServers,
+    expect(result(await call(fake, both, "GET", `/zones/${zoneB.id}`))).toMatchObject({
       account: { id: b.id, name: "New" },
       plan: { legacy_id: "free" },
       activated_on: null,
     });
     await expect(
-      fake.fetch(`${CLOUDFLARE_API}/zones?name=${ZONE}&match=all`, {
+      fake.fetch(`${CLOUDFLARE_API}/zones?name=${ZONE}&status=active`, {
         headers: { Authorization: `Bearer ${both}` },
       }),
-    ).rejects.toThrow("/zones does not take the query parameter match");
+    ).rejects.toThrow("/zones does not take the query parameter status");
   });
 });
 
@@ -188,31 +209,20 @@ describe("fakeCloudflareAccounts: zones", () => {
     expect([again.status, ...codes(again)]).toEqual([400, 1061]);
     expect(await clientB.createZone(b.id, ZONE)).toEqual(zoneB);
 
-    const deleted = await call(fake, TOKEN_B, "DELETE", `/zones/${zoneB.id}`);
-    expect(result(deleted)).toEqual({ id: zoneB.id });
+    await clientB.deleteZone(zoneB.id);
     expect(fake.zones).toEqual([zoneA]);
     const gone = await call(fake, TOKEN_B, "GET", `/zones/${zoneB.id}`);
     expect([gone.status, ...codes(gone)]).toEqual([404, 7003]);
 
     // A's hold keeps the zone out of B until A releases it.
-    const held = await call(
-      fake,
-      TOKEN_A,
-      "POST",
-      `/zones/${zoneA.id}/hold?include_subdomains=true`,
-    );
-    expect(result(held)).toEqual({ hold: true, include_subdomains: true });
-    expect(result(await call(fake, TOKEN_A, "GET", `/zones/${zoneA.id}/hold`))).toEqual({
-      hold: true,
-      include_subdomains: true,
-    });
+    expect(await clientA.zoneHold(zoneA.id)).toEqual({ hold: false });
+    zoneA.hold = { hold: true, include_subdomains: false };
+    expect(await clientA.zoneHold(zoneA.id)).toEqual({ hold: true });
     expect((await rejection(clientB.createZone(b.id, ZONE))).message).toContain(
       "is on hold in another account",
     );
-    await call(fake, TOKEN_A, "DELETE", `/zones/${zoneA.id}/hold`);
-    expect(zoneA.hold.hold).toBe(false);
+    zoneA.hold = { hold: false, include_subdomains: false };
     expect(await clientB.createZone(b.id, ZONE)).toMatchObject({ status: "pending" });
-    expect(await clientA.findZone(ZONE)).toMatchObject({ id: zoneA.id, status: "active" });
   });
 
   it("moves zones pending → active → moved, issues the universal certificate on activation, and limits the activation check as on a free zone", async () => {
@@ -236,8 +246,8 @@ describe("fakeCloudflareAccounts: zones", () => {
 
     fake.activate(zoneB);
     expect(zoneB).toMatchObject({ status: "active", activatedOn: "2026-11-20T11:00:00.000Z" });
-    expect(zoneA.status).toBe("moved");
-    expect(await clientA.findZone(ZONE)).toMatchObject({ id: zoneA.id, status: "moved" });
+    expect(await clientA.getZone(zoneA.id)).toMatchObject({ status: "moved" });
+    expect(await clientB.getZone(zoneB.id)).toMatchObject({ status: "active" });
     expect(await clientB.listCertificatePacks(created.id)).toEqual([
       {
         id: zoneB.certificatePacks[0]?.id,
@@ -261,13 +271,11 @@ describe("fakeCloudflareAccounts: zones", () => {
     ]);
 
     fake.move(zoneB);
-    expect(result(await call(fake, TOKEN_B, "GET", `/zones/${zoneB.id}`))).toMatchObject({
-      status: "moved",
-    });
+    expect(await clientB.getZone(zoneB.id)).toMatchObject({ status: "moved" });
   });
 
   it("turns DNSSEC on as pending with its DS record, until a test makes it active", async () => {
-    const { fake, zoneA, clientA } = setup();
+    const { zoneA, clientA } = setup();
     expect(await clientA.getDnssec(zoneA.id)).toEqual({ status: "disabled" });
     const on = await clientA.enableDnssec(zoneA.id);
     expect(on).toMatchObject({ status: "pending", algorithm: 13, digestType: 2 });
@@ -278,10 +286,6 @@ describe("fakeCloudflareAccounts: zones", () => {
       status: "active",
       digest: on.digest,
     });
-    const off = await call(fake, TOKEN_A, "PATCH", `/zones/${zoneA.id}/dnssec`, {
-      status: "disabled",
-    });
-    expect(result(off)).toEqual({ status: "disabled" });
   });
 });
 
@@ -303,121 +307,128 @@ describe("fakeCloudflareAccounts: records", () => {
       proxied: true,
       meta: { read_only: true, origin_worker_id: "docs" },
     });
-    const listed = result<Record<string, unknown>[]>(
-      await call(fake, TOKEN_A, "GET", `/zones/${zoneA.id}/dns_records`),
-    );
-    expect(listed).toEqual([
-      expect.objectContaining({
+    const [mx, srv, docs] = zoneA.records;
+    expect(await clientA.listZoneRecords(zoneA.id)).toEqual([
+      {
+        id: mx?.id,
         type: "MX",
         name: ZONE,
         content: "mail.example.net",
-        priority: 10,
-        proxied: false,
-        proxiable: false,
         ttl: 1,
-        comment: null,
+        proxied: false,
+        priority: 10,
         meta: {},
-        zone_id: zoneA.id,
-        zone_name: ZONE,
-      }),
-      expect.objectContaining({
+      },
+      {
+        id: srv?.id,
         type: "SRV",
         name: `_sip._tcp.${ZONE}`,
+        content: "",
         data: { priority: 10, weight: 5, port: 5060, target: "sip.example.net" },
-        comment: "phones",
         ttl: 3600,
-      }),
-      expect.objectContaining({
+        proxied: false,
+        comment: "phones",
+        meta: {},
+      },
+      {
+        id: docs?.id,
+        type: "AAAA",
         name: `docs.${ZONE}`,
-        proxiable: true,
+        content: "100::",
+        ttl: 1,
+        proxied: true,
         meta: { read_only: true, origin_worker_id: "docs" },
-      }),
+      },
     ]);
-    const mx = await call(
-      fake,
-      TOKEN_A,
-      "GET",
-      `/zones/${zoneA.id}/dns_records?type=MX&name=${ZONE}`,
+    const listed = result<Record<string, unknown>[]>(
+      await call(fake, TOKEN_A, "GET", `/zones/${zoneA.id}/dns_records?per_page=1`),
     );
-    expect(result<{ type: string }[]>(mx).map((r) => r.type)).toEqual(["MX"]);
+    expect(listed).toEqual([
+      expect.objectContaining({ zone_id: zoneA.id, zone_name: ZONE, proxiable: false, tags: [] }),
+    ]);
+    expect(
+      (await clientA.listDnsRecords(zoneA.id, { type: "MX", name: ZONE })).map((r) => r.type),
+    ).toEqual(["MX"]);
 
     for (let i = 0; i < 120; i++) {
       fake.addRecord(zoneA, { type: "TXT", name: `t${i}`, content: `"v${i}"` });
     }
-    expect(await clientA.listDnsRecords(zoneA.id)).toHaveLength(123);
+    expect(await clientA.listZoneRecords(zoneA.id)).toHaveLength(123);
     expect(fake.calls.filter((c) => c.path.includes("dns_records?page=2"))).toHaveLength(1);
   });
 
-  it("creates records one by one or in one batch transaction, refusing what Cloudflare refuses, and deletes them", async () => {
-    const { fake, b, clientB } = setup();
+  it("creates records in one batch transaction, refusing what Cloudflare refuses, and deletes them", async () => {
+    const { fake, b, zoneA, clientA, clientB } = setup();
     const created = await clientB.createZone(b.id, ZONE);
     const zoneB = fake.zone(ZONE, "New");
-    const post = {
+    fake.addRecord(zoneA, {
       type: "CNAME",
-      name: `www.${ZONE}`,
+      name: "www",
       content: ZONE,
-      ttl: 1,
       proxied: true,
       comment: "the user's own",
-    };
-    const batch = await call(fake, TOKEN_B, "POST", `/zones/${created.id}/dns_records/batch`, {
-      posts: [post, { type: "TXT", name: ZONE, content: '"v=spf1 -all"', ttl: 300 }],
     });
-    expect(result<{ posts: unknown[] }>(batch).posts).toEqual([
-      expect.objectContaining({ ...post, id: zoneB.records[0]?.id }),
-      expect.objectContaining({ type: "TXT", ttl: 300 }),
-    ]);
-    expect(
-      await clientB.batchCreateRecords(created.id, [
-        {
-          type: "MX",
-          name: ZONE,
-          content: "mail.example.net",
-          priority: 10,
-          ttl: 1,
-          proxied: false,
-        },
-      ]),
-    ).toEqual([zoneB.records[2]?.id]);
+    fake.addRecord(zoneA, {
+      type: "CAA",
+      name: "@",
+      data: { flags: 0, tag: "issue", value: "letsencrypt.org" },
+      ttl: 300,
+    });
+    // A's records copied into B with every field.
+    const fromA = await clientA.listZoneRecords(zoneA.id);
+    const ids = await clientB.createZoneRecords(
+      created.id,
+      fromA.map(({ id: _id, meta: _meta, ...record }) => record),
+    );
+    expect(ids).toEqual(zoneB.records.map((r) => r.id));
+    expect((await clientB.listZoneRecords(created.id)).map(({ id: _id, ...r }) => r)).toEqual(
+      fromA.map(({ id: _id, ...r }) => r),
+    );
 
+    const post = { type: "TXT", name: `t.${ZONE}`, content: '"x"', ttl: 1 };
     const refusals: [unknown, number][] = [
-      [post, 81058],
+      [
+        {
+          type: "CNAME",
+          name: `www.${ZONE}`,
+          content: ZONE,
+          ttl: 1,
+          proxied: true,
+          comment: "the user's own",
+        },
+        81058,
+      ],
       [{ type: "A", name: `www.${ZONE}`, content: "203.0.113.10", ttl: 1 }, 81053],
-      [{ type: "TXT", name: `t.${ZONE}`, content: '"x"', ttl: 1, proxied: true }, 9004],
+      [{ ...post, proxied: true }, 9004],
     ];
+    const batch = (posts: unknown[]) =>
+      call(fake, TOKEN_B, "POST", `/zones/${created.id}/dns_records/batch`, { posts });
     for (const [record, code] of refusals) {
-      const refused = await call(fake, TOKEN_B, "POST", `/zones/${created.id}/dns_records`, record);
+      // One refused post leaves the whole batch undone.
+      const refused = await batch([post, record]);
       expect([refused.status, ...codes(refused)]).toEqual([400, code]);
+      expect(zoneB.records).toHaveLength(2);
     }
-    // One refused post leaves the whole batch undone.
-    const undone = await call(fake, TOKEN_B, "POST", `/zones/${created.id}/dns_records/batch`, {
-      deletes: [{ id: zoneB.records[0]?.id }],
-      posts: [{ type: "TXT", name: `new.${ZONE}`, content: '"x"', ttl: 1 }, post, post],
-    });
-    expect(codes(undone)).toEqual([81058]);
-    expect(zoneB.records).toHaveLength(3);
     // 200 changes a call on the Free plan.
-    const many = Array.from({ length: 201 }, (_, i) => ({
-      type: "TXT",
-      name: `m${i}.${ZONE}`,
-      content: '"x"',
-      ttl: 1,
-    }));
-    const tooMany = await call(fake, TOKEN_B, "POST", `/zones/${created.id}/dns_records/batch`, {
-      posts: many,
-    });
-    expect(tooMany.status).toBe(400);
-    zoneB.data.plan = "pro";
-    expect(
-      (await call(fake, TOKEN_B, "POST", `/zones/${created.id}/dns_records/batch`, { posts: many }))
-        .success,
-    ).toBe(true);
+    const many = Array.from({ length: 201 }, (_, i) => ({ ...post, name: `m${i}.${ZONE}` }));
+    expect((await batch(many)).status).toBe(400);
+    expect((await batch(many.slice(0, 200))).success).toBe(true);
+    await expect(
+      fake.fetch(`${CLOUDFLARE_API}/zones/${created.id}/dns_records/batch`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${TOKEN_B}` },
+        body: JSON.stringify({ deletes: [{ id: ids[0] }] }),
+      }),
+    ).rejects.toThrow("only its posts are answered");
 
-    const id = zoneB.records[0]?.id;
-    expect(
-      result(await call(fake, TOKEN_B, "DELETE", `/zones/${created.id}/dns_records/${id}`)),
-    ).toEqual({ id });
-    const missing = await call(fake, TOKEN_B, "DELETE", `/zones/${created.id}/dns_records/${id}`);
+    await clientB.deleteRecord(created.id, ids[0] ?? "");
+    expect(zoneB.records.some((r) => r.id === ids[0])).toBe(false);
+    const missing = await call(
+      fake,
+      TOKEN_B,
+      "DELETE",
+      `/zones/${created.id}/dns_records/${ids[0]}`,
+    );
     expect([missing.status, ...codes(missing)]).toEqual([404, 81044]);
   });
 });
@@ -515,64 +526,44 @@ describe("fakeCloudflareAccounts: rules and origin TLS", () => {
 });
 
 describe("fakeCloudflareAccounts: account pieces", () => {
-  it("answers tunnels with their connections, token and configuration", async () => {
+  it("answers tunnels with their connections, and their secret's change", async () => {
     const { fake, b, clientB } = setup();
-    const created = await call(fake, TOKEN_B, "POST", `/accounts/${b.id}/cfd_tunnel`, {
-      name: "example-app",
-      config_src: "cloudflare",
-    });
-    const id = result<{ id: string }>(created).id;
-    expect(id).toMatch(/^[0-9a-f-]{36}$/);
-    const twice = await call(fake, TOKEN_B, "POST", `/accounts/${b.id}/cfd_tunnel`, {
-      name: "example-app",
-    });
-    expect([twice.status, ...codes(twice)]).toEqual([409, 1013]);
-    expect(await clientB.tunnelConnections(b.id, id)).toBe("closed");
-
-    const [tunnel] = b.tunnels;
-    tunnel?.connections.push({
+    b.tunnels.push({ id: TUNNEL, name: "example-app", connections: [] });
+    expect(await clientB.tunnelConnections(b.id, TUNNEL)).toBe("closed");
+    b.tunnels[0]?.connections.push({
       id: "conn-1",
       colo_name: "fra08",
       opened_at: fake.now.toISOString(),
       origin_ip: "203.0.113.10",
     });
-    expect(await clientB.tunnelConnections(b.id, id)).toBe("active");
-    const listed = await call(
-      fake,
-      TOKEN_B,
-      "GET",
-      `/accounts/${b.id}/cfd_tunnel?name=example-app&is_deleted=false`,
-    );
+    expect(await clientB.tunnelConnections(b.id, TUNNEL)).toBe("active");
+    const listed = await call(fake, TOKEN_B, "GET", `/accounts/${b.id}/cfd_tunnel?per_page=1`);
     expect(result(listed)).toEqual([
       expect.objectContaining({
-        id,
+        id: TUNNEL,
         status: "healthy",
         connections: [expect.objectContaining({ origin_ip: "203.0.113.10" })],
       }),
     ]);
 
     const secret = Buffer.alloc(32, 7).toString("base64");
-    const token = await clientB.rotateTunnelSecret(b.id, id, secret);
+    const token = await clientB.rotateTunnelSecret(b.id, TUNNEL, secret);
     expect(JSON.parse(Buffer.from(token, "base64").toString())).toEqual({
       a: b.id,
-      t: id,
+      t: TUNNEL,
       s: secret,
     });
-    const config = { ingress: [{ hostname: `shop.${ZONE}`, service: "http://app:3000" }] };
-    await call(fake, TOKEN_B, "PUT", `/accounts/${b.id}/cfd_tunnel/${id}/configurations`, {
-      config,
-    });
-    expect(
-      result(await call(fake, TOKEN_B, "GET", `/accounts/${b.id}/cfd_tunnel/${id}/configurations`)),
-    ).toMatchObject({ tunnel_id: id, config });
 
-    const busy = await call(fake, TOKEN_B, "DELETE", `/accounts/${b.id}/cfd_tunnel/${id}`);
-    expect([busy.status, ...codes(busy)]).toEqual([400, 1022]);
-    await call(fake, TOKEN_B, "DELETE", `/accounts/${b.id}/cfd_tunnel/${id}?cascade=true`);
-    expect(await clientB.tunnelConnections(b.id, id)).toBe("gone");
+    const unknownTunnel = "00000000-0000-4000-8000-0000000000bb";
+    expect(await clientB.tunnelConnections(b.id, unknownTunnel)).toBe("gone");
+    if (b.tunnels[0]) b.tunnels[0].deleted_at = fake.now.toISOString();
+    expect(await clientB.tunnelConnections(b.id, TUNNEL)).toBe("gone");
+    await unanswered(fake, TOKEN_B, "GET", `/accounts/${b.id}/cfd_tunnel/${TUNNEL}/configurations`);
+    await unanswered(fake, TOKEN_B, "GET", `/accounts/${b.id}/cfd_tunnel?name=example-app`);
+    await unanswered(fake, TOKEN_B, "POST", `/accounts/${b.id}/cfd_tunnel`);
   });
 
-  it("answers Access: the organization, login methods, applications, policies and service tokens", async () => {
+  it("answers Access: the organization and login methods it creates, and the applications, policies and service tokens a test seeds", async () => {
     const { fake, b, clientB } = setup();
     const access = `/accounts/${b.id}/access`;
     expect(await clientB.accessOrganization(b.id)).toBeUndefined();
@@ -583,68 +574,54 @@ describe("fakeCloudflareAccounts: account pieces", () => {
     const pin = await clientB.createOneTimePinProvider(b.id);
     expect(await clientB.accessIdentityProviders(b.id)).toEqual([{ id: pin, type: "onetimepin" }]);
 
-    const app = result(
-      await call(fake, TOKEN_B, "POST", `${access}/apps`, {
-        name: "example-app ssh",
-        domain: `ssh-shop.${ZONE}`,
-        type: "self_hosted",
-      }),
-    );
-    expect(app).toMatchObject({ name: "example-app ssh", domain: `ssh-shop.${ZONE}` });
-    expect(app.aud).toMatch(/^[0-9a-f]{64}$/);
-    const renamed = await call(fake, TOKEN_B, "PUT", `${access}/apps/${app.id}`, {
-      name: "renamed",
-      domain: `ssh-shop.${ZONE}`,
-      type: "self_hosted",
+    const app = { id: "app-1", name: "example-app ssh", domain: `ssh-shop.${ZONE}` };
+    const policy = { id: "policy-1", name: "deploy", decision: "non_identity" };
+    const secret = fakeSecret("generic-password", "service token");
+    b.accessApps.push(app);
+    b.accessPolicies.push(policy);
+    b.serviceTokens.push({
+      id: "token-1",
+      name: "example-app deploy",
+      client_id: "0123456789abcdef0123456789abcdef.access",
+      client_secret: secret,
+      duration: "8760h",
+      created_at: fake.now.toISOString(),
+      expires_at: fake.now.toISOString(),
     });
-    expect(result(renamed)).toMatchObject({ id: app.id, aud: app.aud, name: "renamed" });
-    const policy = result(
-      await call(fake, TOKEN_B, "POST", `${access}/policies`, {
-        name: "deploy",
-        decision: "non_identity",
-      }),
-    );
-    expect(policy).toMatchObject({ reusable: true });
+    expect(
+      await clientB.accountPermissions(b.id, [
+        "access-apps",
+        "access-service-tokens",
+        "access-organization",
+      ]),
+    ).toEqual({ missing: [] });
+    expect(result(await call(fake, TOKEN_B, "GET", `${access}/apps`))).toEqual([app]);
     expect(result(await call(fake, TOKEN_B, "GET", `${access}/policies`))).toEqual([policy]);
-    await call(fake, TOKEN_B, "DELETE", `${access}/apps/${app.id}`);
-    const gone = await call(fake, TOKEN_B, "GET", `${access}/apps/${app.id}`);
-    expect([gone.status, ...codes(gone)]).toEqual([404, 12130]);
-
-    const token = result<{ id: string; client_id: string; client_secret: string }>(
-      await call(fake, TOKEN_B, "POST", `${access}/service_tokens`, { name: "example-app deploy" }),
-    );
-    expect(token.client_id).toMatch(/^[0-9a-f]{32}\.access$/);
-    expect(token.client_secret).toMatch(/^[0-9a-f]{64}$/);
     const tokens = await call(fake, TOKEN_B, "GET", `${access}/service_tokens`);
-    expect(JSON.stringify(tokens)).not.toContain(token.client_secret);
-    await call(fake, TOKEN_B, "DELETE", `${access}/service_tokens/${token.id}`);
-    expect(b.serviceTokens).toEqual([]);
+    expect(result(tokens)).toEqual([expect.objectContaining({ id: "token-1" })]);
+    expect(JSON.stringify(tokens)).not.toContain(secret);
+    for (const list of ["apps", "policies", "service_tokens", "identity_providers"]) {
+      await unanswered(fake, TOKEN_B, "GET", `${access}/${list}?name=x`);
+    }
+    await unanswered(fake, TOKEN_B, "GET", `${access}/apps/app-1`);
+    await unanswered(fake, TOKEN_B, "DELETE", `${access}/service_tokens/token-1`);
   });
 
-  it("answers R2 buckets per account", async () => {
-    const { fake, a, b } = setup();
-    const buckets = (account: string) => `/accounts/${account}/r2/buckets`;
-    for (const [token, account] of [
-      [TOKEN_A, a.id],
-      [TOKEN_B, b.id],
-    ] as const) {
-      const made = await call(fake, token, "POST", buckets(account), { name: "example-app-files" });
-      expect(result(made)).toMatchObject({ name: "example-app-files", storage_class: "Standard" });
-    }
-    const twice = await call(fake, TOKEN_B, "POST", buckets(b.id), { name: "example-app-files" });
-    expect([twice.status, ...codes(twice)]).toEqual([409, 10004]);
-    const invalid = await call(fake, TOKEN_B, "POST", buckets(b.id), { name: "Not_Valid" });
-    expect([invalid.status, ...codes(invalid)]).toEqual([400, 10005]);
-    await call(fake, TOKEN_B, "POST", buckets(b.id), { name: "example-app-backups" });
-    const page = await call(fake, TOKEN_B, "GET", `${buckets(b.id)}?per_page=1`);
-    expect(result<{ buckets: { name: string }[] }>(page).buckets.map((x) => x.name)).toEqual([
-      "example-app-files",
-    ]);
-    expect(page.result_info).toEqual({ cursor: "1", per_page: 1 });
-    await call(fake, TOKEN_B, "DELETE", `${buckets(b.id)}/example-app-files`);
-    const gone = await call(fake, TOKEN_B, "GET", `${buckets(b.id)}/example-app-files`);
-    expect([gone.status, ...codes(gone)]).toEqual([404, 10006]);
-    expect(a.buckets.map((x) => x.name)).toEqual(["example-app-files"]);
+  it("answers R2 buckets per account, page by page", async () => {
+    const { fake, a, b, clientB } = setup();
+    a.buckets.push({ name: "example-app-files" });
+    b.buckets.push({ name: "example-app-files" }, { name: "example-app-backups" });
+    expect(await clientB.accountPermissions(b.id, ["r2"])).toEqual({ missing: [] });
+    const page = (query: string) =>
+      call(fake, TOKEN_B, "GET", `/accounts/${b.id}/r2/buckets${query}`);
+    const first = await page("?per_page=1");
+    expect(result(first)).toEqual({ buckets: [{ name: "example-app-files" }] });
+    expect(first.result_info).toEqual({ cursor: "1", per_page: 1 });
+    const second = await page("?per_page=1&cursor=1");
+    expect(result(second)).toEqual({ buckets: [{ name: "example-app-backups" }] });
+    expect(second.result_info).toEqual({ cursor: "", per_page: 1 });
+    await unanswered(fake, TOKEN_B, "POST", `/accounts/${b.id}/r2/buckets`);
+    await unanswered(fake, TOKEN_B, "GET", `/accounts/${b.id}/r2/buckets/example-app-files`);
   });
 
   it("answers Workers scripts, their subdomain, and custom domains attached by zone once it is active", async () => {
@@ -653,18 +630,24 @@ describe("fakeCloudflareAccounts: account pieces", () => {
     const zoneB = fake.zone(ZONE, "New");
     b.workers.set("docs", {});
     expect(await clientB.workersPermissions(b.id)).toEqual({ missing: [] });
-    const subdomain = `/accounts/${b.id}/workers/scripts/docs/subdomain`;
+    const scripts = `/accounts/${b.id}/workers/scripts`;
+    expect(result(await call(fake, TOKEN_B, "GET", scripts))).toEqual([{ id: "docs" }]);
+    const subdomain = `${scripts}/docs/subdomain`;
     expect(result(await call(fake, TOKEN_B, "GET", subdomain))).toEqual({
       enabled: false,
       previews_enabled: false,
     });
     await call(fake, TOKEN_B, "POST", subdomain, { enabled: true });
     expect(b.workers.get("docs")?.subdomain).toEqual({ enabled: true, previews_enabled: false });
+    const missing = await call(fake, TOKEN_B, "GET", `${scripts}/api/subdomain`);
+    expect([missing.status, ...codes(missing)]).toEqual([404, 10007]);
+    await unanswered(fake, TOKEN_B, "GET", `${scripts}?per_page=1`);
+    await unanswered(fake, TOKEN_B, "GET", `${scripts}/docs/settings`);
+    await unanswered(fake, TOKEN_B, "DELETE", `${scripts}/docs`);
 
-    const domains = `/accounts/${b.id}/workers/domains`;
     const attach = (hostname: string, service = "docs") =>
-      call(fake, TOKEN_B, "PUT", domains, { hostname, service, zone_id: created.id });
-    expect((await attach(`docs.${ZONE}`)).status).toBe(400);
+      clientB.attachWorkerDomain(b.id, { hostname, zoneId: created.id, service });
+    expect((await rejection(attach(`docs.${ZONE}`))).message).toContain("is not active yet");
     fake.activate(zoneB);
     fake.addRecord(zoneB, {
       type: "CNAME",
@@ -672,58 +655,55 @@ describe("fakeCloudflareAccounts: account pieces", () => {
       content: `docs.${ZONE}`,
       proxied: true,
     });
-    const taken = await attach(`www.docs.${ZONE}`);
-    expect([taken.status, ...codes(taken)]).toEqual([409, 100117]);
-    const noWorker = await attach(`api.${ZONE}`, "api");
-    expect([noWorker.status, ...codes(noWorker)]).toEqual([404, 10007]);
+    expect((await rejection(attach(`www.docs.${ZONE}`))).message).toContain(
+      "already has externally managed DNS records",
+    );
+    expect((await rejection(attach(`api.${ZONE}`, "api"))).message).toContain(
+      "This Worker does not exist on your account",
+    );
 
-    const attached = result<{ id: string }>(await attach(`docs.${ZONE}`));
-    expect(attached).toMatchObject({
-      hostname: `docs.${ZONE}`,
-      service: "docs",
-      zone_id: created.id,
-    });
+    const id = await attach(`docs.${ZONE}`);
     expect(zoneB.records.find((r) => r.name === `docs.${ZONE}`)).toMatchObject({
       type: "AAAA",
       content: "100::",
       proxied: true,
       meta: { read_only: true, origin_worker_id: "docs" },
     });
+    expect(await clientB.listZoneWorkerDomains(b.id, created.id)).toEqual([
+      { id, hostname: `docs.${ZONE}`, zoneId: created.id, service: "docs" },
+    ]);
     expect(await clientB.listWorkerCustomDomains(b.id, "docs")).toEqual([
       { hostname: `docs.${ZONE}`, zoneId: created.id },
     ]);
-    const byZone = await call(fake, TOKEN_B, "GET", `${domains}?zone_id=${created.id}`);
-    expect(result<unknown[]>(byZone)).toHaveLength(1);
-    expect(
-      result<unknown[]>(await call(fake, TOKEN_B, "GET", `${domains}?zone_id=${a.id}`)),
-    ).toEqual([]);
+    expect(await clientB.listZoneWorkerDomains(b.id, a.id)).toEqual([]);
 
-    expect(result(await call(fake, TOKEN_B, "DELETE", `${domains}/${attached.id}`))).toBeNull();
+    await clientB.detachWorkerDomain(b.id, id);
     expect(b.workerDomains).toEqual([]);
     expect(zoneB.records.map((r) => r.name)).toEqual([`www.docs.${ZONE}`]);
+    await unanswered(fake, TOKEN_B, "GET", `/accounts/${b.id}/workers/domains/${id}`);
   });
 });
 
 describe("fakeCloudflareAccounts: permissions and faults", () => {
-  const probes: [FakeCloudflarePermission, string, string][] = [
-    ["zone", "PUT", "/zones/{zone}/activation_check"],
-    ["dns", "GET", "/zones/{zone}/dns_records?per_page=1"],
-    ["ssl", "GET", "/zones/{zone}/ssl/certificate_packs?per_page=1"],
-    ["settings", "GET", "/zones/{zone}/settings/min_tls_version"],
-    [
-      "http_request_firewall_custom",
-      "GET",
-      "/zones/{zone}/rulesets/phases/http_request_firewall_custom/entrypoint",
-    ],
-    ["tunnel", "GET", "/accounts/{account}/cfd_tunnel?per_page=1"],
-    ["access-apps", "GET", "/accounts/{account}/access/apps"],
-    ["access-service-tokens", "GET", "/accounts/{account}/access/service_tokens"],
-    ["access-organization", "GET", "/accounts/{account}/access/identity_providers"],
-    ["r2", "GET", "/accounts/{account}/r2/buckets?per_page=1"],
-    ["workers", "GET", "/accounts/{account}/workers/scripts"],
+  const accountNeeds: AccountPermissionNeed[] = [
+    "tunnel",
+    "access-apps",
+    "access-service-tokens",
+    "access-organization",
+    "r2",
+    "workers",
+  ];
+  const zoneNeeds: ZonePermissionNeed[] = [
+    "dns",
+    "ssl",
+    "settings",
+    "http_config_settings",
+    "http_request_firewall_custom",
+    "http_request_dynamic_redirect",
   ];
 
-  it.each(probes)("withholds %s from one token only: %s %s", async (permission, method, path) => {
+  /** B with its pending zone, its token without `permission`, and a token with every permission. */
+  function denying(permission: FakeCloudflarePermission) {
     const fake = fakeCloudflareAccounts({
       accounts: [{ name: "New", token: TOKEN_B, denied: [permission] }],
       zones: [{ name: ZONE, account: "New", status: "pending" }],
@@ -731,11 +711,52 @@ describe("fakeCloudflareAccounts: permissions and faults", () => {
     const b = fake.account("New");
     const full = fakeSecret("cloudflare-token", "account-b-full");
     fake.tokens.set(full, { accounts: [b.id], denied: new Set() });
-    const at = path.replace("{zone}", fake.zone(ZONE, b.id).id).replace("{account}", b.id);
-    const refused = await call(fake, TOKEN_B, method, at);
-    expect([refused.status, ...codes(refused)]).toEqual([403, 10000]);
-    const granted = await call(fake, full, method, at);
-    expect(granted.status).not.toBe(403);
+    return {
+      fake,
+      b,
+      zone: fake.zone(ZONE, b.id),
+      denied: clientOf(fake, TOKEN_B),
+      full: clientOf(fake, full),
+    };
+  }
+
+  it.each(accountNeeds)("withholds %s from one token only, as its probe finds", async (need) => {
+    const { b, denied, full } = denying(need);
+    expect((await denied.accountPermissions(b.id, [need])).missing).toHaveLength(1);
+    expect(
+      await denied.accountPermissions(
+        b.id,
+        accountNeeds.filter((n) => n !== need),
+      ),
+    ).toEqual({
+      missing: [],
+    });
+    expect(await full.accountPermissions(b.id, accountNeeds)).toEqual({ missing: [] });
+  });
+
+  it.each(zoneNeeds)("withholds %s from one token only, as its probe finds", async (need) => {
+    const { zone, denied, full } = denying(need);
+    expect((await denied.zonePermissions(zone.id, [need])).missing).toHaveLength(1);
+    expect(
+      await denied.zonePermissions(
+        zone.id,
+        zoneNeeds.filter((n) => n !== need),
+      ),
+    ).toEqual({
+      missing: [],
+    });
+    expect(await full.zonePermissions(zone.id, zoneNeeds)).toEqual({ missing: [] });
+  });
+
+  it("withholds the zone permission: adding, deleting and re-checking zones", async () => {
+    const { fake, b, zone, denied } = denying("zone");
+    expect((await rejection(denied.createZone(b.id, "example.org"))).code).toBe(
+      "CREDENTIALS_INVALID",
+    );
+    expect((await rejection(denied.activationCheck(zone.id))).code).toBe("CREDENTIALS_INVALID");
+    expect((await rejection(denied.deleteZone(zone.id))).code).toBe("CREDENTIALS_INVALID");
+    expect(await denied.getZone(zone.id)).toMatchObject({ status: "pending" });
+    expect(fake.zones).toHaveLength(1);
   });
 
   it("fails one request with a fault, after carrying it out when asked", async () => {
