@@ -157,9 +157,12 @@ describe("a further app's static site on Cloudflare", () => {
   });
 
   it("reads only the app's own secrets, in its own GitHub environment", () => {
+    // The _NEW pair is read only while the app moves to another Cloudflare account.
     expect(secretsRead(file.content)).toEqual([
       "OPSCREW_DOCS_CLOUDFLARE_ACCOUNT_ID",
+      "OPSCREW_DOCS_CLOUDFLARE_ACCOUNT_ID_NEW",
       "OPSCREW_DOCS_CLOUDFLARE_API_TOKEN",
+      "OPSCREW_DOCS_CLOUDFLARE_API_TOKEN_NEW",
       "OPSCREW_DOCS_ENV_PUBLIC_API_URL",
     ]);
     expect(flow.jobs.deploy?.environment).toBe("docs-production");

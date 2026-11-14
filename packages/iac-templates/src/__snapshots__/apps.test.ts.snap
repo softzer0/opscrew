@@ -1692,6 +1692,22 @@ jobs:
           fi
           echo "::error::The site did not answer at $URL."
           exit 1
+      - name: Deploy the new version to the new Cloudflare account too
+        env:
+          CLOUDFLARE_API_TOKEN: \${{ secrets.OPSCREW_DOCS_CLOUDFLARE_API_TOKEN_NEW }}
+          CLOUDFLARE_ACCOUNT_ID: \${{ secrets.OPSCREW_DOCS_CLOUDFLARE_ACCOUNT_ID_NEW }}
+          MESSAGE: opscrew \${{ github.run_id }} \${{ needs.build.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          # Only while the app moves to another Cloudflare account.
+          if [[ -z "$CLOUDFLARE_API_TOKEN" ]]; then exit 0; fi
+          cd "$RUNNER_TEMP/wrangler"
+          code=0
+          npx --no-install wrangler deploy --message "$MESSAGE" --config "$GITHUB_WORKSPACE"/'opscrew/apps/docs/cloudflare/wrangler.jsonc' || code=$?
+          if [[ "$code" -ne 0 ]]; then
+            echo "::error::Wrangler could not deploy the new version to the new Cloudflare account; its output above says why. Run the workflow again."
+            exit 1
+          fi
       - id: rollback
         name: Activate the version that ran before again
         if: failure() && (steps.activate.outcome == 'failure' || steps.check.outcome == 'failure') && steps.previous.outputs.id != ''
