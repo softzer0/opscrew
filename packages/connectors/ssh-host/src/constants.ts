@@ -149,6 +149,14 @@ export function tunnelDir(app: string): string {
   return `${TUNNELS_DIR}/${app}`;
 }
 
+/**
+ * The folder of the connector of the Cloudflare account an app moves to, run beside its current
+ * one on a server the user owns: under a parent of its own, so no app's name can reach it.
+ */
+export function nextTunnelDir(app: string): string {
+  return `${TUNNELS_DIR}-next/${app}`;
+}
+
 /** The Compose project of an app's Cloudflare Tunnel connector, on every server. */
 export function tunnelProject(app: string): string {
   return `${app}-tunnel`;

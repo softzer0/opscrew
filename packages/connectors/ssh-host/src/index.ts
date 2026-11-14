@@ -102,6 +102,8 @@ export {
   planHost,
   planNetwork,
   planNetworkRemoval,
+  planNextTunnelConnector,
+  planNextTunnelConnectorRemoval,
   planPortainer,
   planPublicSsh,
   planRunner,

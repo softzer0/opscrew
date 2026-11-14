@@ -42,6 +42,7 @@ import {
   MIN_DOCKER_MAJOR,
   MODULI_FILTER,
   maskFilePath,
+  nextTunnelDir,
   OLD_CHECK_KEY_LINE_RE,
   OPSCREW_DIR,
   PORTAINER_DIR,
@@ -71,7 +72,6 @@ import {
   snapshotScheduleTag,
   snapshotsDir,
   sshdDropIn,
-  TUNNELS_DIR,
   tunnelDir,
   tunnelProject,
   UFW_NETWORK_COMMENT,
@@ -2405,16 +2405,29 @@ fi`,
 
 /**
  * The app's own tunnel connector (`params.app`): a setup or teardown plan changes only its own
- * app's connector; an undo removes any app's that was left behind.
+ * app's connector; an undo removes any app's that was left behind. `next`: the connector of the
+ * Cloudflare account the app moves to, run beside the current one as its own Compose project
+ * (`<app>-tunnel-next`) in `nextTunnelDir` as root, or as the login in a folder whose name ends in
+ * `-next`, so it never touches the current one.
  */
 function tunnelScripts(plan: HostPlan, step: HostStep): StepScripts {
-  const { app } = params(step, z.object({ app: AppNameSchema }));
+  const { app, next } = params(
+    step,
+    z.object({ app: AppNameSchema, next: z.literal(true).optional() }),
+  );
   if (plan.purpose !== "undo" && app !== plan.app) throw invalid(step, "app");
+  // As root `checkLocation` holds the folder to `nextTunnelDir`; as the login its name says so.
+  const { dir: given, runAs: whoRuns } = step.params;
+  if (next === true && whoRuns === "login" && !String(given).endsWith("-next")) {
+    throw invalid(step, "dir");
+  }
+  const rootDir = next === true ? nextTunnelDir(app) : tunnelDir(app);
+  const project = next === true ? `${tunnelProject(app)}-next` : tunnelProject(app);
   if (plan.purpose !== "setup" || step.params.remove === true) {
     return removeAddonScripts(plan, step, {
       name: "tunnel-connector",
-      dir: tunnelDir(app),
-      project: tunnelProject(app),
+      dir: rootDir,
+      project,
       doing: "removing the tunnel connector",
     });
   }
@@ -2430,16 +2443,16 @@ function tunnelScripts(plan: HostPlan, step: HostStep): StepScripts {
       rewrite: z.literal(true).optional(),
     }),
   );
-  const dir = p.dir ?? tunnelDir(app);
+  const dir = p.dir ?? rootDir;
   const runAs = p.runAs ?? "root";
-  checkLocation(step, dir, runAs, tunnelDir(app));
+  checkLocation(step, dir, runAs, rootDir);
   return scripts({
     name: "tunnel-connector",
     params: {
       DIR: dir,
-      PROJECT: tunnelProject(app),
+      PROJECT: project,
       ADDONS_ROOT,
-      TUNNELS_DIR,
+      TUNNELS_DIR: rootDir.slice(0, rootDir.lastIndexOf("/")),
       RUN_AS: runAs,
       COMPOSE_B64: base64(p.compose),
       COMPOSE_SHA256: sha256Hex(p.compose),

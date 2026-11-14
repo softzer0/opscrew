@@ -30,6 +30,7 @@ import {
   FAIL2BAN_JAIL_PATH,
   fail2banJail,
   MIN_DOCKER_MAJOR,
+  nextTunnelDir,
   PORTAINER_DIR,
   PORTAINER_PORT,
   PORTAINER_PROJECT,
@@ -2955,6 +2956,63 @@ export function planTunnelToken(options: {
   };
   // Validate now so a bad directory fails before anything is approved.
   for (const item of plan.steps) stepScripts(plan, item);
+  return plan;
+}
+
+/**
+ * A one-step host plan that runs the connector of the Cloudflare account the app moves to beside
+ * its current one, as the Compose project `<app>-tunnel-next` in `nextTunnelDir` as root (as the
+ * login in `connector.dir`, whose name ends in `-next`). Its token is supplied at apply (`tunnelToken`, on
+ * standard input, never part of this plan) and written to a file only its owner reads. Up to date,
+ * the step is skipped. Apply it with `applyHostPlan` like any host plan.
+ */
+export function planNextTunnelConnector(options: {
+  app: string;
+  runAs: RunAs;
+  connector: { dir?: string; compose: string; tunnelId: string };
+}): HostPlan {
+  const { app, runAs, connector } = options;
+  const dir = connector.dir ?? nextTunnelDir(app);
+  const step = tunnelConnectorStep(app, runAs, { ...connector, dir, needsToken: true }, "");
+  return nextConnectorPlan(app, {
+    ...step,
+    title: `Run the new Cloudflare account's tunnel connector of "${app}" beside the current one${imageIn(connector.compose)}`,
+    reason: `cloudflared runs as its own Compose project ${tunnelProject(app)}-next in ${dir}, beside the current one, which keeps serving until the move finishes; no inbound port is opened. Its token is written to a file only its owner can read at apply time and is never part of this plan.`,
+    params: { ...step.params, next: true },
+  });
+}
+
+/**
+ * A one-step host plan that stops and removes the connector `planNextTunnelConnector` runs and its
+ * folder; the app's current connector stays. Apply it with `applyHostPlan` like any host plan.
+ */
+export function planNextTunnelConnectorRemoval(options: {
+  app: string;
+  runAs: RunAs;
+  dir?: string;
+}): HostPlan {
+  const { app, runAs } = options;
+  const dir = options.dir ?? nextTunnelDir(app);
+  return nextConnectorPlan(app, {
+    id: "tunnel-connector",
+    title: `Remove the new Cloudflare account's tunnel connector of "${app}" that ran beside the current one`,
+    state: "change",
+    scope: "app",
+    reason: `Its Compose project ${tunnelProject(app)}-next and ${dir}; the current connector stays.`,
+    params: { remove: true, next: true, app, dir, runAs },
+  });
+}
+
+function nextConnectorPlan(app: string, step: HostStep): HostPlan {
+  const plan: HostPlan = {
+    schemaVersion: HOST_PLAN_SCHEMA_VERSION,
+    purpose: "setup",
+    app,
+    steps: [step],
+    findings: [],
+  };
+  // Validate now so a bad directory fails before anything is approved.
+  stepScripts(plan, step);
   return plan;
 }
 
