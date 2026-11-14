@@ -787,7 +787,7 @@ The founder asked for more places for the snapshots' encrypted copies, in 0.2.8:
 - [x] T2722 The cPanel live pass (lead): `docs/e2e-coverage.md` row and results.
 - [x] T2723 The SFTP live pass (lead).
 - [x] T2724 The OpenLiteSpeed live pass (lead).
-- [ ] T2758 The snapshots pass's legs to the user's own bucket and SFTP machine (after T2756; the lead runs them and records them in `docs/e2e-coverage.md`)
+- [x] T2758 The snapshots pass's legs to the user's own bucket and SFTP machine (after T2756; the lead runs them and records them in `docs/e2e-coverage.md`)
   - Owns: `packages/cli/test/live/{snapshots.test.ts,snapshots-checks.ts,snapshots-support.ts,snapshots-support.test.ts}`, `docs/e2e.md` (the off-server copy's lines)
   - Reads: T2756's block; `docs/guide/snapshots.md` ("An encrypted copy off the server"); the off-server pass in `snapshots.test.ts` (O1 to O6) and its helpers; `harness.ts` (`createServer`, the scrubber, the cleanup); `sftp-host.test.ts` (its chrooted SFTP account)
   - Decided by the lead:
